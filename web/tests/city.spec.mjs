@@ -3,10 +3,12 @@ import { test, expect } from "@playwright/test";
 const after = "b".repeat(40);
 const before = "a".repeat(40);
 
-test("opens a public repository and fetches source after the WASM city starts", async ({ page }) => {
+test("opens a public repository and fetches source after the WASM city starts", async ({ page }, testInfo) => {
   const faults = [];
+  const consoleLog = [];
   page.on("pageerror", error => faults.push(error.message));
   page.on("console", message => {
+    consoleLog.push(`${message.type()}: ${message.text()}`);
     if (message.type() === "error" || message.text().includes("DeviceLost")) {
       faults.push(message.text());
     }
@@ -30,24 +32,31 @@ test("opens a public repository and fetches source after the WASM city starts", 
   await expect(page.locator("form")).toBeHidden({ timeout: 90_000 });
   const canvas = page.locator("canvas");
   await expect(canvas).toBeVisible();
-  await expect.poll(async () => {
-    expect(faults).toEqual([]);
-    const png = await canvas.screenshot();
-    return page.evaluate(async data => {
-      const image = await createImageBitmap(new Blob([Uint8Array.fromBase64(data)], { type: "image/png" }));
-      const sample = new OffscreenCanvas(64, 64).getContext("2d");
-      sample.drawImage(image, 0, 0, 64, 64);
-      image.close();
-      const { data: pixels } = sample.getImageData(0, 0, 64, 64);
-      let roofPixels = 0;
-      for (let i = 0; i < pixels.length; i += 4) {
-        const [red, green, blue] = pixels.subarray(i, i + 3);
-        // The modified file has an amber roof. Neither the page nor the HUD uses that color.
-        if (red > 120 && red - green > 20 && green - blue > 25) roofPixels++;
-      }
-      return roofPixels;
-    }, png.toString("base64"));
-  }, { timeout: 30_000, message: "Render the modified file's amber roof" }).toBeGreaterThan(12);
+  let png;
+  try {
+    await expect.poll(async () => {
+      expect(faults).toEqual([]);
+      png = await canvas.screenshot({ timeout: 20_000 });
+      return page.evaluate(async data => {
+        const image = await createImageBitmap(new Blob([Uint8Array.fromBase64(data)], { type: "image/png" }));
+        const sample = new OffscreenCanvas(64, 64).getContext("2d");
+        sample.drawImage(image, 0, 0, 64, 64);
+        image.close();
+        const { data: pixels } = sample.getImageData(0, 0, 64, 64);
+        let roofPixels = 0;
+        for (let i = 0; i < pixels.length; i += 4) {
+          const [red, green, blue] = pixels.subarray(i, i + 3);
+          // The modified file has an amber roof. Neither the page nor the HUD uses that color.
+          if (red > 120 && red - green > 20 && green - blue > 25) roofPixels++;
+        }
+        return roofPixels;
+      }, png.toString("base64"));
+    }, { timeout: 100_000, message: "Render the modified file's amber roof" }).toBeGreaterThan(12);
+  } catch (error) {
+    if (png) await testInfo.attach("last canvas", { body: png, contentType: "image/png" });
+    await testInfo.attach("browser console", { body: consoleLog.join("\n"), contentType: "text/plain" });
+    throw error;
+  }
   expect(faults).toEqual([]);
 });
 

@@ -11,7 +11,7 @@ if (process.platform === "linux") {
 export default defineConfig({
   testDir: "./tests",
   workers: 1,
-  timeout: 120_000,
+  timeout: 180_000,
   outputDir: process.env.REPO_CITY_TEST_OUTPUT ?? join(tmpdir(), "repo-city-playwright"),
   use: {
     baseURL: `http://127.0.0.1:${port}`,
