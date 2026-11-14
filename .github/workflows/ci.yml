@@ -64,8 +64,20 @@ jobs:
       - name: Verify the real WASM build in Chromium
         working-directory: web
         run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes libvulkan1
           npx playwright install --with-deps chromium
           npm run test:browser
+        env:
+          REPO_CITY_TEST_OUTPUT: ${{ runner.temp }}/repo-city-playwright
+      - name: Save browser failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: browser-test-failure
+          path: ${{ runner.temp }}/repo-city-playwright/
+          if-no-files-found: ignore
+          retention-days: 7
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: browser-build

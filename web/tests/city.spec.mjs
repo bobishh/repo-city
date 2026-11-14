@@ -6,6 +6,11 @@ const before = "a".repeat(40);
 test("opens a public repository and fetches source after the WASM city starts", async ({ page }) => {
   const faults = [];
   page.on("pageerror", error => faults.push(error.message));
+  page.on("console", message => {
+    if (message.type() === "error" || message.text().includes("DeviceLost")) {
+      faults.push(message.text());
+    }
+  });
   await page.route("https://api.github.com/**", async route => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/repos/owner/demo") return route.fulfill({ json: { default_branch: "main" } });
@@ -23,8 +28,26 @@ test("opens a public repository and fetches source after the WASM city starts", 
   await expect(page.locator("#status")).toBeEmpty({ timeout: 70_000 });
   expect(await blob).not.toBeNull();
   await expect(page.locator("form")).toBeHidden({ timeout: 90_000 });
-  await expect(page.locator("canvas")).toBeVisible();
-  await expect.poll(async () => (await page.locator("canvas").screenshot()).length, { timeout: 30_000 }).toBeGreaterThan(15_000);
+  const canvas = page.locator("canvas");
+  await expect(canvas).toBeVisible();
+  await expect.poll(async () => {
+    expect(faults).toEqual([]);
+    const png = await canvas.screenshot();
+    return page.evaluate(async data => {
+      const image = await createImageBitmap(new Blob([Uint8Array.fromBase64(data)], { type: "image/png" }));
+      const sample = new OffscreenCanvas(64, 64).getContext("2d");
+      sample.drawImage(image, 0, 0, 64, 64);
+      image.close();
+      const { data: pixels } = sample.getImageData(0, 0, 64, 64);
+      let roofPixels = 0;
+      for (let i = 0; i < pixels.length; i += 4) {
+        const [red, green, blue] = pixels.subarray(i, i + 3);
+        // The modified file has an amber roof. Neither the page nor the HUD uses that color.
+        if (red > 120 && red - green > 20 && green - blue > 25) roofPixels++;
+      }
+      return roofPixels;
+    }, png.toString("base64"));
+  }, { timeout: 30_000, message: "Render the modified file's amber roof" }).toBeGreaterThan(12);
   expect(faults).toEqual([]);
 });
 
