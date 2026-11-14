@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { writeFile } from "node:fs/promises";
 
 const after = "b".repeat(40);
 const before = "a".repeat(40);
@@ -32,11 +33,19 @@ test("opens a public repository and fetches source after the WASM city starts", 
   await expect(page.locator("form")).toBeHidden({ timeout: 90_000 });
   const canvas = page.locator("canvas");
   await expect(canvas).toBeVisible();
+  const cdp = await page.context().newCDPSession(page);
+  const { x, y, width, height } = await canvas.boundingBox();
   let png;
   try {
     await expect.poll(async () => {
       expect(faults).toEqual([]);
-      png = await canvas.screenshot({ timeout: 20_000 });
+      // Read the composited pixels without waiting for animation frames to check element stability.
+      const { data } = await cdp.send("Page.captureScreenshot", {
+        format: "png",
+        clip: { x, y, width, height, scale: 1 },
+        fromSurface: true,
+      });
+      png = Buffer.from(data, "base64");
       return page.evaluate(async data => {
         const image = await createImageBitmap(new Blob([Uint8Array.fromBase64(data)], { type: "image/png" }));
         const sample = new OffscreenCanvas(64, 64).getContext("2d");
@@ -50,12 +59,14 @@ test("opens a public repository and fetches source after the WASM city starts", 
           if (red > 120 && red - green > 20 && green - blue > 25) roofPixels++;
         }
         return roofPixels;
-      }, png.toString("base64"));
+      }, data);
     }, { timeout: 100_000, message: "Render the modified file's amber roof" }).toBeGreaterThan(12);
   } catch (error) {
-    if (png) await testInfo.attach("last canvas", { body: png, contentType: "image/png" });
-    await testInfo.attach("browser console", { body: consoleLog.join("\n"), contentType: "text/plain" });
+    if (png) await writeFile(testInfo.outputPath("last-canvas.png"), png);
+    await writeFile(testInfo.outputPath("browser-console.txt"), consoleLog.join("\n"));
     throw error;
+  } finally {
+    await cdp.detach();
   }
   expect(faults).toEqual([]);
 });
