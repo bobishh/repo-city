@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Repo City</title>
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.mjs"></script>
+</head>
+<body>
+  <main>
+    <aside>
+      <h1>Repo City</h1>
+      <button id="change" type="button">Repository</button>
+      <form>
+        <label>Public GitHub repository <input name="repo" placeholder="owner/repository" required></label>
+        <label>Revision <input name="ref" placeholder="Default branch"></label>
+        <label>Compare with <input name="base" placeholder="Parent commit"></label>
+        <button type="submit">Open city</button>
+      </form>
+      <p id="status" role="status"></p>
+    </aside>
+    <section aria-label="3D repository city"><canvas id="repo-city" tabindex="0" hidden></canvas></section>
+  </main>
+</body>
+</html>

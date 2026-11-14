@@ -1,0 +1,12 @@
+{
+  "name": "repo-city-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test github.test.mjs",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1"
+  }
+}
