@@ -55,6 +55,8 @@ module with its WASM content type when the raw file exceeds the static asset
 limit. Successful runs on `main` deploy that same artifact to
 `repo-city.meta-uber-engineer.dev` after both check jobs pass. The deployment
 uses the `CLOUDFLARE_API_TOKEN` secret in the GitHub `production` environment.
+The token needs Editor access to the `repo-city` Worker. CI publishes versions
+to the existing custom domain. Manage domain bindings separately in Cloudflare.
 
 ## Explore
 

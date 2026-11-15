@@ -117,8 +117,11 @@ jobs:
             echo "::error::Set CLOUDFLARE_API_TOKEN in the production environment."
             exit 1
           fi
-          npx --yes wrangler@4.162.0 deploy --config wrangler.jsonc
-      - name: Verify the live WASM matches the tested build
+          export WRANGLER_OUTPUT_FILE_PATH="$RUNNER_TEMP/wrangler-output.ndjson"
+          npx --yes wrangler@4.162.0 versions upload --config wrangler.jsonc --message "$GITHUB_SHA"
+          version_id=$(jq -er 'select(.type == "version-upload") | .version_id | strings' "$WRANGLER_OUTPUT_FILE_PATH")
+          npx --yes wrangler@4.162.0 versions deploy "$version_id@100%" --config wrangler.jsonc --yes
+      - name: Verify the live assets match the tested build
         working-directory: release
         run: |
           base=https://repo-city.meta-uber-engineer.dev
@@ -129,5 +132,7 @@ jobs:
           fi
           curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-max-time 50 "$base/" -o "$RUNNER_TEMP/repo-city.html"
           cmp dist/index.html "$RUNNER_TEMP/repo-city.html"
+          curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-max-time 50 "$base/style.css" -o "$RUNNER_TEMP/style.css"
+          cmp dist/style.css "$RUNNER_TEMP/style.css"
           curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-max-time 50 --compressed "$base/game/repo_city_bg.wasm" -o "$RUNNER_TEMP/deployed.wasm"
           cmp "$wasm" "$RUNNER_TEMP/deployed.wasm"
