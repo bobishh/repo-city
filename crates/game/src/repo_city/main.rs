@@ -3,6 +3,7 @@
 mod city_navigation;
 mod code_texture;
 mod comparison_scene;
+mod district;
 mod file_picker;
 mod listing;
 mod physics;
@@ -405,6 +406,8 @@ fn main() {
             .chain()
             .before(file_picker::update),
     );
+    app.add_systems(Startup, district::setup);
+    app.add_systems(Update, district::reflect.after(listing::draw_overview));
     #[cfg(target_arch = "wasm32")]
     app.add_systems(
         Update,
@@ -641,7 +644,6 @@ fn spawn_city(
     }
     let unit = &palette.unit;
     let plate = &palette.plate;
-    let edge = &palette.edge;
     let shell = &palette.shell;
     if let Ok((mut pose, mut pilot)) = camera.single_mut() {
         *pose = listing::view(&repo.0.files[explorer.selected]);
@@ -665,7 +667,8 @@ fn spawn_city(
         RigidBody::Static,
         Collider::cuboid(1., 1., 1.),
     ));
-    for district in &repo.0.districts {
+    let lights = district::Lights::new(&mut meshes, &mut materials);
+    for (index, district) in repo.0.districts.iter().enumerate() {
         let [x, z] = district.position;
         let [w, d] = district.size;
         commands.spawn((
@@ -675,23 +678,13 @@ fn spawn_city(
             Transform::from_xyz(x + w / 2. - 3., -0.12, z + d / 2. - 1.)
                 .with_scale(Vec3::new(w, 0.18, d)),
         ));
-        for dx in [0., w - 6.] {
-            commands.spawn((
-                CityObject,
-                Mesh3d(unit.clone()),
-                MeshMaterial3d(edge.clone()),
-                Transform::from_xyz(x + dx, 0.05, z + d / 2.).with_scale(Vec3::new(0.07, 0.04, d)),
-            ));
-        }
-        label(
+        lights.spawn(
             &mut commands,
             &mut meshes,
             &mut materials,
             &mut images,
-            &district.name,
-            Vec3::new(x + 36., 3.5, z - 3.),
-            70.,
-            set.ink,
+            district,
+            index,
         );
     }
     let mut block = Mesh::from(Cuboid::from_size(Vec3::ONE));
@@ -1418,6 +1411,7 @@ fn smoke(
     repo: Res<Repo>,
     mut explorer: ResMut<Explorer>,
     mut camera: Query<&mut Transform, With<Camera3d>>,
+    panes: Query<&Transform, (With<district::Glass>, Without<Camera3d>)>,
     sections: Query<(&Section, &Transform), Without<Camera3d>>,
     fragments: Query<Entity, With<physics::Fragment>>,
     debris: Query<Entity, With<physics::Lifetime>>,
@@ -1426,7 +1420,7 @@ fn smoke(
     if check.pending {
         return;
     }
-    if check.stage >= 5 {
+    if check.stage >= 7 {
         if explorer.dirty {
             let expected = explorer.original.clone();
             explorer.reload(&repo.0);
@@ -1434,10 +1428,12 @@ fn smoke(
         }
         std::fs::write(
             check.directory.join("passed.txt"),
-            "Rendered pair, ghost and syntax wall. A real projectile collision detached the exact declaration, spawned physical fragments, and restore recovered the immutable source and cleared debris.",
+            "Rendered pair, ghost, syntax wall, city overview and district mirror. A real projectile collision detached the exact declaration, spawned physical fragments, and restore recovered the immutable source and cleared debris.",
         )
         .expect("smoke report");
-        println!("Native smoke passed: pair, ghost, syntax, physical fragment, restore.");
+        println!(
+            "Native smoke passed: pair, ghost, syntax, physical fragment, restore, neon and mirror."
+        );
         commands.write_message(AppExit::Success);
         return;
     }
@@ -1493,7 +1489,7 @@ fn smoke(
                     *camera = Transform::from_xyz(x - 4., 6.2, z + 14.5)
                         .looking_at(Vec3::new(x - 4., 6.2, z + 3.3), Vec3::Y);
                 }
-                _ => {
+                4 => {
                     let expected = explorer.original.clone();
                     explorer.reload(&repo.0);
                     assert_eq!(explorer.source, expected);
@@ -1504,6 +1500,28 @@ fn smoke(
                     explorer.comparison_mode = 1;
                     explorer.page = 0;
                     comparison_scene::focus(&mut camera, &repo.0, &explorer);
+                }
+                5 => {
+                    explorer.comparison_mode = 0;
+                    explorer.anchored = false;
+                    let target = Vec3::new(x, 21., z);
+                    *camera = Transform::from_translation(target + Vec3::new(64., 68., 100.))
+                        .looking_at(target, Vec3::Y);
+                }
+                _ => {
+                    let pane = panes
+                        .iter()
+                        .min_by(|a, b| {
+                            let file = Vec2::new(x, z);
+                            a.translation
+                                .xz()
+                                .distance_squared(file)
+                                .total_cmp(&b.translation.xz().distance_squared(file))
+                        })
+                        .expect("smoke repository has a district mirror");
+                    *camera =
+                        Transform::from_translation(pane.translation + Vec3::new(2., 2., 12.))
+                            .looking_at(pane.translation, Vec3::Y);
                 }
             }
         }

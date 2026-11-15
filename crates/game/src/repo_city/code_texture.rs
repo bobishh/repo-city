@@ -1,6 +1,7 @@
 //! Tree-sitter syntax colors and independent diff backgrounds.
 use bevy::{
     asset::RenderAssetUsages,
+    image::{CompressedImageFormats, ImageSampler, ImageType},
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
@@ -186,39 +187,43 @@ pub(super) enum Coverage {
     Open,
 }
 
-pub(super) fn facade_overview(bands: impl ExactSizeIterator<Item = Coverage>) -> Image {
-    let width = 48;
-    let height = 128;
-    let count = bands.len();
-    let bands: Vec<_> = bands.collect();
-    let mut pixels = Vec::with_capacity(width * height * 4);
-    for y in 0..height {
-        let (wall, mark) = match bands[y * count / height] {
-            Coverage::Closed => ([24, 39, 46], [57, 78, 88]),
-            Coverage::Partial => ([50, 36, 24], [145, 98, 50]),
-            Coverage::Open => ([15, 40, 39], [51, 128, 116]),
-        };
-        let length = 17 + (y * 13 / 2) % 24;
-        for x in 0..width {
-            pixels.extend(if y % 2 == 0 && (5..length).contains(&x) {
-                mark
-            } else {
-                wall
-            });
-            pixels.push(255);
-        }
-    }
-    Image::new(
-        Extent3d {
-            width: width as u32,
-            height: height as u32,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        pixels,
-        TextureFormat::Rgba8UnormSrgb,
+pub(super) fn embedded_png(png: &[u8]) -> Image {
+    Image::from_buffer(
+        png,
+        ImageType::Extension("png"),
+        CompressedImageFormats::NONE,
+        true,
+        ImageSampler::linear(),
         RenderAssetUsages::default(),
     )
+    .expect("valid bundled city texture")
+}
+
+pub(super) fn facade_overview(bands: impl ExactSizeIterator<Item = Coverage>) -> Image {
+    static PRINT: std::sync::OnceLock<Image> = std::sync::OnceLock::new();
+    let print = PRINT
+        .get_or_init(|| embedded_png(include_bytes!("../../../../assets/city/facade-print.png")));
+    let mut image = print.clone();
+    let width = image.width() as usize;
+    let height = image.height() as usize;
+    let count = bands.len();
+    let bands: Vec<_> = bands.collect();
+    let pixels = image.data.as_mut().expect("packed facade print");
+    for (y, row) in pixels.chunks_exact_mut(width * 4).enumerate() {
+        let [r, g, b]: [u8; 3] = match bands[y * count / height] {
+            Coverage::Closed => [0, 0, 0],
+            Coverage::Partial => [17, 8, 0],
+            Coverage::Open => [0, 16, 12],
+        };
+        if r | g | b != 0 {
+            for pixel in row.chunks_exact_mut(4) {
+                pixel[0] = pixel[0].saturating_add(r);
+                pixel[1] = pixel[1].saturating_add(g);
+                pixel[2] = pixel[2].saturating_add(b);
+            }
+        }
+    }
+    image
 }
 
 pub fn listing(rows: &[(Option<Line>, Mark)], revealed: &impl Fn(usize) -> bool) -> Image {
