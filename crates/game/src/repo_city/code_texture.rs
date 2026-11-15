@@ -276,9 +276,11 @@ pub(super) fn listing_preview<'a>(
 
 fn listing_background(open: bool, mark: Mark) -> [u8; 3] {
     match (open, mark) {
-        (false, _) => [28, 43, 50],
-        (_, Mark::Added) => [17, 56, 42],
-        (_, Mark::Removed) => [66, 27, 35],
+        (false, Mark::Added) => [27, 56, 48],
+        (false, Mark::Removed) => [64, 40, 47],
+        (false, Mark::Context) => [28, 43, 50],
+        (true, Mark::Added) => [17, 56, 42],
+        (true, Mark::Removed) => [66, 27, 35],
         _ => [9, 17, 23],
     }
 }

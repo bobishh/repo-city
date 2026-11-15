@@ -119,6 +119,7 @@ pub(super) struct Listing {
     source_tiles: Tiles,
     diff_tiles: Tiles,
     diff_lines: Vec<(Option<syntax::Line>, Mark)>,
+    source_marks: Vec<Mark>,
     pending_hit: Option<(usize, f32)>,
 }
 
@@ -588,6 +589,17 @@ enum Layer {
     Heading,
 }
 
+impl Layer {
+    fn pose(self, side: &WallSide, y: f32) -> Transform {
+        let mut pose = side.pose(y);
+        if self == Self::Preview {
+            // Behind the readable tiles, still outside the building shell.
+            pose.translation -= side.normal() * (side.wall.row_height * 0.08).clamp(0.003, 0.018);
+        }
+        pose
+    }
+}
+
 impl WallRender<'_, '_, '_> {
     fn clear(&mut self, tiles: &mut Tiles) {
         for tile in std::mem::take(&mut tiles.resident).into_values() {
@@ -619,7 +631,6 @@ impl WallRender<'_, '_, '_> {
             } else {
                 AlphaMode::Opaque
             },
-            depth_bias: if layer == Layer::Tile { 8. } else { 0. },
             unlit: true,
             ..default()
         });
@@ -631,7 +642,7 @@ impl WallRender<'_, '_, '_> {
                 },
                 Mesh3d(self.meshes.add(Rectangle::new(side.width, height))),
                 MeshMaterial3d(material.clone()),
-                side.pose(y),
+                layer.pose(side, y),
             ))
             .id();
         Tile {
@@ -790,6 +801,7 @@ pub(super) fn draw(
         render.clear(&mut listing.source_tiles);
     }
     if diff_changed {
+        let mut source_marks = vec![Mark::Context; count];
         render.clear(&mut listing.diff_tiles);
         listing.diff_lines.clear();
         for (entity, surface) in &old {
@@ -799,6 +811,20 @@ pub(super) fn draw(
         }
         if visible && let Some(diff) = &explorer.comparison {
             for row in &diff.rows {
+                if row.changed {
+                    let index = if explorer.before {
+                        row.before
+                    } else {
+                        row.after
+                    };
+                    if let Some(mark) = index.and_then(|index| source_marks.get_mut(index)) {
+                        *mark = if explorer.before {
+                            Mark::Removed
+                        } else {
+                            Mark::Added
+                        };
+                    }
+                }
                 if let Some(index) = row.before
                     && (row.changed || row.after.is_none())
                 {
@@ -817,6 +843,12 @@ pub(super) fn draw(
                         .push((Some(diff.after[index].clone()), mark));
                 }
             }
+        }
+        if source_marks != listing.source_marks {
+            listing.source_marks = source_marks;
+            listing.source_tiles.preview_dirty = true;
+            let tiles = &mut listing.source_tiles;
+            tiles.dirty.extend(tiles.resident.keys().copied());
         }
     }
     if !visible {
@@ -849,6 +881,7 @@ pub(super) fn draw(
         source_tiles,
         diff_tiles,
         diff_lines,
+        source_marks,
         revealed,
         diff_side,
         ..
@@ -857,7 +890,7 @@ pub(super) fn draw(
     render.preview(&source, source_tiles, count, || {
         code_texture::listing_preview(
             count,
-            |index| (Some(&explorer.highlighted[index]), Mark::Context),
+            |index| (Some(&explorer.highlighted[index]), source_marks[index]),
             is_revealed,
         )
     });
@@ -874,10 +907,13 @@ pub(super) fn draw(
         return;
     }
     let source_texture = |rows: Range<usize>| {
-        let tile = explorer.highlighted[rows]
-            .iter()
-            .cloned()
-            .map(|line| (Some(line), Mark::Context))
+        let tile = rows
+            .map(|index| {
+                (
+                    Some(explorer.highlighted[index].clone()),
+                    source_marks[index],
+                )
+            })
             .collect::<Vec<_>>();
         code_texture::listing(&tile, &is_revealed)
     };
@@ -916,6 +952,21 @@ mod tests {
             after: None,
             change: Change::Added,
             position: [0., 0.],
+        }
+    }
+
+    #[test]
+    fn readable_tiles_and_previews_keep_the_same_rows_on_distinct_depths() {
+        let file = fixture_file();
+        for diff in [false, true] {
+            let side = WallSide::new(&file, 724, diff, block_size(&file, Some(724)));
+            let y = side.wall.y(381.5);
+            let clear = Layer::Tile.pose(&side, y);
+            let blurred = Layer::Preview.pose(&side, y);
+            let separation = (clear.translation - blurred.translation).dot(side.normal());
+            assert_eq!(clear.translation.y, blurred.translation.y);
+            assert_eq!(clear.rotation, blurred.rotation);
+            assert!(separation >= 0.0029 && separation < PANEL_OFFSET);
         }
     }
 

@@ -63,6 +63,8 @@ jobs:
           version=$(python3 -c 'import tomllib; print(next(p["version"] for p in tomllib.load(open("Cargo.lock", "rb"))["package"] if p["name"] == "wasm-bindgen"))')
           cargo install wasm-bindgen-cli --version "$version" --locked
       - run: ./scripts/build-web.sh
+        env:
+          TINSINK_BROWSER_KEY: ${{ vars.TINSINK_BROWSER_KEY }}
       - name: Verify the real WASM build in Chromium
         working-directory: web
         run: |

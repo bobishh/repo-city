@@ -28,7 +28,11 @@ HEAD. An invalid folder leaves the open city in place.
 ## Browser
 
 The browser build opens public GitHub repositories from a URL or an
-`owner/repository` name. Choose a revision and optionally a base ref. With a
+`owner/repository` name. Use `?repo=owner/name&ref=feature&base=main` for a
+direct link. Paste an open public GitHub pull request URL in the same field,
+or pass it as `?pr=<URL>`. The PR opens the complete head tree and compares
+it with the merge base. Changed source rows are tinted in place; the diff
+wall shows removals. For a repository, choose a revision and optionally a base ref. With a
 base ref, the city compares the merge base against the chosen revision.
 Without one, it compares the first parent. Files load as you approach them.
 Use a browser with WebGPU enabled. The browser displays plain source and line
@@ -45,6 +49,17 @@ node tests/serve.mjs 18791
 
 Open `http://127.0.0.1:18791`. Browser tests use a fixture for GitHub responses
 and exercise the compiled WASM in Chromium.
+
+Browser analytics are configured with the `TINSINK_BROWSER_KEY` GitHub
+repository variable. Use the public browser key for the TinSink project
+`repo-city` restricted to `https://repo-city.meta-uber-engineer.dev`.
+The production build records page views and successful or failed repository
+opens, including elapsed time and whether a base was requested. It sends no
+repository names, revisions, source, identifiers, URL parameters or cookies.
+Collection is off for local builds, previews, and browsers that enable Do
+Not Track or Global Privacy Control. See Paket revision
+`8a9cea4150f6adea385daa9ac411a1e5a8a2a1aa` for the deployment workflow and
+TinSink's analytics and telemetry contracts for the event formats.
 
 The two-job CI and WASM asset packaging follow Paket at
 `8a9cea4150f6adea385daa9ac411a1e5a8a2a1aa`. Repo City tests its macOS folder
@@ -68,7 +83,7 @@ to the existing custom domain. Manage domain bindings separately in Cloudflare.
   distance. Open Files with P in the browser or ⌘P on macOS, type a filename
   or path, and press Enter to fly there.
   Approach a file's front to read it in place, or click a block or its beacon
-  to fly there. Aim at a beacon to read the file or directory path. File
+  to fly there. Aim at a beacon to see the file or directory path next to the pointer. File
   beacons are colored by file type, and roof signs show the extension.
   Hold F to charge the
   water blaster and release to fire. A shot arcs downward and washes one strip

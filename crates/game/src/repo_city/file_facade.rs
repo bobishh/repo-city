@@ -56,7 +56,7 @@ pub(super) fn transform(file: &repo_world::File, size: Vec3, part: Part) -> Tran
         )),
         Part::Mirror => Transform::from_xyz(x, size.y / 2., z - size.z / 2. - 0.04)
             .with_rotation(Quat::from_rotation_y(std::f32::consts::PI))
-            .with_scale(Vec3::new(size.x * 0.88, size.y * 0.75, 1.)),
+            .with_scale(Vec3::new(size.x, size.y, 1.)),
     }
 }
 
@@ -110,6 +110,24 @@ pub(super) const INK: [[f32; 3]; 5] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mirror_covers_the_rear_face_from_ground_to_roof() {
+        let file = repo_world::File {
+            path: "demo.rs".into(),
+            before: None,
+            after: None,
+            change: Change::Unchanged,
+            position: [70., 28.],
+        };
+        for count in [23, 724, 1614] {
+            let size = listing::block_size(&file, Some(count));
+            let mirror = transform(&file, size, Part::Mirror);
+            assert_eq!(mirror.scale.xy(), size.xy());
+            assert_eq!(mirror.translation.y - mirror.scale.y / 2., 0.);
+            assert_eq!(mirror.translation.y + mirror.scale.y / 2., size.y);
+        }
+    }
 
     #[test]
     fn proximity_hits_the_front_but_leaves_the_mirror_free() {

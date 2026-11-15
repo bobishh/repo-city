@@ -1,4 +1,9 @@
-import { loadGitHub } from "./github.mjs";
+import { loadGitHub, parsePullRequest } from "./github.mjs";
+import { createAnalytics } from "./analytics.mjs";
+import { browserKey } from "./analytics-config.mjs";
+
+const analytics = createAnalytics(browserKey);
+analytics.pageView();
 
 const form = document.querySelector("form");
 const status = document.querySelector("#status");
@@ -7,6 +12,7 @@ const startScreen = document.querySelector("#start-screen");
 const submit = form.querySelector("button");
 const parameters = new URLSearchParams(location.search);
 for (const name of ["repo", "ref", "base"]) form.elements[name].value = parameters.get(name) ?? "";
+if (parameters.get("pr")) form.elements.repo.value = parameters.get("pr");
 
 canvas.addEventListener("keydown", event => {
   if (event.code === "Tab") {
@@ -21,6 +27,8 @@ canvas.addEventListener("keydown", event => {
 });
 
 async function openRepository(repo, ref, base) {
+  const started = performance.now();
+  const comparing = Boolean(base?.trim() || parsePullRequest(repo));
   submit.disabled = true;
   status.textContent = "Loading repository and browser engine…";
   try {
@@ -54,9 +62,11 @@ async function openRepository(repo, ref, base) {
     status.textContent = "";
     form.hidden = true;
     canvas.focus();
+    analytics.repositoryOpened(true, performance.now() - started, comparing);
   } catch (error) {
     status.textContent = error instanceof Error ? error.message : String(error);
     canvas.hidden = true;
+    analytics.repositoryOpened(false, performance.now() - started, comparing);
   } finally {
     submit.disabled = false;
   }
@@ -77,4 +87,5 @@ document.querySelector("#change").addEventListener("click", () => {
   if (!form.hidden) form.elements.repo.focus();
 });
 
-if (parameters.get("repo")) openRepository(parameters.get("repo"), parameters.get("ref"), parameters.get("base"));
+const initial = parameters.get("pr") || parameters.get("repo");
+if (initial) openRepository(initial, parameters.get("ref"), parameters.get("base"));

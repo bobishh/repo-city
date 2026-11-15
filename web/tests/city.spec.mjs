@@ -111,3 +111,30 @@ test("reports missing repositories and keeps the form usable", async ({ page }) 
   await expect(page.getByRole("button", { name: "Open city" })).toBeEnabled();
   await expect(page.locator("#start-screen").getByText("Repo City", { exact: true })).toBeVisible();
 });
+
+test("opens a pull request from the URL using its fork head and merge base", async ({ page }) => {
+  const checked = [];
+  await page.route("https://api.github.com/**", async route => {
+    const path = new URL(route.request().url()).pathname;
+    checked.push(path);
+    if (path.endsWith("/pulls/8")) return route.fulfill({ json: {
+      state: "open",
+      base: { sha: "c".repeat(40) },
+      head: { sha: after, repo: { full_name: "fork/demo" } },
+    } });
+    if (path.includes("/compare/")) return route.fulfill({ json: { merge_base_commit: { sha: before } } });
+    if (path.includes("/git/trees/")) return route.fulfill({ json: { tree: [
+      { path: "src/pr.rs", type: "blob", mode: "100644", sha: path.endsWith(after) ? after : before, size: 18 },
+      { path: "LICENSE", type: "blob", mode: "100644", sha: "d".repeat(40), size: 16 },
+    ] } });
+    const source = path.endsWith(after) ? "fn new_version() {}" : "fn old_version() {}";
+    return route.fulfill({ json: { size: source.length, encoding: "base64", content: Buffer.from(source).toString("base64") } });
+  });
+  await page.goto("/?pr=https%3A%2F%2Fgithub.com%2Fowner%2Fdemo%2Fpull%2F8");
+  await expect(page.locator("form")).toBeHidden({ timeout: 90_000 });
+  const snapshot = await page.evaluate(() => JSON.parse(globalThis.repoCity.snapshot()));
+  expect(snapshot).toMatchObject({ name: "owner/demo#8", revision: after, baseline: before });
+  expect(Object.keys(snapshot.after)).toContain("LICENSE");
+  expect(checked).toContain(`/repos/fork/demo/git/trees/${after}`);
+  expect(checked).toContain(`/repos/owner/demo/git/trees/${before}`);
+});

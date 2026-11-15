@@ -146,12 +146,7 @@ impl Navigation {
         })
     }
 
-    pub(super) fn prompt(
-        &self,
-        explorer: &Explorer,
-        nearest: &Nearest,
-        repo: &Repository,
-    ) -> String {
+    pub(super) fn prompt(&self, explorer: &Explorer) -> String {
         if self.hop.is_some() {
             return "Flying to destination · Esc to cancel".into();
         }
@@ -179,14 +174,6 @@ impl Navigation {
         if explorer.anchored {
             return "SOURCE WALL · Scroll to read · E or Esc to fly".into();
         }
-        let destination = if let Some(index) = nearest.district {
-            format!("Directory / {}", repo.districts[index].name)
-        } else {
-            nearest
-                .file
-                .map(|index| format!("Click to fly to {}", repo.files[index].path))
-                .unwrap_or_else(|| "Point at a file or a beacon to see its path".into())
-        };
         let trace = if self.trace.is_empty() {
             ""
         } else {
@@ -194,7 +181,7 @@ impl Navigation {
         };
         let shortcut = file_picker::SHORTCUT;
         format!(
-            "{destination}\nScroll follows the text · Files / {shortcut} searches paths · WASD flies\nHold F and release to wash the cover · Home frames the file · G turns to the diff · C reviews changes{trace}"
+            "Aim at a file or a beacon · Click a file to fly there\nScroll follows the text · Files / {shortcut} searches paths · WASD flies\nHold F and release to wash the cover · Home frames the file · G turns to the diff · C reviews changes{trace}"
         )
     }
 }

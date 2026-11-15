@@ -13,6 +13,9 @@ const TINTS: [[f32; 3]; 4] = [
     [0.97, 0.71, 0.39],
     [0.69, 0.55, 0.99],
 ];
+pub(super) fn beacon_ink(index: usize) -> [f32; 3] {
+    TINTS[index % TINTS.len()]
+}
 const GLASS_WIDTH: f32 = 11.;
 const GLASS_HEIGHT: f32 = 7.;
 

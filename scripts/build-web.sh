@@ -5,7 +5,16 @@ cd "$(dirname "$0")/.."
 cargo build --locked -p repo-city --profile web-release --target wasm32-unknown-unknown
 output=web/dist
 mkdir -p "$output/game" "$output/assets"
-cp web/index.html web/style.css web/app.mjs web/github.mjs "$output/"
+cp web/index.html web/style.css web/app.mjs web/github.mjs web/analytics.mjs "$output/"
+python3 - "$output/analytics-config.mjs" <<'PYCODE'
+from pathlib import Path
+import json
+import os
+import sys
+
+key = os.environ.get("TINSINK_BROWSER_KEY", "").strip()
+Path(sys.argv[1]).write_text(f"export const browserKey = {json.dumps(key)};\n")
+PYCODE
 cp web/assets/start-screen.webp web/assets/caveat-latin-wght.woff2 web/assets/OFL-Caveat.txt "$output/assets/"
 wasm-bindgen --target web --remove-name-section --remove-producers-section \
   --out-dir "$output/game" --out-name repo_city \

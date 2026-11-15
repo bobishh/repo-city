@@ -235,6 +235,8 @@ struct StatusHud;
 #[derive(Component)]
 struct AimHud;
 #[derive(Component)]
+struct TargetLabel;
+#[derive(Component)]
 struct Pilot {
     yaw: f32,
     pitch: f32,
@@ -243,8 +245,10 @@ struct Pilot {
 #[derive(Resource, Default)]
 struct Nearest {
     file: Option<usize>,
+    file_beacon: bool,
     near_source: Option<usize>,
     district: Option<usize>,
+    screen: Option<(Vec2, Vec2)>,
     function: Option<usize>,
     hunk: Option<usize>,
 }
@@ -680,6 +684,21 @@ fn setup(
         },
         AimHud,
     ));
+    commands.spawn((
+        TargetLabel,
+        Text::new(""),
+        ui_font(14.),
+        TextColor(color(set.ink)),
+        BackgroundColor(Color::srgba(0.025, 0.045, 0.055, 0.96)),
+        bevy::picking::Pickable::IGNORE,
+        Node {
+            display: Display::None,
+            position_type: PositionType::Absolute,
+            padding: UiRect::axes(px(9.), px(5.)),
+            ..default()
+        },
+        ZIndex(9),
+    ));
 }
 
 fn spawn_city(
@@ -981,11 +1000,23 @@ fn targeting(
     mut nearest: ResMut<Nearest>,
 ) {
     let Ok((projection, camera, pilot)) = camera.single() else {
+        nearest.screen = None;
         return;
     };
+    nearest.screen = None;
+    let window = windows.single().ok();
+    if let Some(window) = window.filter(|window| window.focused) {
+        let size = Vec2::new(window.width(), window.height());
+        let locked = pilot.captured || mouse.pressed(MouseButton::Right);
+        nearest.screen = if locked {
+            Some((size * 0.5, size))
+        } else {
+            window.cursor_position().map(|point| (point, size))
+        };
+    }
     let (origin, direction) = if !pilot.captured
         && !mouse.pressed(MouseButton::Right)
-        && let Ok(window) = windows.single()
+        && let Some(window) = window
         && let Some(cursor) = window.cursor_position()
         && let Ok(ray) = projection.viewport_to_world(&GlobalTransform::from(*camera), cursor)
     {
@@ -994,6 +1025,7 @@ fn targeting(
         (camera.translation, camera.forward().as_vec3())
     };
     nearest.file = None;
+    nearest.file_beacon = false;
     nearest.function = None;
     nearest.hunk = None;
     nearest.near_source = None;
@@ -1012,18 +1044,17 @@ fn targeting(
         let max = Vec3::new(x + size.x / 2., size.y, z + size.z / 2.);
         let beam_min = Vec3::new(x - 0.55, size.y, z - 0.55);
         let beam_max = Vec3::new(x + 0.55, size.y + file_facade::BEAM_HEIGHT, z + 0.55);
-        let hit = [
-            ray_box(origin, direction, min, max),
-            ray_box(origin, direction, beam_min, beam_max),
-        ]
-        .into_iter()
-        .flatten()
-        .min_by(f32::total_cmp);
+        let beam_hit = ray_box(origin, direction, beam_min, beam_max);
+        let hit = [ray_box(origin, direction, min, max), beam_hit]
+            .into_iter()
+            .flatten()
+            .min_by(f32::total_cmp);
         if let Some(d) = hit
             && d < distance
         {
             distance = d;
             nearest.file = Some(f.index);
+            nearest.file_beacon = beam_hit == Some(d);
         }
         if let Some(d) = file_facade::approach(camera, min, max)
             && d <= (size.x * 0.9).clamp(4.5, 12.5)
@@ -1437,15 +1468,67 @@ fn hud(
     nearest: Res<Nearest>,
     navigation: Res<city_navigation::Navigation>,
     listing: Res<listing::Listing>,
-    mut texts: Query<(
-        &mut Text,
-        Has<TopHud>,
-        Has<BottomHud>,
-        Has<StatusHud>,
-        Has<AimHud>,
-    )>,
+    picker: Res<file_picker::FilePicker>,
+    mut label: Query<(&mut Text, &mut TextColor, &mut Node), With<TargetLabel>>,
+    mut texts: Query<
+        (
+            &mut Text,
+            Has<TopHud>,
+            Has<BottomHud>,
+            Has<StatusHud>,
+            Has<AimHud>,
+        ),
+        Without<TargetLabel>,
+    >,
 ) {
     let file = &repo.0.files[explorer.selected];
+    if let Ok((mut text, mut tint, mut node)) = label.single_mut() {
+        let target = if !picker.is_open() && listing::Listing::visible(&explorer, &navigation) {
+            nearest
+                .district
+                .map(|index| {
+                    (
+                        repo.0.districts[index].name.as_str(),
+                        district::beacon_ink(index),
+                    )
+                })
+                .or_else(|| {
+                    nearest
+                        .file
+                        .filter(|&index| index != explorer.selected || nearest.file_beacon)
+                        .map(|index| {
+                            let path = repo.0.files[index].path.as_str();
+                            (path, file_facade::INK[file_facade::kind(path)])
+                        })
+                })
+        } else {
+            None
+        };
+        if let (Some((path, ink)), Some((point, size))) = (target, nearest.screen) {
+            if text.0 != path {
+                text.0 = path.into();
+            }
+            tint.set_if_neq(TextColor(color(ink)));
+            let left = point.x <= size.x / 2.;
+            let below = point.y <= size.y / 2.;
+            node.display = Display::Flex;
+            node.left = if left { px(point.x + 16.) } else { Val::Auto };
+            node.right = if left {
+                Val::Auto
+            } else {
+                px(size.x - point.x + 16.)
+            };
+            node.top = if below { px(point.y + 13.) } else { Val::Auto };
+            node.bottom = if below {
+                Val::Auto
+            } else {
+                px(size.y - point.y + 13.)
+            };
+            node.max_width = px((size.x / 2. - 24.).clamp(40., 460.));
+        } else if node.display != Display::None {
+            node.display = Display::None;
+        }
+    }
     for (mut text, top, bottom, status, aim) in &mut texts {
         let value = if top {
             format!(
@@ -1462,7 +1545,7 @@ fn hud(
                 &repo.0.revision[..8]
             )
         } else if bottom {
-            navigation.prompt(&explorer, &nearest, &repo.0)
+            navigation.prompt(&explorer)
         } else if status && listing::Listing::visible(&explorer, &navigation) {
             let (opened, total) = listing.counts(&explorer);
             let anatomy = explorer
