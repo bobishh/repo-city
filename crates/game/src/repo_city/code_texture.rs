@@ -304,9 +304,18 @@ pub fn listing(rows: &[(Option<Line>, Mark)], revealed: &impl Fn(usize) -> bool)
         let open = line.as_ref().is_none_or(|line| revealed(line.number));
         let background = listing_background(open, *mark);
         canvas.band(y, y + LISTING_ROW_PIXELS, background);
-        if !open && index == 0 {
-            canvas.band(y, y + 2, [95, 137, 147]);
-            canvas.text("COVERED", 106., y as f32 + 21., 18., |_| [0.58, 0.73, 0.77]);
+        if !open {
+            for py in y..y + LISTING_ROW_PIXELS {
+                for x in 91..96 {
+                    let pixel = ((py * width + x) * 4) as usize;
+                    let stripe = if (py + x) % 12 < 5 {
+                        [83, 148, 155, 255]
+                    } else {
+                        [35, 69, 77, 255]
+                    };
+                    canvas.pixels[pixel..pixel + 4].copy_from_slice(&stripe);
+                }
+            }
         }
         let Some(line) = line else { continue };
         let baseline = y as f32 + 21.;
@@ -321,7 +330,7 @@ pub fn listing(rows: &[(Option<Line>, Mark)], revealed: &impl Fn(usize) -> bool)
                     .find(|span| span.bytes.contains(&byte))
                     .map_or(Kind::Plain, |span| span.kind))
             });
-        } else if index > 0 && !line.text.trim().is_empty() {
+        } else if !line.text.trim().is_empty() {
             let (start, end) = covered_span(&line.text);
             for py in y + 12..y + 15 {
                 for px in start..end {

@@ -20,6 +20,9 @@ const GLASS_HEIGHT: f32 = 7.;
 pub(super) struct Glass;
 
 #[derive(Component)]
+pub(super) struct Beacon(pub usize);
+
+#[derive(Component)]
 pub(super) struct Reflection;
 
 #[derive(Component)]
@@ -33,6 +36,7 @@ pub(super) struct MirrorMotion {
 
 pub(super) struct Lights {
     glass: Handle<Mesh>,
+    beacon: Handle<Mesh>,
     tint: [Handle<StandardMaterial>; 4],
     spill: [Handle<StandardMaterial>; 4],
     pane: Handle<StandardMaterial>,
@@ -48,7 +52,8 @@ impl Lights {
             })
         };
         Self {
-            glass: meshes.add(Rectangle::new(GLASS_WIDTH, GLASS_HEIGHT)),
+            glass: meshes.add(Rectangle::new(1., 1.)),
+            beacon: meshes.add(Cuboid::from_size(Vec3::ONE)),
             tint: TINTS.map(|ink| neon(ink, materials)),
             spill: TINTS.map(|ink| neon(ink.map(|value| value * 0.29), materials)),
             pane: neon([0.065, 0.10, 0.14], materials),
@@ -118,7 +123,16 @@ impl Lights {
             NotShadowCaster,
             Mesh3d(self.glass.clone()),
             MeshMaterial3d(self.pane.clone()),
-            Transform::from_translation(pane),
+            Transform::from_translation(pane).with_scale(Vec3::new(GLASS_WIDTH, GLASS_HEIGHT, 1.)),
+        ));
+        commands.spawn((
+            CityObject,
+            Beacon(index),
+            NotShadowCaster,
+            Mesh3d(self.beacon.clone()),
+            MeshMaterial3d(self.tint[ink].clone()),
+            Transform::from_xyz(min_x, 10. + listing::MAX_HEIGHT / 2., max_z)
+                .with_scale(Vec3::new(0.34, listing::MAX_HEIGHT, 0.34)),
         ));
         for side in [-1., 1.] {
             glow(
@@ -216,31 +230,31 @@ pub(super) fn setup(
     ));
 }
 
-fn portrait(pane: Vec3, eye: &Transform) -> Option<(Vec3, f32, f32)> {
-    let offset = eye.translation - pane;
-    if !(0.25..18.).contains(&offset.z)
-        || offset.x.abs() >= GLASS_WIDTH / 2. + 2.
-        || offset.y.abs() >= 7.
-        || eye.forward().z >= -0.05
+fn portrait(pane: &Transform, eye: &Transform) -> Option<(Vec3, f32, f32)> {
+    let inverse = pane.rotation.inverse();
+    let offset = inverse * (eye.translation - pane.translation);
+    let facing = inverse * eye.forward().as_vec3();
+    let half = pane.scale.xy() / 2.;
+    if !(0.23..18.).contains(&offset.z)
+        || offset.x.abs() >= half.x + 2.
+        || offset.y.abs() >= half.y + 3.5
+        || facing.z >= -0.05
     {
         return None;
     }
-    // Place the portrait on the glass at the viewer's reflected position.
-    let scale = 0.66;
-    let half_width = 3.5 * scale / 2.;
-    let half_height = 5.25 * scale / 2.;
-    let x = offset.x.clamp(
-        -GLASS_WIDTH / 2. + half_width,
-        GLASS_WIDTH / 2. - half_width,
-    );
-    let y = (offset.y - 0.8).clamp(
-        -GLASS_HEIGHT / 2. + half_height,
-        GLASS_HEIGHT / 2. - half_height,
-    );
+    let scale = (pane.scale.x / 4.5).min(pane.scale.y / 6.5).min(0.66);
+    let x = offset
+        .x
+        .clamp(-half.x + 1.75 * scale, half.x - 1.75 * scale);
+    let y = (offset.y - 0.8 * scale).clamp(-half.y + 2.625 * scale, half.y - 2.625 * scale);
     let opacity = ((18. - offset.z) / 6.).clamp(0., 1.)
-        * ((GLASS_WIDTH / 2. + 2. - offset.x.abs()) / 3.).clamp(0., 1.)
-        * ((7. - offset.y.abs()) / 3.).clamp(0., 1.);
-    Some((pane + Vec3::new(x, y, 0.035), scale, opacity * 0.62))
+        * ((half.x + 2. - offset.x.abs()) / 3.).clamp(0., 1.)
+        * ((half.y + 3.5 - offset.y.abs()) / 3.).clamp(0., 1.);
+    Some((
+        pane.translation + pane.rotation * Vec3::new(x, y, 0.035),
+        scale,
+        opacity * 0.62,
+    ))
 }
 
 pub(super) fn reflect(
@@ -275,12 +289,11 @@ pub(super) fn reflect(
     };
     let closest = panes
         .iter()
-        .filter_map(|pane| {
-            portrait(pane.translation, eye).map(|portrait| (pane.translation, portrait))
-        })
+        .filter_map(|pane| portrait(pane, eye).map(|portrait| (pane, portrait)))
         .min_by(|(a, _), (b, _)| {
-            a.distance_squared(eye.translation)
-                .total_cmp(&b.distance_squared(eye.translation))
+            a.translation
+                .distance_squared(eye.translation)
+                .total_cmp(&b.translation.distance_squared(eye.translation))
         });
     let Some((pane, (position, scale, alpha))) = closest else {
         visibility.set_if_neq(Visibility::Hidden);
@@ -294,7 +307,8 @@ pub(super) fn reflect(
     if !view.is_active {
         view.is_active = true;
     }
-    let offset = eye.translation - pane;
+    let inverse = pane.rotation.inverse();
+    let offset = inverse * (eye.translation - pane.translation);
     let orbit = Vec3::new(
         (offset.x / offset.z.max(3.) * 2.1).clamp(-1.5, 1.5),
         (offset.y / offset.z.max(3.) * 1.2).clamp(-0.7, 0.85) + 0.12,
@@ -309,12 +323,16 @@ pub(super) fn reflect(
     motion.drift = motion
         .drift
         .lerp((speed / 10.).clamp(0., 1.), 1. - (-dt * 7.).exp());
-    let yaw = eye.forward().x.clamp(-0.8, 0.8);
+    let yaw = (inverse * eye.forward().as_vec3()).x.clamp(-0.8, 0.8);
     for (joint, mut local) in &mut joints {
         android::animate(*joint, &mut local, time.elapsed_secs(), motion.drift, yaw);
     }
     visibility.set_if_neq(Visibility::Visible);
-    pose.set_if_neq(Transform::from_translation(position).with_scale(Vec3::new(-scale, scale, 1.)));
+    pose.set_if_neq(
+        Transform::from_translation(position)
+            .with_rotation(pane.rotation)
+            .with_scale(Vec3::new(-scale, scale, 1.)),
+    );
     let tint = Color::srgba(0.73, 0.81, 0.97, (alpha * 255.).round() / 255.);
     if materials
         .get(&material.0)
@@ -331,18 +349,22 @@ mod tests {
 
     #[test]
     fn the_android_tracks_the_viewer_on_the_front_of_the_glass() {
+        let pane = Transform::from_scale(Vec3::new(GLASS_WIDTH, GLASS_HEIGHT, 1.));
         let mut eye = Transform::from_xyz(-2., 0.5, 8.);
-        let (left, scale, opacity) = portrait(Vec3::ZERO, &eye).unwrap();
+        let (left, scale, opacity) = portrait(&pane, &eye).unwrap();
         eye.translation.x = 2.;
-        let (right, ..) = portrait(Vec3::ZERO, &eye).unwrap();
+        let (right, ..) = portrait(&pane, &eye).unwrap();
         assert!(left.x < 0. && right.x > 0. && left.z == right.z);
         assert!(scale < 1. && opacity > 0. && opacity < 1.);
         eye.translation.z = 16.;
-        assert!(portrait(Vec3::ZERO, &eye).unwrap().2 < opacity);
+        assert!(portrait(&pane, &eye).unwrap().2 < opacity);
         eye.translation.z = -8.;
-        assert!(portrait(Vec3::ZERO, &eye).is_none());
+        assert!(portrait(&pane, &eye).is_none());
         eye.translation.z = 8.;
         eye.rotate_y(std::f32::consts::PI);
-        assert!(portrait(Vec3::ZERO, &eye).is_none());
+        assert!(portrait(&pane, &eye).is_none());
+        let rear = pane.with_rotation(Quat::from_rotation_y(std::f32::consts::PI));
+        eye.translation.z = -8.;
+        assert!(portrait(&rear, &eye).is_some());
     }
 }

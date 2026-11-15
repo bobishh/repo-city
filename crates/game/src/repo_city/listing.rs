@@ -14,11 +14,10 @@ const RETIRING_TILES: usize = 2;
 const TEXTURES_PER_FRAME: usize = 2;
 pub(super) const WIDTH: f32 = 14.;
 pub(super) const DEPTH: f32 = 8.2;
-const SOURCE_WIDTH: f32 = WIDTH - 0.7;
-// The side view reads from the gap between adjacent file blocks.
-const DIFF_WIDTH: f32 = 3.1;
+const GUTTER: f32 = 0.7;
 pub(super) const MAX_HEIGHT: f32 = 72.;
-const BASE: f32 = 2.;
+const BASE: f32 = 0.9;
+const ROOF: f32 = 0.88;
 const PANEL_OFFSET: f32 = 0.06;
 pub(super) const FRONT: f32 = DEPTH / 2. + PANEL_OFFSET;
 const OVERVIEW_BANDS: usize = 64;
@@ -27,25 +26,25 @@ fn texture_row_height(width: f32) -> f32 {
     width * code_texture::LISTING_ROW_PIXELS as f32 / code_texture::LISTING_WIDTH as f32
 }
 
-pub(super) fn building_height(file: &repo_world::File) -> f32 {
-    let bytes = file
-        .after
-        .as_ref()
-        .or(file.before.as_ref())
-        .map_or(0, |blob| blob.size);
-    (15. + (bytes as f32).sqrt() * 0.275).min(MAX_HEIGHT)
-}
-
-pub(super) fn view(file: &repo_world::File, count: usize) -> Transform {
-    // The browser can start a flight before the selected blob is available.
+pub(super) fn block_size(file: &repo_world::File, known_rows: Option<usize>) -> Vec3 {
     let estimated = file
         .after
         .as_ref()
         .or(file.before.as_ref())
         .map_or(1, |blob| (blob.size as usize / 40).max(1));
-    let count = if count == 0 { estimated } else { count };
-    let side = WallSide::new(file, count, false);
-    side.view(side.wall.y(count.min(8) as f32 / 2.))
+    let rows = known_rows.unwrap_or(estimated).max(1) as f32;
+    let height = (BASE + ROOF + rows * texture_row_height(WIDTH - GUTTER)).min(MAX_HEIGHT);
+    let width = ((height - BASE - ROOF) / rows / texture_row_height(1.) + GUTTER).min(WIDTH);
+    Vec3::new(width, height, (width * 0.65).clamp(2.4, DEPTH))
+}
+
+pub(super) fn view(file: &repo_world::File, count: usize) -> Transform {
+    view_from_size(file, count, block_size(file, (count > 0).then_some(count)))
+}
+
+pub(super) fn view_from_size(file: &repo_world::File, count: usize, size: Vec3) -> Transform {
+    let side = WallSide::new(file, count, false, size);
+    side.view(side.wall.y(count.clamp(1, 8) as f32 / 2.))
 }
 
 struct Wall {
@@ -54,8 +53,8 @@ struct Wall {
 }
 
 impl Wall {
-    fn new(file: &repo_world::File, count: usize, width: f32) -> Self {
-        let top = building_height(file) - 0.7;
+    fn new(count: usize, width: f32, height: f32) -> Self {
+        let top = height - ROOF;
         let row_height = ((top - BASE) / count.max(1) as f32).min(texture_row_height(width));
         Self { top, row_height }
     }
@@ -139,10 +138,9 @@ pub(super) fn overview_material(texture: Handle<Image>) -> StandardMaterial {
     }
 }
 
-fn close_to_facade(file: &repo_world::File, camera: &Transform) -> bool {
+fn close_to_facade(file: &repo_world::File, camera: &Transform, size: Vec3) -> bool {
     let [x, z] = file.position;
-    let distance =
-        (camera.translation.xz() - Vec2::new(x, z)).abs() - Vec2::new(WIDTH / 2., DEPTH / 2.);
+    let distance = (camera.translation.xz() - Vec2::new(x, z)).abs() - size.xz() / 2.;
     distance.max(Vec2::ZERO).length_squared() < 24. * 24.
 }
 
@@ -296,7 +294,14 @@ impl Listing {
         if count == 0 {
             return;
         }
-        let row = WallSide::new(file, count, false).wall.row(y, count);
+        let row = WallSide::new(
+            file,
+            count,
+            false,
+            explorer.facade_size(file, explorer.selected),
+        )
+        .wall
+        .row(y, count);
         let rows = tile_rows(row, count);
         let key = (explorer.selected, explorer.before);
         let progress = self
@@ -344,6 +349,7 @@ pub(super) fn controls(
         return;
     }
     let file = &repo.0.files[explorer.selected];
+    let size = explorer.facade_size(file, explorer.selected);
     let Ok(mut camera) = camera.single_mut() else {
         return;
     };
@@ -357,7 +363,7 @@ pub(super) fn controls(
             } else {
                 explorer.highlighted.len()
             };
-            let from = WallSide::new(file, old_count, listing.diff_side);
+            let from = WallSide::new(file, old_count, listing.diff_side, size);
             let row = from.wall.row(from.look_height(&camera), old_count);
             listing.diff_side = !listing.diff_side;
             let count = if listing.diff_side {
@@ -365,7 +371,7 @@ pub(super) fn controls(
             } else {
                 explorer.highlighted.len()
             };
-            let side = WallSide::new(file, count, listing.diff_side);
+            let side = WallSide::new(file, count, listing.diff_side, size);
             let row = projected_row(&explorer, row, listing.diff_side);
             listing.turn = Some((0., *camera, side.view(side.wall.y(row as f32 + 0.5))));
         }
@@ -375,11 +381,11 @@ pub(super) fn controls(
         let ease = |t: f32| t * t * (3. - 2. * t);
         let [x, z] = file.position;
         let corner = Vec3::new(
-            (x + WIDTH / 2. + 0.5)
+            (x + size.x / 2. + 0.5)
                 .max(start.translation.x)
                 .max(end.translation.x),
             (start.translation.y + end.translation.y) * 0.5,
-            (z + FRONT + 0.5)
+            (z + size.z / 2. + PANEL_OFFSET + 0.5)
                 .max(start.translation.z)
                 .max(end.translation.z),
         );
@@ -406,11 +412,11 @@ pub(super) fn controls(
     };
     if keys.just_pressed(KeyCode::Home) {
         listing.scroll_remaining = 0.;
-        let y = building_height(file) / 2.;
-        let distance = building_height(file) * 1.45 + 7.;
+        let y = size.y / 2.;
+        let distance = size.y.max(size.x) * 1.45 + 7.;
         let pose = wall_pose(file, y, angle, distance);
         let target = pose.translation + pose.forward().as_vec3() * distance;
-        *camera = Transform::from_translation(pose.translation.with_y(MAX_HEIGHT + 8.))
+        *camera = Transform::from_translation(pose.translation.with_y(size.y * 1.12 + 5.))
             .looking_at(target, Vec3::Y);
         return;
     }
@@ -421,7 +427,7 @@ pub(super) fn controls(
             explorer.highlighted.len()
         };
         if count > 0 {
-            let side = WallSide::new(file, count, listing.diff_side);
+            let side = WallSide::new(file, count, listing.diff_side, size);
             let y = side.look_height(&camera);
             let delta =
                 (scroll * 4. + step * TILE_ROWS as f32).clamp(-72., 72.) * side.wall.row_height;
@@ -508,19 +514,19 @@ struct WallSide {
 }
 
 impl WallSide {
-    fn new(file: &repo_world::File, count: usize, diff: bool) -> Self {
+    fn new(file: &repo_world::File, count: usize, diff: bool, size: Vec3) -> Self {
         let [x, z] = file.position;
         let (x, z, max_width, angle) = if diff {
             (
-                x + WIDTH / 2. + PANEL_OFFSET,
+                x + size.x / 2. + PANEL_OFFSET,
                 z,
-                DIFF_WIDTH,
+                size.z - GUTTER,
                 std::f32::consts::FRAC_PI_2,
             )
         } else {
-            (x, z + FRONT, SOURCE_WIDTH, 0.)
+            (x, z + size.z / 2. + PANEL_OFFSET, size.x - GUTTER, 0.)
         };
-        let wall = Wall::new(file, count, max_width);
+        let wall = Wall::new(count, max_width, size.y);
         let width = wall.row_height * code_texture::LISTING_WIDTH as f32
             / code_texture::LISTING_ROW_PIXELS as f32;
         Self {
@@ -826,9 +832,10 @@ pub(super) fn draw(
         listing.wash(&explorer, file, y);
     }
 
-    let source = WallSide::new(file, count, false);
+    let size = explorer.facade_size(file, explorer.selected);
+    let source = WallSide::new(file, count, false, size);
     let diff_count = listing.diff_lines.len();
-    let diff = WallSide::new(file, diff_count, true);
+    let diff = WallSide::new(file, diff_count, true, size);
     if changed {
         render.header(&source, &file.path, set.ink, count);
     }
@@ -861,7 +868,7 @@ pub(super) fn draw(
             |_| true,
         )
     });
-    if !close_to_facade(file, camera) {
+    if !close_to_facade(file, camera, size) {
         render.hide_side(source_tiles);
         render.hide_side(diff_tiles);
         return;
@@ -917,8 +924,9 @@ mod tests {
         let mut explorer = Explorer::new(0);
         explorer.highlighted = syntax::highlight("test.rs", &"let x = 1;\n".repeat(48));
         let file = fixture_file();
-        let height = building_height(&file);
-        let wall = Wall::new(&file, 48, WIDTH);
+        let size = block_size(&file, Some(48));
+        let height = size.y;
+        let wall = WallSide::new(&file, 48, false, size).wall;
         let mut repo = repository_picker::empty();
         repo.files.push(file);
         let mut app = App::new();
@@ -938,14 +946,14 @@ mod tests {
         .add_systems(Update, cover_impacts);
         app.finish();
         app.world_mut().spawn((
-            Facade { index: 0, height },
+            Facade { index: 0 },
             RigidBody::Static,
-            Collider::cuboid(WIDTH, height, DEPTH),
+            Collider::cuboid(size.x, size.y, size.z),
             Transform::from_xyz(0., height / 2., 0.),
         ));
         let positions = [
             (
-                Vec3::Z * (DEPTH / 2. + 0.27) + Vec3::Y * wall.y(6.),
+                Vec3::Z * (size.z / 2. + 0.27) + Vec3::Y * wall.y(6.),
                 Vec3::NEG_Z,
             ),
             (Vec3::NEG_Z * 12. + Vec3::Y * wall.y(22.), Vec3::Z),
@@ -990,7 +998,7 @@ mod tests {
         use code_texture::Coverage;
         let file = fixture_file();
         let count = 80;
-        let wall = Wall::new(&file, count, WIDTH);
+        let wall = WallSide::new(&file, count, false, block_size(&file, Some(count))).wall;
         let mut repo = repository_picker::empty();
         repo.files.push(file.clone());
         let mut explorer = Explorer::new(0);
@@ -1023,13 +1031,7 @@ mod tests {
             .add_systems(Update, draw_overview);
         let facade = app
             .world_mut()
-            .spawn((
-                Facade {
-                    index: 0,
-                    height: building_height(&file),
-                },
-                MeshMaterial3d(closed.clone()),
-            ))
+            .spawn((Facade { index: 0 }, MeshMaterial3d(closed.clone())))
             .id();
         app.world_mut().resource_mut::<Listing>().rendered = Some((0, true, count));
         let wash = |app: &mut App, row| {
@@ -1118,7 +1120,7 @@ mod tests {
             .unwrap()
             .translation
             .y;
-        let wall = Wall::new(&file, count, WIDTH);
+        let wall = WallSide::new(&file, count, false, block_size(&file, Some(count))).wall;
         assert!((first_y - next_y - TILE_ROWS as f32 * wall.row_height).abs() < 0.001);
         let y = wall.y(TILE_ROWS as f32 + 2.5);
         let preview = app
@@ -1192,7 +1194,7 @@ mod tests {
         app.update();
         assert!(app.world().resource::<Assets<Image>>().len() <= 6);
         let limit = 4 + TILES_PER_SIDE + RETIRING_TILES;
-        let source = WallSide::new(&file, count, false);
+        let source = WallSide::new(&file, count, false, block_size(&file, Some(count)));
         for _ in 0..limit {
             app.update();
         }
@@ -1240,10 +1242,25 @@ mod tests {
     }
 
     #[test]
+    fn source_and_block_share_both_edges_and_the_last_row() {
+        let file = fixture_file();
+        let short = block_size(&file, Some(23));
+        let medium = block_size(&file, Some(329));
+        let tall = block_size(&file, Some(724));
+        assert!(short.y < 8. && tall.x < medium.x && tall.y <= MAX_HEIGHT);
+        for rows in [1, 23, 329, 724, 1614] {
+            let size = block_size(&file, Some(rows));
+            let side = WallSide::new(&file, rows, false, size);
+            assert!((side.width + GUTTER - size.x).abs() < 0.001);
+            assert!((side.wall.y(rows as f32) - BASE).abs() < 0.001);
+        }
+    }
+
+    #[test]
     fn scroll_stops_at_first_and_last_strip() {
         let file = fixture_file();
         let count = 47;
-        let wall = Wall::new(&file, count, WIDTH);
+        let wall = WallSide::new(&file, count, false, block_size(&file, Some(count))).wall;
         let first = view(&file, count).translation.y;
         let previous = wall.reading_height(first, count, -4.);
         assert!(previous < first);

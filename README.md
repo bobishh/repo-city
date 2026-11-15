@@ -67,7 +67,10 @@ to the existing custom domain. Manage domain bindings separately in Cloudflare.
   Page Up / Page Down to glide along the facade at the current angle and
   distance. Open Files with P in the browser or ⌘P on macOS, type a filename
   or path, and press Enter to fly there.
-  Click a file block from any side to fly to its source. Hold F to charge the
+  Approach a file's front to read it in place, or click a block or its beacon
+  to fly there. Aim at a beacon to read the file or directory path. File
+  beacons are colored by file type, and roof signs show the extension.
+  Hold F to charge the
   water blaster and release to fire. A shot arcs downward and washes one strip
   of cover away on impact. Hitting another file block flies to it and reveals
   the hit strip when the source is ready. Revealed lines stay open on the
@@ -76,10 +79,12 @@ to the existing custom domain. Manage domain bindings separately in Cloudflare.
   covered, amber for partially revealed, and teal for revealed. The selected
   file shows the outline of its entire listing. Rows stay fixed on the wall;
   sharper text fades in nearby with syntax colors for exposed source.
-  Long files use smaller type and a closer arrival point. Scrolling moves
+  Block dimensions fit the listing. Short files have low blocks, and tall
+  files use narrower blocks and a closer arrival point. Scrolling moves
   the camera along the wall without changing its angle or distance.
   Neon outlines and signs mark directory districts. Approach the glass below
-  a district sign from the street to see the animated 3D android reflection.
+  a district sign or on the back of a file to see the animated 3D android
+  reflection.
   G turns to the right wall, which shows the diff against the base snapshot.
   The camera follows the corresponding line. Press G again to turn back.
 - **Review.** Press C at a file to fly to its first change. W and S fly between
@@ -108,8 +113,8 @@ to the existing custom domain. Manage domain bindings separately in Cloudflare.
 
 `git ls-tree` builds the world without loading source bodies. Paths are grouped
 by directory and assigned deterministic non-overlapping lots, with larger files
-on each district's perimeter first. Snapshot sizes determine block heights
-before any code loads. The map includes
+on each district's perimeter first. Snapshot sizes estimate block dimensions
+until the canonical source loads and supplies its exact line count. The map includes
 the union of the selected commit and its comparison base, so deleted files
 remain inspectable. The base defaults to the first parent. Source bodies and syntax trees load when a file is selected.
 The inspected revision is resolved once to a commit ID; working-copy changes

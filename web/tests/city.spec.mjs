@@ -16,12 +16,18 @@ test("opens a public repository and fetches source after the WASM city starts", 
   });
   await page.route("https://api.github.com/**", async route => {
     const path = new URL(route.request().url()).pathname;
+    const source = [
+      "fn demo() {",
+      `    println!("source ${path.endsWith(after) ? "after" : "before"}");`,
+      ...Array.from({ length: 20 }, (_, line) => `    let _row_${line} = ${line};`),
+      "}",
+      "",
+    ].join("\n");
     if (path === "/repos/owner/demo") return route.fulfill({ json: { default_branch: "main" } });
     if (path.includes("/commits/")) return route.fulfill({ json: { sha: after, parents: [{ sha: before }] } });
     if (path.includes("/git/trees/")) return route.fulfill({ json: {
-      tree: [{ path: "src/demo.rs", type: "blob", mode: "100644", sha: path.endsWith(after) ? after : before, size: 64 }],
+      tree: [{ path: "src/demo.rs", type: "blob", mode: "100644", sha: path.endsWith(after) ? after : before, size: source.length }],
     } });
-    const source = `fn demo() {\n    println!("source ${path.endsWith(after) ? "after" : "before"}");\n}\n`;
     return route.fulfill({ json: { size: source.length, encoding: "base64", content: Buffer.from(source).toString("base64") } });
   });
   await page.goto("/");

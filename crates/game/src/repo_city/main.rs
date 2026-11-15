@@ -5,6 +5,7 @@ mod city_navigation;
 mod code_texture;
 mod comparison_scene;
 mod district;
+mod file_facade;
 mod file_picker;
 mod listing;
 mod physics;
@@ -54,6 +55,8 @@ struct Explorer {
     hunk: usize,
     pending_fracture: bool,
     charge: f32,
+    known_rows: std::collections::HashMap<usize, usize>,
+    frame_loaded_source: bool,
 }
 impl Explorer {
     fn new(index: usize) -> Self {
@@ -81,9 +84,12 @@ impl Explorer {
             hunk: 0,
             pending_fracture: false,
             charge: 0.,
+            known_rows: default(),
+            frame_loaded_source: true,
         }
     }
     fn open(&mut self, repo: &Repository, index: usize) {
+        self.frame_loaded_source = true;
         self.selected = index;
         self.before = repo.files[index].after.is_none();
         self.function = None;
@@ -115,6 +121,11 @@ impl Explorer {
         self.hunk = 0;
         self.pending_fracture = false;
         self.refresh(repo);
+        let file = &repo.files[self.selected];
+        if self.anatomy.is_some() && self.before == file.after.is_none() {
+            self.known_rows
+                .insert(self.selected, self.highlighted.len());
+        }
         if self.comparison_mode > 0 {
             self.page = self
                 .comparison
@@ -123,6 +134,13 @@ impl Explorer {
                 .map_or(0, |h| h.row / 23);
         }
         self.rebuild = true;
+    }
+    fn facade_size(&self, file: &repo_world::File, index: usize) -> Vec3 {
+        let rows = self.known_rows.get(&index).copied().or_else(|| {
+            (self.selected == index && !self.highlighted.is_empty())
+                .then_some(self.highlighted.len())
+        });
+        listing::block_size(file, rows)
     }
     fn refresh(&mut self, repo: &Repository) {
         let file = &repo.files[self.selected];
@@ -201,7 +219,6 @@ struct CityObject;
 #[derive(Component)]
 struct Facade {
     index: usize,
-    height: f32,
 }
 #[derive(Component)]
 struct Section {
@@ -226,6 +243,8 @@ struct Pilot {
 #[derive(Resource, Default)]
 struct Nearest {
     file: Option<usize>,
+    near_source: Option<usize>,
+    district: Option<usize>,
     function: Option<usize>,
     hunk: Option<usize>,
 }
@@ -411,6 +430,12 @@ fn main() {
             .before(file_picker::update),
     );
     app.add_systems(Startup, district::setup);
+    app.add_systems(
+        Update,
+        file_facade::sync
+            .after(city_navigation::navigate)
+            .before(interaction),
+    );
     app.add_systems(Update, district::reflect.after(listing::draw_overview));
     #[cfg(target_arch = "wasm32")]
     app.add_systems(
@@ -470,6 +495,7 @@ fn browser_refresh(
             listing.invalidate();
             explorer.page = page;
             if awaiting_source
+                && explorer.frame_loaded_source
                 && !explorer.highlighted.is_empty()
                 && let Ok(mut camera) = camera.single_mut()
             {
@@ -495,19 +521,21 @@ fn label(
     position: Vec3,
     width: f32,
     ink: [f32; 3],
-) {
+) -> Entity {
     let texture = images.add(code_texture::render(title, &[], ink, 768, 64));
-    commands.spawn((
-        Mesh3d(meshes.add(Rectangle::new(width, width / 12.))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color_texture: Some(texture),
-            unlit: true,
-            cull_mode: None,
-            ..default()
-        })),
-        Transform::from_translation(position),
-        CityObject,
-    ));
+    commands
+        .spawn((
+            Mesh3d(meshes.add(Rectangle::new(width, width / 12.))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color_texture: Some(texture),
+                unlit: true,
+                cull_mode: None,
+                ..default()
+            })),
+            Transform::from_translation(position),
+            CityObject,
+        ))
+        .id()
 }
 
 fn setup(
@@ -755,19 +783,23 @@ fn spawn_city(
             ..default()
         })
     });
+    use file_facade::{Attachment, Part, transform};
+    let mirror = meshes.add(Rectangle::new(1., 1.));
+    let glass = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.065, 0.10, 0.14),
+        unlit: true,
+        ..default()
+    });
+    let beams = file_facade::INK.map(|ink| materials.add(file_facade::beam_material(ink)));
     for (i, file) in repo.0.files.iter().enumerate() {
-        let [x, z] = file.position;
-        let height = listing::building_height(file);
+        let size = explorer.facade_size(file, i);
         commands.spawn((
             CityObject,
-            Facade { index: i, height },
+            Facade { index: i },
+            Attachment(i, Part::Body),
             Mesh3d(block.clone()),
             MeshMaterial3d(palette.facade_closed.clone()),
-            Transform::from_xyz(x, height / 2., z).with_scale(Vec3::new(
-                listing::WIDTH,
-                height,
-                listing::DEPTH,
-            )),
+            transform(file, size, Part::Body),
             RigidBody::Static,
             Collider::cuboid(1., 1., 1.),
         ));
@@ -778,29 +810,54 @@ fn spawn_city(
             Change::Unchanged => &unchanged,
         };
         for face in [-1., 1.] {
+            let part = Part::Stripe(face);
             commands.spawn((
                 CityObject,
+                Attachment(i, part),
                 Mesh3d(block.clone()),
                 MeshMaterial3d(status.clone()),
-                Transform::from_xyz(
-                    x - listing::WIDTH / 2. + 0.14,
-                    height / 2.,
-                    z + face * (listing::DEPTH / 2. + 0.02),
-                )
-                .with_scale(Vec3::new(0.28, height, 0.04)),
+                transform(file, size, part),
             ));
         }
+        let kind = file_facade::kind(&file.path);
         let name = file.path.rsplit('/').next().unwrap_or(&file.path);
-        label(
+        let extension = file_facade::extension(&file.path);
+        let title = if extension.is_empty() {
+            name.to_owned()
+        } else {
+            format!(".{}   {name}", extension.to_uppercase())
+        };
+        let sign = label(
             &mut commands,
             &mut meshes,
             &mut materials,
             &mut images,
-            name,
-            Vec3::new(x, height + 1.1, z + listing::DEPTH / 2.),
-            12.,
-            set.ink,
+            &title,
+            Vec3::ZERO,
+            1.,
+            file_facade::INK[kind],
         );
+        commands.entity(sign).insert((
+            Attachment(i, Part::Label),
+            transform(file, size, Part::Label),
+        ));
+        commands.spawn((
+            CityObject,
+            Attachment(i, Part::Beam),
+            bevy::light::NotShadowCaster,
+            Mesh3d(block.clone()),
+            MeshMaterial3d(beams[kind].clone()),
+            transform(file, size, Part::Beam),
+        ));
+        commands.spawn((
+            CityObject,
+            Attachment(i, Part::Mirror),
+            district::Glass,
+            bevy::light::NotShadowCaster,
+            Mesh3d(mirror.clone()),
+            MeshMaterial3d(glass.clone()),
+            transform(file, size, Part::Mirror),
+        ));
     }
 }
 
@@ -920,6 +977,7 @@ fn targeting(
     facades: Query<&Facade>,
     sections: Query<(&Section, &Transform)>,
     hunks: Query<(&comparison_scene::HunkBlock, &Transform)>,
+    district_beams: Query<(&district::Beacon, &Transform)>,
     mut nearest: ResMut<Nearest>,
 ) {
     let Ok((projection, camera, pilot)) = camera.single() else {
@@ -938,22 +996,55 @@ fn targeting(
     nearest.file = None;
     nearest.function = None;
     nearest.hunk = None;
+    nearest.near_source = None;
+    nearest.district = None;
     let mut distance = 250.;
-    // While reading a comparison, do not select a city building through its panels.
+    let mut near_distance = f32::INFINITY;
+    // Click targeting may use the pointer; proximity follows the center of view.
     for f in facades
         .iter()
         .filter(|_| !(explorer.anchored && explorer.comparison_mode > 0))
     {
-        let [x, z] = repo.0.files[f.index].position;
-        if let Some(d) = ray_box(
-            origin,
-            direction,
-            Vec3::new(x - listing::WIDTH / 2., 0., z - listing::DEPTH / 2.),
-            Vec3::new(x + listing::WIDTH / 2., f.height, z + listing::DEPTH / 2.),
-        ) && d < distance
+        let file = &repo.0.files[f.index];
+        let [x, z] = file.position;
+        let size = explorer.facade_size(file, f.index);
+        let min = Vec3::new(x - size.x / 2., 0., z - size.z / 2.);
+        let max = Vec3::new(x + size.x / 2., size.y, z + size.z / 2.);
+        let beam_min = Vec3::new(x - 0.55, size.y, z - 0.55);
+        let beam_max = Vec3::new(x + 0.55, size.y + file_facade::BEAM_HEIGHT, z + 0.55);
+        let hit = [
+            ray_box(origin, direction, min, max),
+            ray_box(origin, direction, beam_min, beam_max),
+        ]
+        .into_iter()
+        .flatten()
+        .min_by(f32::total_cmp);
+        if let Some(d) = hit
+            && d < distance
         {
             distance = d;
             nearest.file = Some(f.index);
+        }
+        if let Some(d) = file_facade::approach(camera, min, max)
+            && d <= (size.x * 0.9).clamp(4.5, 12.5)
+            && d < near_distance
+        {
+            near_distance = d;
+            nearest.near_source = Some(f.index);
+        }
+    }
+    for (marker, pose) in &district_beams {
+        let half = Vec3::new(0.7, pose.scale.y / 2., 0.7);
+        if let Some(d) = ray_box(
+            origin,
+            direction,
+            pose.translation - half,
+            pose.translation + half,
+        ) && d < distance
+        {
+            distance = d;
+            nearest.file = None;
+            nearest.district = Some(marker.0);
         }
     }
     for (section, transform) in &sections {
@@ -1374,8 +1465,30 @@ fn hud(
             navigation.prompt(&explorer, &nearest, &repo.0)
         } else if status && listing::Listing::visible(&explorer, &navigation) {
             let (opened, total) = listing.counts(&explorer);
+            let anatomy = explorer
+                .anatomy
+                .as_ref()
+                .filter(|anatomy| !anatomy.callables.is_empty());
+            let metrics = anatomy.map_or_else(String::new, |anatomy| {
+                let branches = anatomy
+                    .callables
+                    .iter()
+                    .filter_map(|callable| callable.decision_count)
+                    .max();
+                let longest = anatomy
+                    .callables
+                    .iter()
+                    .filter_map(|callable| callable.body_line_span)
+                    .max();
+                format!(
+                    "\n{} functions · peak branches {} · longest body {} lines",
+                    anatomy.callables.len(),
+                    branches.map_or("—".into(), |value| value.to_string()),
+                    longest.map_or("—".into(), |value| value.to_string())
+                )
+            });
             format!(
-                "{}\n{:?} · {}\n{opened} / {total} lines revealed\n{}",
+                "{}\n{:?} · {}\n{opened} / {total} lines revealed{metrics}\n{}",
                 file.path,
                 file.change,
                 if explorer.before { "BEFORE" } else { "AFTER" },
@@ -1545,9 +1658,10 @@ fn smoke(
                                 .total_cmp(&b.translation.xz().distance_squared(file))
                         })
                         .expect("smoke repository has a district mirror");
-                    *camera =
-                        Transform::from_translation(pane.translation + Vec3::new(2., 2., 12.))
-                            .looking_at(pane.translation, Vec3::Y);
+                    *camera = Transform::from_translation(
+                        pane.translation + pane.rotation * Vec3::new(2., 2., 12.),
+                    )
+                    .looking_at(pane.translation, Vec3::Y);
                 }
             }
         }

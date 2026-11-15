@@ -179,10 +179,14 @@ impl Navigation {
         if explorer.anchored {
             return "SOURCE WALL · Scroll to read · E or Esc to fly".into();
         }
-        let destination = nearest
-            .file
-            .map(|index| format!("Click to fly to {}", repo.files[index].path))
-            .unwrap_or_else(|| "Point at a file block to see its path".into());
+        let destination = if let Some(index) = nearest.district {
+            format!("Directory / {}", repo.districts[index].name)
+        } else {
+            nearest
+                .file
+                .map(|index| format!("Click to fly to {}", repo.files[index].path))
+                .unwrap_or_else(|| "Point at a file or a beacon to see its path".into())
+        };
         let trace = if self.trace.is_empty() {
             ""
         } else {
@@ -408,38 +412,61 @@ pub(super) fn navigate(
             explorer.open(&repo.0, index);
         }
         explorer.rebuild = true;
-        let end = listing::view(&repo.0.files[index], explorer.highlighted.len());
+        let file = &repo.0.files[index];
+        let end = listing::view_from_size(
+            file,
+            explorer.highlighted.len(),
+            explorer.facade_size(file, index),
+        );
         if camera.translation.distance_squared(end.translation) < 0.04
             && camera.rotation.dot(end.rotation).abs() > 0.9999
         {
             return;
         }
         let mut hop = Hop::new(*camera, end, Arrival::Facade);
-        hop.roof = flight_roof(hop.start.translation, hop.end.translation, &repo.0).max(hop.roof);
+        hop.roof = flight_roof(
+            hop.start.translation,
+            hop.end.translation,
+            &repo.0,
+            &explorer,
+        )
+        .max(hop.roof);
         let climb = hop.roof - hop.start.translation.y.min(hop.end.translation.y);
         hop.duration = hop.duration.max((climb / 24. + 0.65).min(3.8));
         navigation.hop = Some(hop);
+    } else if !explorer.anchored
+        && explorer.comparison_mode == 0
+        && let Some(index) = nearest
+            .near_source
+            .filter(|&index| index != explorer.selected)
+    {
+        listing.reset_view();
+        explorer.open(&repo.0, index);
+        explorer.frame_loaded_source = false;
     }
 }
 
-fn flight_roof(start: Vec3, end: Vec3, repo: &Repository) -> f32 {
+fn flight_roof(start: Vec3, end: Vec3, repo: &Repository, explorer: &Explorer) -> f32 {
     let origin = Vec3::new(start.x, 0., start.z);
     let offset = Vec3::new(end.x, 0., end.z) - origin;
     let distance = offset.length();
     let direction = offset.try_normalize().unwrap_or(Vec3::ZERO);
-    let width = listing::WIDTH / 2. + 1.;
-    let depth = listing::DEPTH / 2. + 1.;
+
     repo.files
         .iter()
-        .filter_map(|file| {
+        .enumerate()
+        .filter_map(|(index, file)| {
             let [x, z] = file.position;
+            let size = explorer.facade_size(file, index);
+            let width = size.x / 2. + 1.;
+            let depth = size.z / 2. + 1.;
             let hit = ray_box(
                 origin,
                 direction,
                 Vec3::new(x - width, 0., z - depth),
                 Vec3::new(x + width, 1., z + depth),
             )?;
-            (hit <= distance).then(|| listing::building_height(file) + 4.)
+            (hit <= distance).then(|| size.y + 4.)
         })
         .fold(0., f32::max)
 }
@@ -464,9 +491,10 @@ pub(super) fn draw(
     {
         let file = &repo.0.files[index];
         let [x, z] = file.position;
-        let height = listing::building_height(file);
-        let w = listing::WIDTH / 2. + 0.08;
-        let d = listing::DEPTH / 2. + 0.08;
+        let size = explorer.facade_size(file, index);
+        let height = size.y;
+        let w = size.x / 2. + 0.08;
+        let d = size.z / 2. + 0.08;
         let footprint = [
             Vec3::new(x - w, 0.1, z - d),
             Vec3::new(x + w, 0.1, z - d),
@@ -655,6 +683,41 @@ pub(super) fn break_platforms(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approaching_another_front_reads_in_place_without_a_click() {
+        let mut repo = repository_picker::empty();
+        for path in ["current.rs", "nearby.toml"] {
+            repo.files.push(repo_world::File {
+                path: path.into(),
+                before: None,
+                after: None,
+                change: Change::Unchanged,
+                position: [0., 0.],
+            });
+        }
+        let mut app = App::new();
+        app.insert_resource(Repo(repo))
+            .insert_resource(Explorer::new(0))
+            .init_resource::<Time>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<Nearest>()
+            .init_resource::<Navigation>()
+            .init_resource::<file_picker::FilePicker>()
+            .init_resource::<listing::Listing>()
+            .add_systems(Update, navigate);
+        app.world_mut().spawn((Window::default(), PrimaryWindow));
+        let pose = Transform::from_xyz(0., 1.65, 7.);
+        let camera = app.world_mut().spawn((Camera3d::default(), pose)).id();
+        app.update();
+        assert_eq!(app.world().resource::<Explorer>().selected, 0);
+        app.world_mut().resource_mut::<Nearest>().near_source = Some(1);
+        app.update();
+        assert_eq!(app.world().resource::<Explorer>().selected, 1);
+        assert!(!app.world().resource::<Navigation>().guides_camera());
+        assert_eq!(*app.world().get::<Transform>(camera).unwrap(), pose);
+    }
 
     #[test]
     fn approach_clears_roofs_and_ends_at_the_reading_view() {
