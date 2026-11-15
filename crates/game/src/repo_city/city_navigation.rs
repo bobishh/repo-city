@@ -132,12 +132,6 @@ impl Navigation {
         self.hop.is_some()
     }
 
-    pub(super) fn flying_to_facade(&self) -> bool {
-        self.hop
-            .as_ref()
-            .is_some_and(|hop| matches!(hop.arrival, Arrival::Facade))
-    }
-
     pub(super) fn route_status(&self) -> Option<String> {
         self.route.as_ref().map(|route| {
             let title = match route.stops[route.current] {

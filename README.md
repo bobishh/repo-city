@@ -70,7 +70,8 @@ to the existing custom domain. Manage domain bindings separately in Cloudflare.
   water blaster and release to fire. A shot arcs downward and washes one strip
   of cover away on impact. Hitting another file block flies to it and reveals
   the hit strip when the source is ready. Revealed lines stay open on the
-  same file and snapshot during the session. Home frames the entire listing.
+  same file and snapshot during the session. Home frames the file block.
+  The city renders nearby strips of source and diff as you move along them.
   G turns to the right wall, which shows the diff against the base snapshot.
   The camera follows the corresponding line. Press G again to turn back.
 - **Review.** Press C at a file to fly to its first change. W and S fly between

@@ -1,11 +1,16 @@
 //! In-place source reveal for the city facade. Progress is keyed by snapshot and file.
 use avian3d::prelude::{CollisionStart, Position};
 use repo_world::comparison::Mark;
-use std::collections::HashMap;
+use std::{
+    collections::{BTreeMap, HashMap},
+    ops::Range,
+};
 
 use super::*;
 
 const TILE_ROWS: usize = 16;
+const TILES_PER_SIDE: usize = 6;
+const TEXTURES_PER_FRAME: usize = 2;
 const ROW_HEIGHT: f32 = 0.28;
 pub(super) const WIDTH: f32 = 14.;
 pub(super) const DEPTH: f32 = 8.2;
@@ -62,8 +67,10 @@ pub(super) struct Listing {
     diff_side: bool,
     turn: Option<(f32, f32, f32)>,
     rendered: Option<(usize, bool, usize)>,
-    source_tiles: Vec<Handle<Image>>,
-    dirty_tiles: HashSet<usize>,
+    invalidated: bool,
+    source_tiles: Tiles,
+    diff_tiles: Tiles,
+    diff_lines: Vec<(Option<syntax::Line>, Mark)>,
     pending_hit: Option<(usize, f32)>,
 }
 
@@ -76,15 +83,6 @@ pub(super) struct CoverShot;
 fn tile_rows(row: usize, total: usize) -> std::ops::Range<usize> {
     let first = row / TILE_ROWS * TILE_ROWS;
     first..(first + TILE_ROWS).min(total)
-}
-
-fn rows(explorer: &Explorer) -> Vec<(Option<syntax::Line>, Mark)> {
-    explorer
-        .highlighted
-        .iter()
-        .cloned()
-        .map(|line| (Some(line), Mark::Context))
-        .collect()
 }
 
 fn wall_pose(file: &repo_world::File, y: f32, angle: f32, distance: f32) -> Transform {
@@ -149,7 +147,7 @@ fn projected_row(explorer: &Explorer, row: usize, to_diff: bool) -> usize {
 impl Listing {
     #[cfg(target_arch = "wasm32")]
     pub(super) fn invalidate(&mut self) {
-        self.rendered = None;
+        self.invalidated = true;
     }
 
     pub(super) fn turning(&self) -> bool {
@@ -194,7 +192,7 @@ impl Listing {
             rows.clone().map(|row| row + 1),
         ) > 0
         {
-            self.dirty_tiles.insert(rows.start / TILE_ROWS);
+            self.source_tiles.dirty.insert(rows.start / TILE_ROWS);
         }
     }
 }
@@ -330,6 +328,137 @@ pub(super) fn cover_impacts(
     }
 }
 
+#[derive(Default)]
+struct Tiles {
+    resident: BTreeMap<usize, (Entity, Handle<Image>)>,
+    dirty: HashSet<usize>,
+}
+
+struct WallSide {
+    top: Vec3,
+    row_height: f32,
+    width: f32,
+    angle: f32,
+}
+
+impl WallSide {
+    fn focus(&self, camera: &Transform, count: usize) -> usize {
+        let normal = Quat::from_rotation_y(self.angle) * Vec3::Z;
+        let direction = camera.forward().as_vec3();
+        let facing = direction.dot(normal);
+        let distance = (self.top - camera.translation).dot(normal) / facing;
+        let y = if facing < -0.05 && distance > 0. {
+            camera.translation.y + direction.y * distance
+        } else {
+            camera.translation.y
+        };
+        (((self.top.y - y) / self.row_height).max(0.) as usize).min(count.saturating_sub(1))
+            / TILE_ROWS
+    }
+}
+
+struct WallRender<'a, 'w, 's> {
+    commands: &'a mut Commands<'w, 's>,
+    meshes: &'a mut Assets<Mesh>,
+    materials: &'a mut Assets<StandardMaterial>,
+    images: &'a mut Assets<Image>,
+    remaining: usize,
+}
+
+impl WallRender<'_, '_, '_> {
+    fn clear(&mut self, tiles: &mut Tiles) {
+        for (_, texture) in std::mem::take(&mut tiles.resident).into_values() {
+            self.images.remove(texture.id());
+        }
+        tiles.dirty.clear();
+    }
+
+    fn plane(
+        &mut self,
+        side: &WallSide,
+        image: Image,
+        y: f32,
+        height: f32,
+    ) -> (Entity, Handle<Image>) {
+        let texture = self.images.add(image);
+        let entity = self
+            .commands
+            .spawn((
+                ListingSurface,
+                Mesh3d(self.meshes.add(Rectangle::new(side.width, height))),
+                MeshMaterial3d(self.materials.add(StandardMaterial {
+                    base_color_texture: Some(texture.clone()),
+                    unlit: true,
+                    cull_mode: None,
+                    ..default()
+                })),
+                Transform::from_translation(side.top.with_y(y))
+                    .with_rotation(Quat::from_rotation_y(side.angle)),
+            ))
+            .id();
+        (entity, texture)
+    }
+
+    fn header(&mut self, side: &WallSide, title: &str, tint: [f32; 3], count: usize) {
+        let header = if count == 0 {
+            format!("{title} / No readable source")
+        } else {
+            format!("{title} / {count} rows")
+        };
+        let image = code_texture::render(&header, &[], tint, 1280, 64);
+        self.plane(side, image, side.top.y + 0.4, 0.8);
+    }
+
+    fn tiles(
+        &mut self,
+        side: &WallSide,
+        state: &mut Tiles,
+        camera: &Transform,
+        count: usize,
+        texture: impl Fn(Range<usize>) -> Image,
+    ) {
+        let total = count.div_ceil(TILE_ROWS);
+        let focus = side.focus(camera, count);
+        let first = focus
+            .saturating_sub(TILES_PER_SIDE / 2)
+            .min(total.saturating_sub(TILES_PER_SIDE));
+        let window = first..(first + TILES_PER_SIDE).min(total);
+        state.resident.retain(|index, (entity, texture)| {
+            if window.contains(index) {
+                return true;
+            }
+            self.commands.entity(*entity).despawn();
+            self.images.remove(texture.id());
+            false
+        });
+        state
+            .dirty
+            .retain(|index| state.resident.contains_key(index));
+        let mut priority = window.collect::<Vec<_>>();
+        priority.sort_unstable_by_key(|index| (index.abs_diff(focus), *index));
+        for index in priority {
+            if self.remaining == 0 {
+                break;
+            }
+            let rows = tile_rows(index * TILE_ROWS, count);
+            if let Some((_, handle)) = state.resident.get(&index) {
+                if !state.dirty.remove(&index) {
+                    continue;
+                }
+                if let Some(mut image) = self.images.get_mut(handle) {
+                    *image = texture(rows);
+                }
+            } else {
+                let height = rows.len() as f32 * side.row_height;
+                let center = side.top.y - rows.start as f32 * side.row_height - height / 2.;
+                let tile = self.plane(side, texture(rows), center, height);
+                state.resident.insert(index, tile);
+            }
+            self.remaining -= 1;
+        }
+    }
+}
+
 pub(super) fn draw(
     mut commands: Commands,
     repo: Res<Repo>,
@@ -338,189 +467,116 @@ pub(super) fn draw(
     set: Res<WorldSet>,
     mut listing: ResMut<Listing>,
     old: Query<Entity, With<ListingSurface>>,
+    camera: Query<&Transform, With<Camera3d>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let visible = Listing::visible(&explorer, &navigation) || navigation.flying_to_facade();
+    let visible = Listing::visible(&explorer, &navigation);
     let count = explorer.highlighted.len();
     let key = visible.then_some((explorer.selected, explorer.before, count));
-    if visible
-        && count > 0
-        && let Some((file, y)) = listing.pending_hit
-        && file == explorer.selected
-    {
-        listing.pending_hit = None;
-        listing.wash(&explorer, &repo.0.files[file], y);
-    }
-    let dirty = std::mem::take(&mut listing.dirty_tiles);
-    if key == listing.rendered {
-        if visible {
-            for index in dirty {
-                let Some(handle) = listing.source_tiles.get(index) else {
-                    continue;
-                };
-                let range = tile_rows(index * TILE_ROWS, count);
-                let tile = explorer.highlighted[range]
-                    .iter()
-                    .cloned()
-                    .map(|line| (Some(line), Mark::Context))
-                    .collect::<Vec<_>>();
-                if let Some(mut image) = images.get_mut(handle) {
-                    *image = code_texture::listing(&tile, &|line| {
-                        listing
-                            .revealed
-                            .contains(&(explorer.selected, explorer.before, line))
-                    });
+    let changed = std::mem::take(&mut listing.invalidated) || key != listing.rendered;
+    let mut render = WallRender {
+        commands: &mut commands,
+        meshes: &mut meshes,
+        materials: &mut materials,
+        images: &mut images,
+        remaining: TEXTURES_PER_FRAME,
+    };
+    if changed {
+        listing.rendered = key;
+        render.clear(&mut listing.source_tiles);
+        render.clear(&mut listing.diff_tiles);
+        listing.diff_lines.clear();
+        for entity in &old {
+            render.commands.entity(entity).despawn();
+        }
+        if visible && let Some(diff) = &explorer.comparison {
+            for row in &diff.rows {
+                if let Some(index) = row.before
+                    && (row.changed || row.after.is_none())
+                {
+                    listing
+                        .diff_lines
+                        .push((Some(diff.before[index].clone()), Mark::Removed));
+                }
+                if let Some(index) = row.after {
+                    let mark = if row.changed {
+                        Mark::Added
+                    } else {
+                        Mark::Context
+                    };
+                    listing
+                        .diff_lines
+                        .push((Some(diff.after[index].clone()), mark));
                 }
             }
         }
-        return;
-    }
-    listing.rendered = key;
-    listing.source_tiles.clear();
-    for entity in &old {
-        commands.entity(entity).despawn();
     }
     if !visible {
         return;
     }
 
     let file = &repo.0.files[explorer.selected];
-    let [x, z] = file.position;
-    let current = rows(&explorer);
-    let wall = Wall::new(file, count);
-    listing.source_tiles = draw_side(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        &mut images,
-        &current,
-        Vec3::new(x, wall.top, z + FRONT),
-        wall.row_height,
-        WIDTH,
-        &file.path,
-        set.ink,
-        |line| {
-            listing
-                .revealed
-                .contains(&(explorer.selected, explorer.before, line))
-        },
-        0.,
-    );
-    if let Some(diff) = &explorer.comparison {
-        let mut changed = Vec::with_capacity(diff_rows(&explorer));
-        for row in &diff.rows {
-            if let Some(index) = row.before
-                && (row.changed || row.after.is_none())
-            {
-                changed.push((Some(diff.before[index].clone()), Mark::Removed));
-            }
-            if let Some(index) = row.after {
-                changed.push((
-                    Some(diff.after[index].clone()),
-                    if row.changed {
-                        Mark::Added
-                    } else {
-                        Mark::Context
-                    },
-                ));
-            }
-        }
-        let wall = Wall::new(file, changed.len());
-        draw_side(
-            &mut commands,
-            &mut meshes,
-            &mut materials,
-            &mut images,
-            &changed,
-            Vec3::new(x + WIDTH / 2. + PANEL_OFFSET, wall.top, z),
-            wall.row_height,
-            DEPTH,
-            "DIFF / BASE → SNAPSHOT",
-            set.added,
-            |_| true,
-            std::f32::consts::FRAC_PI_2,
-        );
+    if count > 0
+        && let Some((index, y)) = listing.pending_hit
+        && index == explorer.selected
+    {
+        listing.pending_hit = None;
+        listing.wash(&explorer, file, y);
     }
-}
 
-fn draw_side(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-    images: &mut Assets<Image>,
-    lines: &[(Option<syntax::Line>, Mark)],
-    top: Vec3,
-    row_height: f32,
-    width: f32,
-    title: &str,
-    tint: [f32; 3],
-    revealed: impl Fn(usize) -> bool,
-    angle: f32,
-) -> Vec<Handle<Image>> {
-    let header = if lines.is_empty() {
-        format!("{title} / No readable source")
-    } else {
-        format!("{title} / {} rows", lines.len())
+    let [x, z] = file.position;
+    let wall = Wall::new(file, count);
+    let source = WallSide {
+        top: Vec3::new(x, wall.top, z + FRONT),
+        row_height: wall.row_height,
+        width: WIDTH,
+        angle: 0.,
     };
-    let header_texture = code_texture::render(&header, &[], tint, 1280, 64);
-    plane(
-        commands,
-        meshes,
-        materials,
-        images,
-        header_texture,
-        top + Vec3::Y * 0.4,
-        0.8,
-        width,
-        angle,
-    );
-    lines
-        .chunks(TILE_ROWS)
-        .enumerate()
-        .map(|(index, tile)| {
-            let offset = index * TILE_ROWS;
-            let height = tile.len() as f32 * row_height;
-            plane(
-                commands,
-                meshes,
-                materials,
-                images,
-                code_texture::listing(tile, &revealed),
-                top - Vec3::Y * (offset as f32 * row_height + height / 2.),
-                height,
-                width,
-                angle,
-            )
-        })
-        .collect()
-}
+    let diff_count = listing.diff_lines.len();
+    let wall = Wall::new(file, diff_count);
+    let diff = WallSide {
+        top: Vec3::new(x + WIDTH / 2. + PANEL_OFFSET, wall.top, z),
+        row_height: wall.row_height,
+        width: DEPTH,
+        angle: std::f32::consts::FRAC_PI_2,
+    };
+    if changed {
+        render.header(&source, &file.path, set.ink, count);
+        if explorer.comparison.is_some() {
+            render.header(&diff, "DIFF / BASE → SNAPSHOT", set.added, diff_count);
+        }
+    }
 
-fn plane(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-    images: &mut Assets<Image>,
-    image: Image,
-    center: Vec3,
-    height: f32,
-    width: f32,
-    angle: f32,
-) -> Handle<Image> {
-    let texture = images.add(image);
-    commands.spawn((
-        ListingSurface,
-        Mesh3d(meshes.add(Rectangle::new(width, height))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color_texture: Some(texture.clone()),
-            unlit: true,
-            cull_mode: None,
-            ..default()
-        })),
-        Transform::from_translation(center).with_rotation(Quat::from_rotation_y(angle)),
-    ));
-    texture
+    let fallback = view(file);
+    let camera = camera.single().unwrap_or(&fallback);
+    let Listing {
+        source_tiles,
+        diff_tiles,
+        diff_lines,
+        revealed,
+        diff_side,
+        ..
+    } = &mut *listing;
+    let source_texture = |rows: Range<usize>| {
+        let tile = explorer.highlighted[rows]
+            .iter()
+            .cloned()
+            .map(|line| (Some(line), Mark::Context))
+            .collect::<Vec<_>>();
+        code_texture::listing(&tile, &|line| {
+            revealed.contains(&(explorer.selected, explorer.before, line))
+        })
+    };
+    let diff_texture = |rows: Range<usize>| code_texture::listing(&diff_lines[rows], &|_| true);
+    if *diff_side {
+        render.tiles(&diff, diff_tiles, camera, diff_count, &diff_texture);
+        render.tiles(&source, source_tiles, camera, count, &source_texture);
+    } else {
+        render.tiles(&source, source_tiles, camera, count, &source_texture);
+        render.tiles(&diff, diff_tiles, camera, diff_count, &diff_texture);
+    }
 }
 
 #[cfg(test)]
@@ -629,9 +685,16 @@ mod tests {
             .init_resource::<city_navigation::Navigation>()
             .init_resource::<Listing>()
             .add_systems(Update, draw);
-        app.update();
-        let handles = app.world().resource::<Listing>().source_tiles.clone();
-        assert_eq!(handles.len(), 12);
+        for _ in 0..TILES_PER_SIDE.div_ceil(TEXTURES_PER_FRAME) {
+            app.update();
+        }
+        let handles = app
+            .world()
+            .resource::<Listing>()
+            .source_tiles
+            .resident
+            .clone();
+        assert_eq!(handles.len(), TILES_PER_SIDE);
         let mut reader = app
             .world()
             .resource::<Messages<AssetEvent<Image>>>()
@@ -653,10 +716,13 @@ mod tests {
             }));
         }
 
-        assert_eq!(app.world().resource::<Listing>().source_tiles, handles);
+        assert_eq!(
+            app.world().resource::<Listing>().source_tiles.resident,
+            handles
+        );
         assert_eq!(app.world().resource::<Assets<Mesh>>().len(), mesh_count);
         assert_eq!(app.world().resource::<Assets<Image>>().len(), image_count);
-        assert_eq!(modified, [handles[1].id()]);
+        assert_eq!(modified, [handles[&1].1.id()]);
         let listing = app.world().resource::<Listing>();
         assert_eq!(
             listing.counts(app.world().resource::<Explorer>()),
@@ -664,6 +730,59 @@ mod tests {
         );
         assert!(!listing.revealed.contains(&(1, false, TILE_ROWS + 1)));
         assert!(!listing.revealed.contains(&(0, true, TILE_ROWS + 1)));
+    }
+
+    #[test]
+    fn opening_a_long_file_bounds_texture_work_per_frame() {
+        let file = fixture_file();
+        let mut repo = repository_picker::empty();
+        repo.files.push(file.clone());
+        let source = "let x = 1;\n".repeat(TILE_ROWS * 40);
+        let mut explorer = Explorer::new(0);
+        explorer.highlighted = syntax::highlight(&file.path, &source);
+        explorer.comparison = Some(Comparison::new(&file.path, &source, &source).unwrap());
+        let mut app = App::new();
+        app.insert_resource(Repo(repo))
+            .insert_resource(explorer)
+            .insert_resource(WorldSet::load(None).unwrap())
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<city_navigation::Navigation>()
+            .init_resource::<Listing>()
+            .add_systems(Update, draw);
+        let camera = app
+            .world_mut()
+            .spawn((Camera3d::default(), view(&file)))
+            .id();
+        app.update();
+        assert!(app.world().resource::<Assets<Image>>().len() <= 4);
+        let limit = 2 + TILES_PER_SIDE * 2;
+        let wall = Wall::new(&file, TILE_ROWS * 40);
+        for first_row in [0, TILE_ROWS * 39, TILE_ROWS * 12, 0] {
+            app.world_mut()
+                .get_mut::<Transform>(camera)
+                .unwrap()
+                .translation
+                .y = wall.y(first_row as f32);
+            for _ in 0..limit {
+                app.update();
+                assert!(app.world().resource::<Assets<Image>>().len() <= limit);
+            }
+            let listing = app.world().resource::<Listing>();
+            assert!(
+                listing
+                    .source_tiles
+                    .resident
+                    .contains_key(&(first_row / TILE_ROWS))
+            );
+            assert!(
+                listing
+                    .diff_tiles
+                    .resident
+                    .contains_key(&(first_row / TILE_ROWS))
+            );
+        }
     }
 
     #[test]
