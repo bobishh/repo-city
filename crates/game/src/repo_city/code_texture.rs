@@ -293,6 +293,14 @@ fn covered_span(text: &str) -> (usize, usize) {
 }
 
 pub fn listing(rows: &[(Option<Line>, Mark)], revealed: &impl Fn(usize) -> bool) -> Image {
+    listing_with_notes(rows, revealed, None)
+}
+
+pub(super) fn listing_with_notes(
+    rows: &[(Option<Line>, Mark)],
+    revealed: &impl Fn(usize) -> bool,
+    notes: Option<&[String]>,
+) -> Image {
     let width = LISTING_WIDTH;
     let height = rows.len() as u32 * LISTING_ROW_PIXELS;
     let mut canvas = Canvas {
@@ -324,8 +332,17 @@ pub fn listing(rows: &[(Option<Line>, Mark)], revealed: &impl Fn(usize) -> bool)
         canvas.text(&format!("{:>6}", line.number), 12., baseline, 20., |_| {
             [0.50, 0.66, 0.71]
         });
+        let text_start = if let Some(notes) = notes {
+            if let Some(author) = notes.get(line.number.saturating_sub(1)) {
+                let short = author.chars().take(28).collect::<String>();
+                canvas.text(&short, 106., baseline, 17., |_| [0.53, 0.83, 0.78]);
+            }
+            405
+        } else {
+            106
+        };
         if open {
-            canvas.text(&line.text, 106., baseline, 20., |byte| {
+            canvas.text(&line.text, text_start as f32, baseline, 20., |byte| {
                 ink(line
                     .spans
                     .iter()
@@ -335,7 +352,7 @@ pub fn listing(rows: &[(Option<Line>, Mark)], revealed: &impl Fn(usize) -> bool)
         } else if !line.text.trim().is_empty() {
             let (start, end) = covered_span(&line.text);
             for py in y + 12..y + 15 {
-                for px in start..end {
+                for px in (start + text_start - 106)..(end + text_start - 106).min(width as usize) {
                     let pixel = ((py * width + px as u32) * 4) as usize;
                     canvas.pixels[pixel..pixel + 4].copy_from_slice(&[68, 91, 101, 255]);
                 }

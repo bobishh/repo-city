@@ -1,5 +1,4 @@
 //! In-place source reveal for the city facade. Progress is keyed by snapshot and file.
-use avian3d::prelude::{CollisionStart, Position};
 use repo_world::comparison::Mark;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -13,13 +12,9 @@ const TILES_PER_SIDE: usize = 6;
 const RETIRING_TILES: usize = 2;
 const TEXTURES_PER_FRAME: usize = 2;
 pub(super) const WIDTH: f32 = 14.;
-pub(super) const DEPTH: f32 = 8.2;
-const GUTTER: f32 = 0.7;
+const HEADING_RATIO: f32 = 0.055;
 pub(super) const MAX_HEIGHT: f32 = 72.;
-const BASE: f32 = 0.9;
-const ROOF: f32 = 0.88;
-const PANEL_OFFSET: f32 = 0.06;
-pub(super) const FRONT: f32 = DEPTH / 2. + PANEL_OFFSET;
+pub(super) const PANEL_OFFSET: f32 = 0.06;
 const OVERVIEW_BANDS: usize = 64;
 
 fn texture_row_height(width: f32) -> f32 {
@@ -33,9 +28,10 @@ pub(super) fn block_size(file: &repo_world::File, known_rows: Option<usize>) -> 
         .or(file.before.as_ref())
         .map_or(1, |blob| (blob.size as usize / 40).max(1));
     let rows = known_rows.unwrap_or(estimated).max(1) as f32;
-    let height = (BASE + ROOF + rows * texture_row_height(WIDTH - GUTTER)).min(MAX_HEIGHT);
-    let width = ((height - BASE - ROOF) / rows / texture_row_height(1.) + GUTTER).min(WIDTH);
-    Vec3::new(width, height, (width * 0.65).clamp(2.4, DEPTH))
+    let aspect = rows * texture_row_height(1.) + HEADING_RATIO;
+    let height = (WIDTH * aspect).min(MAX_HEIGHT);
+    let width = height / aspect;
+    Vec3::new(width, height, width)
 }
 
 pub(super) fn view(file: &repo_world::File, count: usize) -> Transform {
@@ -43,7 +39,7 @@ pub(super) fn view(file: &repo_world::File, count: usize) -> Transform {
 }
 
 pub(super) fn view_from_size(file: &repo_world::File, count: usize, size: Vec3) -> Transform {
-    let side = WallSide::new(file, count, false, size);
+    let side = WallSide::new(file, count, Face::Source, size);
     side.view(side.wall.y(count.clamp(1, 8) as f32 / 2.))
 }
 
@@ -53,9 +49,8 @@ struct Wall {
 }
 
 impl Wall {
-    fn new(count: usize, width: f32, height: f32) -> Self {
-        let top = height - ROOF;
-        let row_height = ((top - BASE) / count.max(1) as f32).min(texture_row_height(width));
+    fn new(count: usize, top: f32) -> Self {
+        let row_height = top / count.max(1) as f32;
         Self { top, row_height }
     }
 
@@ -111,25 +106,31 @@ pub(super) struct Listing {
     reveal_progress: HashMap<(usize, bool), RevealProgress>,
     overview_dirty: HashSet<usize>,
     listing_facade: Option<usize>,
-    diff_side: bool,
+    viewing: Option<Face>,
+    destination: Option<Face>,
+    wash_remaining: f32,
+    blame: super::blame::Blame,
     turn: Option<(f32, Transform, Transform)>,
     scroll_remaining: f32,
     rendered: Option<(usize, bool, usize)>,
     invalidated: bool,
     source_tiles: Tiles,
     diff_tiles: Tiles,
+    blame_tiles: Tiles,
+    blame_header: Option<Tile>,
     diff_lines: Vec<(Option<syntax::Line>, Mark)>,
     source_marks: Vec<Mark>,
-    pending_hit: Option<(usize, f32)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Face {
+    Source,
+    Diff,
+    Blame,
 }
 
 #[derive(Component)]
-pub(super) struct ListingSurface {
-    diff: bool,
-}
-
-#[derive(Component)]
-pub(super) struct CoverShot;
+pub(super) struct ListingSurface(Face);
 
 pub(super) fn overview_material(texture: Handle<Image>) -> StandardMaterial {
     StandardMaterial {
@@ -137,12 +138,6 @@ pub(super) fn overview_material(texture: Handle<Image>) -> StandardMaterial {
         unlit: true,
         ..default()
     }
-}
-
-fn close_to_facade(file: &repo_world::File, camera: &Transform, size: Vec3) -> bool {
-    let [x, z] = file.position;
-    let distance = (camera.translation.xz() - Vec2::new(x, z)).abs() - size.xz() / 2.;
-    distance.max(Vec2::ZERO).length_squared() < 24. * 24.
 }
 
 pub(super) fn draw_overview(
@@ -215,15 +210,19 @@ fn wall_pose(file: &repo_world::File, y: f32, angle: f32, distance: f32) -> Tran
 }
 
 fn diff_rows(explorer: &Explorer) -> usize {
-    explorer.comparison.as_ref().map_or(0, |diff| {
-        diff.rows
-            .iter()
-            .map(|row| {
-                usize::from(row.before.is_some() && (row.changed || row.after.is_none()))
-                    + usize::from(row.after.is_some())
-            })
-            .sum()
-    })
+    explorer
+        .comparison
+        .as_ref()
+        .filter(|diff| !diff.hunks.is_empty())
+        .map_or(0, |diff| {
+            diff.rows
+                .iter()
+                .map(|row| {
+                    usize::from(row.before.is_some() && (row.changed || row.after.is_none()))
+                        + usize::from(row.after.is_some())
+                })
+                .sum()
+        })
 }
 
 fn projected_row(explorer: &Explorer, row: usize, to_diff: bool) -> usize {
@@ -272,7 +271,9 @@ impl Listing {
         self.turn.is_some()
     }
     pub(super) fn reset_view(&mut self) {
-        self.diff_side = false;
+        self.viewing = None;
+        self.destination = None;
+        self.wash_remaining = 0.;
         self.turn = None;
         self.scroll_remaining = 0.;
     }
@@ -298,7 +299,7 @@ impl Listing {
         let row = WallSide::new(
             file,
             count,
-            false,
+            Face::Source,
             explorer.facade_size(file, explorer.selected),
         )
         .wall
@@ -332,7 +333,7 @@ pub(super) fn controls(
     time: Res<Time>,
     wheel: Res<AccumulatedMouseScroll>,
     repo: Res<Repo>,
-    mut explorer: ResMut<Explorer>,
+    explorer: Res<Explorer>,
     navigation: Res<city_navigation::Navigation>,
     mut listing: ResMut<Listing>,
     mut camera: Query<&mut Transform, PlayerCamera>,
@@ -354,49 +355,62 @@ pub(super) fn controls(
     let Ok(mut camera) = camera.single_mut() else {
         return;
     };
-    if keys.just_pressed(KeyCode::KeyG) {
-        if explorer.comparison.is_none() {
-            explorer.notice = "Diff unavailable for this file.".into();
-        } else if listing.turn.is_none() {
-            listing.scroll_remaining = 0.;
-            let old_count = if listing.diff_side {
-                diff_rows(&explorer)
-            } else {
-                explorer.highlighted.len()
-            };
-            let from = WallSide::new(file, old_count, listing.diff_side, size);
-            let row = from.wall.row(from.look_height(&camera), old_count);
-            listing.diff_side = !listing.diff_side;
-            let count = if listing.diff_side {
-                diff_rows(&explorer)
-            } else {
-                explorer.highlighted.len()
-            };
-            let side = WallSide::new(file, count, listing.diff_side, size);
-            let row = projected_row(&explorer, row, listing.diff_side);
-            listing.turn = Some((0., *camera, side.view(side.wall.y(row as f32 + 0.5))));
+    let source_count = explorer.highlighted.len();
+    let active = Face::at_camera(file, size, &camera, 24.)
+        .or(listing.destination)
+        .or(listing.viewing)
+        .unwrap_or(Face::Source);
+    let count_for = |face| {
+        if face == Face::Diff {
+            diff_rows(&explorer)
+        } else {
+            source_count
         }
+    };
+    let toggle = if keys.just_pressed(KeyCode::KeyG) {
+        Some(Face::Diff)
+    } else if keys.just_pressed(KeyCode::KeyB) {
+        Some(Face::Blame)
+    } else {
+        None
+    };
+    if let Some(selected) = toggle {
+        let destination = if listing.destination.unwrap_or(active) == selected {
+            Face::Source
+        } else {
+            selected
+        };
+        listing.scroll_remaining = 0.;
+        let old_count = count_for(active);
+        let from = WallSide::new(file, old_count, active, size);
+        let row = from.wall.row(from.look_height(&camera), old_count);
+        let source_row = if active == Face::Diff && old_count > 0 {
+            projected_row(&explorer, row, false)
+        } else {
+            row
+        };
+        let count = count_for(destination);
+        let side = WallSide::new(file, count, destination, size);
+        let row = if destination == Face::Diff && count > 0 {
+            projected_row(&explorer, source_row, true)
+        } else {
+            source_row
+        };
+        let y = if count == 0 {
+            side.wall.top * 0.5
+        } else {
+            side.wall.y(row as f32 + 0.5)
+        };
+        listing.destination = Some(destination);
+        listing.turn = Some((0., *camera, side.view(y)));
     }
     if let Some((elapsed, start, end)) = listing.turn {
-        let t = (elapsed + time.delta_secs() / 0.7).min(1.);
-        let ease = |t: f32| t * t * (3. - 2. * t);
-        let [x, z] = file.position;
-        let corner = Vec3::new(
-            (x + size.x / 2. + 0.5)
-                .max(start.translation.x)
-                .max(end.translation.x),
-            (start.translation.y + end.translation.y) * 0.5,
-            (z + size.z / 2. + PANEL_OFFSET + 0.5)
-                .max(start.translation.z)
-                .max(end.translation.z),
-        );
-        camera.translation = if t < 0.5 {
-            start.translation.lerp(corner, ease(t * 2.))
-        } else {
-            corner.lerp(end.translation, ease(t * 2. - 1.))
-        };
-        camera.rotation = start.rotation.slerp(end.rotation, ease(t));
+        let t = (elapsed + time.delta_secs() / 0.72).min(1.);
+        *camera = turn_pose(file, size, start, end, t);
         listing.turn = (t < 1.).then_some((t, start, end));
+        if t >= 1. {
+            listing.viewing = listing.destination.take();
+        }
         return;
     }
     let step = f32::from(keys.just_pressed(KeyCode::PageUp))
@@ -406,29 +420,20 @@ pub(super) fn controls(
     } else {
         wheel.delta.y
     };
-    let angle = if listing.diff_side {
-        std::f32::consts::FRAC_PI_2
-    } else {
-        0.
-    };
     if keys.just_pressed(KeyCode::Home) {
         listing.scroll_remaining = 0.;
         let y = size.y / 2.;
         let distance = size.y.max(size.x) * 1.45 + 7.;
-        let pose = wall_pose(file, y, angle, distance);
+        let pose = wall_pose(file, y, active.angle(), distance);
         let target = pose.translation + pose.forward().as_vec3() * distance;
         *camera = Transform::from_translation(pose.translation.with_y(size.y * 1.12 + 5.))
             .looking_at(target, Vec3::Y);
         return;
     }
     if scroll != 0. || step != 0. {
-        let count = if listing.diff_side {
-            listing.diff_lines.len()
-        } else {
-            explorer.highlighted.len()
-        };
+        let count = count_for(active);
         if count > 0 {
-            let side = WallSide::new(file, count, listing.diff_side, size);
+            let side = WallSide::new(file, count, active, size);
             let y = side.look_height(&camera);
             let delta =
                 (scroll * 4. + step * TILE_ROWS as f32).clamp(-72., 72.) * side.wall.row_height;
@@ -445,50 +450,93 @@ pub(super) fn controls(
         } else {
             remaining * (1. - (-time.delta_secs() / 0.08).exp())
         };
-        camera.translation.y = (camera.translation.y + step).max(1.);
+        camera.translation.y = (camera.translation.y + step).max(CAMERA_FLOOR);
         listing.scroll_remaining -= step;
     }
 }
 
-pub(super) fn cover_impacts(
-    mut commands: Commands,
-    mut collisions: MessageReader<CollisionStart>,
-    mut shots: Query<(&mut physics::Projectile, &Position), With<CoverShot>>,
-    facades: Query<&Facade>,
+fn turn_pose(
+    file: &repo_world::File,
+    size: Vec3,
+    start: Transform,
+    end: Transform,
+    t: f32,
+) -> Transform {
+    let origin = Vec2::from_array(file.position);
+    let from = start.translation.xz() - origin;
+    let to = end.translation.xz() - origin;
+    let ease = |value: f32| value * value * (3. - 2. * value);
+    let radius = size.xz().length() / 2. + 0.5;
+    let point = if t < 0.2 {
+        from.lerp(from.normalize_or(Vec2::Y) * radius, ease(t / 0.2))
+    } else if t < 0.8 {
+        let angle = from.to_angle();
+        let delta = (to.to_angle() - angle + std::f32::consts::PI)
+            .rem_euclid(std::f32::consts::TAU)
+            - std::f32::consts::PI;
+        Vec2::from_angle(angle + delta * ease((t - 0.2) / 0.6)) * radius
+    } else {
+        (to.normalize_or(Vec2::Y) * radius).lerp(to, ease((t - 0.8) / 0.2))
+    } + origin;
+    Transform::from_xyz(
+        point.x,
+        start.translation.y.lerp(end.translation.y, ease(t)),
+        point.y,
+    )
+    .with_rotation(start.rotation.slerp(end.rotation, ease(t)))
+}
+
+pub(super) fn wash_stream(
+    mut gizmos: Gizmos,
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
     explorer: Res<Explorer>,
     repo: Res<Repo>,
     mut listing: ResMut<Listing>,
-    mut navigation: ResMut<city_navigation::Navigation>,
+    navigation: Res<city_navigation::Navigation>,
+    nearest: Res<Nearest>,
+    camera: Query<&Transform, PlayerCamera>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    picker: Res<file_picker::FilePicker>,
 ) {
-    for event in collisions.read() {
-        let (facade, shot) = if let Ok(facade) = facades.get(event.collider1) {
-            (facade, event.collider2)
-        } else if let Ok(facade) = facades.get(event.collider2) {
-            (facade, event.collider1)
-        } else {
-            continue;
-        };
-        let Ok((mut projectile, position)) = shots.get_mut(shot) else {
-            continue;
-        };
-        if projectile.used {
-            continue;
-        }
-        projectile.used = true;
-        commands.entity(shot).despawn();
-        physics::splash(&mut commands, position.0);
-        if !Listing::visible(&explorer, &navigation) {
-            continue;
-        }
-        if facade.index != explorer.selected {
-            navigation.shot_destination = Some(facade.index);
-            listing.pending_hit = Some((facade.index, position.y));
-        } else if explorer.highlighted.is_empty() {
-            listing.pending_hit = Some((facade.index, position.y));
-        } else {
-            listing.wash(&explorer, &repo.0.files[facade.index], position.y);
-        }
+    if !keys.pressed(KeyCode::KeyF)
+        || picker.is_open()
+        || listing.turning()
+        || !Listing::visible(&explorer, &navigation)
+        || !windows.single().is_ok_and(|window| window.focused)
+    {
+        listing.wash_remaining = 0.;
+        return;
     }
+    let Ok(camera) = camera.single() else { return };
+    let count = explorer.highlighted.len();
+    let file = &repo.0.files[explorer.selected];
+    let side = WallSide::new(
+        file,
+        count,
+        Face::Source,
+        explorer.facade_size(file, explorer.selected),
+    );
+    let Some(hit) = side.wash_hit(camera, count).filter(|_| {
+        nearest
+            .near_source
+            .is_none_or(|index| index == explorer.selected)
+    }) else {
+        listing.wash_remaining = 0.;
+        return;
+    };
+    listing.wash_remaining -= time.delta_secs();
+    if listing.wash_remaining <= 0. {
+        listing.wash(&explorer, file, hit.y);
+        listing.wash_remaining = 0.12;
+    }
+    physics::water_stream(
+        &mut gizmos,
+        camera,
+        hit,
+        side.wall.row_height,
+        time.elapsed_secs(),
+    );
 }
 
 #[derive(Default)]
@@ -511,35 +559,55 @@ struct WallSide {
     top: Vec3,
     wall: Wall,
     width: f32,
-    angle: f32,
+    face: Face,
+    heading_height: f32,
 }
 
 impl WallSide {
-    fn new(file: &repo_world::File, count: usize, diff: bool, size: Vec3) -> Self {
+    fn new(file: &repo_world::File, count: usize, face: Face, size: Vec3) -> Self {
         let [x, z] = file.position;
-        let (x, z, max_width, angle) = if diff {
-            (
-                x + size.x / 2. + PANEL_OFFSET,
-                z,
-                size.z - GUTTER,
-                std::f32::consts::FRAC_PI_2,
-            )
-        } else {
-            (x, z + size.z / 2. + PANEL_OFFSET, size.x - GUTTER, 0.)
+        let (x, z, width) = match face {
+            Face::Source => (x, z + size.z / 2. + PANEL_OFFSET, size.x),
+            Face::Diff => (x + size.x / 2. + PANEL_OFFSET, z, size.z),
+            Face::Blame => (x - size.x / 2. - PANEL_OFFSET, z, size.z),
         };
-        let wall = Wall::new(count, max_width, size.y);
-        let width = wall.row_height * code_texture::LISTING_WIDTH as f32
-            / code_texture::LISTING_ROW_PIXELS as f32;
+        let heading_height = width * HEADING_RATIO;
+        let wall = Wall::new(count, size.y - heading_height);
         Self {
             top: Vec3::new(x, wall.top, z),
             wall,
             width,
-            angle,
+            face,
+            heading_height,
         }
     }
 
     fn normal(&self) -> Vec3 {
-        Quat::from_rotation_y(self.angle) * Vec3::Z
+        self.face.normal()
+    }
+
+    fn ray_hit(&self, camera: &Transform, facing_limit: f32, range: f32) -> Option<(Vec3, f32)> {
+        let normal = self.normal();
+        let facing = camera.forward().dot(normal);
+        let gap = (camera.translation - self.top).dot(normal);
+        if facing >= -facing_limit || gap <= 0. {
+            return None;
+        }
+        let distance = gap / -facing;
+        if distance > range {
+            return None;
+        }
+        let point = camera.translation + camera.forward() * distance;
+        let lateral = (point - self.top).dot(Vec3::Y.cross(normal)).abs();
+        (lateral <= self.width / 2. && point.y >= 0. && point.y <= self.top.y + self.heading_height)
+            .then_some((point, distance))
+    }
+
+    fn wash_hit(&self, camera: &Transform, count: usize) -> Option<Vec3> {
+        // Arrival sits 0.84 widths away. Keep the jet inside that reading scale,
+        // and only on a line under the reticle, never on the roof or from behind.
+        let (point, _) = self.ray_hit(camera, 0.72, (self.width * 0.96).max(0.20))?;
+        (count > 0 && point.y < self.wall.top).then_some(point)
     }
 
     fn look_height(&self, camera: &Transform) -> f32 {
@@ -555,8 +623,9 @@ impl WallSide {
 
     fn view(&self, y: f32) -> Transform {
         let target = self.top.with_y(y);
-        Transform::from_translation(target + self.normal() * (self.width * 0.84).max(0.18))
-            .looking_at(target, Vec3::Y)
+        let eye = target + self.normal() * (self.width * 0.84).max(0.18);
+        // Clear district curbs when framing a very short file near the ground.
+        Transform::from_translation(eye.with_y(eye.y.max(1.))).looking_at(target, Vec3::Y)
     }
 
     fn window(&self, focus: usize, count: usize) -> Range<usize> {
@@ -569,7 +638,42 @@ impl WallSide {
 
     fn pose(&self, y: f32) -> Transform {
         Transform::from_translation(self.top.with_y(y))
-            .with_rotation(Quat::from_rotation_y(self.angle))
+            .with_rotation(Quat::from_rotation_y(self.face.angle()))
+    }
+}
+
+impl Face {
+    fn angle(self) -> f32 {
+        match self {
+            Self::Source => 0.,
+            Self::Diff => std::f32::consts::FRAC_PI_2,
+            Self::Blame => -std::f32::consts::FRAC_PI_2,
+        }
+    }
+
+    fn normal(self) -> Vec3 {
+        match self {
+            Self::Source => Vec3::Z,
+            Self::Diff => Vec3::X,
+            Self::Blame => Vec3::NEG_X,
+        }
+    }
+
+    fn at_camera(
+        file: &repo_world::File,
+        size: Vec3,
+        camera: &Transform,
+        range: f32,
+    ) -> Option<Self> {
+        [Self::Source, Self::Diff, Self::Blame]
+            .into_iter()
+            .filter_map(|face| {
+                WallSide::new(file, 1, face, size)
+                    .ray_hit(camera, 0.12, range)
+                    .map(|(_, distance)| (face, distance))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(face, _)| face)
     }
 }
 
@@ -637,9 +741,7 @@ impl WallRender<'_, '_, '_> {
         let entity = self
             .commands
             .spawn((
-                ListingSurface {
-                    diff: side.angle != 0.,
-                },
+                ListingSurface(side.face),
                 Mesh3d(self.meshes.add(Rectangle::new(side.width, height))),
                 MeshMaterial3d(material.clone()),
                 layer.pose(side, y),
@@ -653,21 +755,16 @@ impl WallRender<'_, '_, '_> {
         }
     }
 
-    fn header(&mut self, side: &WallSide, title: &str, tint: [f32; 3], count: usize) {
-        let header = if count == 0 {
-            format!("{title} / No readable source")
-        } else {
-            format!("{title} / {count} rows")
-        };
-        let image = code_texture::render(&header, &[], tint, 1280, 64);
-        let height = side.width * 0.0625;
+    fn header(&mut self, side: &WallSide, title: &str, tint: [f32; 3]) -> Tile {
+        let image = code_texture::render(title, &[], tint, 1280, 64);
+        let height = side.heading_height;
         self.plane(
             side,
             image,
             side.top.y + height / 2.,
             height,
             Layer::Heading,
-        );
+        )
     }
 
     fn preview(
@@ -799,17 +896,24 @@ pub(super) fn draw(
     if changed {
         listing.rendered = key;
         render.clear(&mut listing.source_tiles);
+        render.clear(&mut listing.blame_tiles);
+        if let Some(header) = listing.blame_header.take() {
+            render.images.remove(header.image.id());
+        }
     }
     if diff_changed {
         let mut source_marks = vec![Mark::Context; count];
         render.clear(&mut listing.diff_tiles);
         listing.diff_lines.clear();
         for (entity, surface) in &old {
-            if changed || surface.diff {
+            if changed || surface.0 == Face::Diff {
                 render.commands.entity(entity).despawn();
             }
         }
-        if visible && let Some(diff) = &explorer.comparison {
+        if visible
+            && let Some(diff) = &explorer.comparison
+            && !diff.hunks.is_empty()
+        {
             for row in &diff.rows {
                 if row.changed {
                     let index = if explorer.before {
@@ -852,98 +956,175 @@ pub(super) fn draw(
         }
     }
     if !visible {
+        listing.blame.clear();
         return;
     }
 
     let file = &repo.0.files[explorer.selected];
-    if count > 0
-        && let Some((index, y)) = listing.pending_hit
-        && index == explorer.selected
-    {
-        listing.pending_hit = None;
-        listing.wash(&explorer, file, y);
-    }
-
     let size = explorer.facade_size(file, explorer.selected);
-    let source = WallSide::new(file, count, false, size);
+    let source = WallSide::new(file, count, Face::Source, size);
     let diff_count = listing.diff_lines.len();
-    let diff = WallSide::new(file, diff_count, true, size);
+    let diff = WallSide::new(file, diff_count, Face::Diff, size);
+    let blame = WallSide::new(file, count, Face::Blame, size);
     if changed {
-        render.header(&source, &file.path, set.ink, count);
+        let title = if count == 0 {
+            format!("{} / {}", file.path, explorer.notice)
+        } else {
+            format!("{} / {count} rows", file.path)
+        };
+        render.header(&source, &title, set.ink);
     }
-    if diff_changed && explorer.comparison.is_some() {
-        render.header(&diff, "DIFF / BASE → SNAPSHOT", set.added, diff_count);
+    if diff_changed {
+        let title = if diff_count > 0 {
+            format!("DIFF / BASE → SNAPSHOT / {diff_count} rows")
+        } else if explorer
+            .comparison
+            .as_ref()
+            .is_some_and(|diff| diff.final_newline_changed)
+        {
+            "DIFF / Only the final newline changed".into()
+        } else if explorer.comparison.is_some() {
+            "DIFF / No changed lines between these revisions".into()
+        } else {
+            "DIFF / Comparison unavailable".into()
+        };
+        render.header(&diff, &title, set.added);
     }
 
     let fallback = view(file, count);
     let camera = camera.single().unwrap_or(&fallback);
+    let viewed = Face::at_camera(file, size, camera, 24.);
+    if listing.turn.is_none() {
+        listing.viewing = viewed;
+    }
+    let blame_row = (viewed == Some(Face::Blame) && count > 0 && listing.turn.is_none())
+        .then(|| blame.wall.row(blame.look_height(camera), count));
+    let attribution_updated = listing.blame.update(&repo.0, &explorer, blame_row);
+    if listing.blame_header.is_none() || attribution_updated {
+        let caption = if count > 0 {
+            listing.blame.caption()
+        } else {
+            "BLAME / No readable source"
+        };
+        if let Some(header) = &listing.blame_header {
+            if let Some(mut image) = render.images.get_mut(&header.image) {
+                *image = code_texture::render(caption, &[], set.ink, 1280, 64);
+            }
+        } else {
+            listing.blame_header = Some(render.header(&blame, caption, set.ink));
+        }
+        let tiles = &mut listing.blame_tiles;
+        tiles.dirty.extend(tiles.resident.keys().copied());
+    }
     let Listing {
         source_tiles,
         diff_tiles,
+        blame_tiles,
         diff_lines,
         source_marks,
         revealed,
-        diff_side,
+        blame: attribution,
         ..
     } = &mut *listing;
     let is_revealed = |line| revealed.contains(&(explorer.selected, explorer.before, line));
+    let source_row = |index| (Some(&explorer.highlighted[index]), source_marks[index]);
+    let diff_row = |index: usize| (diff_lines[index].0.as_ref(), diff_lines[index].1);
     render.preview(&source, source_tiles, count, || {
-        code_texture::listing_preview(
-            count,
-            |index| (Some(&explorer.highlighted[index]), source_marks[index]),
-            is_revealed,
-        )
+        code_texture::listing_preview(count, source_row, is_revealed)
     });
     render.preview(&diff, diff_tiles, diff_count, || {
-        code_texture::listing_preview(
-            diff_count,
-            |index| (diff_lines[index].0.as_ref(), diff_lines[index].1),
-            |_| true,
-        )
+        code_texture::listing_preview(diff_count, diff_row, |_| true)
     });
-    if !close_to_facade(file, camera, size) {
+    if viewed != Some(Face::Source) {
         render.hide_side(source_tiles);
-        render.hide_side(diff_tiles);
-        return;
     }
-    let source_texture = |rows: Range<usize>| {
-        let tile = rows
-            .map(|index| {
-                (
-                    Some(explorer.highlighted[index].clone()),
-                    source_marks[index],
-                )
-            })
-            .collect::<Vec<_>>();
-        code_texture::listing(&tile, &is_revealed)
-    };
-    let diff_texture = |rows: Range<usize>| code_texture::listing(&diff_lines[rows], &|_| true);
-    if *diff_side {
-        render.hide_side(source_tiles);
-        render.tiles(
-            &diff,
-            diff_tiles,
-            diff.look_height(camera),
-            diff_count,
-            &diff_texture,
-        );
-    } else {
+    if viewed != Some(Face::Diff) {
         render.hide_side(diff_tiles);
-        render.tiles(
+    }
+    if viewed != Some(Face::Blame) {
+        render.hide_side(blame_tiles);
+    }
+
+    let source_rows = |rows: Range<usize>| {
+        rows.map(|index| {
+            (
+                Some(explorer.highlighted[index].clone()),
+                source_marks[index],
+            )
+        })
+        .collect::<Vec<_>>()
+    };
+    match viewed {
+        Some(Face::Source) => render.tiles(
             &source,
             source_tiles,
             source.look_height(camera),
             count,
-            &source_texture,
-        );
+            |rows| code_texture::listing(&source_rows(rows), &is_revealed),
+        ),
+        Some(Face::Diff) => render.tiles(
+            &diff,
+            diff_tiles,
+            diff.look_height(camera),
+            diff_count,
+            |rows| code_texture::listing(&diff_lines[rows], &|_| true),
+        ),
+        Some(Face::Blame) => render.tiles(
+            &blame,
+            blame_tiles,
+            blame.look_height(camera),
+            count,
+            |rows| {
+                code_texture::listing_with_notes(&source_rows(rows), &|_| true, attribution.notes())
+            },
+        ),
+        None => {}
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn smoke_side(explorer: &Explorer, file: &repo_world::File, blame: bool) -> Transform {
+    let face = if blame { Face::Blame } else { Face::Diff };
+    let count = if blame {
+        explorer.highlighted.len()
+    } else {
+        diff_rows(explorer)
+    };
+    let side = WallSide::new(
+        file,
+        count,
+        face,
+        explorer.facade_size(file, explorer.selected),
+    );
+    let focus = if count == 0 {
+        side.wall.top * 0.5
+    } else {
+        let row = if blame {
+            18
+        } else {
+            explorer
+                .comparison
+                .as_ref()
+                .and_then(|diff| diff.hunks.first())
+                .map_or(0, |hunk| projected_row(explorer, hunk.after.start, true))
+        };
+        side.wall.y(row.clamp(0, count - 1) as f32 + 0.5)
+    };
+    side.view(focus)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn smoke_blame_ready(listing: &Listing, count: usize) -> bool {
+    listing
+        .blame
+        .notes()
+        .is_some_and(|notes| notes.len() == count)
+        && !listing.blame_tiles.resident.is_empty()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use avian3d::prelude::{CollisionEventsEnabled, LinearVelocity, SweptCcd};
-    use bevy::time::TimeUpdateStrategy;
 
     fn fixture_file() -> repo_world::File {
         repo_world::File {
@@ -958,8 +1139,8 @@ mod tests {
     #[test]
     fn readable_tiles_and_previews_keep_the_same_rows_on_distinct_depths() {
         let file = fixture_file();
-        for diff in [false, true] {
-            let side = WallSide::new(&file, 724, diff, block_size(&file, Some(724)));
+        for face in [Face::Source, Face::Diff, Face::Blame] {
+            let side = WallSide::new(&file, 724, face, block_size(&file, Some(724)));
             let y = side.wall.y(381.5);
             let clear = Layer::Tile.pose(&side, y);
             let blurred = Layer::Preview.pose(&side, y);
@@ -971,77 +1152,25 @@ mod tests {
     }
 
     #[test]
-    fn water_hits_the_same_facade_from_all_sides_and_from_above() {
-        let mut explorer = Explorer::new(0);
-        explorer.highlighted = syntax::highlight("test.rs", &"let x = 1;\n".repeat(48));
+    fn wash_can_only_reach_readable_source_under_the_reticle() {
         let file = fixture_file();
-        let size = block_size(&file, Some(48));
-        let height = size.y;
-        let wall = WallSide::new(&file, 48, false, size).wall;
-        let mut repo = repository_picker::empty();
-        repo.files.push(file);
-        let mut app = App::new();
-        app.add_plugins((
-            MinimalPlugins,
-            TransformPlugin,
-            bevy::asset::AssetPlugin::default(),
-            PhysicsPlugins::default(),
-        ))
-        .insert_resource(Repo(repo))
-        .insert_resource(explorer)
-        .init_resource::<Listing>()
-        .init_resource::<city_navigation::Navigation>()
-        .insert_resource(TimeUpdateStrategy::ManualDuration(
-            std::time::Duration::from_secs_f64(1. / 60.),
-        ))
-        .add_systems(Update, cover_impacts);
-        app.finish();
-        app.world_mut().spawn((
-            Facade { index: 0 },
-            RigidBody::Static,
-            Collider::cuboid(size.x, size.y, size.z),
-            Transform::from_xyz(0., height / 2., 0.),
-        ));
-        let positions = [
-            (
-                Vec3::Z * (size.z / 2. + 0.27) + Vec3::Y * wall.y(6.),
-                Vec3::NEG_Z,
-            ),
-            (Vec3::NEG_Z * 12. + Vec3::Y * wall.y(22.), Vec3::Z),
-            (Vec3::X * 12. + Vec3::Y * wall.y(38.), Vec3::NEG_X),
-            (Vec3::NEG_X * 12. + Vec3::Y * wall.y(6.), Vec3::X),
-            (Vec3::Y * (height + 8.), Vec3::ZERO),
-        ];
-        for (origin, direction) in positions {
-            let shot = app
-                .world_mut()
-                .spawn((
-                    CoverShot,
-                    physics::Projectile { used: false },
-                    RigidBody::Dynamic,
-                    Collider::sphere(0.22),
-                    SweptCcd::default(),
-                    CollisionEventsEnabled,
-                    LinearVelocity(direction * 42.),
-                    Transform::from_translation(origin),
-                ))
-                .id();
-            for _ in 0..100 {
-                app.update();
-            }
-            assert!(
-                app.world().get_entity(shot).is_err(),
-                "shot from {origin:?} missed"
-            );
+        for count in [1, 23, 329, 1394] {
+            let size = block_size(&file, Some(count));
+            let source = WallSide::new(&file, count, Face::Source, size);
+            let row = 12.min(count - 1);
+            let y = source.wall.y(row as f32 + 0.5);
+            assert!(y > CAMERA_FLOOR);
+            let close = source.view(y);
+            let hit = source.wash_hit(&close, count).expect("arrival is in range");
+            assert_eq!(source.wall.row(hit.y, count), row);
+            let far = close.with_translation(close.translation + Vec3::Z * source.width);
+            assert!(source.wash_hit(&far, count).is_none());
+            let from_side = WallSide::new(&file, count, Face::Diff, size).view(y);
+            assert!(source.wash_hit(&from_side, count).is_none());
+            let at_roof = Transform::from_translation(close.translation.with_y(size.y - 0.01));
+            assert!(source.wash_hit(&at_roof, count).is_none());
+            assert!(source.wash_hit(&close, 0).is_none());
         }
-        let listing = app.world().resource::<Listing>();
-        assert_eq!(listing.counts(app.world().resource::<Explorer>()), (48, 48));
-        let mut physics_bodies = app.world_mut().query::<&RigidBody>();
-        assert!(
-            physics_bodies
-                .iter(app.world())
-                .all(|body| *body == RigidBody::Static)
-        );
     }
 
     #[test]
@@ -1049,7 +1178,7 @@ mod tests {
         use code_texture::Coverage;
         let file = fixture_file();
         let count = 80;
-        let wall = WallSide::new(&file, count, false, block_size(&file, Some(count))).wall;
+        let wall = WallSide::new(&file, count, Face::Source, block_size(&file, Some(count))).wall;
         let mut repo = repository_picker::empty();
         repo.files.push(file.clone());
         let mut explorer = Explorer::new(0);
@@ -1171,7 +1300,7 @@ mod tests {
             .unwrap()
             .translation
             .y;
-        let wall = WallSide::new(&file, count, false, block_size(&file, Some(count))).wall;
+        let wall = WallSide::new(&file, count, Face::Source, block_size(&file, Some(count))).wall;
         assert!((first_y - next_y - TILE_ROWS as f32 * wall.row_height).abs() < 0.001);
         let y = wall.y(TILE_ROWS as f32 + 2.5);
         let preview = app
@@ -1227,7 +1356,8 @@ mod tests {
         let source = "let x = 1;\n".repeat(count);
         let mut explorer = Explorer::new(0);
         explorer.highlighted = syntax::highlight(&file.path, &source);
-        explorer.comparison = Some(Comparison::new(&file.path, &source, &source).unwrap());
+        let before = source.replacen("let x = 1;", "let x = 0;", 1);
+        explorer.comparison = Some(Comparison::new(&file.path, &before, &source).unwrap());
         let mut app = App::new();
         app.insert_resource(Repo(repo))
             .insert_resource(explorer)
@@ -1243,9 +1373,9 @@ mod tests {
             .spawn((Camera3d::default(), view(&file, count)))
             .id();
         app.update();
-        assert!(app.world().resource::<Assets<Image>>().len() <= 6);
-        let limit = 4 + TILES_PER_SIDE + RETIRING_TILES;
-        let source = WallSide::new(&file, count, false, block_size(&file, Some(count)));
+        assert!(app.world().resource::<Assets<Image>>().len() <= 7);
+        let limit = 5 + TILES_PER_SIDE + RETIRING_TILES;
+        let source = WallSide::new(&file, count, Face::Source, block_size(&file, Some(count)));
         for _ in 0..limit {
             app.update();
         }
@@ -1284,7 +1414,9 @@ mod tests {
                 assert_eq!(*app.world().get::<Transform>(entity).unwrap(), pose);
             }
         }
-        app.world_mut().resource_mut::<Listing>().diff_side = true;
+        let diff = WallSide::new(&file, count + 1, Face::Diff, block_size(&file, Some(count)));
+        // Walk around to the diff face without pressing G.
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() = diff.view(diff.wall.y(42.));
         app.update();
         let listing = app.world().resource::<Listing>();
         assert!(listing.source_tiles.resident.is_empty());
@@ -1301,17 +1433,29 @@ mod tests {
         assert!(short.y < 8. && tall.x < medium.x && tall.y <= MAX_HEIGHT);
         for rows in [1, 23, 329, 724, 1614] {
             let size = block_size(&file, Some(rows));
-            let side = WallSide::new(&file, rows, false, size);
-            assert!((side.width + GUTTER - size.x).abs() < 0.001);
-            assert!((side.wall.y(rows as f32) - BASE).abs() < 0.001);
+            let side = WallSide::new(&file, rows, Face::Source, size);
+            assert!((side.width - size.x).abs() < 0.001);
+            assert!(side.wall.y(rows as f32).abs() < 0.001);
         }
+    }
+
+    // Given a long comparison, walking around the right corner shows sharp diff rows.
+    // Both listing edges and the title stay on the physical side of the building.
+    #[test]
+    fn long_diff_fills_its_wall_even_when_it_has_more_rows_than_source() {
+        let file = fixture_file();
+        let size = block_size(&file, Some(1394));
+        let side = WallSide::new(&file, 1620, Face::Diff, size);
+        assert!((side.width - size.z).abs() < 0.001);
+        assert!(side.wall.y(1620.).abs() < 0.001);
+        assert!((side.wall.y(0.) + side.heading_height - size.y).abs() < 0.001);
     }
 
     #[test]
     fn scroll_stops_at_first_and_last_strip() {
         let file = fixture_file();
         let count = 47;
-        let wall = WallSide::new(&file, count, false, block_size(&file, Some(count))).wall;
+        let wall = WallSide::new(&file, count, Face::Source, block_size(&file, Some(count))).wall;
         let first = view(&file, count).translation.y;
         let previous = wall.reading_height(first, count, -4.);
         assert!(previous < first);
@@ -1342,8 +1486,8 @@ mod tests {
             .init_resource::<Listing>()
             .add_systems(Update, controls);
         app.world_mut().spawn((Window::default(), PrimaryWindow));
-        let start =
-            Transform::from_xyz(3., 13., 30.).looking_at(Vec3::new(1., 10., FRONT), Vec3::Y);
+        let start = Transform::from_xyz(3., 13., 30.)
+            .looking_at(Vec3::new(1., 10., WIDTH / 2. + PANEL_OFFSET), Vec3::Y);
         let camera = app.world_mut().spawn((Camera3d::default(), start)).id();
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()

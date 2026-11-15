@@ -48,6 +48,11 @@ test("a fork pull request opens the full head, compares from its merge base and 
   assert.equal(snapshot.name, "owner/project#17");
   assert.equal(snapshot.baseline, "common");
   assert.equal(snapshot.after["src/unchanged.rs"].id, "shared-blob");
+  assert.equal(loaded.blameURL("src/changed.rs", false, 12),
+    "https://github.com/contributor/project/blame/head-tip/src/changed.rs#L12");
+  assert.equal(loaded.blameURL("src/changed.rs", true, 9),
+    "https://github.com/owner/project/blame/common/src/changed.rs#L9");
+  assert.equal(loaded.blameURL("missing.rs", false, 1), null);
   await loaded.blob("before-blob");
   await loaded.blob("after-blob");
   assert.deepEqual(seen, [

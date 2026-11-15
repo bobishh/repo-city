@@ -1,4 +1,7 @@
 //! Immutable repository inventory and lazy source loading. No checkout or source writes.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod blame;
+
 pub mod anatomy;
 pub mod comparison;
 pub mod syntax;
@@ -390,6 +393,8 @@ extern "C" {
     fn browser_blob(sha: &str) -> Result<Vec<u8>, wasm_bindgen::JsValue>;
     #[wasm_bindgen(js_namespace = repoCity, js_name = snapshot)]
     fn browser_snapshot() -> String;
+    #[wasm_bindgen(js_namespace = repoCity, js_name = showBlame)]
+    fn browser_blame_link(path: &str, before: bool, line: usize);
     #[wasm_bindgen(js_namespace = repoCity, js_name = sourceVersion)]
     pub fn browser_source_version() -> u32;
 }
@@ -413,4 +418,9 @@ pub fn open_browser() -> Result<Repository, String> {
         snapshot.before,
         snapshot.after,
     )
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn browser_show_blame(path: &str, before: bool, line: usize) {
+    browser_blame_link(path, before, line);
 }

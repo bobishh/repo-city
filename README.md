@@ -85,10 +85,9 @@ to the existing custom domain. Manage domain bindings separately in Cloudflare.
   Approach a file's front to read it in place, or click a block or its beacon
   to fly there. Aim at a beacon to see the file or directory path next to the pointer. File
   beacons are colored by file type, and roof signs show the extension.
-  Hold F to charge the
-  water blaster and release to fire. A shot arcs downward and washes one strip
-  of cover away on impact. Hitting another file block flies to it and reveals
-  the hit strip when the source is ready. Revealed lines stay open on the
+  Hold F while aiming at nearby source rows to wash off the cover with
+  a short, continuous jet. When the code is too far away or the wall is
+  nearly edge-on, the jet cannot reach it. Revealed lines stay open on the
   same file and snapshot during the session. Home frames the file block.
   From a distance, each block shows an overview of its rows: blue-gray for
   covered, amber for partially revealed, and teal for revealed. The selected
@@ -101,7 +100,11 @@ to the existing custom domain. Manage domain bindings separately in Cloudflare.
   a district sign or on the back of a file to see the animated 3D android
   reflection.
   G turns to the right wall, which shows the diff against the base snapshot.
-  The camera follows the corresponding line. Press G again to turn back.
+  B turns to the left wall for blame. Both walls also work when you approach
+  them in flight. Turning keeps the corresponding line in view; press the
+  same key to turn back. Local blame shows the commit and author for each
+  line of the inspected revision. In the browser, the Blame on GitHub link
+  opens that file, revision, and line on GitHub.
 - **Review.** Press C at a file to fly to its first change. W and S fly between
   code platforms. Large hunks span several platforms. Aim with the right mouse
   button and shoot a platform you already passed to clear it with a splash.
@@ -182,8 +185,8 @@ cargo fmt -p repo-world -p repo-city -- --check
 ```
 
 This first version explores source, snapshots, functions and private deletions.
-It does not prove program behavior, execute the inspected repository, fetch
-hosted PRs, or automatically generate verified puzzles. Review markers are
+It does not prove program behavior, execute the inspected repository, or
+automatically generate verified puzzles. Review markers are
 session-local. Repository topology is stable within the selected comparison;
 adding files or directories in another comparison can move the generated lots.
 

@@ -3,7 +3,7 @@
 * { box-sizing: border-box; }
 body { margin: 0; }
 main { display: flex; flex-direction: column; height: 100dvh; }
-aside { padding: 0.65rem 1rem; border-bottom: 1px solid #26404a; background: #0e1a24; }
+aside { position: relative; padding: 0.65rem 1rem; border-bottom: 1px solid #26404a; background: #0e1a24; }
 h1 { display: inline-block; margin: 0 1rem 0 0; font-size: 1.2rem; color: #9ff5e0; }
 form { display: flex; flex-wrap: wrap; align-items: end; gap: 0.8rem; margin-top: 0.8rem; }
 [hidden] { display: none; }
@@ -11,6 +11,8 @@ label { display: grid; gap: 0.3rem; font-size: 0.8rem; }
 input, button { border: 1px solid #345662; background: #132934; color: inherit; font: inherit; border-radius: 0; padding: 0.45rem 0.6rem; }
 button { cursor: pointer; }
 button:hover { background: #20515a; }
+#blame { position: absolute; inset-inline-end: 1rem; inset-block-start: 1.15rem; color: #9ff5e0; text-underline-offset: 0.2em; }
+#blame:focus-visible { outline: 1px solid currentColor; outline-offset: 3px; }
 #status { margin: 0.5rem 0 0; }
 #status:empty { display: none; }
 section { position: relative; flex: 1; min-height: 0; }
@@ -27,6 +29,7 @@ canvas[hidden] { display: none; }
   transform: rotate(-5deg);
   text-shadow: 0 0.035em 0 #3d1238, 0 0 0.15em #1a0e25;
 }
+@media (max-width: 420px) { #blame span { display: none; } }
 @media (max-aspect-ratio: 4/5) {
   .start-title { inset-inline: 0; text-align: center; }
 }

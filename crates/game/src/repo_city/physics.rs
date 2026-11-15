@@ -100,16 +100,59 @@ pub(super) fn splashes(
         }
     }
 }
+/// A short fan of cyan streaks. It has no bodies, emitters, or persistent particles.
+pub(super) fn water_stream(
+    gizmos: &mut Gizmos,
+    camera: &Transform,
+    hit: Vec3,
+    row_height: f32,
+    time: f32,
+) {
+    let right = camera.right().as_vec3();
+    let up = camera.up().as_vec3();
+    let direction = camera.forward().as_vec3();
+    let length = camera.translation.distance(hit);
+    let spread = (row_height * 2.4).min(length * 0.07);
+    let origin =
+        camera.translation + direction * (length * 0.22) + (right * 0.18 - up * 0.19) * length;
+    let touch = hit + Vec3::Z * 0.025;
+    for lane in 0..11 {
+        let phase = (time * 9. + lane as f32 * 0.173).fract();
+        let angle = lane as f32 * 2.39996;
+        let fan = (right * angle.cos() + up * angle.sin()) * spread;
+        let tip = touch + fan;
+        let point = |t: f32| origin.lerp(tip, t) + up * (t * (1. - t) * spread);
+        gizmos.line_gradient(
+            point((phase - 0.26).max(0.)),
+            point(phase),
+            Color::srgba(0.15, 0.76, 1., 0.18),
+            Color::srgba(0.59, 0.96, 1., 0.86),
+        );
+        if lane % 2 == 0 {
+            let splash = (time * 6. + lane as f32 * 0.223).fract();
+            gizmos.line_gradient(
+                touch + fan * splash,
+                touch + fan * (splash + 0.26) + Vec3::Z * spread * splash,
+                Color::srgba(0.58, 0.97, 1., (1. - splash) * 0.75),
+                Color::srgba(0.27, 0.76, 1., 0.),
+            );
+        }
+    }
+}
+
 pub fn trajectory(
     mut gizmos: Gizmos,
     keys: Res<ButtonInput<KeyCode>>,
     explorer: Res<Explorer>,
     camera: Query<&Transform, PlayerCamera>,
     set: Res<WorldSet>,
-    listing: Res<listing::Listing>,
+    navigation: Res<city_navigation::Navigation>,
     picker: Res<file_picker::FilePicker>,
 ) {
-    if !keys.pressed(KeyCode::KeyF) || picker.is_open() || listing.turning() {
+    if !keys.pressed(KeyCode::KeyF)
+        || picker.is_open()
+        || listing::Listing::visible(&explorer, &navigation)
+    {
         return;
     }
     let Ok(camera) = camera.single() else {
@@ -143,9 +186,8 @@ pub fn launch(
     navigation: Res<city_navigation::Navigation>,
     active_shots: Query<Entity, With<Projectile>>,
     picker: Res<file_picker::FilePicker>,
-    listing: Res<listing::Listing>,
 ) {
-    if picker.is_open() {
+    if picker.is_open() || listing::Listing::visible(&explorer, &navigation) {
         explorer.charge = 0.;
         return;
     }
@@ -160,33 +202,22 @@ pub fn launch(
         return;
     }
     let charge = std::mem::take(&mut explorer.charge);
-    let cover = listing::Listing::visible(&explorer, &navigation);
-    if charge <= 0. || listing.turning() || active_shots.iter().take(MAX_SHOTS).count() == MAX_SHOTS
-    {
+    if charge <= 0. || active_shots.iter().take(MAX_SHOTS).count() == MAX_SHOTS {
         return;
     }
     if let Ok(camera) = camera.single() {
         let direction = camera.forward().as_vec3();
-        // Close reading views can sit less than one unit from the wall.
-        let origin = if cover {
-            camera.translation
-        } else {
-            camera.translation + direction
-        };
-        let shot = spawn_projectile(
+        spawn_projectile(
             &mut commands,
             &blaster,
-            origin,
+            camera.translation + direction,
             direction * shot_speed(charge),
         );
-        if cover {
-            commands.entity(shot).insert(listing::CoverShot);
-        }
     }
 }
 pub fn impacts(
     mut events: MessageReader<CollisionStart>,
-    mut shots: Query<&mut Projectile, Without<listing::CoverShot>>,
+    mut shots: Query<&mut Projectile>,
     sections: Query<&Section>,
     buildings: Query<&BuildingCollider>,
     hunks: Query<&comparison_scene::HunkBlock>,
@@ -339,8 +370,10 @@ mod tests {
         let mesh = blaster.mesh.clone();
         let material = blaster.material.clone();
         let mut app = App::new();
+        let mut explorer = Explorer::new(0);
+        explorer.anchored = true;
         app.insert_resource(blaster)
-            .insert_resource(Explorer::new(0))
+            .insert_resource(explorer)
             .init_resource::<Time>()
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<city_navigation::Navigation>()

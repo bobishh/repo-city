@@ -1,6 +1,7 @@
 //! Repository explorer and the code city's presentation.
 #![allow(dead_code)]
 mod android;
+mod blame;
 mod city_navigation;
 mod code_texture;
 mod comparison_scene;
@@ -15,10 +16,11 @@ mod shapes;
 mod world_set;
 
 use avian3d::prelude::{Collider, PhysicsPlugins, RigidBody};
+#[cfg(not(target_arch = "wasm32"))]
+use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
 use bevy::{
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
     prelude::*,
-    render::view::screenshot::{Screenshot, ScreenshotCaptured},
     window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
 use repo_world::{Change, FileAnatomy, Repository};
@@ -27,6 +29,8 @@ use std::{collections::HashSet, path::PathBuf};
 use world_set::{WorldSet, color};
 
 type PlayerCamera = (With<Camera3d>, Without<district::MirrorCamera>);
+
+const CAMERA_FLOOR: f32 = 0.05;
 
 #[derive(Resource)]
 struct Repo(Repository);
@@ -272,7 +276,7 @@ fn main() {
     };
     if args.iter().any(|a| a == "--help") {
         println!(
-            "repo-city --repo PATH [--rev HEAD] [--base REF] [--trace FILE] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · Click a file block to fly there · Space/Ctrl altitude · Shift boost · RMB look · Tab capture\nHold F and release to wash a source strip · Home frames the file · G turns to the diff\nC reviews changes · T follows a supplied stack · W/S fly between platforms · Esc returns to the city\nG ghost/pair · [ ] hunks · E source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
+            "repo-city --repo PATH [--rev HEAD] [--base REF] [--trace FILE] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · Click a file block to fly there · Space/Ctrl altitude · Shift boost · RMB look · Tab capture\nHold F close to wash source · Home frames the file · G diff · B blame\nC reviews changes · T follows a supplied stack · W/S fly between platforms · Esc returns to the city\nG ghost/pair · [ ] hunks · E source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
         );
         return;
     }
@@ -412,7 +416,7 @@ fn main() {
             listing::controls,
             physics::launch,
             physics::trajectory,
-            listing::cover_impacts,
+            listing::wash_stream,
             physics::splashes,
             city_navigation::break_platforms,
             physics::impacts,
@@ -449,34 +453,43 @@ fn main() {
             .run_if(repository_picker::has_city),
     );
 
-    let bundle_smoke = std::env::current_exe()
-        .ok()
-        .and_then(|p| {
-            p.parent()?
-                .parent()
-                .map(|p| p.join("Resources/smoke-output.txt"))
-        })
-        .and_then(|p| std::fs::read_to_string(p).ok());
-    if let Some(directory) = arg("--smoke-dir").or(bundle_smoke.as_deref().map(str::trim)) {
-        let failure_path = PathBuf::from(directory).join("failure.txt");
-        let default_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            if let Some(parent) = failure_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::write(&failure_path, info.to_string());
-            default_hook(info);
-        }));
-        app.insert_resource(Smoke {
-            directory: directory.into(),
-            elapsed: 0.,
-            stage: 0,
-            pending: false,
-            prepared: false,
-            expected_draft: None,
-            capture_attempts: 0,
-        })
-        .add_systems(Update, smoke.after(animate));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let bundle_smoke = std::env::current_exe()
+            .ok()
+            .and_then(|p| {
+                p.parent()?
+                    .parent()
+                    .map(|p| p.join("Resources/smoke-output.txt"))
+            })
+            .and_then(|p| std::fs::read_to_string(p).ok());
+        if let Some(directory) = arg("--smoke-dir").or(bundle_smoke.as_deref().map(str::trim)) {
+            let failure_path = PathBuf::from(directory).join("failure.txt");
+            let default_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                if let Some(parent) = failure_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(&failure_path, info.to_string());
+                default_hook(info);
+            }));
+            app.insert_resource(Smoke {
+                directory: directory.into(),
+                elapsed: 0.,
+                stage: std::env::args()
+                    .find_map(|arg| match arg.as_str() {
+                        "--smoke-walls" => Some(7),
+                        "--smoke-blame" => Some(8),
+                        _ => None,
+                    })
+                    .unwrap_or(0),
+                pending: false,
+                prepared: false,
+                expected_draft: None,
+                capture_attempts: 0,
+            })
+            .add_systems(Update, smoke.after(animate));
+        }
     }
     app.run();
 }
@@ -964,7 +977,7 @@ fn flight(
     };
     let movement = direction.clamp_length_max(1.) * speed * time.delta_secs();
     camera.translation += movement;
-    camera.translation.y = camera.translation.y.max(1.);
+    camera.translation.y = camera.translation.y.max(CAMERA_FLOOR);
 }
 
 fn ray_box(origin: Vec3, direction: Vec3, min: Vec3, max: Vec3) -> Option<f32> {
@@ -1057,7 +1070,7 @@ fn targeting(
             nearest.file_beacon = beam_hit == Some(d);
         }
         if let Some(d) = file_facade::approach(camera, min, max)
-            && d <= (size.x * 0.9).clamp(4.5, 12.5)
+            && d <= (size.x * 0.96).clamp(4.5, 14.)
             && d < near_distance
         {
             near_distance = d;
@@ -1354,7 +1367,7 @@ fn detail_scene(
             cull_mode: None,
             ..default()
         })),
-        Transform::from_xyz(x, 6.2, z + listing::FRONT),
+        Transform::from_xyz(x, 6.2, z + 4.16),
         Detail,
     ));
     if let Some((name, source, start)) = &explorer.detached {
@@ -1626,6 +1639,7 @@ fn hud(
         }
     }
 }
+#[cfg(not(target_arch = "wasm32"))]
 fn smoke(
     mut commands: Commands,
     time: Res<Time>,
@@ -1638,11 +1652,12 @@ fn smoke(
     fragments: Query<Entity, With<physics::Fragment>>,
     debris: Query<Entity, With<physics::Lifetime>>,
     blaster: Res<physics::Blaster>,
+    listing: Res<listing::Listing>,
 ) {
     if check.pending {
         return;
     }
-    if check.stage >= 7 {
+    if check.stage >= 9 {
         if explorer.dirty {
             let expected = explorer.original.clone();
             explorer.reload(&repo.0);
@@ -1650,11 +1665,11 @@ fn smoke(
         }
         std::fs::write(
             check.directory.join("passed.txt"),
-            "Rendered pair, ghost, syntax wall, city overview and district mirror. A real projectile collision detached the exact declaration, spawned physical fragments, and restore recovered the immutable source and cleared debris.",
+            "Rendered pair, ghost, syntax wall, city overview, district mirror, diff and blame walls. A real projectile collision detached the exact declaration, spawned physical fragments, and restore recovered the immutable source and cleared debris.",
         )
         .expect("smoke report");
         println!(
-            "Native smoke passed: pair, ghost, syntax, physical fragment, restore, neon and mirror."
+            "Native smoke passed: pair, ghost, syntax, physical fragment, restore, neon, mirror, diff and blame."
         );
         commands.write_message(AppExit::Success);
         return;
@@ -1730,7 +1745,7 @@ fn smoke(
                     *camera = Transform::from_translation(target + Vec3::new(64., 68., 100.))
                         .looking_at(target, Vec3::Y);
                 }
-                _ => {
+                6 => {
                     let pane = panes
                         .iter()
                         .min_by(|a, b| {
@@ -1745,6 +1760,13 @@ fn smoke(
                         pane.translation + pane.rotation * Vec3::new(2., 2., 12.),
                     )
                     .looking_at(pane.translation, Vec3::Y);
+                }
+                _ => {
+                    *camera = listing::smoke_side(
+                        &explorer,
+                        &repo.0.files[explorer.selected],
+                        check.stage == 8,
+                    );
                 }
             }
         }
@@ -1773,6 +1795,12 @@ fn smoke(
         assert!(!explorer.dirty);
         assert!(debris.is_empty(), "restore left physical debris behind");
     }
+    if check.stage == 8 {
+        assert!(
+            listing::smoke_blame_ready(&listing, explorer.highlighted.len()),
+            "blame rows missing"
+        );
+    }
     std::fs::create_dir_all(&check.directory).expect("smoke output");
     let path = check.directory.join(format!("{:02}.png", check.stage));
     check.pending = true;
@@ -1790,7 +1818,14 @@ fn smoke(
                 .count();
             check.pending = false;
             check.elapsed = 0.;
-            if visible_pixels < (rgba.width() as usize * rgba.height() as usize) / 100 {
+            // A close view is mostly dark paper; only the listing ink must register.
+            let divisor = if check.stage >= 7 { 1000 } else { 100 };
+            if visible_pixels < (rgba.width() as usize * rgba.height() as usize) / divisor {
+                if check.stage >= 7 {
+                    image
+                        .save(path.with_extension("dark.png"))
+                        .expect("save diagnostic screenshot");
+                }
                 check.capture_attempts += 1;
                 assert!(
                     check.capture_attempts < 8,

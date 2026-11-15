@@ -137,4 +137,40 @@ test("opens a pull request from the URL using its fork head and merge base", asy
   expect(Object.keys(snapshot.after)).toContain("LICENSE");
   expect(checked).toContain(`/repos/fork/demo/git/trees/${after}`);
   expect(checked).toContain(`/repos/owner/demo/git/trees/${before}`);
+  const blame = page.getByRole("link", { name: "Blame on GitHub" });
+  await expect(blame).toBeHidden();
+  const canvas = page.locator("canvas");
+  await canvas.focus();
+  await page.keyboard.press("b", { delay: 180 });
+  await expect(blame).toBeVisible({ timeout: 25_000 });
+  await expect(blame).toHaveAttribute("href", new RegExp(
+    `https://github.com/fork/demo/blame/${after}/src/pr\\.rs#L1$`));
+  await canvas.focus();
+  await page.keyboard.press("g", { delay: 180 });
+  await expect(blame).toBeHidden({ timeout: 25_000 });
+  const cdp = await page.context().newCDPSession(page);
+  const { x, y, width, height } = await canvas.boundingBox();
+  try {
+    await expect.poll(async () => {
+      const { data } = await cdp.send("Page.captureScreenshot", {
+        format: "png", clip: { x, y, width, height, scale: 1 }, fromSurface: true,
+      });
+      return page.evaluate(async data => {
+        const image = await createImageBitmap(new Blob([Uint8Array.fromBase64(data)], { type: "image/png" }));
+        const sample = new OffscreenCanvas(256, 128).getContext("2d");
+        sample.drawImage(image, 0, 0, 256, 128);
+        image.close();
+        const { data: pixels } = sample.getImageData(50, 45, 156, 55);
+        let removal = 0, addition = 0;
+        for (let i = 0; i < pixels.length; i += 4) {
+          const [red, green, blue] = pixels.subarray(i, i + 3);
+          if (red > 50 && red - green > 21 && red - blue > 15) removal++;
+          if (green > 40 && green - red > 20 && green - blue > 8) addition++;
+        }
+        return Math.min(removal, addition);
+      }, data);
+    }, { timeout: 25_000, message: "G shows both changed rows on the rendered diff wall" }).toBeGreaterThan(70);
+  } finally {
+    await cdp.detach();
+  }
 });

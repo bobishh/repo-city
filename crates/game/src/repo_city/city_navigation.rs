@@ -110,7 +110,6 @@ pub(super) struct Navigation {
     hop: Option<Hop>,
     redraw: bool,
     broken: HashSet<usize>,
-    pub(super) shot_destination: Option<usize>,
 }
 
 impl Navigation {
@@ -181,7 +180,7 @@ impl Navigation {
         };
         let shortcut = file_picker::SHORTCUT;
         format!(
-            "Aim at a file or a beacon · Click a file to fly there\nScroll follows the text · Files / {shortcut} searches paths · WASD flies\nHold F and release to wash the cover · Home frames the file · G turns to the diff · C reviews changes{trace}"
+            "Aim at a file or a beacon · Click a file to fly there\nScroll follows the text · Files / {shortcut} searches paths · WASD flies\nHold F close to wash source · Home frames the file · G diff · B blame · C reviews changes{trace}"
         )
     }
 }
@@ -375,7 +374,6 @@ pub(super) fn navigate(
         return;
     }
     let next_changed = keys.just_pressed(KeyCode::KeyN);
-    let shot_destination = navigation.shot_destination.take();
     let target = if let Some(file) = picker.destination.take() {
         Some(file)
     } else if next_changed {
@@ -389,7 +387,7 @@ pub(super) fn navigate(
     {
         nearest.file
     } else {
-        shot_destination
+        None
     };
     if let Some(index) = target {
         listing.reset_view();

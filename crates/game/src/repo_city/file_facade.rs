@@ -12,14 +12,24 @@ pub(super) fn beam_material([r, g, b]: [f32; 3]) -> StandardMaterial {
 }
 
 pub(super) fn approach(eye: &Transform, min: Vec3, max: Vec3) -> Option<f32> {
-    let direction = eye.forward().as_vec3();
-    if eye.translation.z <= max.z || direction.z >= -0.12 {
-        return None;
-    }
-    let distance = (max.z - eye.translation.z) / direction.z;
-    let point = eye.translation + direction * distance;
-    (point.x >= min.x && point.x <= max.x && point.y >= min.y && point.y <= max.y)
-        .then_some(distance)
+    let forward = eye.forward().as_vec3();
+    // The front and both sides are readable, the rear remains a mirror.
+    [Vec3::Z, Vec3::X, Vec3::NEG_X]
+        .into_iter()
+        .filter_map(|normal| {
+            let facing = forward.dot(normal);
+            let plane = if normal.x < 0. { min } else { max };
+            let gap = (eye.translation - plane).dot(normal);
+            if facing >= -0.12 || gap <= 0. {
+                return None;
+            }
+            let distance = gap / -facing;
+            let point = eye.translation + forward * distance;
+            let tolerance = Vec3::splat(0.002);
+            (point.cmpge(min - tolerance).all() && point.cmple(max + tolerance).all())
+                .then_some(distance)
+        })
+        .min_by(f32::total_cmp)
 }
 
 #[derive(Clone, Copy)]
@@ -38,12 +48,15 @@ pub(super) fn transform(file: &repo_world::File, size: Vec3, part: Part) -> Tran
     let [x, z] = file.position;
     match part {
         Part::Body => Transform::from_xyz(x, size.y / 2., z).with_scale(size),
-        Part::Stripe(side) => Transform::from_xyz(
-            x - size.x / 2. + 0.14,
-            size.y / 2.,
-            z + side * (size.z / 2. + 0.02),
-        )
-        .with_scale(Vec3::new(0.24, size.y, 0.04)),
+        Part::Stripe(side) => {
+            let width = size.x * 0.016;
+            Transform::from_xyz(
+                x - size.x / 2. + width / 2.,
+                size.y / 2.,
+                z + side * (size.z / 2. + listing::PANEL_OFFSET + 0.015),
+            )
+            .with_scale(Vec3::new(width, size.y, 0.02))
+        }
         Part::Label => {
             let width = size.x.clamp(4., 12.);
             Transform::from_xyz(x, size.y + 0.35 + width / 24., z + size.z / 2.)
@@ -130,13 +143,15 @@ mod tests {
     }
 
     #[test]
-    fn proximity_hits_the_front_but_leaves_the_mirror_free() {
+    fn proximity_opens_reading_walls_but_leaves_the_mirror_free() {
         let min = Vec3::new(-4., 0., -2.);
         let max = Vec3::new(4., 8., 2.);
         let front = Transform::from_xyz(0., 3., 7.);
         assert_eq!(approach(&front, min, max), Some(5.));
         let side = front.with_translation(Vec3::new(4.1, 3., 7.));
         assert_eq!(approach(&side, min, max), None);
+        let right = Transform::from_xyz(9., 3., 0.).looking_to(Vec3::NEG_X, Vec3::Y);
+        assert!((approach(&right, min, max).unwrap() - 5.).abs() < 0.001);
         let rear = Transform::from_xyz(0., 3., -7.).looking_to(Vec3::Z, Vec3::Y);
         assert_eq!(approach(&rear, min, max), None);
     }

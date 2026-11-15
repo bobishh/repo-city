@@ -8,6 +8,7 @@ analytics.pageView();
 const form = document.querySelector("form");
 const status = document.querySelector("#status");
 const canvas = document.querySelector("#repo-city");
+const blame = document.querySelector("#blame");
 const startScreen = document.querySelector("#start-screen");
 const submit = form.querySelector("button");
 const parameters = new URLSearchParams(location.search);
@@ -43,6 +44,12 @@ async function openRepository(repo, ref, base) {
     globalThis.repoCity = {
       snapshot: () => repository.snapshot,
       sourceVersion: () => version,
+      showBlame(path, before, line) {
+        const href = repository.blameURL(path, before, line);
+        if (href) blame.href = href;
+        else blame.removeAttribute("href");
+        blame.hidden = !href;
+      },
       blob(sha) {
         if (!blobs.has(sha)) {
           const entry = { error: "Loading source from GitHub…" };
