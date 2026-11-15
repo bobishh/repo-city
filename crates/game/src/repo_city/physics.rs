@@ -167,10 +167,16 @@ pub fn launch(
     }
     if let Ok(camera) = camera.single() {
         let direction = camera.forward().as_vec3();
+        // Close reading views can sit less than one unit from the wall.
+        let origin = if cover {
+            camera.translation
+        } else {
+            camera.translation + direction
+        };
         let shot = spawn_projectile(
             &mut commands,
             &blaster,
-            camera.translation + direction,
+            origin,
             direction * shot_speed(charge),
         );
         if cover {

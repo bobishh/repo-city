@@ -190,6 +190,7 @@ struct Palette {
     shell: Handle<StandardMaterial>,
     facade_closed: Handle<StandardMaterial>,
     facade_open: Handle<StandardMaterial>,
+    facade_neutral: Handle<StandardMaterial>,
     edge: Handle<StandardMaterial>,
     removed: Handle<StandardMaterial>,
     plate: Handle<StandardMaterial>,
@@ -457,15 +458,30 @@ fn browser_refresh(
     mut explorer: ResMut<Explorer>,
     mut version: Local<u32>,
     mut listing: ResMut<listing::Listing>,
+    mut camera: Query<&mut Transform, PlayerCamera>,
 ) {
     let current = repo_world::browser_source_version();
     if current != *version {
         *version = current;
         if explorer.anatomy.is_none() || (explorer.comparison.is_none() && !explorer.dirty) {
             let page = explorer.page;
+            let awaiting_source = explorer.anatomy.is_none();
             explorer.reload(&repo.0);
             listing.invalidate();
             explorer.page = page;
+            if awaiting_source
+                && !explorer.highlighted.is_empty()
+                && let Ok(mut camera) = camera.single_mut()
+            {
+                let file = &repo.0.files[explorer.selected];
+                let pending = listing::view(file, 0);
+                // Frame the first source only if the player stayed at its loading pose.
+                if camera.translation.distance_squared(pending.translation) < 0.0001
+                    && camera.rotation.dot(pending.rotation).abs() > 0.99999
+                {
+                    *camera = listing::view(file, explorer.highlighted.len());
+                }
+            }
         }
     }
 }
@@ -518,6 +534,11 @@ fn setup(
                 images.add(code_texture::facade_overview(std::iter::once(coverage))),
             ))
         });
+    let facade_neutral = materials.add(StandardMaterial {
+        base_color: Color::srgb_u8(19, 30, 36),
+        unlit: true,
+        ..default()
+    });
     let edge = materials.add(StandardMaterial {
         base_color: color(set.accent),
         emissive: LinearRgba::new(
@@ -544,6 +565,7 @@ fn setup(
         shell: shell.clone(),
         facade_closed,
         facade_open,
+        facade_neutral,
         edge: edge.clone(),
         removed,
         plate: plate.clone(),
@@ -650,7 +672,7 @@ fn spawn_city(
     let plate = &palette.plate;
     let shell = &palette.shell;
     if let Ok((mut pose, mut pilot)) = camera.single_mut() {
-        *pose = listing::view(&repo.0.files[explorer.selected]);
+        *pose = listing::view(&repo.0.files[explorer.selected], explorer.highlighted.len());
         pilot.captured = false;
     }
     let extent_z = repo

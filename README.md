@@ -73,10 +73,11 @@ to the existing custom domain. Manage domain bindings separately in Cloudflare.
   the hit strip when the source is ready. Revealed lines stay open on the
   same file and snapshot during the session. Home frames the file block.
   From a distance, each block shows an overview of its rows: blue-gray for
-  covered, amber for partially revealed, and teal for revealed. Up close,
-  the active wall shows a readable span of the selected file with ordinary
-  syntax colors for exposed source. Scrolling moves through the listing;
-  flying or looking around leaves that span in place.
+  covered, amber for partially revealed, and teal for revealed. The selected
+  file shows the outline of its entire listing. Rows stay fixed on the wall;
+  sharper text fades in nearby with syntax colors for exposed source.
+  Long files use smaller type and a closer arrival point. Scrolling moves
+  the camera along the wall without changing its angle or distance.
   Neon outlines and signs mark directory districts. Approach the glass below
   a district sign from the street to see the animated 3D android reflection.
   G turns to the right wall, which shows the diff against the base snapshot.

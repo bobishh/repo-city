@@ -226,6 +226,70 @@ pub(super) fn facade_overview(bands: impl ExactSizeIterator<Item = Coverage>) ->
     image
 }
 
+pub(super) fn listing_preview<'a>(
+    count: usize,
+    row: impl Fn(usize) -> (Option<&'a Line>, Mark),
+    revealed: impl Fn(usize) -> bool,
+) -> Image {
+    const WIDTH: usize = 128;
+    let height = (count * 2).clamp(64, 2048);
+    let mut pixels = vec![0; WIDTH * height * 4];
+    for (y, pixels) in pixels.chunks_exact_mut(WIDTH * 4).enumerate() {
+        let index = y * count / height;
+        let (line, mark) = row(index);
+        let open = line.is_none_or(|line| revealed(line.number));
+        let background = listing_background(open, mark);
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[background[0], background[1], background[2], 255]);
+        }
+        if let Some(line) = line.filter(|line| !line.text.trim().is_empty()) {
+            let start_y = (index * height).div_ceil(count);
+            let end_y = ((index + 1) * height).div_ceil(count);
+            if y != (start_y + end_y - 1) / 2 {
+                continue;
+            }
+            let mark = if open {
+                [113, 135, 146, 255]
+            } else {
+                [68, 91, 101, 255]
+            };
+            let (start, end) = covered_span(&line.text);
+            let start = start * WIDTH / LISTING_WIDTH as usize;
+            let end = (end * WIDTH / LISTING_WIDTH as usize).max(start + 1);
+            for x in start..end {
+                pixels[x * 4..x * 4 + 4].copy_from_slice(&mark);
+            }
+        }
+    }
+    Image::new(
+        Extent3d {
+            width: WIDTH as u32,
+            height: height as u32,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    )
+}
+
+fn listing_background(open: bool, mark: Mark) -> [u8; 3] {
+    match (open, mark) {
+        (false, _) => [28, 43, 50],
+        (_, Mark::Added) => [17, 56, 42],
+        (_, Mark::Removed) => [66, 27, 35],
+        _ => [9, 17, 23],
+    }
+}
+
+fn covered_span(text: &str) -> (usize, usize) {
+    let indent = (text.len() - text.trim_start().len()).min(40);
+    let start = 106 + indent * 12;
+    let end = (106 + text.len().min(128) * 12).min((LISTING_WIDTH - 16) as usize);
+    (start, end)
+}
+
 pub fn listing(rows: &[(Option<Line>, Mark)], revealed: &impl Fn(usize) -> bool) -> Image {
     let width = LISTING_WIDTH;
     let height = rows.len() as u32 * LISTING_ROW_PIXELS;
@@ -238,12 +302,7 @@ pub fn listing(rows: &[(Option<Line>, Mark)], revealed: &impl Fn(usize) -> bool)
     for (index, (line, mark)) in rows.iter().enumerate() {
         let y = index as u32 * LISTING_ROW_PIXELS;
         let open = line.as_ref().is_none_or(|line| revealed(line.number));
-        let background = match (open, mark) {
-            (false, _) => [28, 43, 50],
-            (_, Mark::Added) => [17, 56, 42],
-            (_, Mark::Removed) => [66, 27, 35],
-            _ => [9, 17, 23],
-        };
+        let background = listing_background(open, *mark);
         canvas.band(y, y + LISTING_ROW_PIXELS, background);
         if !open && index == 0 {
             canvas.band(y, y + 2, [95, 137, 147]);
@@ -263,8 +322,7 @@ pub fn listing(rows: &[(Option<Line>, Mark)], revealed: &impl Fn(usize) -> bool)
                     .map_or(Kind::Plain, |span| span.kind))
             });
         } else if index > 0 && !line.text.trim().is_empty() {
-            let start = 106 + (line.text.len() - line.text.trim_start().len()).min(40) * 12;
-            let end = (106 + line.text.len() * 12).min((width - 16) as usize);
+            let (start, end) = covered_span(&line.text);
             for py in y + 12..y + 15 {
                 for px in start..end {
                     let pixel = ((py * width + px as u32) * 4) as usize;

@@ -401,14 +401,14 @@ pub(super) fn navigate(
         shot_destination
     };
     if let Some(index) = target {
-        listing.start_file();
+        listing.reset_view();
         explorer.anchored = false;
         explorer.comparison_mode = 0;
         if index != explorer.selected {
             explorer.open(&repo.0, index);
         }
         explorer.rebuild = true;
-        let end = listing::view(&repo.0.files[index]);
+        let end = listing::view(&repo.0.files[index], explorer.highlighted.len());
         if camera.translation.distance_squared(end.translation) < 0.04
             && camera.rotation.dot(end.rotation).abs() > 0.9999
         {
