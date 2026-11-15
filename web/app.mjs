@@ -3,6 +3,7 @@ import { loadGitHub } from "./github.mjs";
 const form = document.querySelector("form");
 const status = document.querySelector("#status");
 const canvas = document.querySelector("#repo-city");
+const startScreen = document.querySelector("#start-screen");
 const submit = form.querySelector("button");
 const parameters = new URLSearchParams(location.search);
 for (const name of ["repo", "ref", "base"]) form.elements[name].value = parameters.get(name) ?? "";
@@ -37,6 +38,7 @@ async function openRepository(repo, ref, base) {
     };
     canvas.hidden = false;
     await engine.default();
+    startScreen.hidden = true;
     status.textContent = "";
     form.hidden = true;
     canvas.focus();

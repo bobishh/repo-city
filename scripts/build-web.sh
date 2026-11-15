@@ -4,8 +4,9 @@ cd "$(dirname "$0")/.."
 
 cargo build --locked -p repo-city --profile web-release --target wasm32-unknown-unknown
 output=web/dist
-mkdir -p "$output/game"
+mkdir -p "$output/game" "$output/assets"
 cp web/index.html web/style.css web/app.mjs web/github.mjs "$output/"
+cp web/assets/start-screen.webp web/assets/caveat-latin-wght.woff2 web/assets/OFL-Caveat.txt "$output/assets/"
 wasm-bindgen --target web --remove-name-section --remove-producers-section \
   --out-dir "$output/game" --out-name repo_city \
   "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/web-release/repo-city.wasm"

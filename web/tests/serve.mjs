@@ -4,7 +4,7 @@ import { stat } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 
 const root = resolve("dist");
-const types = { ".html": "text/html", ".mjs": "text/javascript", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm" };
+const types = { ".html": "text/html", ".mjs": "text/javascript", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".webp": "image/webp", ".woff2": "font/woff2" };
 createServer(async (request, response) => {
   const { pathname } = new URL(request.url, "http://localhost");
   let path = resolve(root, pathname === "/" ? "index.html" : `.${pathname}`);

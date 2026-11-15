@@ -25,6 +25,9 @@ test("opens a public repository and fetches source after the WASM city starts", 
     return route.fulfill({ json: { size: source.length, encoding: "base64", content: Buffer.from(source).toString("base64") } });
   });
   await page.goto("/");
+  const cover = page.locator("#start-screen");
+  await expect(cover.getByText("Repo City", { exact: true })).toBeVisible();
+  await expect.poll(() => cover.locator("img").evaluate(image => image.naturalWidth)).toBeGreaterThan(0);
   await page.getByRole("textbox", { name: "Public GitHub repository" }).fill("owner/demo");
   const blob = page.waitForResponse(response => response.url().includes("/git/blobs/"), { timeout: 75_000 }).catch(() => null);
   await page.getByRole("button", { name: "Open city" }).click();
@@ -33,6 +36,7 @@ test("opens a public repository and fetches source after the WASM city starts", 
   await expect(page.locator("form")).toBeHidden({ timeout: 90_000 });
   const canvas = page.locator("canvas");
   await expect(canvas).toBeVisible();
+  await expect(cover).toBeHidden();
   const cdp = await page.context().newCDPSession(page);
   const { x, y, width, height } = await canvas.boundingBox();
   let png;
@@ -78,4 +82,5 @@ test("reports missing repositories and keeps the form usable", async ({ page }) 
   await page.getByRole("button", { name: "Open city" }).click();
   await expect(page.getByRole("status")).toHaveText("Public repository, revision, or file not found.");
   await expect(page.getByRole("button", { name: "Open city" })).toBeEnabled();
+  await expect(page.locator("#start-screen").getByText("Repo City", { exact: true })).toBeVisible();
 });

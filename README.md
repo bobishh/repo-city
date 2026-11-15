@@ -127,6 +127,10 @@ Those alternatives are not mixed into the city.
   revision so simultaneous courier edits are not affected.
 - Sloposcope: anatomy records and `parser_metrics.rs`, including its tests.
   Byte ranges were added for exact declaration removal from private drafts.
+- Caveat: Latin variable font from the same tincanban revision as the
+  Gonzo Yuppie homepage, `0c7a08b7485a91bce3597c179408f58e5a57099c`.
+  Repo City uses it for the browser cover title under the bundled
+  [SIL Open Font License](web/assets/OFL-Caveat.txt).
 - `docs/source-provenance.json` records source revisions and original hashes.
 
 The original courier game remains under `crates/game` for subsequent reuse;
