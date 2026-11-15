@@ -5293,6 +5293,7 @@ dependencies = [
  "serde",
  "serde_json",
  "swash",
+ "web-sys",
 ]
 
 [[package]]

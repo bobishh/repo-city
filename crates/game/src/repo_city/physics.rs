@@ -1,4 +1,4 @@
-//! Avian rigid bodies: charged projectiles, collisions, tumbling code fragments.
+//! Charged water shots, splash effects and private draft impacts.
 use super::*;
 use avian3d::prelude::*;
 #[derive(Component)]
@@ -12,46 +12,104 @@ pub struct BuildingCollider(pub usize, pub bool);
 #[derive(Component)]
 pub struct Fragment;
 
+const MAX_SHOTS: usize = 10;
+const SPLASH_SECONDS: f32 = 0.32;
+
+#[derive(Resource)]
+pub(super) struct Blaster {
+    mesh: Handle<Mesh>,
+    material: Handle<StandardMaterial>,
+}
+
+impl Blaster {
+    pub(super) fn new(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>) -> Self {
+        Self {
+            mesh: meshes.add(Sphere::new(0.22)),
+            material: materials.add(StandardMaterial {
+                base_color: Color::srgb(0.48, 0.96, 1.),
+                emissive: LinearRgba::new(0.6, 2.8, 4.6, 1.),
+                unlit: true,
+                ..default()
+            }),
+        }
+    }
+}
+
+#[derive(Component)]
+pub(super) struct Splash(Vec3);
+
+pub(super) fn splash(commands: &mut Commands, position: Vec3) {
+    commands.spawn((Splash(position), Lifetime(SPLASH_SECONDS)));
+}
+
 pub fn spawn_projectile(
     commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    material: Handle<StandardMaterial>,
+    blaster: &Blaster,
     origin: Vec3,
     velocity: Vec3,
 ) -> Entity {
     commands
         .spawn((
-            Mesh3d(meshes.add(Sphere::new(0.32))),
-            MeshMaterial3d(material),
+            Mesh3d(blaster.mesh.clone()),
+            MeshMaterial3d(blaster.material.clone()),
             Transform::from_translation(origin),
             RigidBody::Dynamic,
-            Collider::sphere(0.32),
+            Collider::sphere(0.22),
+            CollisionLayers::from_bits(2, 1),
             LinearVelocity(velocity),
-            AngularVelocity(Vec3::new(3., 1., 0.)),
-            Restitution::new(0.55),
+            Restitution::new(0.18),
             SweptCcd::default(),
             CollisionEventsEnabled,
             Projectile { used: false },
-            Lifetime(15.),
+            Lifetime(4.5),
         ))
         .id()
 }
 
+pub(super) fn splashes(
+    mut gizmos: Gizmos,
+    shots: Query<(&Projectile, &Transform, &LinearVelocity)>,
+    flashes: Query<(&Splash, &Lifetime)>,
+) {
+    for (shot, pose, velocity) in &shots {
+        if !shot.used
+            && let Some(direction) = velocity.try_normalize()
+        {
+            let head = pose.translation;
+            gizmos.line_gradient(
+                head - direction * 2.2,
+                head,
+                Color::srgba(0.28, 0.78, 1., 0.),
+                Color::srgb(0.60, 0.97, 1.),
+            );
+        }
+    }
+    for (flash, life) in &flashes {
+        let alpha = (life.0 / SPLASH_SECONDS).clamp(0., 1.);
+        let spread = 1. - alpha;
+        for i in 0..8 {
+            let angle = i as f32 * std::f32::consts::TAU / 8.;
+            let ray = Vec3::new(angle.cos(), 0.4 + (i % 3) as f32 * 0.3, angle.sin());
+            let tip = flash.0 + ray * (0.18 + 1.65 * spread) - Vec3::Y * spread * spread;
+            gizmos.line_gradient(
+                tip - ray * 0.32,
+                tip,
+                Color::srgba(0.18, 0.62, 1., 0.),
+                Color::srgba(0.62, 0.95, 1., alpha),
+            );
+        }
+    }
+}
 pub fn trajectory(
     mut gizmos: Gizmos,
     keys: Res<ButtonInput<KeyCode>>,
     explorer: Res<Explorer>,
     camera: Query<&Transform, With<Camera3d>>,
-    navigation: Res<city_navigation::Navigation>,
     set: Res<WorldSet>,
     listing: Res<listing::Listing>,
     picker: Res<file_picker::FilePicker>,
 ) {
-    let cover = listing::Listing::visible(&explorer, &navigation);
-    if !keys.pressed(KeyCode::KeyF)
-        || picker.is_open()
-        || (cover && (listing.on_diff() || listing.turning()))
-    {
+    if !keys.pressed(KeyCode::KeyF) || picker.is_open() || listing.turning() {
         return;
     }
     let Ok(camera) = camera.single() else {
@@ -59,8 +117,8 @@ pub fn trajectory(
     };
     let direction = camera.forward().as_vec3();
     let origin = camera.translation + direction;
-    let velocity = direction * (22. + explorer.charge * 22.);
-    let point = |t: f32| origin + velocity * t - Vec3::Y * if cover { 0. } else { 4.905 * t * t };
+    let velocity = direction * shot_speed(explorer.charge);
+    let point = |t: f32| origin + velocity * t - Vec3::Y * 4.905 * t * t;
     for i in 0..24 {
         gizmos.line(
             point(i as f32 * 0.075),
@@ -70,6 +128,10 @@ pub fn trajectory(
     }
 }
 
+fn shot_speed(charge: f32) -> f32 {
+    30. + charge * 28.
+}
+
 pub fn launch(
     mut commands: Commands,
     time: Res<Time>,
@@ -77,10 +139,9 @@ pub fn launch(
     mut explorer: ResMut<Explorer>,
     camera: Query<&Transform, With<Camera3d>>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    palette: Res<Palette>,
+    blaster: Res<Blaster>,
     navigation: Res<city_navigation::Navigation>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    active_shots: Query<Entity, With<Projectile>>,
     picker: Res<file_picker::FilePicker>,
     listing: Res<listing::Listing>,
 ) {
@@ -100,46 +161,20 @@ pub fn launch(
     }
     let charge = std::mem::take(&mut explorer.charge);
     let cover = listing::Listing::visible(&explorer, &navigation);
-    if charge <= 0. || (cover && (listing.on_diff() || listing.turning())) {
+    if charge <= 0. || listing.turning() || active_shots.iter().take(MAX_SHOTS).count() == MAX_SHOTS
+    {
         return;
     }
     if let Ok(camera) = camera.single() {
         let direction = camera.forward().as_vec3();
-        let speed = 22. + charge * 22.;
         let shot = spawn_projectile(
             &mut commands,
-            &mut meshes,
-            palette.edge.clone(),
+            &blaster,
             camera.translation + direction,
-            direction * speed,
+            direction * shot_speed(charge),
         );
         if cover {
-            let core = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.57, 0.98, 1.),
-                emissive: LinearRgba::new(0.7, 3., 4., 1.),
-                unlit: true,
-                ..default()
-            });
-            commands.entity(shot).insert(MeshMaterial3d(core.clone()));
-            commands.entity(shot).with_children(|children| {
-                children.spawn((
-                    Mesh3d(meshes.add(Cuboid::new(0.12, 0.12, 1.5))),
-                    MeshMaterial3d(core),
-                    Transform::from_translation(-direction * 0.88)
-                        .with_rotation(Quat::from_rotation_arc(Vec3::Z, direction)),
-                ));
-            });
-            commands.entity(shot).insert((
-                listing::CoverShot {
-                    file: explorer.selected,
-                    before: explorer.before,
-                },
-                GravityScale(0.),
-                Lifetime(2.5),
-            ));
-        } else {
-            explorer.notice =
-                format!("Launched at {speed:.0} m/s. Aim at a function block to detach it.");
+            commands.entity(shot).insert(listing::CoverShot);
         }
     }
 }
@@ -241,7 +276,7 @@ pub fn fractures(
     };
     let [x, z] = repo.0.files[explorer.selected].position;
     let y = if explorer.comparison_mode > 0 {
-        30.
+        comparison_scene::BASE + 6.
     } else {
         6.
     };
@@ -274,7 +309,7 @@ pub fn fractures(
             AngularDamping(0.45),
             LinearDamping(0.08),
             Fragment,
-            Lifetime(60.),
+            Lifetime(6.),
         ))
         .id();
     commands.entity(block).with_children(|parent| {
@@ -284,31 +319,49 @@ pub fn fractures(
             Transform::from_xyz(0., 0., 0.205),
         ));
     });
-    for i in 0..8 {
-        commands.spawn((
-            Mesh3d(palette.unit.clone()),
-            MeshMaterial3d(palette.removed.clone()),
-            Transform::from_xyz(x + (i as f32 - 3.5) * 0.4, y + 1., z + 5.)
-                .with_scale(Vec3::splat(0.25)),
-            RigidBody::Dynamic,
-            Collider::cuboid(1., 1., 1.),
-            LinearVelocity(Vec3::new(
-                (i as f32 * 2.4).sin() * 5.,
-                3. + (i % 4) as f32,
-                4. + (i as f32).cos() * 3.,
-            )),
-            AngularVelocity(Vec3::new(i as f32, 2., 3.)),
-            Restitution::new(0.5),
-            Friction::new(0.6),
-            Fragment,
-            Lifetime(15.),
-        ));
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_blaster_releases_share_assets_and_cap_active_bodies() {
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<StandardMaterial>::default();
+        let blaster = Blaster::new(&mut meshes, &mut materials);
+        let mesh = blaster.mesh.clone();
+        let material = blaster.material.clone();
+        let mut app = App::new();
+        app.insert_resource(blaster)
+            .insert_resource(Explorer::new(0))
+            .init_resource::<Time>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<city_navigation::Navigation>()
+            .init_resource::<file_picker::FilePicker>()
+            .init_resource::<listing::Listing>()
+            .add_systems(Update, launch);
+        app.world_mut().spawn(Camera3d::default());
+        for _ in 0..64 {
+            app.world_mut().resource_mut::<Explorer>().charge = 0.5;
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::KeyF);
+            keys.release(KeyCode::KeyF);
+            app.update();
+        }
+        let world = app.world_mut();
+        let mut shots = world.query_filtered::<(&Mesh3d, &MeshMaterial3d<StandardMaterial>, &CollisionLayers), With<Projectile>>();
+        let shots = shots.iter(world).collect::<Vec<_>>();
+        assert_eq!(shots.len(), MAX_SHOTS);
+        assert!(
+            shots
+                .iter()
+                .all(|(shot_mesh, shot_material, layers)| shot_mesh.0 == mesh
+                    && shot_material.0 == material
+                    && !layers.interacts_with(**layers))
+        );
+    }
+
     #[test]
     fn one_collision_detaches_exact_utf8_declaration_only_once() {
         let source =

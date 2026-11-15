@@ -179,7 +179,7 @@ impl Repository {
         let mut x = 0.;
         let mut z = 0.;
         let mut band_height = 0.0_f32;
-        for (n, (name, indices)) in groups.into_iter().enumerate() {
+        for (n, (name, mut indices)) in groups.into_iter().enumerate() {
             if n > 0 && n % 3 == 0 {
                 x = 0.;
                 z += band_height + 20.;
@@ -188,7 +188,24 @@ impl Repository {
             let rows = indices.len().div_ceil(6);
             let width = 112.;
             let depth = rows as f32 * 20. + 16.;
-            for (j, i) in indices.into_iter().enumerate() {
+            let columns = indices.len().min(6);
+            let mut lots: Vec<_> = (0..indices.len()).collect();
+            lots.sort_by_key(|&lot| {
+                let (column, row) = (lot % 6, lot / 6);
+                let side = column.min(columns - 1 - column);
+                let end = row.min(rows - 1 - row);
+                (side.min(end), side + end, lot)
+            });
+            indices.sort_by_key(|&i| {
+                let file = &self.files[i];
+                let size = file
+                    .after
+                    .as_ref()
+                    .or(file.before.as_ref())
+                    .map_or(0, |blob| blob.size);
+                (std::cmp::Reverse(size), i)
+            });
+            for (j, i) in lots.into_iter().zip(indices) {
                 self.files[i].position = [
                     x + 12. + (j % 6) as f32 * 17.,
                     z + 12. + (j / 6) as f32 * 20.,
@@ -277,6 +294,35 @@ pub fn cut_lines(source: &str, start: u32, end: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tall_files_take_perimeter_lots_before_interior_lots() {
+        let files = (0..24)
+            .map(|size| File {
+                path: format!("src/{size:02}.rs"),
+                before: None,
+                after: Some(Blob {
+                    id: size.to_string(),
+                    size,
+                    mode: "100644".into(),
+                }),
+                change: Change::Added,
+                position: [0., 0.],
+            })
+            .collect();
+        let mut repo = Repository {
+            root: PathBuf::new(),
+            revision: String::new(),
+            baseline: None,
+            files,
+            districts: Vec::new(),
+        };
+        repo.layout();
+        for (size, file) in repo.files.iter().enumerate() {
+            let [x, z] = file.position;
+            let edge = x == 12. || x == 97. || z == 12. || z == 72.;
+            assert_eq!(edge, size >= 8, "lot for {}", file.path);
+        }
+    }
     #[test]
     fn cutting_preserves_other_source_and_can_break_syntax() {
         let source = "fn keep() {}\nfn cut() {\n  panic!();\n}\nfn also_keep() {}\n";

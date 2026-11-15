@@ -62,18 +62,20 @@ to the existing custom domain. Manage domain bindings separately in Cloudflare.
 
 - **Codebase.** Start at a covered source listing. WASD flies, Space and left
   Ctrl change altitude, and Shift boosts. Hold the right mouse button to aim,
-  or use Tab to capture the cursor. Scroll or press Page Up / Page Down to
-  move along the facade. Open Files with ⌘P, type a filename or path, and press Enter to fly there.
-  You can also click a building in the city. Hold F to charge the blaster and
-  release to fire. A hit cracks the cover, then the pieces fall and expose the
-  source in place. Revealed lines stay open when you return to the
+  or use Tab to capture the cursor and Esc to release it. Scroll or press
+  Page Up / Page Down to move along the facade. Open Files with P in the
+  browser or ⌘P on macOS, type a filename or path, and press Enter to fly there.
+  Click a building from any side to fly to its source. Hold F to charge the
+  water blaster and release to fire. A shot arcs downward and washes one strip
+  of cover away on impact. Hitting another building flies to it and reveals
+  the hit strip when the source is ready. Revealed lines stay open on the
   same file and snapshot during the session. Home frames the entire listing.
   G turns to the right wall, which shows the diff against the base snapshot.
   The camera follows the corresponding line. Press G again to turn back.
 - **Review.** Press C at a file to fly to its first change. W and S fly between
   code platforms. Large hunks span several platforms. Aim with the right mouse
-  button and shoot a platform you already passed to break it into falling
-  pieces. You can still return to its code with S. W at the last platform lands
+  button and shoot a platform you already passed to clear it with a splash.
+  You can still return to its code with S. W at the last platform lands
   at the complete file comparison. Scroll for aligned source, use [ and ] to
   jump between hunks, or press G to switch between pair and overlay. N flies to
   the next changed file. To review a local pull request, pass the base commit or
@@ -95,7 +97,9 @@ to the existing custom domain. Manage domain bindings separately in Cloudflare.
 ## Data and presentation
 
 `git ls-tree` builds the world without loading source bodies. Paths are grouped
-by directory and assigned deterministic non-overlapping lots. The map includes
+by directory and assigned deterministic non-overlapping lots, with larger files
+on each district's perimeter first. Snapshot sizes determine building heights
+before any code loads. The map includes
 the union of the selected commit and its comparison base, so deleted files
 remain inspectable. The base defaults to the first parent. Source bodies and syntax trees load when a file is selected.
 The inspected revision is resolved once to a commit ID; working-copy changes

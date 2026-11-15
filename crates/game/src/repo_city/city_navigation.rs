@@ -1,10 +1,10 @@
 //! Camera travel and code stops for the city world.
-use avian3d::prelude::{AngularVelocity, Collider, CollisionStart, LinearVelocity, RigidBody};
+use avian3d::prelude::{Collider, CollisionStart, Position, RigidBody};
 
 use super::*;
 
 const PAGE: usize = 23;
-const PLATFORM_HEIGHT: f32 = 52.;
+const PLATFORM_HEIGHT: f32 = listing::MAX_HEIGHT + 28.;
 
 #[derive(Clone, Copy)]
 enum Stop {
@@ -37,11 +37,12 @@ struct Hop {
     elapsed: f32,
     duration: f32,
     arrival: Arrival,
+    roof: f32,
 }
 
 #[derive(Clone, Copy)]
 enum Arrival {
-    Facade(usize),
+    Facade,
     Stop,
     Comparison,
 }
@@ -55,6 +56,7 @@ impl Hop {
             elapsed: 0.,
             duration,
             arrival,
+            roof: start.translation.y.max(end.translation.y).max(22.),
         }
     }
 
@@ -65,18 +67,13 @@ impl Hop {
         let mut translation = self.start.translation.lerp(self.end.translation, eased);
         translation.y += lift * (std::f32::consts::PI * eased).sin().max(0.);
         let mut rotation = self.start.rotation.slerp(self.end.rotation, eased);
-        if matches!(self.arrival, Arrival::Facade(_)) {
+        if matches!(self.arrival, Arrival::Facade) {
             let smooth = |v: f32| {
                 let v = v.clamp(0., 1.);
                 v * v * (3. - 2. * v)
             };
             let horizontal = smooth((t - 0.2) / 0.6);
-            let roof = self
-                .start
-                .translation
-                .y
-                .max(self.end.translation.y)
-                .max(22.);
+            let roof = self.roof;
             translation = self
                 .start
                 .translation
@@ -90,7 +87,11 @@ impl Hop {
             };
             let target = self.end.translation + self.end.forward().as_vec3() * 11.;
             let aimed = Transform::from_translation(translation).looking_at(target, Vec3::Y);
-            rotation = self.start.rotation.slerp(aimed.rotation, smooth(t / 0.28));
+            rotation = self
+                .start
+                .rotation
+                .slerp(aimed.rotation, smooth(t / 0.28))
+                .slerp(self.end.rotation, smooth((t - 0.72) / 0.28));
         }
         Transform::from_translation(translation).with_rotation(rotation)
     }
@@ -109,6 +110,7 @@ pub(super) struct Navigation {
     hop: Option<Hop>,
     redraw: bool,
     broken: HashSet<usize>,
+    pub(super) shot_destination: Option<usize>,
 }
 
 impl Navigation {
@@ -128,6 +130,12 @@ impl Navigation {
 
     pub(super) fn is_flying(&self) -> bool {
         self.hop.is_some()
+    }
+
+    pub(super) fn flying_to_facade(&self) -> bool {
+        self.hop
+            .as_ref()
+            .is_some_and(|hop| matches!(hop.arrival, Arrival::Facade))
     }
 
     pub(super) fn route_status(&self) -> Option<String> {
@@ -166,7 +174,7 @@ impl Navigation {
                 (RouteKind::Trace, false) => "W to follow the stack · S to go back · Esc to leave",
             };
             return if route.kind == RouteKind::Review && route.current > 0 {
-                format!("{hint}\nAim at a reviewed platform, then hold F and release to break it")
+                format!("{hint}\nAim at a reviewed platform, then hold F and release to clear it")
             } else {
                 hint.into()
             };
@@ -179,7 +187,6 @@ impl Navigation {
         }
         let destination = nearest
             .file
-            .filter(|&index| index != explorer.selected)
             .map(|index| format!("Click to fly to {}", repo.files[index].path))
             .unwrap_or_else(|| "Point at a building to see where it leads".into());
         let trace = if self.trace.is_empty() {
@@ -187,8 +194,9 @@ impl Navigation {
         } else {
             " · T follows stack trace"
         };
+        let shortcut = file_picker::SHORTCUT;
         format!(
-            "{destination}\nScroll follows the text · Files / Cmd+P searches paths · WASD flies\nHold F and release to reveal code · Home frames the file · G turns to the diff · C reviews changes{trace}"
+            "{destination}\nScroll follows the text · Files / {shortcut} searches paths · WASD flies\nHold F and release to wash the cover · Home frames the file · G turns to the diff · C reviews changes{trace}"
         )
     }
 }
@@ -291,7 +299,6 @@ pub(super) fn navigate(
         *camera = hop.pose(progress);
         if progress >= 1. {
             let arrival = hop.arrival;
-            *camera = hop.end;
             navigation.hop = None;
             match arrival {
                 Arrival::Comparison => {
@@ -319,16 +326,7 @@ pub(super) fn navigate(
                     }
                     navigation.redraw = true;
                 }
-                Arrival::Facade(index) => {
-                    if explorer.selected != index {
-                        explorer.open(&repo.0, index);
-                        #[cfg(target_arch = "wasm32")]
-                        {
-                            *camera =
-                                listing::view(&repo.0.files[index], explorer.highlighted.len());
-                        }
-                    }
-                }
+                Arrival::Facade => {}
             }
         }
         return;
@@ -392,6 +390,7 @@ pub(super) fn navigate(
         return;
     }
     let next_changed = keys.just_pressed(KeyCode::KeyN);
+    let shot_destination = navigation.shot_destination.take();
     let target = if let Some(file) = picker.destination.take() {
         Some(file)
     } else if next_changed {
@@ -403,31 +402,52 @@ pub(super) fn navigate(
         && mouse.just_pressed(MouseButton::Left)
         && !file_buttons.iter().any(|hovered| hovered.get())
     {
-        nearest.file.filter(|&index| index != explorer.selected)
+        nearest.file
     } else {
-        None
+        shot_destination
     };
     if let Some(index) = target {
         listing.reset_view();
-        let count = if index == explorer.selected {
-            explorer.highlighted.len()
-        } else {
-            let file = &repo.0.files[index];
-            repo.0
-                .source(index, file.after.is_none())
-                .map_or(0, |source| source.lines().count())
-        };
         explorer.anchored = false;
         explorer.comparison_mode = 0;
+        if index != explorer.selected {
+            explorer.open(&repo.0, index);
+        }
         explorer.rebuild = true;
-        explorer.notice = format!("Flying to {}", repo.0.files[index].path);
-        navigation.hop = Some(Hop::new(
-            *camera,
-            listing::view(&repo.0.files[index], count),
-            Arrival::Facade(index),
-        ));
-        return;
+        let end = listing::view(&repo.0.files[index]);
+        if camera.translation.distance_squared(end.translation) < 0.04
+            && camera.rotation.dot(end.rotation).abs() > 0.9999
+        {
+            return;
+        }
+        let mut hop = Hop::new(*camera, end, Arrival::Facade);
+        hop.roof = flight_roof(hop.start.translation, hop.end.translation, &repo.0).max(hop.roof);
+        let climb = hop.roof - hop.start.translation.y.min(hop.end.translation.y);
+        hop.duration = hop.duration.max((climb / 24. + 0.65).min(3.8));
+        navigation.hop = Some(hop);
     }
+}
+
+fn flight_roof(start: Vec3, end: Vec3, repo: &Repository) -> f32 {
+    let origin = Vec3::new(start.x, 0., start.z);
+    let offset = Vec3::new(end.x, 0., end.z) - origin;
+    let distance = offset.length();
+    let direction = offset.try_normalize().unwrap_or(Vec3::ZERO);
+    let width = listing::WIDTH / 2. + 1.;
+    let depth = listing::DEPTH / 2. + 1.;
+    repo.files
+        .iter()
+        .filter_map(|file| {
+            let [x, z] = file.position;
+            let hit = ray_box(
+                origin,
+                direction,
+                Vec3::new(x - width, 0., z - depth),
+                Vec3::new(x + width, 1., z + depth),
+            )?;
+            (hit <= distance).then(|| listing::building_height(file) + 4.)
+        })
+        .fold(0., f32::max)
 }
 
 pub(super) fn draw(
@@ -446,28 +466,25 @@ pub(super) fn draw(
     if !navigation.guides_camera()
         && !explorer.anchored
         && explorer.comparison_mode == 0
-        && let Some(index) = nearest.file.filter(|&index| index != explorer.selected)
+        && let Some(index) = nearest.file
     {
         let file = &repo.0.files[index];
         let [x, z] = file.position;
-        let height = (4.
-            + (file
-                .after
-                .as_ref()
-                .or(file.before.as_ref())
-                .map_or(1, |blob| blob.size)
-                .max(1) as f32)
-                .log2()
-                * 0.65)
-            .min(17.);
-        let corners = [
-            Vec3::new(x - 6.1, 0.1, z + 3.23),
-            Vec3::new(x + 6.1, 0.1, z + 3.23),
-            Vec3::new(x + 6.1, height, z + 3.23),
-            Vec3::new(x - 6.1, height, z + 3.23),
+        let height = listing::building_height(file);
+        let w = listing::WIDTH / 2. + 0.08;
+        let d = listing::DEPTH / 2. + 0.08;
+        let footprint = [
+            Vec3::new(x - w, 0.1, z - d),
+            Vec3::new(x + w, 0.1, z - d),
+            Vec3::new(x + w, 0.1, z + d),
+            Vec3::new(x - w, 0.1, z + d),
         ];
         for edge in 0..4 {
-            gizmos.line(corners[edge], corners[(edge + 1) % 4], color(set.accent));
+            let bottom = footprint[edge];
+            let next = footprint[(edge + 1) % 4];
+            let rise = Vec3::Y * height;
+            gizmos.line(bottom, bottom + rise, color(set.accent));
+            gizmos.line(bottom + rise, next + rise, color(set.accent));
         }
     }
     if let Some(route) = &navigation.route
@@ -531,17 +548,18 @@ pub(super) fn draw(
                         if before { "BEFORE" } else { "AFTER" }
                     );
                     let side = if before { -4. } else { 4. };
-                    panel(
+                    let panel = panel(
                         &mut commands,
                         &mut meshes,
                         &mut materials,
                         &mut images,
                         &title,
                         &diff.page(before, row, count),
-                        point + Vec3::new(side, 3., 0.),
+                        Vec3::new(side, 3., 0.),
                         7.8,
                         &set,
                     );
+                    commands.entity(body).add_child(panel);
                 }
             }
             Stop::Trace { file, line } => {
@@ -566,17 +584,18 @@ pub(super) fn draw(
                         Vec::new()
                     }
                 };
-                panel(
+                let panel = panel(
                     &mut commands,
                     &mut meshes,
                     &mut materials,
                     &mut images,
                     &title,
                     &rows,
-                    point + Vec3::Y * 3.,
+                    Vec3::Y * 3.,
                     10.,
                     &set,
                 );
+                commands.entity(body).add_child(panel);
             }
         }
     }
@@ -592,28 +611,28 @@ fn panel(
     position: Vec3,
     width: f32,
     set: &WorldSet,
-) {
+) -> Entity {
     let texture = images.add(code_texture::source(title, rows, set.accent, 1024, 704, 0));
-    commands.spawn((
-        RouteVisual,
-        Mesh3d(meshes.add(Rectangle::new(width, 5.))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color_texture: Some(texture),
-            unlit: true,
-            cull_mode: None,
-            ..default()
-        })),
-        Transform::from_translation(position),
-    ));
+    commands
+        .spawn((
+            Mesh3d(meshes.add(Rectangle::new(width, 5.))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color_texture: Some(texture),
+                unlit: true,
+                cull_mode: None,
+                ..default()
+            })),
+            Transform::from_translation(position),
+        ))
+        .id()
 }
 
 pub(super) fn break_platforms(
     mut commands: Commands,
     mut events: MessageReader<CollisionStart>,
-    mut shots: Query<&mut physics::Projectile>,
+    mut shots: Query<(&mut physics::Projectile, Option<&Position>)>,
     platforms: Query<(&Transform, &ReviewedPlatform)>,
     mut navigation: ResMut<Navigation>,
-    palette: Res<Palette>,
 ) {
     for event in events.read() {
         let (shot, platform) = if platforms.contains(event.collider1) {
@@ -621,33 +640,21 @@ pub(super) fn break_platforms(
         } else {
             (event.collider1, event.collider2)
         };
-        let (Ok(mut shot), Ok((transform, stop))) = (shots.get_mut(shot), platforms.get(platform))
+        let (Ok((mut projectile, position)), Ok((transform, stop))) =
+            (shots.get_mut(shot), platforms.get(platform))
         else {
             continue;
         };
-        if shot.used || !navigation.broken.insert(stop.0) {
+        if projectile.used || !navigation.broken.insert(stop.0) {
             continue;
         }
-        shot.used = true;
-        navigation.redraw = true;
-        for tile in 0..8 {
-            let offset = Vec3::new(
-                (tile % 4) as f32 * 4. - 6.,
-                0.,
-                (tile / 4) as f32 * 3.5 - 1.75,
-            );
-            commands.spawn((
-                Mesh3d(palette.unit.clone()),
-                MeshMaterial3d(palette.edge.clone()),
-                Transform::from_translation(transform.translation + offset)
-                    .with_scale(Vec3::new(3.8, 0.45, 3.2)),
-                RigidBody::Dynamic,
-                Collider::cuboid(1., 1., 1.),
-                LinearVelocity(Vec3::new(offset.x * 0.45, 1.5, offset.z)),
-                AngularVelocity(Vec3::new(0.4, tile as f32 * 0.13, 0.6)),
-                physics::Lifetime(12.),
-            ));
-        }
+        projectile.used = true;
+        physics::splash(
+            &mut commands,
+            position.map_or(transform.translation, |p| p.0),
+        );
+        commands.entity(shot).despawn();
+        commands.entity(platform).despawn();
     }
 }
 
@@ -658,11 +665,15 @@ mod tests {
     #[test]
     fn approach_clears_roofs_and_ends_at_the_reading_view() {
         let start = Transform::from_xyz(0., 5., 10.);
-        let end = Transform::from_xyz(100., 8., 15.);
-        let hop = Hop::new(start, end, Arrival::Facade(0));
+        let end = Transform::from_xyz(100., 8., 15.).looking_to(Vec3::NEG_X, Vec3::Y);
+        let hop = Hop::new(start, end, Arrival::Facade);
         assert_eq!(hop.pose(0.).translation, start.translation);
         assert!(hop.pose(0.5).translation.y > 18.);
         assert_eq!(hop.pose(1.).translation, end.translation);
+        assert!(hop.pose(1.).rotation.dot(end.rotation).abs() > 0.9999);
+        let just_before = hop.pose(0.999);
+        assert!(just_before.translation.distance(end.translation) < 0.01);
+        assert!(just_before.rotation.dot(end.rotation).abs() > 0.9999);
     }
 
     #[test]
@@ -684,17 +695,10 @@ mod tests {
     }
 
     #[test]
-    fn projectile_breaks_a_reviewed_platform_once_and_creates_falling_tiles() {
+    fn repeated_platform_hits_spawn_no_dynamic_debris() {
         let mut app = App::new();
         app.add_message::<CollisionStart>()
             .init_resource::<Navigation>()
-            .insert_resource(Palette {
-                unit: default(),
-                edge: default(),
-                shell: default(),
-                removed: default(),
-                plate: default(),
-            })
             .add_systems(Update, break_platforms);
         let shot = app
             .world_mut()
@@ -704,7 +708,7 @@ mod tests {
             .world_mut()
             .spawn((ReviewedPlatform(0), Transform::default()))
             .id();
-        for _ in 0..2 {
+        for _ in 0..64 {
             app.world_mut().write_message(CollisionStart {
                 collider1: shot,
                 collider2: platform,
@@ -720,7 +724,7 @@ mod tests {
                 .iter(app.world())
                 .filter(|(body, _)| **body == RigidBody::Dynamic)
                 .count(),
-            8
+            0
         );
     }
 }

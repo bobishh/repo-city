@@ -6,6 +6,11 @@ use bevy::{
 
 use super::*;
 
+#[cfg(target_arch = "wasm32")]
+pub(super) const SHORTCUT: &str = "P";
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) const SHORTCUT: &str = "Cmd+P";
+
 const PAGE_SIZE: usize = 7;
 
 #[derive(Resource, Default)]
@@ -86,7 +91,12 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
         ))
         .with_children(|ui| {
             ui.spawn((
-                button("Files  Cmd+P", font, ink, AlignSelf::FlexStart),
+                button(
+                    &format!("Files  {SHORTCUT}"),
+                    font,
+                    ink,
+                    AlignSelf::FlexStart,
+                ),
                 observe(|_: On<Activate>, mut picker: ResMut<FilePicker>| picker.toggle()),
             ));
             ui.spawn((
@@ -191,8 +201,18 @@ pub(super) fn update(
         KeyCode::ControlLeft,
         KeyCode::ControlRight,
     ]);
-    if command && keys.just_pressed(KeyCode::KeyP) {
+    let shortcut = keys.just_pressed(KeyCode::KeyP)
+        && if cfg!(target_arch = "wasm32") {
+            !command && !picker.open
+        } else {
+            command
+        };
+    if shortcut {
         picker.toggle();
+        // An earlier key in the same frame belongs to the view before opening.
+        let _ = events
+            .read()
+            .find(|event| event.state.is_pressed() && event.key_code == KeyCode::KeyP);
     }
     if !picker.open {
         events.clear();

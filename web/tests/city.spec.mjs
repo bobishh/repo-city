@@ -52,10 +52,10 @@ test("opens a public repository and fetches source after the WASM city starts", 
       png = Buffer.from(data, "base64");
       return page.evaluate(async data => {
         const image = await createImageBitmap(new Blob([Uint8Array.fromBase64(data)], { type: "image/png" }));
-        const sample = new OffscreenCanvas(64, 64).getContext("2d");
-        sample.drawImage(image, 0, 0, 64, 64);
+        const sample = new OffscreenCanvas(256, 128).getContext("2d");
+        sample.drawImage(image, 0, 0, 256, 128);
         image.close();
-        const { data: pixels } = sample.getImageData(0, 0, 64, 64);
+        const { data: pixels } = sample.getImageData(0, 0, 256, 128);
         let roofPixels = 0;
         for (let i = 0; i < pixels.length; i += 4) {
           const [red, green, blue] = pixels.subarray(i, i + 3);
@@ -64,7 +64,7 @@ test("opens a public repository and fetches source after the WASM city starts", 
         }
         return roofPixels;
       }, data);
-    }, { timeout: 100_000, message: "Render the modified file's amber roof" }).toBeGreaterThan(12);
+    }, { timeout: 100_000, message: "Render the modified file's amber roof" }).toBeGreaterThan(50);
   } catch (error) {
     if (png) await writeFile(testInfo.outputPath("last-canvas.png"), png);
     await writeFile(testInfo.outputPath("browser-console.txt"), consoleLog.join("\n"));
@@ -73,6 +73,25 @@ test("opens a public repository and fetches source after the WASM city starts", 
     await cdp.detach();
   }
   expect(faults).toEqual([]);
+});
+
+test("Tab captures and Escape releases the browser pointer", async ({ page }) => {
+  // Exercise the canvas handlers with a stand-in for the OS pointer in headless Chromium.
+  await page.addInitScript(() => {
+    let locked = null;
+    Object.defineProperty(document, "pointerLockElement", { get: () => locked });
+    HTMLCanvasElement.prototype.requestPointerLock = function () {
+      locked = this;
+      return Promise.resolve();
+    };
+    document.exitPointerLock = () => { locked = null; };
+  });
+  await page.goto("/");
+  const canvas = page.locator("canvas");
+  await canvas.dispatchEvent("keydown", { code: "Tab" });
+  expect(await page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
+  await canvas.dispatchEvent("keydown", { code: "Escape" });
+  expect(await page.evaluate(() => document.pointerLockElement)).toBeNull();
 });
 
 test("reports missing repositories and keeps the form usable", async ({ page }) => {

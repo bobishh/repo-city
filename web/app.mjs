@@ -8,6 +8,18 @@ const submit = form.querySelector("button");
 const parameters = new URLSearchParams(location.search);
 for (const name of ["repo", "ref", "base"]) form.elements[name].value = parameters.get(name) ?? "";
 
+canvas.addEventListener("keydown", event => {
+  if (event.code === "Tab") {
+    event.preventDefault();
+    if (event.repeat) return;
+    if (document.pointerLockElement === canvas) document.exitPointerLock();
+    else canvas.requestPointerLock()?.catch(() => {});
+  }
+  if (event.code === "Escape" && document.pointerLockElement === canvas) {
+    document.exitPointerLock();
+  }
+});
+
 async function openRepository(repo, ref, base) {
   submit.disabled = true;
   status.textContent = "Loading repository and browser engine…";

@@ -1,86 +1,81 @@
 //! In-place source reveal for the city facade. Progress is keyed by snapshot and file.
-use avian3d::prelude::{AngularVelocity, CollisionStart, LinearVelocity, Position};
+use avian3d::prelude::{CollisionStart, Position};
 use repo_world::comparison::Mark;
+use std::collections::HashMap;
 
 use super::*;
 
 const TILE_ROWS: usize = 16;
 const ROW_HEIGHT: f32 = 0.28;
 pub(super) const WIDTH: f32 = 14.;
+pub(super) const DEPTH: f32 = 8.2;
+pub(super) const MAX_HEIGHT: f32 = 72.;
 const BASE: f32 = 2.;
-const FRONT: f32 = 4.18;
-const CRACK_SECONDS: f32 = 0.45;
+const TRIM_CLEARANCE: f32 = 0.28;
+pub(super) const FRONT: f32 = DEPTH / 2. + TRIM_CLEARANCE;
 
-pub(super) fn top(rows: usize) -> f32 {
-    BASE + rows as f32 * ROW_HEIGHT
+pub(super) fn building_height(file: &repo_world::File) -> f32 {
+    let bytes = file
+        .after
+        .as_ref()
+        .or(file.before.as_ref())
+        .map_or(0, |blob| blob.size);
+    (15. + (bytes as f32).sqrt() * 0.275).min(MAX_HEIGHT)
 }
 
-pub(super) fn view(file: &repo_world::File, rows: usize) -> Transform {
+pub(super) fn view(file: &repo_world::File) -> Transform {
     let [x, z] = file.position;
-    let y = (top(rows) - 2.2).max(BASE + 0.4);
-    Transform::from_xyz(x, y, z + 17.).looking_at(Vec3::new(x, y, z + FRONT), Vec3::Y)
+    let y = building_height(file) - 1.7;
+    Transform::from_xyz(x, y, z + 15.).looking_at(Vec3::new(x, y, z + FRONT), Vec3::Y)
 }
 
-fn reading_height(y: f32, count: usize, delta: f32) -> f32 {
-    let first = top(count) - (count.min(TILE_ROWS) as f32 * ROW_HEIGHT / 2.);
-    let last = BASE + (count.min(TILE_ROWS) as f32 * ROW_HEIGHT / 2.);
-    (y + delta).clamp(last, first.max(last))
+struct Wall {
+    top: f32,
+    row_height: f32,
+}
+
+impl Wall {
+    fn new(file: &repo_world::File, count: usize) -> Self {
+        let top = building_height(file) - 0.7;
+        let row_height = ((top - BASE) / count.max(1) as f32).min(ROW_HEIGHT);
+        Self { top, row_height }
+    }
+
+    fn row(&self, y: f32, count: usize) -> usize {
+        (((self.top - y) / self.row_height).max(0.) as usize).min(count.saturating_sub(1))
+    }
+
+    fn y(&self, row: f32) -> f32 {
+        self.top - row * self.row_height
+    }
+
+    fn reading_height(&self, y: f32, count: usize, delta: f32) -> f32 {
+        let margin = count.min(TILE_ROWS) as f32 / 2.;
+        (y + delta).clamp(self.y(count as f32 - margin), self.y(margin))
+    }
 }
 
 #[derive(Resource, Default)]
 pub(super) struct Listing {
     revealed: HashSet<(usize, bool, usize)>,
+    revealed_counts: HashMap<(usize, bool), usize>,
     diff_side: bool,
     turn: Option<(f32, f32, f32)>,
-    rendered: Option<(usize, bool, usize, usize)>,
-    revision: usize,
+    rendered: Option<(usize, bool, usize)>,
+    source_tiles: Vec<Handle<Image>>,
+    dirty_tiles: HashSet<usize>,
+    pending_hit: Option<(usize, f32)>,
 }
 
 #[derive(Component)]
 pub(super) struct ListingSurface;
 
 #[derive(Component)]
-pub(super) struct CoverShot {
-    pub file: usize,
-    pub before: bool,
-}
-
-#[derive(Component)]
-pub(super) struct CoverCollider;
-
-#[derive(Component)]
-pub(super) struct CoverStrike {
-    file: usize,
-    before: bool,
-    rows: std::ops::Range<usize>,
-    point: Vec3,
-    top: Vec3,
-    elapsed: f32,
-}
-
-impl CoverStrike {
-    fn reveal_when_ready(&self, listing: &mut Listing) -> usize {
-        if self.elapsed < CRACK_SECONDS {
-            return 0;
-        }
-        listing.reveal(self.file, self.before, self.rows.clone().map(|row| row + 1))
-    }
-}
+pub(super) struct CoverShot;
 
 fn tile_rows(row: usize, total: usize) -> std::ops::Range<usize> {
     let first = row / TILE_ROWS * TILE_ROWS;
     first..(first + TILE_ROWS).min(total)
-}
-
-fn hit_row(origin: Vec3, direction: Vec3, center: Vec3, rows: usize) -> Option<usize> {
-    if direction.z >= -0.0001 {
-        return None;
-    }
-    let distance = (center.z - origin.z) / direction.z;
-    let impact = origin + direction * distance;
-    let row = (center.y - impact.y) / ROW_HEIGHT;
-    (distance > 0. && (impact.x - center.x).abs() < WIDTH / 2. && row >= 0. && row < rows as f32)
-        .then_some(row as usize)
 }
 
 fn rows(explorer: &Explorer) -> Vec<(Option<syntax::Line>, Mark)> {
@@ -92,14 +87,15 @@ fn rows(explorer: &Explorer) -> Vec<(Option<syntax::Line>, Mark)> {
         .collect()
 }
 
-const SIDE_DEPTH: f32 = 14.;
-const SIDE_CENTER: f32 = FRONT - SIDE_DEPTH / 2. - 0.05;
-
 fn wall_pose(file: &repo_world::File, y: f32, angle: f32, distance: f32) -> Transform {
     let [x, z] = file.position;
-    let center = Vec3::new(x, y, z + SIDE_CENTER);
+    let center = Vec3::new(x, y, z);
     let direction = Vec3::new(angle.sin(), 0., angle.cos());
     Transform::from_translation(center + direction * distance).looking_at(center, Vec3::Y)
+}
+
+fn reading_pose(file: &repo_world::File, y: f32, angle: f32) -> Transform {
+    wall_pose(file, y, angle, 15. - 5.6 * angle.sin())
 }
 
 fn diff_rows(explorer: &Explorer) -> usize {
@@ -159,9 +155,6 @@ impl Listing {
     pub(super) fn turning(&self) -> bool {
         self.turn.is_some()
     }
-    pub(super) fn on_diff(&self) -> bool {
-        self.diff_side
-    }
     pub(super) fn reset_view(&mut self) {
         self.diff_side = false;
         self.turn = None;
@@ -172,12 +165,12 @@ impl Listing {
 
     pub(super) fn counts(&self, explorer: &Explorer) -> (usize, usize) {
         let total = explorer.highlighted.len();
-        let visible = (1..=total)
-            .filter(|line| {
-                self.revealed
-                    .contains(&(explorer.selected, explorer.before, *line))
-            })
-            .count();
+        let visible = self
+            .revealed_counts
+            .get(&(explorer.selected, explorer.before))
+            .copied()
+            .unwrap_or(0)
+            .min(total);
         (visible, total)
     }
 
@@ -186,9 +179,23 @@ impl Listing {
             .filter(|line| self.revealed.insert((file, before, *line)))
             .count();
         if added > 0 {
-            self.revision += 1;
+            *self.revealed_counts.entry((file, before)).or_default() += added;
         }
         added
+    }
+
+    fn wash(&mut self, explorer: &Explorer, file: &repo_world::File, y: f32) {
+        let count = explorer.highlighted.len();
+        let row = Wall::new(file, count).row(y, count);
+        let rows = tile_rows(row, count);
+        if self.reveal(
+            explorer.selected,
+            explorer.before,
+            rows.clone().map(|row| row + 1),
+        ) > 0
+        {
+            self.dirty_tiles.insert(rows.start / TILE_ROWS);
+        }
     }
 }
 
@@ -225,8 +232,7 @@ pub(super) fn controls(
             } else {
                 explorer.highlighted.len()
             };
-            let row = ((top(old_count) - camera.translation.y) / ROW_HEIGHT)
-                .clamp(0., old_count.saturating_sub(1) as f32) as usize;
+            let row = Wall::new(file, old_count).row(camera.translation.y, old_count);
             listing.diff_side = !listing.diff_side;
             let count = if listing.diff_side {
                 diff_rows(&explorer)
@@ -234,7 +240,7 @@ pub(super) fn controls(
                 explorer.highlighted.len()
             };
             let target_row = projected_row(&explorer, row, listing.diff_side);
-            let y = top(count) - (target_row as f32 + 0.5) * ROW_HEIGHT;
+            let y = Wall::new(file, count).y(target_row as f32 + 0.5);
             listing.turn = Some((0., camera.translation.y, y));
         }
     }
@@ -243,7 +249,7 @@ pub(super) fn controls(
         let eased = t * t * (3. - 2. * t);
         let angle =
             if listing.diff_side { eased } else { 1. - eased } * std::f32::consts::FRAC_PI_2;
-        *camera = wall_pose(file, start.lerp(end, eased), angle, 20.);
+        *camera = reading_pose(file, start.lerp(end, eased), angle);
         listing.turn = (t < 1.).then_some((t, start, end));
         return;
     }
@@ -264,42 +270,44 @@ pub(super) fn controls(
     } else {
         0.
     };
+    let wall = Wall::new(file, count);
     if (scroll != 0. || step != 0.) && count > 0 {
-        let y = reading_height(
+        let y = wall.reading_height(
             camera.translation.y,
             count,
-            (scroll * ROW_HEIGHT * 4. + step * ROW_HEIGHT * TILE_ROWS as f32).clamp(-20., 20.),
+            (scroll * 4. + step * TILE_ROWS as f32).clamp(-72., 72.) * wall.row_height,
         );
-        *camera = wall_pose(file, y, angle, 20.);
+        *camera = reading_pose(file, y, angle);
     }
     if keys.just_pressed(KeyCode::Home) {
-        let y = (top(count) + BASE) / 2.;
-        let distance = (top(count) - BASE + 2.).max(WIDTH * 0.85) * 1.45 + 7.;
-        *camera = wall_pose(file, y, angle, distance);
+        let y = building_height(file) / 2.;
+        let distance = building_height(file) * 1.45 + 7.;
+        let pose = wall_pose(file, y, angle, distance);
+        let target = pose.translation + pose.forward().as_vec3() * distance;
+        *camera = Transform::from_translation(pose.translation.with_y(MAX_HEIGHT + 8.))
+            .looking_at(target, Vec3::Y);
     }
 }
 
 pub(super) fn cover_impacts(
     mut commands: Commands,
     mut collisions: MessageReader<CollisionStart>,
-    mut shots: Query<(&mut physics::Projectile, &Position, &CoverShot)>,
-    covers: Query<Entity, With<CoverCollider>>,
-    strikes: Query<&CoverStrike>,
+    mut shots: Query<(&mut physics::Projectile, &Position), With<CoverShot>>,
+    facades: Query<&Facade>,
     explorer: Res<Explorer>,
     repo: Res<Repo>,
-    listing: Res<Listing>,
-    navigation: Res<city_navigation::Navigation>,
+    mut listing: ResMut<Listing>,
+    mut navigation: ResMut<city_navigation::Navigation>,
 ) {
-    let mut new_strikes = HashSet::new();
     for event in collisions.read() {
-        let shot = if covers.contains(event.collider1) {
-            event.collider2
-        } else if covers.contains(event.collider2) {
-            event.collider1
+        let (facade, shot) = if let Ok(facade) = facades.get(event.collider1) {
+            (facade, event.collider2)
+        } else if let Ok(facade) = facades.get(event.collider2) {
+            (facade, event.collider1)
         } else {
             continue;
         };
-        let Ok((mut projectile, position, target)) = shots.get_mut(shot) else {
+        let Ok((mut projectile, position)) = shots.get_mut(shot) else {
             continue;
         };
         if projectile.used {
@@ -307,170 +315,17 @@ pub(super) fn cover_impacts(
         }
         projectile.used = true;
         commands.entity(shot).despawn();
-        if !Listing::visible(&explorer, &navigation)
-            || target.file != explorer.selected
-            || target.before != explorer.before
-        {
+        physics::splash(&mut commands, position.0);
+        if !Listing::visible(&explorer, &navigation) {
             continue;
         }
-        let count = explorer.highlighted.len();
-        let [x, z] = repo.0.files[explorer.selected].position;
-        let top = Vec3::new(x, top(count), z + FRONT + 0.025);
-        let Some(row) = hit_row(
-            Vec3::new(position.x, position.y, top.z + 1.),
-            Vec3::NEG_Z,
-            top,
-            count,
-        ) else {
-            continue;
-        };
-        let rows = tile_rows(row, count);
-        if !new_strikes.insert(rows.start)
-            || listing
-                .revealed
-                .contains(&(explorer.selected, explorer.before, rows.start + 1))
-            || strikes.iter().any(|strike| {
-                strike.file == explorer.selected
-                    && strike.before == explorer.before
-                    && strike.rows.start == rows.start
-            })
-        {
-            continue;
-        }
-        commands.spawn((
-            CoverStrike {
-                file: explorer.selected,
-                before: explorer.before,
-                rows,
-                point: Vec3::new(position.x, position.y, top.z),
-                top,
-                elapsed: 0.,
-            },
-            physics::Lifetime(3.),
-        ));
-    }
-}
-
-pub(super) fn cover_breaks(
-    mut commands: Commands,
-    time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
-    mut listing: ResMut<Listing>,
-    mut strikes: Query<(Entity, &mut CoverStrike)>,
-    mut gizmos: Gizmos,
-    palette: Res<Palette>,
-    mut explorer: ResMut<Explorer>,
-    navigation: Res<city_navigation::Navigation>,
-) {
-    if keys.just_pressed(KeyCode::KeyR) {
-        return;
-    }
-    for (entity, mut strike) in &mut strikes {
-        strike.elapsed += time.delta_secs();
-        let visible = Listing::visible(&explorer, &navigation)
-            && strike.file == explorer.selected
-            && strike.before == explorer.before;
-        if strike.elapsed < CRACK_SECONDS {
-            if visible {
-                draw_cracks(&strike, &mut gizmos);
-            }
-            continue;
-        }
-        commands.entity(entity).despawn();
-        if strike.reveal_when_ready(&mut listing) == 0 || !visible {
-            continue;
-        }
-        let (open, total) = listing.counts(&explorer);
-        explorer.notice = if open == total {
-            "Home frames the revealed file.".into()
+        if facade.index != explorer.selected {
+            navigation.shot_destination = Some(facade.index);
+            listing.pending_hit = Some((facade.index, position.y));
+        } else if explorer.highlighted.is_empty() {
+            listing.pending_hit = Some((facade.index, position.y));
         } else {
-            String::new()
-        };
-        let height = strike.rows.len() as f32 * ROW_HEIGHT;
-        for row in 0..3 {
-            for column in 0..6 {
-                let width = WIDTH / 6.;
-                let tile_height = height / 3.;
-                let offset = Vec3::new(
-                    (column as f32 + 0.5) * width - WIDTH / 2.,
-                    -(row as f32 + 0.5) * tile_height - strike.rows.start as f32 * ROW_HEIGHT,
-                    0.16,
-                );
-                let position = strike.top + offset;
-                let away = position - strike.point;
-                commands.spawn((
-                    Mesh3d(palette.unit.clone()),
-                    MeshMaterial3d(palette.shell.clone()),
-                    Transform::from_translation(position).with_scale(Vec3::new(
-                        width * 0.95,
-                        tile_height * 0.93,
-                        0.18,
-                    )),
-                    RigidBody::Dynamic,
-                    Collider::cuboid(1., 1., 1.),
-                    LinearVelocity(Vec3::new(
-                        away.x * 0.55,
-                        away.y * 0.35 + 0.9,
-                        1.2 + (column % 3) as f32 * 0.55,
-                    )),
-                    AngularVelocity(Vec3::new(1.4 + row as f32, away.x * 0.25, away.x * 0.14)),
-                    physics::Lifetime(5.),
-                ));
-            }
-        }
-    }
-}
-
-fn draw_cracks(strike: &CoverStrike, gizmos: &mut Gizmos) {
-    let progress = (strike.elapsed / CRACK_SECONDS).clamp(0., 1.);
-    let min = Vec3::new(
-        strike.top.x - WIDTH / 2.,
-        strike.top.y - strike.rows.end as f32 * ROW_HEIGHT,
-        strike.top.z,
-    );
-    let max = Vec3::new(
-        strike.top.x + WIDTH / 2.,
-        strike.top.y - strike.rows.start as f32 * ROW_HEIGHT,
-        strike.top.z,
-    );
-    let ink = Color::srgb(1., 0.72, 0.33);
-    let root = strike.point + Vec3::Z * 0.035;
-    for branch in 0..9 {
-        let angle = branch as f32 * std::f32::consts::TAU / 9.;
-        let ray = Vec2::from_angle(angle);
-        let mut last = root;
-        for segment in 1..=5 {
-            let reach = (progress * 5. - (segment - 1) as f32).clamp(0., 1.);
-            if reach == 0. {
-                break;
-            }
-            let jag = ((segment + branch) as f32 * 2.4).sin() * 0.42;
-            let end = strike.point
-                + Vec3::new(
-                    ray.x * segment as f32 * 1.25,
-                    ray.y * segment as f32 * 0.52 + jag,
-                    0.,
-                );
-            let end = end.clamp(min, max) + Vec3::Z * 0.035;
-            let current = last.lerp(end, reach);
-            gizmos.line(last, current, ink);
-            gizmos.line(last + Vec3::Y * 0.018, current + Vec3::Y * 0.018, ink);
-            last = current;
-        }
-    }
-    if progress < 0.37 {
-        let radius = 0.10 + progress * 1.5;
-        for direction in [
-            Vec3::X,
-            Vec3::Y,
-            Vec3::new(0.7, 0.7, 0.),
-            Vec3::new(-0.7, 0.7, 0.),
-        ] {
-            gizmos.line(
-                root - direction * radius,
-                root + direction * radius,
-                Color::WHITE,
-            );
+            listing.wash(&explorer, &repo.0.files[facade.index], position.y);
         }
     }
 }
@@ -487,17 +342,43 @@ pub(super) fn draw(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let visible = Listing::visible(&explorer, &navigation);
-    let key = visible.then_some((
-        explorer.selected,
-        explorer.before,
-        listing.revision,
-        explorer.highlighted.len(),
-    ));
+    let visible = Listing::visible(&explorer, &navigation) || navigation.flying_to_facade();
+    let count = explorer.highlighted.len();
+    let key = visible.then_some((explorer.selected, explorer.before, count));
+    if visible
+        && count > 0
+        && let Some((file, y)) = listing.pending_hit
+        && file == explorer.selected
+    {
+        listing.pending_hit = None;
+        listing.wash(&explorer, &repo.0.files[file], y);
+    }
+    let dirty = std::mem::take(&mut listing.dirty_tiles);
     if key == listing.rendered {
+        if visible {
+            for index in dirty {
+                let Some(handle) = listing.source_tiles.get(index) else {
+                    continue;
+                };
+                let range = tile_rows(index * TILE_ROWS, count);
+                let tile = explorer.highlighted[range]
+                    .iter()
+                    .cloned()
+                    .map(|line| (Some(line), Mark::Context))
+                    .collect::<Vec<_>>();
+                if let Some(mut image) = images.get_mut(handle) {
+                    *image = code_texture::listing(&tile, &|line| {
+                        listing
+                            .revealed
+                            .contains(&(explorer.selected, explorer.before, line))
+                    });
+                }
+            }
+        }
         return;
     }
     listing.rendered = key;
+    listing.source_tiles.clear();
     for entity in &old {
         commands.entity(entity).despawn();
     }
@@ -505,49 +386,19 @@ pub(super) fn draw(
         return;
     }
 
-    let [x, z] = repo.0.files[explorer.selected].position;
     let file = &repo.0.files[explorer.selected];
+    let [x, z] = file.position;
     let current = rows(&explorer);
-    let after = Vec3::new(x, top(current.len()), z + FRONT);
-    let height = top(current.len().max(diff_rows(&explorer))).max(5.);
-    commands.spawn((
-        ListingSurface,
-        Mesh3d(meshes.add(Cuboid::new(WIDTH, height, SIDE_DEPTH))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: color(set.shell),
-            perceptual_roughness: 0.85,
-            ..default()
-        })),
-        Transform::from_xyz(x, height / 2., z + SIDE_CENTER),
-    ));
-    for y in [0.28, height + 0.12] {
-        commands.spawn((
-            ListingSurface,
-            Mesh3d(meshes.add(Cuboid::new(WIDTH + 0.6, 0.24, SIDE_DEPTH + 0.45))),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: set.change(&file.change),
-                ..default()
-            })),
-            Transform::from_xyz(x, y, z + SIDE_CENTER),
-        ));
-    }
-    if !current.is_empty() {
-        let length = current.len() as f32 * ROW_HEIGHT;
-        commands.spawn((
-            ListingSurface,
-            CoverCollider,
-            RigidBody::Static,
-            Collider::cuboid(WIDTH, length, 0.12),
-            Transform::from_xyz(x, BASE + length / 2., z + FRONT),
-        ));
-    }
-    draw_side(
+    let wall = Wall::new(file, count);
+    listing.source_tiles = draw_side(
         &mut commands,
         &mut meshes,
         &mut materials,
         &mut images,
         &current,
-        after,
+        Vec3::new(x, wall.top, z + FRONT),
+        wall.row_height,
+        WIDTH,
         &file.path,
         set.ink,
         |line| {
@@ -576,14 +427,16 @@ pub(super) fn draw(
                 ));
             }
         }
-        let top = Vec3::new(x + WIDTH / 2. + 0.06, top(changed.len()), z + SIDE_CENTER);
+        let wall = Wall::new(file, changed.len());
         draw_side(
             &mut commands,
             &mut meshes,
             &mut materials,
             &mut images,
             &changed,
-            top,
+            Vec3::new(x + WIDTH / 2. + TRIM_CLEARANCE, wall.top, z),
+            wall.row_height,
+            DEPTH,
             "DIFF / BASE → SNAPSHOT",
             set.added,
             |_| true,
@@ -599,11 +452,13 @@ fn draw_side(
     images: &mut Assets<Image>,
     lines: &[(Option<syntax::Line>, Mark)],
     top: Vec3,
+    row_height: f32,
+    width: f32,
     title: &str,
     tint: [f32; 3],
     revealed: impl Fn(usize) -> bool,
     angle: f32,
-) {
+) -> Vec<Handle<Image>> {
     let header = if lines.is_empty() {
         format!("{title} / No readable source")
     } else {
@@ -618,23 +473,28 @@ fn draw_side(
         header_texture,
         top + Vec3::Y * 0.4,
         0.8,
+        width,
         angle,
     );
-    for (index, tile) in lines.chunks(TILE_ROWS).enumerate() {
-        let offset = index * TILE_ROWS;
-        let height = tile.len() as f32 * ROW_HEIGHT;
-        let image = code_texture::listing(tile, &revealed);
-        plane(
-            commands,
-            meshes,
-            materials,
-            images,
-            image,
-            top - Vec3::Y * (offset as f32 * ROW_HEIGHT + height / 2.),
-            height,
-            angle,
-        );
-    }
+    lines
+        .chunks(TILE_ROWS)
+        .enumerate()
+        .map(|(index, tile)| {
+            let offset = index * TILE_ROWS;
+            let height = tile.len() as f32 * row_height;
+            plane(
+                commands,
+                meshes,
+                materials,
+                images,
+                code_texture::listing(tile, &revealed),
+                top - Vec3::Y * (offset as f32 * row_height + height / 2.),
+                height,
+                width,
+                angle,
+            )
+        })
+        .collect()
 }
 
 fn plane(
@@ -645,61 +505,49 @@ fn plane(
     image: Image,
     center: Vec3,
     height: f32,
+    width: f32,
     angle: f32,
-) {
+) -> Handle<Image> {
+    let texture = images.add(image);
     commands.spawn((
         ListingSurface,
-        Mesh3d(meshes.add(Rectangle::new(WIDTH, height))),
+        Mesh3d(meshes.add(Rectangle::new(width, height))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color_texture: Some(images.add(image)),
+            base_color_texture: Some(texture.clone()),
             unlit: true,
             cull_mode: None,
             ..default()
         })),
         Transform::from_translation(center).with_rotation(Quat::from_rotation_y(angle)),
     ));
+    texture
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use avian3d::prelude::{CollisionEventsEnabled, LinearVelocity, SweptCcd};
+    use bevy::time::TimeUpdateStrategy;
 
-    #[test]
-    fn cover_stays_closed_during_cracking_and_reveals_once_afterward() {
-        let mut listing = Listing::default();
-        let strike = CoverStrike {
-            file: 0,
-            before: false,
-            rows: 0..16,
-            point: Vec3::ZERO,
-            top: Vec3::Y,
-            elapsed: 0.,
-        };
-        assert_eq!(strike.reveal_when_ready(&mut listing), 0);
-        assert!(listing.revealed.is_empty());
-        let strike = CoverStrike {
-            elapsed: CRACK_SECONDS,
-            ..strike
-        };
-        assert_eq!(strike.reveal_when_ready(&mut listing), 16);
-        assert_eq!(strike.reveal_when_ready(&mut listing), 0);
-    }
-
-    #[test]
-    fn moving_projectile_hits_cover_and_starts_the_crack_stage() {
-        use avian3d::prelude::{CollisionEventsEnabled, GravityScale, SweptCcd};
-        use bevy::time::TimeUpdateStrategy;
-
-        let mut explorer = Explorer::new(0);
-        explorer.highlighted = syntax::highlight("test.rs", &"let x = 1;\n".repeat(32));
-        let mut repo = repository_picker::empty();
-        repo.files.push(repo_world::File {
+    fn fixture_file() -> repo_world::File {
+        repo_world::File {
             path: "test.rs".into(),
             before: None,
             after: None,
             change: Change::Added,
             position: [0., 0.],
-        });
+        }
+    }
+
+    #[test]
+    fn water_hits_the_same_facade_from_all_sides_and_from_above() {
+        let mut explorer = Explorer::new(0);
+        explorer.highlighted = syntax::highlight("test.rs", &"let x = 1;\n".repeat(48));
+        let file = fixture_file();
+        let height = building_height(&file);
+        let wall = Wall::new(&file, 48);
+        let mut repo = repository_picker::empty();
+        repo.files.push(file);
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
@@ -716,82 +564,120 @@ mod tests {
         ))
         .add_systems(Update, cover_impacts);
         app.finish();
-        let height = 32. * ROW_HEIGHT;
         app.world_mut().spawn((
-            CoverCollider,
+            Facade { index: 0, height },
             RigidBody::Static,
-            Collider::cuboid(WIDTH, height, 0.12),
-            Transform::from_xyz(0., BASE + height / 2., FRONT),
+            Collider::cuboid(WIDTH, height, DEPTH),
+            Transform::from_xyz(0., height / 2., 0.),
         ));
-        let shot = app
-            .world_mut()
-            .spawn((
-                CoverShot {
-                    file: 0,
-                    before: false,
-                },
-                physics::Projectile { used: false },
-                RigidBody::Dynamic,
-                Collider::sphere(0.32),
-                GravityScale(0.),
-                SweptCcd::default(),
-                CollisionEventsEnabled,
-                LinearVelocity(Vec3::NEG_Z * 40.),
-                Transform::from_xyz(0., top(32) - 2., FRONT + 12.),
-            ))
-            .id();
-        for _ in 0..40 {
-            app.update();
+        let positions = [
+            (Vec3::Z * 12. + Vec3::Y * wall.y(6.), Vec3::NEG_Z),
+            (Vec3::NEG_Z * 12. + Vec3::Y * wall.y(22.), Vec3::Z),
+            (Vec3::X * 12. + Vec3::Y * wall.y(38.), Vec3::NEG_X),
+            (Vec3::NEG_X * 12. + Vec3::Y * wall.y(6.), Vec3::X),
+            (Vec3::Y * (height + 8.), Vec3::ZERO),
+        ];
+        for (origin, direction) in positions {
+            let shot = app
+                .world_mut()
+                .spawn((
+                    CoverShot,
+                    physics::Projectile { used: false },
+                    RigidBody::Dynamic,
+                    Collider::sphere(0.22),
+                    SweptCcd::default(),
+                    CollisionEventsEnabled,
+                    LinearVelocity(direction * 42.),
+                    Transform::from_translation(origin),
+                ))
+                .id();
+            for _ in 0..100 {
+                app.update();
+            }
+            assert!(
+                app.world().get_entity(shot).is_err(),
+                "shot from {origin:?} missed"
+            );
         }
-        assert!(app.world().get_entity(shot).is_err());
-        let mut strikes = app.world_mut().query::<&CoverStrike>();
-        let strike = strikes.single(app.world()).unwrap();
-        assert_eq!(strike.rows, 0..16);
-        assert!(app.world().resource::<Listing>().revealed.is_empty());
+        let listing = app.world().resource::<Listing>();
+        assert_eq!(listing.counts(app.world().resource::<Explorer>()), (48, 48));
+        let mut physics_bodies = app.world_mut().query::<&RigidBody>();
+        assert!(
+            physics_bodies
+                .iter(app.world())
+                .all(|body| *body == RigidBody::Static)
+        );
+    }
+
+    #[test]
+    fn repeated_hits_only_update_the_affected_texture_on_a_long_facade() {
+        let file = fixture_file();
+        let count = TILE_ROWS * 12;
+        let y = Wall::new(&file, count).y(TILE_ROWS as f32 + 2.);
+        let mut repo = repository_picker::empty();
+        repo.files.push(file.clone());
+        let mut explorer = Explorer::new(0);
+        explorer.highlighted = syntax::highlight("test.rs", &"let x = 1;\n".repeat(count));
+        let mut app = App::new();
+        app.add_plugins(bevy::asset::AssetPlugin::default())
+            .insert_resource(Repo(repo))
+            .insert_resource(explorer)
+            .insert_resource(WorldSet::load(None).unwrap())
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_asset::<Image>()
+            .init_resource::<city_navigation::Navigation>()
+            .init_resource::<Listing>()
+            .add_systems(Update, draw);
+        app.update();
+        let handles = app.world().resource::<Listing>().source_tiles.clone();
+        assert_eq!(handles.len(), 12);
+        let mut reader = app
+            .world()
+            .resource::<Messages<AssetEvent<Image>>>()
+            .get_cursor_current();
+        let mut modified = Vec::new();
+        let mesh_count = app.world().resource::<Assets<Mesh>>().len();
+        let image_count = app.world().resource::<Assets<Image>>().len();
+
+        for _ in 0..64 {
+            app.world_mut()
+                .resource_scope(|world, mut listing: Mut<Listing>| {
+                    listing.wash(world.resource::<Explorer>(), &file, y);
+                });
+            app.update();
+            let events = app.world().resource::<Messages<AssetEvent<Image>>>();
+            modified.extend(reader.read(events).filter_map(|event| match event {
+                AssetEvent::Modified { id } => Some(*id),
+                _ => None,
+            }));
+        }
+
+        assert_eq!(app.world().resource::<Listing>().source_tiles, handles);
+        assert_eq!(app.world().resource::<Assets<Mesh>>().len(), mesh_count);
+        assert_eq!(app.world().resource::<Assets<Image>>().len(), image_count);
+        assert_eq!(modified, [handles[1].id()]);
+        let listing = app.world().resource::<Listing>();
+        assert_eq!(
+            listing.counts(app.world().resource::<Explorer>()),
+            (TILE_ROWS, count)
+        );
+        assert!(!listing.revealed.contains(&(1, false, TILE_ROWS + 1)));
+        assert!(!listing.revealed.contains(&(0, true, TILE_ROWS + 1)));
     }
 
     #[test]
     fn scroll_stops_at_first_and_last_strip() {
+        let file = fixture_file();
         let count = 47;
-        let first = view(
-            &repo_world::File {
-                path: "test.rs".into(),
-                before: None,
-                after: None,
-                change: Change::Unchanged,
-                position: [0., 0.],
-            },
-            count,
-        )
-        .translation
-        .y;
-        let previous = reading_height(first, count, -4.);
+        let wall = Wall::new(&file, count);
+        let first = view(&file).translation.y;
+        let previous = wall.reading_height(first, count, -4.);
         assert!(previous < first);
-        let last = reading_height(first, count, -100.);
+        let last = wall.reading_height(previous, count, -100.);
         assert!(last < previous);
-        assert_eq!(reading_height(last, count, -100.), last);
-        let first = reading_height(last, count, 100.);
-        assert_eq!(reading_height(first, count, 100.), first);
-    }
-
-    #[test]
-    fn aimed_shots_reveal_original_rows_in_place_and_keep_progress_per_file() {
-        let top = Vec3::new(2., 11., 3.);
-        let mut listing = Listing::default();
-        let total = 35;
-        for (height, expected) in [(32.5, 32..35), (0.5, 0..16), (16.5, 16..32)] {
-            let origin = top + Vec3::new(0., -height * ROW_HEIGHT, 8.);
-            let row = hit_row(origin, Vec3::NEG_Z, top, total).unwrap();
-            let tile = tile_rows(row, total);
-            assert_eq!(tile, expected);
-            assert_eq!(
-                listing.reveal(0, false, tile.clone().map(|row| row + 1)),
-                tile.len()
-            );
-            assert_eq!(listing.reveal(0, false, tile.map(|row| row + 1)), 0);
-        }
-        assert!((1..=total).all(|line| listing.revealed.contains(&(0, false, line))));
-        assert!(!listing.revealed.contains(&(1, false, 1)));
-        assert!(!listing.revealed.contains(&(0, true, 1)));
+        assert_eq!(wall.reading_height(last, count, -100.), last);
+        let first = wall.reading_height(last, count, 100.);
+        assert_eq!(wall.reading_height(first, count, 100.), first);
     }
 }

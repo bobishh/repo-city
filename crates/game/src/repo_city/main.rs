@@ -391,7 +391,7 @@ fn main() {
             physics::launch,
             physics::trajectory,
             listing::cover_impacts,
-            listing::cover_breaks,
+            physics::splashes,
             city_navigation::break_platforms,
             physics::impacts,
             physics::fractures,
@@ -445,7 +445,7 @@ fn main() {
             expected_draft: None,
             capture_attempts: 0,
         })
-        .add_systems(Update, smoke.after(detail_scene));
+        .add_systems(Update, smoke.after(animate));
     }
     app.run();
 }
@@ -455,28 +455,16 @@ fn browser_refresh(
     repo: Res<Repo>,
     mut explorer: ResMut<Explorer>,
     mut version: Local<u32>,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
     mut listing: ResMut<listing::Listing>,
-    navigation: Res<city_navigation::Navigation>,
 ) {
     let current = repo_world::browser_source_version();
     if current != *version {
         *version = current;
         if explorer.anatomy.is_none() || (explorer.comparison.is_none() && !explorer.dirty) {
-            let pending = explorer.anatomy.is_none();
             let page = explorer.page;
             explorer.reload(&repo.0);
             listing.invalidate();
-            if pending
-                && explorer.anatomy.is_some()
-                && !navigation.guides_camera()
-                && let Ok(mut camera) = camera.single_mut()
-            {
-                *camera =
-                    listing::view(&repo.0.files[explorer.selected], explorer.highlighted.len());
-            } else if !pending {
-                explorer.page = page;
-            }
+            explorer.page = page;
         }
     }
 }
@@ -543,6 +531,7 @@ fn setup(
         perceptual_roughness: 0.7,
         ..default()
     });
+    commands.insert_resource(physics::Blaster::new(&mut meshes, &mut materials));
     commands.insert_resource(Palette {
         shell: shell.clone(),
         edge: edge.clone(),
@@ -651,7 +640,7 @@ fn spawn_city(
     let edge = &palette.edge;
     let shell = &palette.shell;
     if let Ok((mut pose, mut pilot)) = camera.single_mut() {
-        *pose = listing::view(&repo.0.files[explorer.selected], explorer.highlighted.len());
+        *pose = listing::view(&repo.0.files[explorer.selected]);
         pilot.captured = false;
     }
     let extent_z = repo
@@ -704,12 +693,9 @@ fn spawn_city(
     for (i, file) in repo.0.files.iter().enumerate() {
         let [x, z] = file.position;
 
-        let size = file
-            .after
-            .as_ref()
-            .or(file.before.as_ref())
-            .map_or(0, |blob| blob.size);
-        let height = (4. + (size.max(1) as f32).log2() * 0.65).min(17.);
+        let height = listing::building_height(file);
+        let half_width = listing::WIDTH as f64 / 2.;
+        let half_depth = listing::DEPTH as f64 / 2.;
         let point = |dx: f64, dz: f64| paket_geo::EastNorth {
             east: x as f64 + dx,
             north: -(z as f64 + dz),
@@ -719,14 +705,14 @@ fn spawn_city(
             id: file.path.clone(),
             address: Some(file.path.clone()),
             footprint: vec![
-                point(-6., -3.),
-                point(6., -3.),
-                point(6., 3.),
-                point(-6., 3.),
+                point(-half_width, -half_depth),
+                point(half_width, -half_depth),
+                point(half_width, half_depth),
+                point(-half_width, half_depth),
             ],
             triangles: vec![[0, 1, 2], [0, 2, 3]],
             height: height as f64,
-            entrance: point(0., 3.),
+            entrance: point(0., half_depth),
             passages: vec![],
             accessory: false,
             open_sided: false,
@@ -737,13 +723,19 @@ fn spawn_city(
         };
         commands.spawn((
             CityObject,
-            Facade { index: i, height },
             Mesh3d(meshes.add(shapes::lit(buildings::mesh(&building)))),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: Color::WHITE,
                 ..default()
             })),
             Transform::default(),
+        ));
+        commands.spawn((
+            CityObject,
+            Facade { index: i, height },
+            Transform::from_xyz(x, height / 2., z),
+            RigidBody::Static,
+            Collider::cuboid(listing::WIDTH, height, listing::DEPTH),
         ));
         let status = materials.add(StandardMaterial {
             base_color: set.change(&file.change),
@@ -754,7 +746,11 @@ fn spawn_city(
             CityObject,
             Mesh3d(unit.clone()),
             MeshMaterial3d(status),
-            Transform::from_xyz(x, height + 0.15, z).with_scale(Vec3::new(12., 0.2, 6.)),
+            Transform::from_xyz(x, height + 0.12, z).with_scale(Vec3::new(
+                listing::WIDTH + 0.25,
+                0.24,
+                listing::DEPTH + 0.25,
+            )),
         ));
         let name = file.path.rsplit('/').next().unwrap_or(&file.path);
         label(
@@ -763,7 +759,7 @@ fn spawn_city(
             &mut materials,
             &mut images,
             name,
-            Vec3::new(x, height + 1.1, z + 3.1),
+            Vec3::new(x, height + 1.1, z + listing::DEPTH / 2.),
             12.,
             set.ink,
         );
@@ -788,18 +784,33 @@ fn flight(
     let Ok((window, mut cursor)) = windows.single_mut() else {
         return;
     };
-    if keys.just_pressed(KeyCode::Tab) {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+        pilot.captured = document.pointer_lock_element().is_some();
+        if pilot.captured && picker.is_open() {
+            document.exit_pointer_lock();
+            pilot.captured = false;
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if keys.just_pressed(KeyCode::Tab) && !picker.is_open() {
         pilot.captured = !pilot.captured;
     }
     if keys.just_pressed(KeyCode::Escape) {
         pilot.captured = false;
         explorer.anchored = false;
     }
-    cursor.grab_mode = if pilot.captured && window.focused {
-        CursorGrabMode::Locked
-    } else {
-        CursorGrabMode::None
-    };
+    if !window.focused {
+        pilot.captured = false;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        cursor.grab_mode = if pilot.captured && window.focused {
+            CursorGrabMode::Locked
+        } else {
+            CursorGrabMode::None
+        };
+    }
     cursor.visible = !pilot.captured;
     if picker.is_open() || listing.turning() {
         return;
@@ -844,7 +855,7 @@ fn flight(
 
 fn ray_box(origin: Vec3, direction: Vec3, min: Vec3, max: Vec3) -> Option<f32> {
     let mut near = 0.0_f32;
-    let mut far = 300.0_f32;
+    let mut far = f32::INFINITY;
     for axis in 0..3 {
         if direction[axis].abs() < 0.00001 {
             if origin[axis] < min[axis] || origin[axis] > max[axis] {
@@ -899,8 +910,8 @@ fn targeting(
         if let Some(d) = ray_box(
             origin,
             direction,
-            Vec3::new(x - 6., 0., z - 3.),
-            Vec3::new(x + 6., f.height, z + 3.2),
+            Vec3::new(x - listing::WIDTH / 2., 0., z - listing::DEPTH / 2.),
+            Vec3::new(x + listing::WIDTH / 2., f.height, z + listing::DEPTH / 2.),
         ) && d < distance
         {
             distance = d;
@@ -1183,7 +1194,7 @@ fn detail_scene(
             cull_mode: None,
             ..default()
         })),
-        Transform::from_xyz(x, 6.2, z + 4.15),
+        Transform::from_xyz(x, 6.2, z + listing::FRONT),
         Detail,
     ));
     if let Some((name, source, start)) = &explorer.detached {
@@ -1391,8 +1402,7 @@ fn smoke(
     sections: Query<(&Section, &Transform), Without<Camera3d>>,
     fragments: Query<Entity, With<physics::Fragment>>,
     debris: Query<Entity, With<physics::Lifetime>>,
-    palette: Res<Palette>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    blaster: Res<physics::Blaster>,
 ) {
     if check.pending {
         return;
@@ -1427,8 +1437,9 @@ fn smoke(
                 }
                 1 => {
                     explorer.comparison_mode = 2;
-                    *camera = Transform::from_xyz(x + 19., 43., z + 28.)
-                        .looking_at(Vec3::new(x, 30., z), Vec3::Y);
+                    let base = comparison_scene::BASE;
+                    *camera = Transform::from_xyz(x + 19., base + 19., z + 28.)
+                        .looking_at(Vec3::new(x, base + 6., z), Vec3::Y);
                 }
                 2 => {
                     explorer.comparison_mode = 0;
@@ -1458,15 +1469,9 @@ fn smoke(
                     let travel = 0.4;
                     let velocity =
                         (transform.translation - origin) / travel + Vec3::Y * (9.81 * travel / 2.);
-                    physics::spawn_projectile(
-                        &mut commands,
-                        &mut meshes,
-                        palette.edge.clone(),
-                        origin,
-                        velocity,
-                    );
-                    // The next row begins at z + 17: stay inside the reading street.
-                    *camera = Transform::from_xyz(x - 4., 6.2, z + 16.5)
+                    physics::spawn_projectile(&mut commands, &blaster, origin, velocity);
+                    // Keep the camera in the street between rows.
+                    *camera = Transform::from_xyz(x - 4., 6.2, z + 14.5)
                         .looking_at(Vec3::new(x - 4., 6.2, z + 3.3), Vec3::Y);
                 }
                 _ => {

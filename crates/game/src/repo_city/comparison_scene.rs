@@ -2,9 +2,12 @@
 use super::*;
 #[derive(Component)]
 pub struct HunkBlock(pub usize);
+pub(super) const BASE: f32 = listing::MAX_HEIGHT + 4.;
+
 pub fn focus(camera: &mut Transform, repo: &Repository, explorer: &Explorer) {
     let [x, z] = repo.files[explorer.selected].position;
-    *camera = Transform::from_xyz(x, 32., z + 37.).looking_at(Vec3::new(x, 31., z + 3.), Vec3::Y);
+    *camera = Transform::from_xyz(x, BASE + 8., z + 37.)
+        .looking_at(Vec3::new(x, BASE + 7., z + 3.), Vec3::Y);
 }
 pub fn controls(
     keys: Res<ButtonInput<KeyCode>>,
@@ -99,7 +102,7 @@ pub fn draw(
     };
     let file = &repo.files[explorer.selected];
     let [x, z] = file.position;
-    let base = 24.;
+    let base = BASE;
     commands.spawn((
         Mesh3d(palette.unit.clone()),
         MeshMaterial3d(palette.plate.clone()),
