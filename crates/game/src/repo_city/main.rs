@@ -1,5 +1,6 @@
 //! Repository explorer and the code city's presentation.
 #![allow(dead_code)]
+mod android;
 mod city_navigation;
 mod code_texture;
 mod comparison_scene;
@@ -23,6 +24,8 @@ use repo_world::{Change, FileAnatomy, Repository};
 use repo_world::{comparison::Comparison, syntax};
 use std::{collections::HashSet, path::PathBuf};
 use world_set::{WorldSet, color};
+
+type PlayerCamera = (With<Camera3d>, Without<district::MirrorCamera>);
 
 #[derive(Resource)]
 struct Repo(Repository);
@@ -548,6 +551,7 @@ fn setup(
     });
     commands.spawn((
         Camera3d::default(),
+        bevy::ui::IsDefaultUiCamera,
         Camera { ..default() },
         Msaa::Sample4,
         Transform::default(),
@@ -634,7 +638,7 @@ fn spawn_city(
     set: Res<WorldSet>,
     explorer: Res<Explorer>,
     palette: Res<Palette>,
-    mut camera: Query<(&mut Transform, &mut Pilot), With<Camera3d>>,
+    mut camera: Query<(&mut Transform, &mut Pilot), PlayerCamera>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
@@ -785,7 +789,7 @@ fn flight(
     motion: Res<AccumulatedMouseMotion>,
     mut explorer: ResMut<Explorer>,
     navigation: Res<city_navigation::Navigation>,
-    mut camera: Query<(&mut Transform, &mut Pilot), With<Camera3d>>,
+    mut camera: Query<(&mut Transform, &mut Pilot), PlayerCamera>,
     mut windows: Query<(&Window, &mut CursorOptions), With<PrimaryWindow>>,
     picker: Res<file_picker::FilePicker>,
     listing: Res<listing::Listing>,
@@ -888,7 +892,7 @@ fn ray_box(origin: Vec3, direction: Vec3, min: Vec3, max: Vec3) -> Option<f32> {
 fn targeting(
     repo: Res<Repo>,
     explorer: Res<Explorer>,
-    camera: Query<(&Camera, &Transform, &Pilot), With<Camera3d>>,
+    camera: Query<(&Camera, &Transform, &Pilot), PlayerCamera>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mouse: Res<ButtonInput<MouseButton>>,
     facades: Query<&Facade>,
@@ -966,7 +970,7 @@ fn interaction(
     repo: Res<Repo>,
     nearest: Res<Nearest>,
     mut explorer: ResMut<Explorer>,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
+    mut camera: Query<&mut Transform, PlayerCamera>,
     navigation: Res<city_navigation::Navigation>,
     picker: Res<file_picker::FilePicker>,
 ) {
@@ -1410,7 +1414,7 @@ fn smoke(
     mut check: ResMut<Smoke>,
     repo: Res<Repo>,
     mut explorer: ResMut<Explorer>,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
+    mut camera: Query<&mut Transform, PlayerCamera>,
     panes: Query<&Transform, (With<district::Glass>, Without<Camera3d>)>,
     sections: Query<(&Section, &Transform), Without<Camera3d>>,
     fragments: Query<Entity, With<physics::Fragment>>,

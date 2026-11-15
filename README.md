@@ -78,7 +78,7 @@ to the existing custom domain. Manage domain bindings separately in Cloudflare.
   syntax colors for exposed source. Scrolling moves through the listing;
   flying or looking around leaves that span in place.
   Neon outlines and signs mark directory districts. Approach the glass below
-  a district sign from the street to see the android reflection.
+  a district sign from the street to see the animated 3D android reflection.
   G turns to the right wall, which shows the diff against the base snapshot.
   The camera follows the corresponding line. Press G again to turn back.
 - **Review.** Press C at a file to fly to its first change. W and S fly between

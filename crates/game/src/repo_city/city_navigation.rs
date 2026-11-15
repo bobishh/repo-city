@@ -263,7 +263,7 @@ pub(super) fn navigate(
     mut listing: ResMut<listing::Listing>,
     file_buttons: Query<&bevy::picking::hover::Hovered, With<file_picker::FileButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
+    mut camera: Query<&mut Transform, PlayerCamera>,
 ) {
     if picker.is_open() || listing.turning() {
         return;

@@ -1,6 +1,11 @@
 //! Street lights and the player portrait shown by district glass.
 use super::*;
-use bevy::light::NotShadowCaster;
+use bevy::{
+    camera::{RenderTarget, visibility::RenderLayers},
+    core_pipeline::tonemapping::Tonemapping,
+    light::NotShadowCaster,
+    render::render_resource::TextureFormat,
+};
 
 const TINTS: [[f32; 3]; 4] = [
     [0.97, 0.39, 0.67],
@@ -16,6 +21,15 @@ pub(super) struct Glass;
 
 #[derive(Component)]
 pub(super) struct Reflection;
+
+#[derive(Component)]
+pub(super) struct MirrorCamera;
+
+#[derive(Default)]
+pub(super) struct MirrorMotion {
+    last_eye: Option<Vec3>,
+    drift: f32,
+}
 
 pub(super) struct Lights {
     glass: Handle<Mesh>,
@@ -151,9 +165,41 @@ pub(super) fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let robot = images.add(code_texture::embedded_png(include_bytes!(
-        "../../../../assets/city/android-reflection.png"
-    )));
+    let robot = images.add(Image::new_target_texture(
+        256,
+        384,
+        TextureFormat::Rgba8Unorm,
+        Some(TextureFormat::Rgba8UnormSrgb),
+    ));
+    android::build(&mut commands, &mut meshes, &mut materials);
+    commands.spawn((
+        MirrorCamera,
+        Camera3d::default(),
+        Camera {
+            order: -1,
+            is_active: false,
+            clear_color: Color::NONE.into(),
+            ..default()
+        },
+        RenderTarget::Image(robot.clone().into()),
+        Tonemapping::None,
+        Transform::from_xyz(0., 0.12, 7.3).looking_at(Vec3::Y * 0.12, Vec3::Y),
+        RenderLayers::layer(android::LAYER),
+    ));
+    for (location, color, lux) in [
+        (Vec3::new(2.5, 5., 6.), Color::srgb(0.89, 0.95, 1.), 10_500.),
+        (Vec3::new(-4., 1., 2.), Color::srgb(1., 0.48, 0.73), 4_500.),
+    ] {
+        commands.spawn((
+            DirectionalLight {
+                color,
+                illuminance: lux,
+                ..default()
+            },
+            Transform::from_translation(location).looking_at(Vec3::ZERO, Vec3::Y),
+            RenderLayers::layer(android::LAYER),
+        ));
+    }
     commands.spawn((
         Reflection,
         NotShadowCaster,
@@ -198,34 +244,75 @@ fn portrait(pane: Vec3, eye: &Transform) -> Option<(Vec3, f32, f32)> {
 }
 
 pub(super) fn reflect(
-    camera: Query<&Transform, (With<Camera3d>, Without<Reflection>)>,
-    panes: Query<&Transform, (With<Glass>, Without<Reflection>)>,
+    camera: Query<&Transform, PlayerCamera>,
+    panes: Query<
+        &Transform,
+        (
+            With<Glass>,
+            Without<Reflection>,
+            Without<MirrorCamera>,
+            Without<android::Joint>,
+        ),
+    >,
     mut sprite: Query<
         (
             &mut Transform,
             &mut Visibility,
             &MeshMaterial3d<StandardMaterial>,
         ),
-        With<Reflection>,
+        (With<Reflection>, Without<Camera3d>),
     >,
+    mut render: Query<(&mut Camera, &mut Transform), (With<MirrorCamera>, With<Camera3d>)>,
+    mut joints: Query<(&android::Joint, &mut Transform), (Without<Camera3d>, Without<Reflection>)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    time: Res<Time>,
+    mut motion: Local<MirrorMotion>,
 ) {
-    let (Ok(eye), Ok((mut pose, mut visibility, material))) =
-        (camera.single(), sprite.single_mut())
+    let (Ok(eye), Ok((mut pose, mut visibility, material)), Ok((mut view, mut mirror_pose))) =
+        (camera.single(), sprite.single_mut(), render.single_mut())
     else {
         return;
     };
     let closest = panes
         .iter()
-        .filter_map(|pane| portrait(pane.translation, eye))
-        .min_by(|(a, _, _), (b, _, _)| {
+        .filter_map(|pane| {
+            portrait(pane.translation, eye).map(|portrait| (pane.translation, portrait))
+        })
+        .min_by(|(a, _), (b, _)| {
             a.distance_squared(eye.translation)
                 .total_cmp(&b.distance_squared(eye.translation))
         });
-    let Some((position, scale, alpha)) = closest else {
+    let Some((pane, (position, scale, alpha))) = closest else {
         visibility.set_if_neq(Visibility::Hidden);
+        if view.is_active {
+            view.is_active = false;
+        }
+        motion.last_eye = None;
+        motion.drift = 0.;
         return;
     };
+    if !view.is_active {
+        view.is_active = true;
+    }
+    let offset = eye.translation - pane;
+    let orbit = Vec3::new(
+        (offset.x / offset.z.max(3.) * 2.1).clamp(-1.5, 1.5),
+        (offset.y / offset.z.max(3.) * 1.2).clamp(-0.7, 0.85) + 0.12,
+        7.3,
+    );
+    mirror_pose.set_if_neq(Transform::from_translation(orbit).looking_at(Vec3::Y * 0.12, Vec3::Y));
+    let dt = time.delta_secs();
+    let speed = motion
+        .last_eye
+        .replace(eye.translation)
+        .map_or(0., |last| eye.translation.distance(last) / dt.max(0.001));
+    motion.drift = motion
+        .drift
+        .lerp((speed / 10.).clamp(0., 1.), 1. - (-dt * 7.).exp());
+    let yaw = eye.forward().x.clamp(-0.8, 0.8);
+    for (joint, mut local) in &mut joints {
+        android::animate(*joint, &mut local, time.elapsed_secs(), motion.drift, yaw);
+    }
     visibility.set_if_neq(Visibility::Visible);
     pose.set_if_neq(Transform::from_translation(position).with_scale(Vec3::new(-scale, scale, 1.)));
     let tint = Color::srgba(0.73, 0.81, 0.97, (alpha * 255.).round() / 255.);

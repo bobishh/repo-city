@@ -13,7 +13,7 @@ pub fn controls(
     keys: Res<ButtonInput<KeyCode>>,
     repo: Res<Repo>,
     mut explorer: ResMut<Explorer>,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
+    mut camera: Query<&mut Transform, PlayerCamera>,
     navigation: Res<city_navigation::Navigation>,
     picker: Res<file_picker::FilePicker>,
 ) {
