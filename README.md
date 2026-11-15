@@ -52,8 +52,9 @@ GitHub Actions runs native checks and uploads `browser-build` after the
 browser checks pass. That artifact contains the Cloudflare Worker
 configuration, handler and static build. The Worker serves the precompressed
 module with its WASM content type when the raw file exceeds the static asset
-limit. For a Cloudflare release, add the chosen custom-domain route to
-`web/wrangler.jsonc` and deploy that configuration with the verified assets.
+limit. For a Cloudflare release, extract the verified `browser-build` artifact
+and run `wrangler deploy --config wrangler.jsonc` from that directory.
+The configuration serves the Worker at `repo-city.meta-uber-engineer.dev`.
 
 ## Explore
 
