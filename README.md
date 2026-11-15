@@ -52,9 +52,9 @@ GitHub Actions runs native checks and uploads `browser-build` after the
 browser checks pass. That artifact contains the Cloudflare Worker
 configuration, handler and static build. The Worker serves the precompressed
 module with its WASM content type when the raw file exceeds the static asset
-limit. For a Cloudflare release, extract the verified `browser-build` artifact
-and run `wrangler deploy --config wrangler.jsonc` from that directory.
-The configuration serves the Worker at `repo-city.meta-uber-engineer.dev`.
+limit. Successful runs on `main` deploy that same artifact to
+`repo-city.meta-uber-engineer.dev` after both check jobs pass. The deployment
+uses the `CLOUDFLARE_API_TOKEN` secret in the GitHub `production` environment.
 
 ## Explore
 
@@ -152,3 +152,9 @@ detached as a whole. This does not simulate structural engineering or prove a
 behavioral defect. Individual restitution of sections and executable scenarios
 remain future work. Drafts are discarded when switching file/snapshot unless
 explicitly exported with F6; R restores the whole draft.
+
+## License
+
+Project source is available under either the [MIT license](LICENSE-MIT) or
+the [Apache License 2.0](LICENSE-APACHE), at your option. See
+[THIRD_PARTY.md](THIRD_PARTY.md) for fonts and map data under separate licenses.
