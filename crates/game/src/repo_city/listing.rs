@@ -20,6 +20,7 @@ pub(super) const MAX_HEIGHT: f32 = 72.;
 const BASE: f32 = 2.;
 const PANEL_OFFSET: f32 = 0.06;
 pub(super) const FRONT: f32 = DEPTH / 2. + PANEL_OFFSET;
+const OVERVIEW_BANDS: usize = 64;
 
 fn texture_row_height(width: f32) -> f32 {
     width * code_texture::LISTING_ROW_PIXELS as f32 / code_texture::LISTING_WIDTH as f32
@@ -62,16 +63,52 @@ impl Wall {
 
     fn reading_height(&self, y: f32, count: usize, delta: f32) -> f32 {
         let margin = count.min(TILE_ROWS) as f32 / 2.;
-        (y + delta).clamp(self.y(count as f32 - margin), self.y(margin))
+        let down = (self.y(count as f32 - margin) - y).min(0.);
+        let up = (self.y(margin) - y).max(0.);
+        y + delta.clamp(down, up)
+    }
+}
+
+struct RevealProgress {
+    rows: usize,
+    opened: usize,
+    bands: [usize; OVERVIEW_BANDS],
+}
+
+impl RevealProgress {
+    fn new(rows: usize) -> Self {
+        Self {
+            rows,
+            opened: 0,
+            bands: [0; OVERVIEW_BANDS],
+        }
+    }
+
+    fn bands(&self) -> impl ExactSizeIterator<Item = code_texture::Coverage> + '_ {
+        use code_texture::Coverage;
+        let bands = self.rows.min(OVERVIEW_BANDS);
+        (0..bands).map(move |band| {
+            let rows =
+                ((band + 1) * self.rows).div_ceil(bands) - (band * self.rows).div_ceil(bands);
+            match self.bands[band] {
+                0 => Coverage::Closed,
+                opened if opened == rows => Coverage::Open,
+                _ => Coverage::Partial,
+            }
+        })
     }
 }
 
 #[derive(Resource, Default)]
 pub(super) struct Listing {
     revealed: HashSet<(usize, bool, usize)>,
-    revealed_counts: HashMap<(usize, bool), usize>,
+    reveal_progress: HashMap<(usize, bool), RevealProgress>,
+    overview_dirty: HashSet<usize>,
+    close_facade: Option<usize>,
     diff_side: bool,
     turn: Option<(f32, f32, f32)>,
+    reading: Option<((usize, bool), f32)>,
+    scroll_remaining: f32,
     rendered: Option<(usize, bool, usize)>,
     invalidated: bool,
     source_tiles: Tiles,
@@ -85,6 +122,86 @@ pub(super) struct ListingSurface;
 
 #[derive(Component)]
 pub(super) struct CoverShot;
+
+pub(super) fn overview_material(texture: Handle<Image>) -> StandardMaterial {
+    StandardMaterial {
+        base_color_texture: Some(texture),
+        unlit: true,
+        ..default()
+    }
+}
+
+fn close_to_facade(file: &repo_world::File, camera: &Transform, was_close: bool) -> bool {
+    let [x, z] = file.position;
+    let distance =
+        (camera.translation.xz() - Vec2::new(x, z)).abs() - Vec2::new(WIDTH / 2., DEPTH / 2.);
+    let limit = if was_close { 24. } else { 20. };
+    distance.max(Vec2::ZERO).length_squared() < limit * limit
+}
+
+pub(super) fn draw_overview(
+    repo: Res<Repo>,
+    explorer: Res<Explorer>,
+    palette: Res<Palette>,
+    camera: Query<&Transform, With<Camera3d>>,
+    mut listing: ResMut<Listing>,
+    mut facades: Query<(&Facade, &mut MeshMaterial3d<StandardMaterial>)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let close = camera
+        .single()
+        .is_ok_and(|camera| {
+            close_to_facade(
+                &repo.0.files[explorer.selected],
+                camera,
+                listing.close_facade == Some(explorer.selected),
+            )
+        })
+        .then_some(explorer.selected);
+    if listing.close_facade != close {
+        if let Some(index) = listing.close_facade {
+            listing.overview_dirty.insert(index);
+        }
+        if let Some(index) = close {
+            listing.overview_dirty.insert(index);
+        }
+        listing.close_facade = close;
+    }
+    if listing.overview_dirty.is_empty() {
+        return;
+    }
+    let dirty = std::mem::take(&mut listing.overview_dirty);
+    for (facade, mut material) in &mut facades {
+        let index = facade.index;
+        if !dirty.contains(&index) {
+            continue;
+        }
+        let before = repo.0.files[index].after.is_none();
+        let progress = listing
+            .reveal_progress
+            .get(&(index, before))
+            .filter(|_| close != Some(index));
+        match progress {
+            None => material.0 = palette.facade_closed.clone(),
+            Some(progress) if progress.opened == progress.rows => {
+                material.0 = palette.facade_open.clone();
+            }
+            Some(progress) => {
+                let overview = code_texture::facade_overview(progress.bands());
+                if material.0 == palette.facade_closed || material.0 == palette.facade_open {
+                    material.0 = materials.add(overview_material(images.add(overview)));
+                } else if let Some(mut texture) = materials
+                    .get(&material.0)
+                    .and_then(|material| material.base_color_texture.as_ref())
+                    .and_then(|texture| images.get_mut(texture))
+                {
+                    *texture = overview;
+                }
+            }
+        }
+    }
+}
 
 fn tile_rows(row: usize, total: usize) -> std::ops::Range<usize> {
     let first = row / TILE_ROWS * TILE_ROWS;
@@ -160,8 +277,24 @@ impl Listing {
         self.turn.is_some()
     }
     pub(super) fn reset_view(&mut self) {
+        if self.diff_side {
+            self.reading = None;
+        }
         self.diff_side = false;
         self.turn = None;
+        self.scroll_remaining = 0.;
+    }
+    pub(super) fn start_file(&mut self) {
+        self.reset_view();
+        self.reading = None;
+    }
+    fn reading_y(&self, explorer: &Explorer, file: &repo_world::File) -> f32 {
+        self.reading
+            .filter(|(key, _)| *key == (explorer.selected, explorer.before))
+            .map_or_else(|| view(file).translation.y, |(_, y)| y)
+    }
+    fn set_reading_y(&mut self, explorer: &Explorer, y: f32) {
+        self.reading = Some(((explorer.selected, explorer.before), y));
     }
     pub(super) fn visible(explorer: &Explorer, navigation: &city_navigation::Navigation) -> bool {
         explorer.comparison_mode == 0 && !explorer.anchored && !navigation.guides_camera()
@@ -170,39 +303,42 @@ impl Listing {
     pub(super) fn counts(&self, explorer: &Explorer) -> (usize, usize) {
         let total = explorer.highlighted.len();
         let visible = self
-            .revealed_counts
+            .reveal_progress
             .get(&(explorer.selected, explorer.before))
-            .copied()
-            .unwrap_or(0)
+            .map_or(0, |progress| progress.opened)
             .min(total);
         (visible, total)
     }
 
-    fn reveal(&mut self, file: usize, before: bool, lines: impl Iterator<Item = usize>) -> usize {
-        let added = lines
-            .filter(|line| self.revealed.insert((file, before, *line)))
-            .count();
-        if added > 0 {
-            *self.revealed_counts.entry((file, before)).or_default() += added;
-        }
-        added
-    }
-
     fn wash(&mut self, explorer: &Explorer, file: &repo_world::File, y: f32) {
         let count = explorer.highlighted.len();
+        if count == 0 {
+            return;
+        }
         let row = self
             .source_tiles
             .page
             .and_then(|page| page.hit_row(y, count))
             .unwrap_or_else(|| Wall::new(file, count).row(y, count));
         let rows = tile_rows(row, count);
-        if self.reveal(
-            explorer.selected,
-            explorer.before,
-            rows.clone().map(|row| row + 1),
-        ) > 0
-        {
+        let key = (explorer.selected, explorer.before);
+        let progress = self
+            .reveal_progress
+            .entry(key)
+            .or_insert_with(|| RevealProgress::new(count));
+        let mut changed = false;
+        for row in rows.clone() {
+            if self.revealed.insert((key.0, key.1, row + 1)) {
+                progress.opened += 1;
+                progress.bands[row * count.min(OVERVIEW_BANDS) / count] += 1;
+                changed = true;
+            }
+        }
+        if changed {
             self.source_tiles.dirty.insert(rows.start / TILE_ROWS);
+            if explorer.before == file.after.is_none() {
+                self.overview_dirty.insert(explorer.selected);
+            }
         }
     }
 }
@@ -220,11 +356,13 @@ pub(super) fn controls(
     picker: Res<file_picker::FilePicker>,
 ) {
     if picker.is_open() {
+        listing.scroll_remaining = 0.;
         return;
     }
     if !Listing::visible(&explorer, &navigation)
         || !windows.single().is_ok_and(|window| window.focused)
     {
+        listing.scroll_remaining = 0.;
         return;
     }
     let file = &repo.0.files[explorer.selected];
@@ -235,12 +373,13 @@ pub(super) fn controls(
         if explorer.comparison.is_none() {
             explorer.notice = "Diff unavailable for this file.".into();
         } else if listing.turn.is_none() {
+            listing.scroll_remaining = 0.;
             let old_count = if listing.diff_side {
                 diff_rows(&explorer)
             } else {
                 explorer.highlighted.len()
             };
-            let row = Wall::new(file, old_count).row(camera.translation.y, old_count);
+            let row = Wall::new(file, old_count).row(listing.reading_y(&explorer, file), old_count);
             listing.diff_side = !listing.diff_side;
             let count = if listing.diff_side {
                 diff_rows(&explorer)
@@ -249,6 +388,7 @@ pub(super) fn controls(
             };
             let target_row = projected_row(&explorer, row, listing.diff_side);
             let y = Wall::new(file, count).y(target_row as f32 + 0.5);
+            listing.set_reading_y(&explorer, y);
             listing.turn = Some((0., camera.translation.y, y));
         }
     }
@@ -278,22 +418,34 @@ pub(super) fn controls(
     } else {
         0.
     };
-    let wall = Wall::new(file, count);
-    if (scroll != 0. || step != 0.) && count > 0 {
-        let y = wall.reading_height(
-            camera.translation.y,
-            count,
-            (scroll * 4. + step * TILE_ROWS as f32).clamp(-72., 72.) * wall.row_height,
-        );
-        *camera = reading_pose(file, y, angle);
-    }
     if keys.just_pressed(KeyCode::Home) {
+        listing.scroll_remaining = 0.;
         let y = building_height(file) / 2.;
         let distance = building_height(file) * 1.45 + 7.;
         let pose = wall_pose(file, y, angle, distance);
         let target = pose.translation + pose.forward().as_vec3() * distance;
         *camera = Transform::from_translation(pose.translation.with_y(MAX_HEIGHT + 8.))
             .looking_at(target, Vec3::Y);
+        return;
+    }
+    if (scroll != 0. || step != 0.) && count > 0 {
+        let wall = Wall::new(file, count);
+        let y = listing.reading_y(&explorer, file);
+        let delta = (scroll * 4. + step * TILE_ROWS as f32).clamp(-72., 72.) * wall.row_height;
+        listing.scroll_remaining =
+            wall.reading_height(y, count, listing.scroll_remaining + delta) - y;
+    }
+    if listing.scroll_remaining != 0. {
+        let remaining = listing.scroll_remaining;
+        let step = if remaining.abs() <= 0.001 {
+            remaining
+        } else {
+            remaining * (1. - (-time.delta_secs() / 0.08).exp())
+        };
+        let y = listing.reading_y(&explorer, file);
+        listing.set_reading_y(&explorer, y + step);
+        camera.translation.y = (camera.translation.y + step).max(1.);
+        listing.scroll_remaining -= step;
     }
 }
 
@@ -373,35 +525,43 @@ struct WallSide {
 }
 
 impl WallSide {
-    fn focus(&self, camera: &Transform, count: usize) -> usize {
-        let normal = Quat::from_rotation_y(self.angle) * Vec3::Z;
-        let direction = camera.forward().as_vec3();
-        let facing = direction.dot(normal);
-        let distance = (self.top - camera.translation).dot(normal) / facing;
-        let y = if facing < -0.05 && distance > 0. {
-            camera.translation.y + direction.y * distance
+    fn new(file: &repo_world::File, count: usize, diff: bool) -> Self {
+        let [x, z] = file.position;
+        let wall = Wall::new(file, count);
+        let (x, z, width, angle) = if diff {
+            (
+                x + WIDTH / 2. + PANEL_OFFSET,
+                z,
+                DIFF_WIDTH,
+                std::f32::consts::FRAC_PI_2,
+            )
         } else {
-            camera.translation.y
+            (x, z + FRONT, WIDTH, 0.)
         };
-        (((self.top.y - y) / self.row_height).max(0.) as usize).min(count.saturating_sub(1))
+        Self {
+            top: Vec3::new(x, wall.top, z),
+            row_height: wall.row_height,
+            width,
+            angle,
+        }
     }
 
-    fn page(&self, focus: usize, count: usize) -> WallPage {
+    fn page(&self, focus: f32, count: usize) -> WallPage {
         let row_height = texture_row_height(self.width);
         let tile_height = TILE_ROWS as f32 * row_height;
         let number_of_tiles = ((self.top.y - BASE) / tile_height).floor() as usize;
         let capacity = number_of_tiles.clamp(1, TILES_PER_SIDE);
         let total = count.div_ceil(TILE_ROWS);
-        let first_tile = (focus / TILE_ROWS)
+        let first_tile = (focus as usize / TILE_ROWS)
             .saturating_sub(capacity / 2)
             .min(total.saturating_sub(capacity));
         let end_tile = (first_tile + capacity).min(total);
         let first_row = first_tile * TILE_ROWS;
         let end_row = count.min(end_tile * TILE_ROWS);
         let height = (end_row - first_row) as f32 * row_height;
-        let focus_y = self.top.y - focus as f32 * self.row_height;
+        let focus_y = self.top.y - focus * self.row_height;
         let top =
-            (focus_y + (focus - first_row) as f32 * row_height).clamp(BASE + height, self.top.y);
+            (focus_y + (focus - first_row as f32) * row_height).clamp(BASE + height, self.top.y);
         WallPage {
             first_tile,
             end_tile,
@@ -479,11 +639,12 @@ impl WallRender<'_, '_, '_> {
         &mut self,
         side: &WallSide,
         state: &mut Tiles,
-        camera: &Transform,
+        read_y: f32,
         count: usize,
         texture: impl Fn(Range<usize>) -> Image,
     ) {
-        let focus = side.focus(camera, count);
+        let focus =
+            ((side.top.y - read_y) / side.row_height).clamp(0., count.saturating_sub(1) as f32);
         let page = side.page(focus, count);
         let reposition = state.page.replace(page) != Some(page);
         let window = page.first_tile..page.end_tile;
@@ -504,7 +665,7 @@ impl WallRender<'_, '_, '_> {
             .dirty
             .retain(|index| state.resident.contains_key(index));
         let mut priority = window.collect::<Vec<_>>();
-        priority.sort_unstable_by_key(|index| (index.abs_diff(focus / TILE_ROWS), *index));
+        priority.sort_unstable_by_key(|index| (index.abs_diff(focus as usize / TILE_ROWS), *index));
         for index in priority {
             if self.remaining == 0 {
                 break;
@@ -595,22 +756,9 @@ pub(super) fn draw(
         listing.wash(&explorer, file, y);
     }
 
-    let [x, z] = file.position;
-    let wall = Wall::new(file, count);
-    let source = WallSide {
-        top: Vec3::new(x, wall.top, z + FRONT),
-        row_height: wall.row_height,
-        width: WIDTH,
-        angle: 0.,
-    };
+    let source = WallSide::new(file, count, false);
     let diff_count = listing.diff_lines.len();
-    let wall = Wall::new(file, diff_count);
-    let diff = WallSide {
-        top: Vec3::new(x + WIDTH / 2. + PANEL_OFFSET, wall.top, z),
-        row_height: wall.row_height,
-        width: DIFF_WIDTH,
-        angle: std::f32::consts::FRAC_PI_2,
-    };
+    let diff = WallSide::new(file, diff_count, true);
     if changed {
         render.header(&source, &file.path, set.ink, count);
         if explorer.comparison.is_some() {
@@ -620,6 +768,16 @@ pub(super) fn draw(
 
     let fallback = view(file);
     let camera = camera.single().unwrap_or(&fallback);
+    if !close_to_facade(
+        file,
+        camera,
+        listing.close_facade == Some(explorer.selected),
+    ) {
+        render.hide_side(&mut listing.source_tiles);
+        render.hide_side(&mut listing.diff_tiles);
+        return;
+    }
+    let read_y = listing.reading_y(&explorer, file);
     let Listing {
         source_tiles,
         diff_tiles,
@@ -641,10 +799,10 @@ pub(super) fn draw(
     let diff_texture = |rows: Range<usize>| code_texture::listing(&diff_lines[rows], &|_| true);
     if *diff_side {
         render.hide_side(source_tiles);
-        render.tiles(&diff, diff_tiles, camera, diff_count, &diff_texture);
+        render.tiles(&diff, diff_tiles, read_y, diff_count, &diff_texture);
     } else {
         render.hide_side(diff_tiles);
-        render.tiles(&source, source_tiles, camera, count, &source_texture);
+        render.tiles(&source, source_tiles, read_y, count, &source_texture);
     }
 }
 
@@ -732,6 +890,99 @@ mod tests {
                 .iter(app.world())
                 .all(|body| *body == RigidBody::Static)
         );
+    }
+
+    #[test]
+    fn overview_marks_coverage_only_at_a_distance_and_keeps_progress() {
+        use code_texture::Coverage;
+        let file = fixture_file();
+        let count = 80;
+        let wall = Wall::new(&file, count);
+        let mut repo = repository_picker::empty();
+        repo.files.push(file.clone());
+        let mut explorer = Explorer::new(0);
+        explorer.before = true;
+        explorer.highlighted = syntax::highlight(&file.path, &"let x = 1;\n".repeat(count));
+        let mut images = Assets::default();
+        let mut materials = Assets::default();
+        let [closed, open] = [Coverage::Closed, Coverage::Open].map(|state| {
+            materials.add(overview_material(
+                images.add(code_texture::facade_overview(std::iter::once(state))),
+            ))
+        });
+        let mut app = App::new();
+        app.insert_resource(Repo(repo))
+            .insert_resource(explorer)
+            .insert_resource(Palette {
+                facade_closed: closed.clone(),
+                facade_open: open.clone(),
+                shell: default(),
+                edge: default(),
+                removed: default(),
+                plate: default(),
+                unit: default(),
+            })
+            .insert_resource(materials)
+            .insert_resource(images)
+            .init_resource::<Listing>()
+            .add_systems(Update, draw_overview);
+        let facade = app
+            .world_mut()
+            .spawn((
+                Facade {
+                    index: 0,
+                    height: building_height(&file),
+                },
+                MeshMaterial3d(closed.clone()),
+            ))
+            .id();
+        let close = view(&file);
+        let camera = app.world_mut().spawn((Camera3d::default(), close)).id();
+        let far = Transform::from_translation(close.translation + Vec3::Z * 40.);
+        let wash = |app: &mut App, row| {
+            app.world_mut()
+                .resource_scope(|world, mut listing: Mut<Listing>| {
+                    listing.wash(world.resource::<Explorer>(), &file, wall.y(row));
+                });
+        };
+        let current = |app: &App| {
+            app.world()
+                .get::<MeshMaterial3d<StandardMaterial>>(facade)
+                .unwrap()
+                .0
+                .clone()
+        };
+        wash(&mut app, 1.);
+        app.update();
+        assert_eq!(current(&app), closed);
+        assert_eq!(app.world().resource::<Assets<Image>>().len(), 2);
+        let bands: Vec<_> = app.world().resource::<Listing>().reveal_progress[&(0, true)]
+            .bands()
+            .collect();
+        assert_eq!(bands[0], Coverage::Open);
+        assert_eq!(bands[12], Coverage::Partial);
+        assert_eq!(bands[13], Coverage::Closed);
+
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() = far;
+        app.update();
+        let partial = current(&app);
+        assert_ne!(partial, closed);
+        assert_ne!(partial, open);
+        wash(&mut app, 17.);
+        app.update();
+        assert_eq!(current(&app), partial);
+        assert_eq!(app.world().resource::<Assets<Image>>().len(), 3);
+        for row in (TILE_ROWS * 2..count).step_by(TILE_ROWS) {
+            wash(&mut app, row as f32 + 0.5);
+        }
+        app.update();
+        assert_eq!(current(&app), open);
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() = close;
+        app.update();
+        assert_eq!(current(&app), closed);
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() = far;
+        app.update();
+        assert_eq!(current(&app), open);
     }
 
     #[test]
@@ -841,12 +1092,30 @@ mod tests {
         assert!(app.world().resource::<Assets<Image>>().len() <= 4);
         let limit = 2 + TILES_PER_SIDE;
         let wall = Wall::new(&file, TILE_ROWS * 40);
+        for _ in 0..limit {
+            app.update();
+        }
+        let initial = app.world().resource::<Listing>().source_tiles.page;
+        let resident = app
+            .world()
+            .resource::<Listing>()
+            .source_tiles
+            .resident
+            .clone();
+        let mut pose = view(&file);
+        pose.translation += Vec3::new(2., -8., 0.);
+        pose.rotate_x(-0.2);
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() = pose;
+        app.update();
+        let listing = app.world().resource::<Listing>();
+        assert!(
+            listing.source_tiles.page == initial,
+            "camera movement moved the listing"
+        );
+        assert_eq!(listing.source_tiles.resident, resident);
         for first_row in [0, TILE_ROWS * 39, TILE_ROWS * 12, 0] {
-            app.world_mut()
-                .get_mut::<Transform>(camera)
-                .unwrap()
-                .translation
-                .y = wall.y(first_row as f32);
+            app.world_mut().resource_mut::<Listing>().reading =
+                Some(((0, false), wall.y(first_row as f32 + 0.5)));
             for _ in 0..limit {
                 app.update();
                 assert!(app.world().resource::<Assets<Image>>().len() <= limit);
@@ -882,5 +1151,47 @@ mod tests {
         assert_eq!(wall.reading_height(last, count, -100.), last);
         let first = wall.reading_height(last, count, 100.);
         assert_eq!(wall.reading_height(first, count, 100.), first);
+    }
+
+    #[test]
+    fn page_down_eases_along_the_wall_without_reframing_an_oblique_view() {
+        let file = fixture_file();
+        let mut repo = repository_picker::empty();
+        repo.files.push(file);
+        let mut explorer = Explorer::new(0);
+        explorer.highlighted = syntax::highlight("test.rs", &"let x = 1;\n".repeat(80));
+        let mut time = Time::<()>::default();
+        time.advance_by(std::time::Duration::from_millis(16));
+        let mut app = App::new();
+        app.insert_resource(Repo(repo))
+            .insert_resource(explorer)
+            .insert_resource(time)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<AccumulatedMouseScroll>()
+            .init_resource::<city_navigation::Navigation>()
+            .init_resource::<file_picker::FilePicker>()
+            .init_resource::<Listing>()
+            .add_systems(Update, controls);
+        app.world_mut().spawn((Window::default(), PrimaryWindow));
+        let start =
+            Transform::from_xyz(3., 13., 30.).looking_at(Vec3::new(1., 10., FRONT), Vec3::Y);
+        let camera = app.world_mut().spawn((Camera3d::default(), start)).id();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::PageDown);
+        app.update();
+        let first = *app.world().get::<Transform>(camera).unwrap();
+        assert!(first.translation.y < start.translation.y);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        for _ in 0..40 {
+            app.update();
+            let pose = app.world().get::<Transform>(camera).unwrap();
+            assert_eq!(pose.rotation, start.rotation);
+            assert_eq!(pose.translation.xz(), start.translation.xz());
+        }
+        let end = app.world().get::<Transform>(camera).unwrap();
+        assert!(end.translation.y < first.translation.y);
     }
 }

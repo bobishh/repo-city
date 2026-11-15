@@ -401,7 +401,7 @@ pub(super) fn navigate(
         shot_destination
     };
     if let Some(index) = target {
-        listing.reset_view();
+        listing.start_file();
         explorer.anchored = false;
         explorer.comparison_mode = 0;
         if index != explorer.selected {

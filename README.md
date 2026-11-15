@@ -64,15 +64,19 @@ to the existing custom domain. Manage domain bindings separately in Cloudflare.
 - **Codebase.** Start at a covered source listing. WASD flies, Space and left
   Ctrl change altitude, and Shift boosts. Hold the right mouse button to aim,
   or use Tab to capture the cursor and Esc to release it. Scroll or press
-  Page Up / Page Down to move along the facade. Open Files with P in the
-  browser or ⌘P on macOS, type a filename or path, and press Enter to fly there.
+  Page Up / Page Down to glide along the facade at the current angle and
+  distance. Open Files with P in the browser or ⌘P on macOS, type a filename
+  or path, and press Enter to fly there.
   Click a file block from any side to fly to its source. Hold F to charge the
   water blaster and release to fire. A shot arcs downward and washes one strip
   of cover away on impact. Hitting another file block flies to it and reveals
   the hit strip when the source is ready. Revealed lines stay open on the
   same file and snapshot during the session. Home frames the file block.
-  The city renders nearby rows on the active side of the selected file.
-  Rows retain their proportions as you scroll through long files.
+  From a distance, each block shows an overview of its rows: blue-gray for
+  covered, amber for partially revealed, and teal for revealed. Up close,
+  the active wall shows a readable span of the selected file with ordinary
+  syntax colors for exposed source. Scrolling moves through the listing;
+  flying or looking around leaves that span in place.
   G turns to the right wall, which shows the diff against the base snapshot.
   The camera follows the corresponding line. Press G again to turn back.
 - **Review.** Press C at a file to fly to its first change. W and S fly between

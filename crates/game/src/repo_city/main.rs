@@ -184,6 +184,8 @@ impl Explorer {
 #[derive(Resource)]
 struct Palette {
     shell: Handle<StandardMaterial>,
+    facade_closed: Handle<StandardMaterial>,
+    facade_open: Handle<StandardMaterial>,
     edge: Handle<StandardMaterial>,
     removed: Handle<StandardMaterial>,
     plate: Handle<StandardMaterial>,
@@ -390,6 +392,7 @@ fn main() {
             detail_scene,
             city_navigation::draw,
             listing::draw,
+            listing::draw_overview,
             animate,
             hud,
         )
@@ -490,6 +493,7 @@ fn setup(
     set: Res<WorldSet>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     mut fonts: ResMut<Assets<Font>>,
 ) {
     let font = fonts.add(Font::from_bytes(
@@ -502,6 +506,12 @@ fn setup(
         perceptual_roughness: 0.35,
         ..default()
     });
+    let [facade_closed, facade_open] =
+        [code_texture::Coverage::Closed, code_texture::Coverage::Open].map(|coverage| {
+            materials.add(listing::overview_material(
+                images.add(code_texture::facade_overview(std::iter::once(coverage))),
+            ))
+        });
     let edge = materials.add(StandardMaterial {
         base_color: color(set.accent),
         emissive: LinearRgba::new(
@@ -526,6 +536,8 @@ fn setup(
     commands.insert_resource(physics::Blaster::new(&mut meshes, &mut materials));
     commands.insert_resource(Palette {
         shell: shell.clone(),
+        facade_closed,
+        facade_open,
         edge: edge.clone(),
         removed,
         plate: plate.clone(),
@@ -682,7 +694,35 @@ fn spawn_city(
             set.ink,
         );
     }
-    let block = meshes.add(Cuboid::from_size(Vec3::ONE));
+    let mut block = Mesh::from(Cuboid::from_size(Vec3::ONE));
+    // The stock cuboid rotates its UVs by face. Keep row height aligned on every wall.
+    if let (
+        Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)),
+        Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)),
+        Some(bevy::mesh::VertexAttributeValues::Float32x2(stock_uvs)),
+    ) = (
+        block.attribute(Mesh::ATTRIBUTE_POSITION),
+        block.attribute(Mesh::ATTRIBUTE_NORMAL),
+        block.attribute(Mesh::ATTRIBUTE_UV_0),
+    ) {
+        let uvs: Vec<_> = positions
+            .iter()
+            .zip(normals)
+            .zip(stock_uvs)
+            .map(|((&[x, y, z], &[nx, ny, nz]), &uv)| {
+                if nx != 0. {
+                    [0.5 - z * nx, 0.5 - y]
+                } else if nz != 0. {
+                    [0.5 + x * nz, 0.5 - y]
+                } else {
+                    debug_assert!(ny != 0.);
+                    uv
+                }
+            })
+            .collect();
+        block.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    }
+    let block = meshes.add(block);
     let [added, removed, modified, unchanged] = [
         Change::Added,
         Change::Removed,
@@ -703,7 +743,7 @@ fn spawn_city(
             CityObject,
             Facade { index: i, height },
             Mesh3d(block.clone()),
-            MeshMaterial3d(shell.clone()),
+            MeshMaterial3d(palette.facade_closed.clone()),
             Transform::from_xyz(x, height / 2., z).with_scale(Vec3::new(
                 listing::WIDTH,
                 height,

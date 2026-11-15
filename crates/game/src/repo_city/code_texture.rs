@@ -179,6 +179,48 @@ pub fn source(
 pub(super) const LISTING_WIDTH: u32 = 1536;
 pub(super) const LISTING_ROW_PIXELS: u32 = 27;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Coverage {
+    Closed,
+    Partial,
+    Open,
+}
+
+pub(super) fn facade_overview(bands: impl ExactSizeIterator<Item = Coverage>) -> Image {
+    let width = 48;
+    let height = 128;
+    let count = bands.len();
+    let bands: Vec<_> = bands.collect();
+    let mut pixels = Vec::with_capacity(width * height * 4);
+    for y in 0..height {
+        let (wall, mark) = match bands[y * count / height] {
+            Coverage::Closed => ([24, 39, 46], [57, 78, 88]),
+            Coverage::Partial => ([50, 36, 24], [145, 98, 50]),
+            Coverage::Open => ([15, 40, 39], [51, 128, 116]),
+        };
+        let length = 17 + (y * 13 / 2) % 24;
+        for x in 0..width {
+            pixels.extend(if y % 2 == 0 && (5..length).contains(&x) {
+                mark
+            } else {
+                wall
+            });
+            pixels.push(255);
+        }
+    }
+    Image::new(
+        Extent3d {
+            width: width as u32,
+            height: height as u32,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    )
+}
+
 pub fn listing(rows: &[(Option<Line>, Mark)], revealed: &impl Fn(usize) -> bool) -> Image {
     let width = LISTING_WIDTH;
     let height = rows.len() as u32 * LISTING_ROW_PIXELS;
