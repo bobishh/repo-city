@@ -14,10 +14,16 @@ const TEXTURES_PER_FRAME: usize = 2;
 const ROW_HEIGHT: f32 = 0.28;
 pub(super) const WIDTH: f32 = 14.;
 pub(super) const DEPTH: f32 = 8.2;
+// The side view reads from the gap between adjacent file blocks.
+const DIFF_WIDTH: f32 = 3.1;
 pub(super) const MAX_HEIGHT: f32 = 72.;
 const BASE: f32 = 2.;
 const PANEL_OFFSET: f32 = 0.06;
 pub(super) const FRONT: f32 = DEPTH / 2. + PANEL_OFFSET;
+
+fn texture_row_height(width: f32) -> f32 {
+    width * code_texture::LISTING_ROW_PIXELS as f32 / code_texture::LISTING_WIDTH as f32
+}
 
 pub(super) fn building_height(file: &repo_world::File) -> f32 {
     let bytes = file
@@ -184,7 +190,11 @@ impl Listing {
 
     fn wash(&mut self, explorer: &Explorer, file: &repo_world::File, y: f32) {
         let count = explorer.highlighted.len();
-        let row = Wall::new(file, count).row(y, count);
+        let row = self
+            .source_tiles
+            .page
+            .and_then(|page| page.hit_row(y, count))
+            .unwrap_or_else(|| Wall::new(file, count).row(y, count));
         let rows = tile_rows(row, count);
         if self.reveal(
             explorer.selected,
@@ -332,6 +342,27 @@ pub(super) fn cover_impacts(
 struct Tiles {
     resident: BTreeMap<usize, (Entity, Handle<Image>)>,
     dirty: HashSet<usize>,
+    page: Option<WallPage>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct WallPage {
+    first_tile: usize,
+    end_tile: usize,
+    top: f32,
+    row_height: f32,
+}
+
+impl WallPage {
+    fn y(&self, row: f32) -> f32 {
+        self.top - (row - (self.first_tile * TILE_ROWS) as f32) * self.row_height
+    }
+
+    fn hit_row(&self, y: f32, count: usize) -> Option<usize> {
+        let local = (self.top - y) / self.row_height;
+        let row = self.first_tile * TILE_ROWS + local.max(0.) as usize;
+        (local >= 0. && row < count.min(self.end_tile * TILE_ROWS)).then_some(row)
+    }
 }
 
 struct WallSide {
@@ -353,7 +384,35 @@ impl WallSide {
             camera.translation.y
         };
         (((self.top.y - y) / self.row_height).max(0.) as usize).min(count.saturating_sub(1))
-            / TILE_ROWS
+    }
+
+    fn page(&self, focus: usize, count: usize) -> WallPage {
+        let row_height = texture_row_height(self.width);
+        let tile_height = TILE_ROWS as f32 * row_height;
+        let number_of_tiles = ((self.top.y - BASE) / tile_height).floor() as usize;
+        let capacity = number_of_tiles.clamp(1, TILES_PER_SIDE);
+        let total = count.div_ceil(TILE_ROWS);
+        let first_tile = (focus / TILE_ROWS)
+            .saturating_sub(capacity / 2)
+            .min(total.saturating_sub(capacity));
+        let end_tile = (first_tile + capacity).min(total);
+        let first_row = first_tile * TILE_ROWS;
+        let end_row = count.min(end_tile * TILE_ROWS);
+        let height = (end_row - first_row) as f32 * row_height;
+        let focus_y = self.top.y - focus as f32 * self.row_height;
+        let top =
+            (focus_y + (focus - first_row) as f32 * row_height).clamp(BASE + height, self.top.y);
+        WallPage {
+            first_tile,
+            end_tile,
+            top,
+            row_height,
+        }
+    }
+
+    fn pose(&self, y: f32) -> Transform {
+        Transform::from_translation(self.top.with_y(y))
+            .with_rotation(Quat::from_rotation_y(self.angle))
     }
 }
 
@@ -371,6 +430,14 @@ impl WallRender<'_, '_, '_> {
             self.images.remove(texture.id());
         }
         tiles.dirty.clear();
+        tiles.page = None;
+    }
+
+    fn hide_side(&mut self, tiles: &mut Tiles) {
+        for (entity, _) in tiles.resident.values() {
+            self.commands.entity(*entity).despawn();
+        }
+        self.clear(tiles);
     }
 
     fn plane(
@@ -392,8 +459,7 @@ impl WallRender<'_, '_, '_> {
                     cull_mode: None,
                     ..default()
                 })),
-                Transform::from_translation(side.top.with_y(y))
-                    .with_rotation(Quat::from_rotation_y(side.angle)),
+                side.pose(y),
             ))
             .id();
         (entity, texture)
@@ -417,14 +483,17 @@ impl WallRender<'_, '_, '_> {
         count: usize,
         texture: impl Fn(Range<usize>) -> Image,
     ) {
-        let total = count.div_ceil(TILE_ROWS);
         let focus = side.focus(camera, count);
-        let first = focus
-            .saturating_sub(TILES_PER_SIDE / 2)
-            .min(total.saturating_sub(TILES_PER_SIDE));
-        let window = first..(first + TILES_PER_SIDE).min(total);
+        let page = side.page(focus, count);
+        let reposition = state.page.replace(page) != Some(page);
+        let window = page.first_tile..page.end_tile;
         state.resident.retain(|index, (entity, texture)| {
             if window.contains(index) {
+                if reposition {
+                    let rows = tile_rows(index * TILE_ROWS, count);
+                    let center = page.y((rows.start + rows.end) as f32 / 2.);
+                    self.commands.entity(*entity).insert(side.pose(center));
+                }
                 return true;
             }
             self.commands.entity(*entity).despawn();
@@ -435,7 +504,7 @@ impl WallRender<'_, '_, '_> {
             .dirty
             .retain(|index| state.resident.contains_key(index));
         let mut priority = window.collect::<Vec<_>>();
-        priority.sort_unstable_by_key(|index| (index.abs_diff(focus), *index));
+        priority.sort_unstable_by_key(|index| (index.abs_diff(focus / TILE_ROWS), *index));
         for index in priority {
             if self.remaining == 0 {
                 break;
@@ -449,8 +518,8 @@ impl WallRender<'_, '_, '_> {
                     *image = texture(rows);
                 }
             } else {
-                let height = rows.len() as f32 * side.row_height;
-                let center = side.top.y - rows.start as f32 * side.row_height - height / 2.;
+                let height = rows.len() as f32 * page.row_height;
+                let center = page.y((rows.start + rows.end) as f32 / 2.);
                 let tile = self.plane(side, texture(rows), center, height);
                 state.resident.insert(index, tile);
             }
@@ -539,7 +608,7 @@ pub(super) fn draw(
     let diff = WallSide {
         top: Vec3::new(x + WIDTH / 2. + PANEL_OFFSET, wall.top, z),
         row_height: wall.row_height,
-        width: DEPTH,
+        width: DIFF_WIDTH,
         angle: std::f32::consts::FRAC_PI_2,
     };
     if changed {
@@ -571,11 +640,11 @@ pub(super) fn draw(
     };
     let diff_texture = |rows: Range<usize>| code_texture::listing(&diff_lines[rows], &|_| true);
     if *diff_side {
+        render.hide_side(source_tiles);
         render.tiles(&diff, diff_tiles, camera, diff_count, &diff_texture);
-        render.tiles(&source, source_tiles, camera, count, &source_texture);
     } else {
+        render.hide_side(diff_tiles);
         render.tiles(&source, source_tiles, camera, count, &source_texture);
-        render.tiles(&diff, diff_tiles, camera, diff_count, &diff_texture);
     }
 }
 
@@ -669,7 +738,6 @@ mod tests {
     fn repeated_hits_only_update_the_affected_texture_on_a_long_facade() {
         let file = fixture_file();
         let count = TILE_ROWS * 12;
-        let y = Wall::new(&file, count).y(TILE_ROWS as f32 + 2.);
         let mut repo = repository_picker::empty();
         repo.files.push(file.clone());
         let mut explorer = Explorer::new(0);
@@ -694,7 +762,21 @@ mod tests {
             .source_tiles
             .resident
             .clone();
-        assert_eq!(handles.len(), TILES_PER_SIDE);
+        let first_y = app
+            .world()
+            .get::<Transform>(handles[&0].0)
+            .unwrap()
+            .translation
+            .y;
+        let next_y = app
+            .world()
+            .get::<Transform>(handles[&1].0)
+            .unwrap()
+            .translation
+            .y;
+        assert!((first_y - next_y - TILE_ROWS as f32 * texture_row_height(WIDTH)).abs() < 0.001);
+        let page = app.world().resource::<Listing>().source_tiles.page.unwrap();
+        let y = page.y(TILE_ROWS as f32 + 2.5);
         let mut reader = app
             .world()
             .resource::<Messages<AssetEvent<Image>>>()
@@ -757,7 +839,7 @@ mod tests {
             .id();
         app.update();
         assert!(app.world().resource::<Assets<Image>>().len() <= 4);
-        let limit = 2 + TILES_PER_SIDE * 2;
+        let limit = 2 + TILES_PER_SIDE;
         let wall = Wall::new(&file, TILE_ROWS * 40);
         for first_row in [0, TILE_ROWS * 39, TILE_ROWS * 12, 0] {
             app.world_mut()
@@ -776,13 +858,15 @@ mod tests {
                     .resident
                     .contains_key(&(first_row / TILE_ROWS))
             );
-            assert!(
-                listing
-                    .diff_tiles
-                    .resident
-                    .contains_key(&(first_row / TILE_ROWS))
-            );
+            assert!(listing.diff_tiles.resident.is_empty());
         }
+        app.world_mut().resource_mut::<Listing>().diff_side = true;
+        app.update();
+        let listing = app.world().resource::<Listing>();
+        assert!(listing.source_tiles.resident.is_empty());
+        assert!(!listing.diff_tiles.resident.is_empty());
+        let page = listing.diff_tiles.page.unwrap();
+        assert_eq!(page.row_height, texture_row_height(DIFF_WIDTH));
     }
 
     #[test]

@@ -176,9 +176,12 @@ pub fn source(
     )
 }
 
+pub(super) const LISTING_WIDTH: u32 = 1536;
+pub(super) const LISTING_ROW_PIXELS: u32 = 27;
+
 pub fn listing(rows: &[(Option<Line>, Mark)], revealed: &impl Fn(usize) -> bool) -> Image {
-    let width = 1536;
-    let height = rows.len() as u32 * 27;
+    let width = LISTING_WIDTH;
+    let height = rows.len() as u32 * LISTING_ROW_PIXELS;
     let mut canvas = Canvas {
         pixels: vec![0; (width * height * 4) as usize],
         width,
@@ -186,7 +189,7 @@ pub fn listing(rows: &[(Option<Line>, Mark)], revealed: &impl Fn(usize) -> bool)
         context: ScaleContext::new(),
     };
     for (index, (line, mark)) in rows.iter().enumerate() {
-        let y = index as u32 * 27;
+        let y = index as u32 * LISTING_ROW_PIXELS;
         let open = line.as_ref().is_none_or(|line| revealed(line.number));
         let background = match (open, mark) {
             (false, _) => [28, 43, 50],
@@ -194,7 +197,7 @@ pub fn listing(rows: &[(Option<Line>, Mark)], revealed: &impl Fn(usize) -> bool)
             (_, Mark::Removed) => [66, 27, 35],
             _ => [9, 17, 23],
         };
-        canvas.band(y, y + 27, background);
+        canvas.band(y, y + LISTING_ROW_PIXELS, background);
         if !open && index == 0 {
             canvas.band(y, y + 2, [95, 137, 147]);
             canvas.text("COVERED", 106., y as f32 + 21., 18., |_| [0.58, 0.73, 0.77]);

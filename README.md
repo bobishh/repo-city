@@ -71,7 +71,8 @@ to the existing custom domain. Manage domain bindings separately in Cloudflare.
   of cover away on impact. Hitting another file block flies to it and reveals
   the hit strip when the source is ready. Revealed lines stay open on the
   same file and snapshot during the session. Home frames the file block.
-  The city renders nearby strips of source and diff as you move along them.
+  The city renders nearby rows on the active side of the selected file.
+  Rows retain their proportions as you scroll through long files.
   G turns to the right wall, which shows the diff against the base snapshot.
   The camera follows the corresponding line. Press G again to turn back.
 - **Review.** Press C at a file to fly to its first change. W and S fly between
