@@ -11,8 +11,8 @@ pub(super) const WIDTH: f32 = 14.;
 pub(super) const DEPTH: f32 = 8.2;
 pub(super) const MAX_HEIGHT: f32 = 72.;
 const BASE: f32 = 2.;
-const TRIM_CLEARANCE: f32 = 0.28;
-pub(super) const FRONT: f32 = DEPTH / 2. + TRIM_CLEARANCE;
+const PANEL_OFFSET: f32 = 0.06;
+pub(super) const FRONT: f32 = DEPTH / 2. + PANEL_OFFSET;
 
 pub(super) fn building_height(file: &repo_world::File) -> f32 {
     let bytes = file
@@ -434,7 +434,7 @@ pub(super) fn draw(
             &mut materials,
             &mut images,
             &changed,
-            Vec3::new(x + WIDTH / 2. + TRIM_CLEARANCE, wall.top, z),
+            Vec3::new(x + WIDTH / 2. + PANEL_OFFSET, wall.top, z),
             wall.row_height,
             DEPTH,
             "DIFF / BASE → SNAPSHOT",

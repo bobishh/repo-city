@@ -1,9 +1,10 @@
 # Repo City
 
 A local, native 3D code explorer built from the courier game's Bevy geometry.
-The first world set is a dark city of code facades. Repository data and editing
-state are separate from presentation so another set can use different objects
-and controls without creating another game.
+The first world set is a dark city of vertical file blocks. Each block has a
+filename, a color for its change status, and a surface for reading source.
+Repository data and editing state are separate from presentation so another
+set can use different objects and controls without creating another game.
 
 ## Run
 
@@ -65,9 +66,9 @@ to the existing custom domain. Manage domain bindings separately in Cloudflare.
   or use Tab to capture the cursor and Esc to release it. Scroll or press
   Page Up / Page Down to move along the facade. Open Files with P in the
   browser or ⌘P on macOS, type a filename or path, and press Enter to fly there.
-  Click a building from any side to fly to its source. Hold F to charge the
+  Click a file block from any side to fly to its source. Hold F to charge the
   water blaster and release to fire. A shot arcs downward and washes one strip
-  of cover away on impact. Hitting another building flies to it and reveals
+  of cover away on impact. Hitting another file block flies to it and reveals
   the hit strip when the source is ready. Revealed lines stay open on the
   same file and snapshot during the session. Home frames the entire listing.
   G turns to the right wall, which shows the diff against the base snapshot.
@@ -98,7 +99,7 @@ to the existing custom domain. Manage domain bindings separately in Cloudflare.
 
 `git ls-tree` builds the world without loading source bodies. Paths are grouped
 by directory and assigned deterministic non-overlapping lots, with larger files
-on each district's perimeter first. Snapshot sizes determine building heights
+on each district's perimeter first. Snapshot sizes determine block heights
 before any code loads. The map includes
 the union of the selected commit and its comparison base, so deleted files
 remain inspectable. The base defaults to the first parent. Source bodies and syntax trees load when a file is selected.
@@ -126,7 +127,7 @@ Those alternatives are not mixed into the city.
 
 ## Reused source
 
-- Courier: the original facade generator, rounded meshes, material helpers and
+- Courier: rounded meshes, material helpers and
   native Bevy foundation. The courier sources were copied from a fixed committed
   revision so simultaneous courier edits are not affected.
 - Sloposcope: anatomy records and `parser_metrics.rs`, including its tests.

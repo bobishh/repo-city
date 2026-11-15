@@ -56,15 +56,17 @@ test("opens a public repository and fetches source after the WASM city starts", 
         sample.drawImage(image, 0, 0, 256, 128);
         image.close();
         const { data: pixels } = sample.getImageData(0, 0, 256, 128);
-        let roofPixels = 0;
+        const stripeRows = new Set();
         for (let i = 0; i < pixels.length; i += 4) {
           const [red, green, blue] = pixels.subarray(i, i + 3);
-          // The modified file has an amber roof. Neither the page nor the HUD uses that color.
-          if (red > 120 && red - green > 20 && green - blue > 25) roofPixels++;
+          // The modification marker spans the file block vertically.
+          if (red > 120 && red - green > 20 && green - blue > 25) {
+            stripeRows.add(Math.floor(i / (256 * 4)));
+          }
         }
-        return roofPixels;
+        return stripeRows.size;
       }, data);
-    }, { timeout: 100_000, message: "Render the modified file's amber roof" }).toBeGreaterThan(50);
+    }, { timeout: 100_000, message: "Render the modified file's vertical amber marker" }).toBeGreaterThan(50);
   } catch (error) {
     if (png) await writeFile(testInfo.outputPath("last-canvas.png"), png);
     await writeFile(testInfo.outputPath("browser-console.txt"), consoleLog.join("\n"));

@@ -11,7 +11,6 @@ path = "../game/src/repo_city/main.rs"
 
 [dependencies]
 bevy = { version = "0.20", default-features = false, features = ["std", "default_app", "3d_bevy_render", "ui_bevy_render", "bevy_ui_widgets", "bevy_winit", "scene", "picking", "png", "keyboard", "mouse"] }
-paket-geo = { path = "../geo" }
 repo-world = { path = "../repository" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

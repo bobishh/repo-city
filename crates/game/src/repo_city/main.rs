@@ -1,7 +1,5 @@
-//! Repository explorer. Courier geometry is copied, repository data is independent.
+//! Repository explorer and the code city's presentation.
 #![allow(dead_code)]
-#[path = "../buildings.rs"]
-mod buildings;
 mod city_navigation;
 mod code_texture;
 mod comparison_scene;
@@ -11,8 +9,6 @@ mod physics;
 mod repository_picker;
 #[path = "../shapes.rs"]
 mod shapes;
-#[path = "../surfaces.rs"]
-mod surfaces;
 mod world_set;
 
 use avian3d::prelude::{Collider, PhysicsPlugins, RigidBody};
@@ -26,10 +22,6 @@ use repo_world::{Change, FileAnatomy, Repository};
 use repo_world::{comparison::Comparison, syntax};
 use std::{collections::HashSet, path::PathBuf};
 use world_set::{WorldSet, color};
-
-fn to_world(point: paket_geo::EastNorth, y: f32) -> Vec3 {
-    Vec3::new(point.east as f32, y, -point.north as f32)
-}
 
 #[derive(Resource)]
 struct Repo(Repository);
@@ -250,7 +242,7 @@ fn main() {
     };
     if args.iter().any(|a| a == "--help") {
         println!(
-            "repo-city --repo PATH [--rev HEAD] [--base REF] [--trace FILE] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · Click a building to fly there · Space/Ctrl altitude · Shift boost · RMB look · Tab capture\nHold F and release to shoot through a source strip · Home frames the file · G turns to the diff\nC reviews changes · T follows a supplied stack · W/S fly between platforms · Esc returns to the city\nG ghost/pair · [ ] hunks · E source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
+            "repo-city --repo PATH [--rev HEAD] [--base REF] [--trace FILE] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · Click a file block to fly there · Space/Ctrl altitude · Shift boost · RMB look · Tab capture\nHold F and release to wash a source strip · Home frames the file · G turns to the diff\nC reviews changes · T follows a supplied stack · W/S fly between platforms · Esc returns to the city\nG ghost/pair · [ ] hunks · E source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
         );
         return;
     }
@@ -690,68 +682,55 @@ fn spawn_city(
             set.ink,
         );
     }
+    let block = meshes.add(Cuboid::from_size(Vec3::ONE));
+    let [added, removed, modified, unchanged] = [
+        Change::Added,
+        Change::Removed,
+        Change::Modified,
+        Change::Unchanged,
+    ]
+    .map(|change| {
+        materials.add(StandardMaterial {
+            base_color: set.change(&change),
+            unlit: true,
+            ..default()
+        })
+    });
     for (i, file) in repo.0.files.iter().enumerate() {
         let [x, z] = file.position;
-
         let height = listing::building_height(file);
-        let half_width = listing::WIDTH as f64 / 2.;
-        let half_depth = listing::DEPTH as f64 / 2.;
-        let point = |dx: f64, dz: f64| paket_geo::EastNorth {
-            east: x as f64 + dx,
-            north: -(z as f64 + dz),
-        };
-        let rgb = set.shell.map(|c| (c * 255.) as u8);
-        let building = paket_geo::Building {
-            id: file.path.clone(),
-            address: Some(file.path.clone()),
-            footprint: vec![
-                point(-half_width, -half_depth),
-                point(half_width, -half_depth),
-                point(half_width, half_depth),
-                point(-half_width, half_depth),
-            ],
-            triangles: vec![[0, 1, 2], [0, 2, 3]],
-            height: height as f64,
-            entrance: point(0., half_depth),
-            passages: vec![],
-            accessory: false,
-            open_sided: false,
-            roof: paket_geo::Roof::Flat,
-            roof_height: None,
-            wall_color: Some(rgb),
-            roof_color: Some(rgb),
-        };
-        commands.spawn((
-            CityObject,
-            Mesh3d(meshes.add(shapes::lit(buildings::mesh(&building)))),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: Color::WHITE,
-                ..default()
-            })),
-            Transform::default(),
-        ));
         commands.spawn((
             CityObject,
             Facade { index: i, height },
-            Transform::from_xyz(x, height / 2., z),
-            RigidBody::Static,
-            Collider::cuboid(listing::WIDTH, height, listing::DEPTH),
-        ));
-        let status = materials.add(StandardMaterial {
-            base_color: set.change(&file.change),
-            unlit: true,
-            ..default()
-        });
-        commands.spawn((
-            CityObject,
-            Mesh3d(unit.clone()),
-            MeshMaterial3d(status),
-            Transform::from_xyz(x, height + 0.12, z).with_scale(Vec3::new(
-                listing::WIDTH + 0.25,
-                0.24,
-                listing::DEPTH + 0.25,
+            Mesh3d(block.clone()),
+            MeshMaterial3d(shell.clone()),
+            Transform::from_xyz(x, height / 2., z).with_scale(Vec3::new(
+                listing::WIDTH,
+                height,
+                listing::DEPTH,
             )),
+            RigidBody::Static,
+            Collider::cuboid(1., 1., 1.),
         ));
+        let status = match file.change {
+            Change::Added => &added,
+            Change::Removed => &removed,
+            Change::Modified => &modified,
+            Change::Unchanged => &unchanged,
+        };
+        for face in [-1., 1.] {
+            commands.spawn((
+                CityObject,
+                Mesh3d(block.clone()),
+                MeshMaterial3d(status.clone()),
+                Transform::from_xyz(
+                    x - listing::WIDTH / 2. + 0.14,
+                    height / 2.,
+                    z + face * (listing::DEPTH / 2. + 0.02),
+                )
+                .with_scale(Vec3::new(0.28, height, 0.04)),
+            ));
+        }
         let name = file.path.rsplit('/').next().unwrap_or(&file.path);
         label(
             &mut commands,

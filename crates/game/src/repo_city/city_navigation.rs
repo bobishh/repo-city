@@ -188,7 +188,7 @@ impl Navigation {
         let destination = nearest
             .file
             .map(|index| format!("Click to fly to {}", repo.files[index].path))
-            .unwrap_or_else(|| "Point at a building to see where it leads".into());
+            .unwrap_or_else(|| "Point at a file block to see its path".into());
         let trace = if self.trace.is_empty() {
             ""
         } else {
