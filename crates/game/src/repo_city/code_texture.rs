@@ -334,10 +334,19 @@ pub(super) fn listing_with_notes(
         });
         let text_start = if let Some(notes) = notes {
             if let Some(author) = notes.get(line.number.saturating_sub(1)) {
-                let short = author.chars().take(28).collect::<String>();
-                canvas.text(&short, 106., baseline, 17., |_| [0.53, 0.83, 0.78]);
+                let (limit, size) = if cfg!(target_arch = "wasm32") {
+                    (39, 15.)
+                } else {
+                    (28, 17.)
+                };
+                let short = author.chars().take(limit).collect::<String>();
+                canvas.text(&short, 106., baseline, size, |_| [0.53, 0.83, 0.78]);
             }
-            405
+            if cfg!(target_arch = "wasm32") {
+                470
+            } else {
+                405
+            }
         } else {
             106
         };

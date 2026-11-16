@@ -46,6 +46,21 @@ test("OAuth uses PKCE, binds state to the browser, and keeps the token in its en
   });
   assert.match(allowed.headers.get("Cache-Control"), /no-store/);
   assert.equal((await allowed.json())[0].name, "private-branch");
+  const blameQuery = new URLSearchParams({ owner: "owner", repo: "private", sha: "a".repeat(40), path: "src/hello [draft].rs" });
+  const blame = await handleGitHub(request("/github/blame?" + blameQuery, { headers }), env, async (url, options) => {
+    assert.equal(url, "https://api.github.com/graphql");
+    assert.equal(options.headers.Authorization, "Bearer " + token);
+    assert.equal(options.method, "POST");
+    const { query, variables } = JSON.parse(options.body);
+    assert.match(query, /blame\(path: \$path\)/);
+    assert.deepEqual(variables, { owner: "owner", name: "private", oid: "a".repeat(40), path: "src/hello [draft].rs" });
+    return Response.json({ data: { repository: { object: { blame: { ranges: [] } } } } });
+  });
+  assert.deepEqual(await blame.json(), { ranges: [] });
+  assert.match(blame.headers.get("Cache-Control"), /no-store/);
+  blameQuery.set("path", "../somewhere");
+  assert.equal((await handleGitHub(request("/github/blame?" + blameQuery, { headers }), env,
+    () => assert.fail("An invalid path must not reach GitHub"))).status, 400);
   const search = new URLSearchParams({ q: 'repo:owner/private "robot" "motor"', per_page: "100" });
   const found = await handleGitHub(request("/github/api/search/commits?" + search, { headers }), env, async (url, options) => {
     assert.equal(url.pathname, "/search/commits");
@@ -79,6 +94,7 @@ test("OAuth uses PKCE, binds state to the browser, and keeps the token in its en
 test("OAuth remains optional and rejects requests for private data without a session", async () => {
   assert.equal((await (await handleGitHub(request("/github/session"), {})).json()).enabled, false);
   assert.equal((await handleGitHub(request("/github/api/repos/owner/private"), env)).status, 401);
+  assert.equal((await handleGitHub(request("/github/blame"), env)).status, 401);
 });
 
 test("OAuth upstream failures and redirects return to the picker and clear the flow", async () => {

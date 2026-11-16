@@ -54,7 +54,7 @@ first argument.
 | Capture or release the cursor | Click the scene to capture. **Esc** releases. |
 | Open the camera menu | Right-click at a face to fly there, switch to its diff or blame, or open file search. Right-click empty space to open file search from the menu. |
 | Approach a wall | Aim at a face of a building and press **E** to fly to that face. Scroll along a reading wall. Hold the left mouse button close to the source wall to reveal covered lines. |
-| Turn to the diff or blame wall | **G** for diff, **B** for blame. The browser blame wall links to GitHub. |
+| Turn to the diff or blame wall | **G** for diff, **B** for blame. Sign in with GitHub for line attribution in the browser. |
 | Follow a file’s changes | **C** starts the review. **W** and **S** move between change platforms. |
 
 Repo City saves revealed lines and reviewed files in your browser or on your

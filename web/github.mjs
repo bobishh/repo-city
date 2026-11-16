@@ -127,15 +127,42 @@ export async function loadGitHub(input, ref, base, request = fetch) {
   if (!paths.size || paths.size > MAX_FILES) throw new Error(`Repo City supports 1 to ${MAX_FILES} files per comparison.`);
 
   const forkBlobs = headRepository === name ? null : new Set(Object.values(after).map(file => file.id));
+  function blameTarget(path, useBase) {
+    if (!Object.hasOwn(useBase ? before : after, path)) return null;
+    return {
+      repository: useBase ? name : headRepository,
+      sha: useBase ? baseline.sha : head.sha,
+    };
+  }
   return {
     progressScope: JSON.stringify([name.toLowerCase(), head.sha, baseline?.sha ?? null]),
     snapshot: JSON.stringify({ name: pull ? `${name}#${pull.number}` : name, revision: head.sha, baseline: baseline?.sha ?? null, before, after }),
     blameURL(path, useBase, line) {
-      if (!Number.isSafeInteger(line) || line < 1 || !Object.hasOwn(useBase ? before : after, path)) return null;
-      const repository = useBase ? name : headRepository;
-      const commit = useBase ? baseline.sha : head.sha;
+      const target = blameTarget(path, useBase);
+      if (!target || !Number.isSafeInteger(line) || line < 1) return null;
       const file = path.split("/").map(encodeURIComponent).join("/");
-      return `https://github.com/${repository}/blame/${encodeURIComponent(commit)}/${file}#L${line}`;
+      return `https://github.com/${target.repository}/blame/${encodeURIComponent(target.sha)}/${file}#L${line}`;
+    },
+    async blame(path, useBase, lineCount) {
+      const target = blameTarget(path, useBase);
+      if (!target) return { error: "unavailable" };
+      const [owner, repo] = target.repository.split("/");
+      const parameters = new URLSearchParams({ owner, repo, sha: target.sha, path });
+      const response = await fetch("/github/blame?" + parameters, { signal: AbortSignal.timeout(15_000) });
+      if (response.status === 401) return { error: "login" };
+      if (!response.ok) return { error: "unavailable" };
+      const { ranges } = await response.json();
+      const notes = Array(lineCount).fill("");
+      for (const { startingLine, endingLine, commit } of ranges) {
+        if (!Number.isSafeInteger(startingLine) || !Number.isSafeInteger(endingLine) ||
+            startingLine < 1 || endingLine < startingLine || startingLine > lineCount ||
+            !commit?.abbreviatedOid || !commit.committedDate) continue;
+        const author = commit.author?.name || commit.author?.user?.login || "Unknown author";
+        const date = commit.committedDate.slice(0, 16).replace("T", " ");
+        notes.fill(`${commit.abbreviatedOid.slice(0, 8)}  ${date}  ${author}`,
+          startingLine - 1, Math.min(endingLine, lineCount));
+      }
+      return notes.some(Boolean) ? { notes } : { error: "unavailable" };
     },
     async blob(sha) {
       const blob = await read(`/git/blobs/${sha}`, forkBlobs?.has(sha) ? headRepository : name);

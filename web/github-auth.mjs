@@ -103,6 +103,43 @@ export async function handleGitHub(request, env, upstream = fetch) {
       return json({ enabled, login: session?.login ?? null, installUrl });
     }
     if (!enabled) return json({ error: "GitHub sign-in is unavailable." }, 503);
+    if (path === "/github/blame" && request.method === "GET") {
+      const session = await readCookie(request, SESSION, secret);
+      if (!session) return json({ error: "Sign in with GitHub." }, 401);
+      const owner = url.searchParams.get("owner");
+      const name = url.searchParams.get("repo");
+      const oid = url.searchParams.get("sha");
+      const file = url.searchParams.get("path");
+      const validName = value => /^[\w.-]{1,100}$/.test(value ?? "") && value !== "." && value !== "..";
+      if (!validName(owner) || !validName(name) || !/^[a-f\d]{40}$/i.test(oid ?? "") ||
+          !file || file.length > 4096 || /[\u0000-\u001f]/u.test(file) ||
+          file.split("/").some(part => !part || part === "." || part === "..")) {
+        return json({ error: "Invalid blame target." }, 400);
+      }
+      const response = await upstream(API + "/graphql", {
+        method: "POST",
+        headers: { ...github(session.token), "Content-Type": "application/json" },
+        redirect: "manual",
+        body: JSON.stringify({
+          query: `query CityBlame($owner: String!, $name: String!, $oid: GitObjectID!, $path: String!) {
+            repository(owner: $owner, name: $name) {
+              object(oid: $oid) {
+                ... on Commit {
+                  blame(path: $path) {
+                    ranges { startingLine endingLine commit { abbreviatedOid committedDate author { name user { login } } } }
+                  }
+                }
+              }
+            }
+          }`,
+          variables: { owner, name, oid, path: file },
+        }),
+      });
+      if (response.status === 401) return relay(response);
+      if (!response.ok) return json({ error: "Line history unavailable." }, response.status === 403 ? 403 : 502);
+      const ranges = (await response.json()).data?.repository?.object?.blame?.ranges;
+      return Array.isArray(ranges) ? json({ ranges }) : json({ error: "Line history unavailable." }, 404);
+    }
     if (path === "/github/logout" && request.method === "POST") {
       if (request.headers.get("Origin") !== url.origin) return json({ error: "Invalid origin." }, 403);
       return new Response(null, {

@@ -7,15 +7,15 @@ pub(super) struct Blame {
     key: Option<(std::path::PathBuf, String, String)>,
     #[cfg(not(target_arch = "wasm32"))]
     pending: Option<std::sync::Mutex<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>>,
-    #[cfg(not(target_arch = "wasm32"))]
     notes: Option<Result<Vec<String>, String>>,
     #[cfg(target_arch = "wasm32")]
     link: Option<(String, bool, usize)>,
+    #[cfg(target_arch = "wasm32")]
+    file: Option<(String, bool, usize)>,
 }
 
 impl Blame {
     pub(super) fn notes(&self) -> Option<&[String]> {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(Ok(notes)) = &self.notes {
             return Some(notes);
         }
@@ -33,7 +33,12 @@ impl Blame {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            "BLAME / OPEN LINE HISTORY ON GITHUB"
+            match &self.notes {
+                Some(Ok(_)) => "BLAME / COMMIT + TIME (UTC) + AUTHOR",
+                Some(Err(reason)) if reason == "login" => "BLAME / SIGN IN FOR LINE HISTORY",
+                Some(Err(_)) => "BLAME / HISTORY UNAVAILABLE",
+                None => "BLAME / LOADING LINE HISTORY",
+            }
         }
     }
 
@@ -122,7 +127,38 @@ impl Blame {
                     repo_world::browser_show_blame("", false, 0);
                 }
             }
-            false
+            let Some((path, before, _)) = next else {
+                return false;
+            };
+            let count = explorer.highlighted.len();
+            let changed = !self
+                .file
+                .as_ref()
+                .is_some_and(|(old_path, old_before, old_count)| {
+                    old_path == path && *old_before == before && *old_count == count
+                });
+            if changed {
+                self.file = Some((path.to_owned(), before, count));
+                self.notes = None;
+            }
+            if self.notes.is_none() {
+                let data = browser_read_blame(path, before, count);
+                if !data.is_empty() {
+                    #[derive(serde::Deserialize)]
+                    #[serde(untagged)]
+                    enum Response {
+                        Notes { notes: Vec<String> },
+                        Error { error: String },
+                    }
+                    self.notes = Some(match serde_json::from_str(&data) {
+                        Ok(Response::Notes { notes }) => Ok(notes),
+                        Ok(Response::Error { error }) => Err(error),
+                        Err(_) => Err("unavailable".into()),
+                    });
+                    return true;
+                }
+            }
+            changed
         }
     }
 
@@ -132,4 +168,11 @@ impl Blame {
             repo_world::browser_show_blame("", false, 0);
         }
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = repoCity, js_name = readBlame)]
+    fn browser_read_blame(path: &str, before: bool, line_count: usize) -> String;
 }

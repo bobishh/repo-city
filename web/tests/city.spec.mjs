@@ -182,6 +182,14 @@ test("reports missing repositories and keeps the form usable", async ({ page }) 
 
 test("opens a pull request from the URL using its fork head and merge base", async ({ page }, testInfo) => {
   const checked = [];
+  const blameTargets = [];
+  await page.route(/\/github\/blame\?/, async route => {
+    blameTargets.push(Object.fromEntries(new URL(route.request().url()).searchParams));
+    return route.fulfill({ json: { ranges: [{
+      startingLine: 1, endingLine: 1,
+      commit: { abbreviatedOid: "b0123456", committedDate: "2026-11-15T14:30:00Z", author: { name: "Ada" } },
+    }] } });
+  });
   await page.route("https://api.github.com/**", async route => {
     const path = new URL(route.request().url()).pathname;
     checked.push(path);
@@ -213,6 +221,10 @@ test("opens a pull request from the URL using its fork head and merge base", asy
   await expect(blame).toBeVisible({ timeout: 55_000 });
   await expect(blame).toHaveAttribute("href", new RegExp(
     `https://github.com/fork/demo/blame/${after}/src/pr\\.rs#L1$`));
+  await expect.poll(() => blameTargets).toEqual([{ owner: "fork", repo: "demo", sha: after, path: "src/pr.rs" }]);
+  await expect.poll(() => page.evaluate(() => globalThis.repoCity.readBlame("src/pr.rs", false, 1)))
+    .toBe('{"notes":["b0123456  2026-11-15 14:30  Ada"]}');
+  await canvas.screenshot({ path: testInfo.outputPath("blame-authorship.png") });
   await canvas.focus();
   await page.keyboard.press("g", { delay: 180 });
   await expect(blame).toBeHidden({ timeout: 25_000 });

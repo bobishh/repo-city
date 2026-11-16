@@ -63,7 +63,7 @@ async function stageRepository(repository) {
     console.warn("Could not load review progress", error);
     return [];
   });
-  active = { repository, blobs: new Map(), marks };
+  active = { repository, blobs: new Map(), blameFiles: new Map(), marks };
   progressPanel.hidden = false;
   refreshPickerFooter();
   repositoryVersion++;
@@ -122,6 +122,19 @@ async function openRepository(repo, ref, base) {
           if (href) blame.href = href;
           else blame.removeAttribute("href");
           blame.hidden = !href;
+        },
+        readBlame(path, before, lineCount) {
+          const { repository, blameFiles } = active;
+          const key = JSON.stringify([path, before, lineCount]);
+          if (!blameFiles.has(key)) {
+            if (blameFiles.size >= 24) blameFiles.delete(blameFiles.keys().next().value);
+            const entry = { data: "" };
+            blameFiles.set(key, entry);
+            repository.blame(path, before, lineCount)
+              .then(result => { entry.data = JSON.stringify(result); })
+              .catch(() => { entry.data = '{"error":"unavailable"}'; });
+          }
+          return blameFiles.get(key).data;
         },
         blob(sha) {
           const { repository, blobs } = active;
