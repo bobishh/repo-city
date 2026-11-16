@@ -51,8 +51,8 @@ first argument.
 | --- | --- |
 | Find a file by name or path | **P** in the browser, **⌘P** on Mac |
 | Fly | **WASD**, **Space** and **Ctrl** for altitude, **Shift** to boost |
-| Capture or release the cursor | **Tab** captures. **Esc** releases. Click the scene to recapture. |
-| Read source on a wall | Approach the wall. Scroll to move along it. Hold **F** close to reveal covered lines. |
+| Capture or release the cursor | Click the scene to capture. **Esc** releases. |
+| Read source on a wall | Aim at a building and press **E** to fly there. Scroll to read. Hold the left mouse button close to reveal covered lines. |
 | Turn to the diff or blame wall | **G** for diff, **B** for blame. The browser blame wall links to GitHub. |
 | Follow a file’s changes | **C** starts the review. **W** and **S** move between change platforms. |
 

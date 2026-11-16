@@ -1,39 +1,46 @@
-// After Escape or a menu, a new canvas gesture can capture the pointer again.
 export function setupPointer(canvas, menu) {
-  let recapture = false;
   const locked = () => document.pointerLockElement === canvas;
-  function capture() {
-    if (menu.open || document.pointerLockElement) return;
-    canvas.focus({ preventScroll: true });
-    try {
-      canvas.requestPointerLock()?.catch(() => {});
-    } catch {
-      // The browser can refuse an immediate relock after its Escape gesture.
-    }
-  }
+  let pending = false;
+
   function release() {
-    if (!locked()) return;
-    recapture = true;
-    document.exitPointerLock();
+    if (locked()) document.exitPointerLock();
   }
-  document.addEventListener("pointerlockchange", () => {
-    if (locked()) recapture = true;
-  });
-  canvas.addEventListener("keydown", event => {
-    if (event.code === "Tab" && !event.shiftKey) {
-      event.preventDefault();
-      if (event.repeat) return;
-      if (locked()) release();
-      else {
-        recapture = true;
-        capture();
-      }
+
+  function capture() {
+    if (pending || canvas.hidden || menu.open || canvas.hasAttribute("data-pointer-ui") ||
+        document.pointerLockElement || !canvas.requestPointerLock) return;
+    canvas.focus({ preventScroll: true });
+    pending = true;
+    try {
+      canvas.requestPointerLock()?.catch(() => { pending = false; });
+    } catch {
+      pending = false;
     }
-    if (event.code === "Escape") release();
+  }
+
+  document.addEventListener("pointerlockchange", () => {
+    pending = false;
+    canvas.toggleAttribute("data-pointer-locked", locked());
+    if (menu.open || canvas.hasAttribute("data-pointer-ui")) release();
   });
-  canvas.addEventListener("contextmenu", event => event.preventDefault());
+  document.addEventListener("pointerlockerror", () => { pending = false; });
+  window.addEventListener("blur", release);
+  document.addEventListener("keydown", event => {
+    if (event.code === "Escape") release();
+  }, true);
+  canvas.addEventListener("keydown", event => {
+    if (event.code !== "Tab" || event.shiftKey || canvas.hasAttribute("data-pointer-ui")) return;
+    event.preventDefault();
+    if (!event.repeat) {
+      if (locked()) release();
+      else capture();
+    }
+  });
   canvas.addEventListener("pointerdown", event => {
-    if ((recapture && event.button === 0) || event.button === 2) capture();
+    if (event.button === 0) capture();
+  });
+  canvas.addEventListener("contextmenu", event => {
+    if (locked()) event.preventDefault();
   });
   return release;
 }

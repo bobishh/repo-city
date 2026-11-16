@@ -59,7 +59,6 @@ struct Explorer {
     comparison_mode: u8,
     hunk: usize,
     pending_fracture: bool,
-    charge: f32,
     known_rows: std::collections::HashMap<usize, usize>,
     frame_loaded_source: bool,
 }
@@ -79,7 +78,7 @@ impl Explorer {
             dirty: false,
             rebuild: true,
             reviewed: HashSet::new(),
-            notice: "Fly to a file. Hit its facade to unfold it.".into(),
+            notice: "Aim at a file and press E to fly there.".into(),
             pulse: 0.,
             detached: None,
             column: 0,
@@ -88,7 +87,6 @@ impl Explorer {
             comparison_mode: 0,
             hunk: 0,
             pending_fracture: false,
-            charge: 0.,
             known_rows: default(),
             frame_loaded_source: true,
         }
@@ -177,6 +175,20 @@ impl Explorer {
             _ => None,
         };
     }
+    fn detach_selection(&mut self, repo: &Repository) {
+        self.cut();
+        if self.pending_fracture {
+            self.anatomy = Some(repo_world::anatomy::analyze(
+                &repo.files[self.selected].path,
+                &self.source,
+            ));
+            self.function = None;
+            self.function_page = 0;
+            self.page = 0;
+            self.refresh(repo);
+        }
+    }
+
     fn cut(&mut self) {
         if self.before {
             self.notice = "BEFORE is a read-only ghost. Q switches to AFTER.".into();
@@ -241,12 +253,25 @@ struct StatusHud;
 struct AimHud;
 #[derive(Component)]
 struct TargetLabel;
-#[derive(Component)]
+#[derive(Component, Default)]
 struct Pilot {
     yaw: f32,
     pitch: f32,
     captured: bool,
+    fire_ready: bool,
+    firing: bool,
+    shot: bool,
 }
+impl Pilot {
+    fn update_fire(&mut self, mouse: &ButtonInput<MouseButton>) {
+        let pressed = mouse.pressed(MouseButton::Left);
+        let clicked = mouse.just_pressed(MouseButton::Left);
+        self.firing = self.captured && self.fire_ready && (pressed || clicked);
+        self.shot = self.firing && clicked;
+        self.fire_ready = self.captured && (self.fire_ready || (!pressed && !clicked));
+    }
+}
+
 #[derive(Resource, Default)]
 struct Nearest {
     file: Option<usize>,
@@ -277,7 +302,7 @@ fn main() {
     };
     if args.iter().any(|a| a == "--help") {
         println!(
-            "repo-city --repo PATH [--rev HEAD] [--base REF] [--trace FILE] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · Click a file block to fly there · Space/Ctrl altitude · Shift boost · RMB look · Tab capture\nHold F close to wash source · Home frames the file · G diff · B blame\nC reviews changes · T follows a supplied stack · W/S fly between platforms · Esc returns to the city\nG ghost/pair · [ ] hunks · E source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
+            "repo-city --repo PATH [--rev HEAD] [--base REF] [--trace FILE] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · E flies to the aimed file · Space/Ctrl altitude · Shift boost · Click captures the cursor · Esc releases it\nHold left mouse close to wash source · Home frames the file · G diff · B blame\nC reviews changes · T follows a supplied stack · W/S fly between platforms · Esc returns to the city\nG ghost/pair · [ ] hunks · Enter source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
         );
         return;
     }
@@ -416,12 +441,9 @@ fn main() {
             interaction,
             comparison_scene::controls,
             listing::controls,
-            physics::launch,
-            physics::trajectory,
             listing::wash_stream,
             physics::splashes,
-            city_navigation::break_platforms,
-            physics::impacts,
+            city_navigation::shoot_reviewed_platform,
             physics::fractures,
             detail_scene,
             city_navigation::draw,
@@ -668,7 +690,6 @@ fn setup(
         perceptual_roughness: 0.7,
         ..default()
     });
-    commands.insert_resource(physics::Blaster::new(&mut meshes, &mut materials));
     commands.insert_resource(Palette {
         shell: shell.clone(),
         facade_closed,
@@ -689,6 +710,9 @@ fn setup(
             yaw: 0.45,
             pitch: -0.3,
             captured: false,
+            fire_ready: false,
+            firing: false,
+            shot: false,
         },
     ));
     commands.spawn((
@@ -972,54 +996,84 @@ fn flight(
     mut explorer: ResMut<Explorer>,
     navigation: Res<city_navigation::Navigation>,
     mut camera: Query<(&mut Transform, &mut Pilot), PlayerCamera>,
-    mut windows: Query<(&Window, &mut CursorOptions), With<PrimaryWindow>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    #[cfg(not(target_arch = "wasm32"))] mut cursors: Query<&mut CursorOptions, With<PrimaryWindow>>,
     picker: Res<file_picker::FilePicker>,
     listing: Res<listing::Listing>,
+    file_buttons: Query<&bevy::picking::hover::Hovered, With<file_picker::FileButton>>,
+    #[cfg(target_arch = "wasm32")] mut previous_pointer_ui: Local<Option<bool>>,
 ) {
     let Ok((mut camera, mut pilot)) = camera.single_mut() else {
         return;
     };
-    let Ok((window, mut cursor)) = windows.single_mut() else {
+    let Ok(window) = windows.single() else {
         return;
     };
+    let picker_open = picker.is_open();
+    let over_button = !pilot.captured && file_buttons.iter().any(|hovered| hovered.get());
     #[cfg(target_arch = "wasm32")]
-    if let Some(document) = web_sys::window().and_then(|window| window.document()) {
-        pilot.captured = document.pointer_lock_element().is_some();
-        if pilot.captured && picker.is_open() {
-            document.exit_pointer_lock();
-            pilot.captured = false;
+    {
+        if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+            let pointer_ui = picker_open || over_button;
+            if *previous_pointer_ui != Some(pointer_ui)
+                && let Some(canvas) = document.get_element_by_id("repo-city")
+            {
+                if pointer_ui {
+                    let _ = canvas.set_attribute("data-pointer-ui", "");
+                } else {
+                    let _ = canvas.remove_attribute("data-pointer-ui");
+                }
+                *previous_pointer_ui = Some(pointer_ui);
+            }
+            pilot.captured = document
+                .pointer_lock_element()
+                .is_some_and(|element| element.id() == "repo-city");
+            if pilot.captured && picker_open {
+                document.exit_pointer_lock();
+                pilot.captured = false;
+            }
         }
     }
+    let focused = window.focused || (cfg!(target_arch = "wasm32") && pilot.captured);
     #[cfg(not(target_arch = "wasm32"))]
-    if keys.just_pressed(KeyCode::Tab) && !picker.is_open() {
-        pilot.captured = !pilot.captured;
+    if focused && !picker_open && !over_button {
+        if keys.just_pressed(KeyCode::Tab) {
+            pilot.captured = !pilot.captured;
+        } else if mouse.just_pressed(MouseButton::Left) {
+            pilot.captured = true;
+        }
     }
     if keys.just_pressed(KeyCode::Escape) {
         pilot.captured = false;
         explorer.anchored = false;
     }
-    if !window.focused {
+    if !focused || picker_open {
         pilot.captured = false;
     }
+    // Updating CursorOptions on the web reapplies winit's grab mode (None)
+    // and would release the browser lock. CSS handles visibility there.
     #[cfg(not(target_arch = "wasm32"))]
-    {
-        cursor.grab_mode = if pilot.captured && window.focused {
+    if let Ok(mut cursor) = cursors.single_mut() {
+        let grab_mode = if pilot.captured {
             CursorGrabMode::Locked
         } else {
             CursorGrabMode::None
         };
+        if cursor.grab_mode != grab_mode {
+            cursor.grab_mode = grab_mode;
+        }
+        if cursor.visible == pilot.captured {
+            cursor.visible = !pilot.captured;
+        }
     }
-    cursor.visible = !pilot.captured;
-    if picker.is_open() || listing.turning() {
-        return;
-    }
-    if !window.focused {
+    pilot.update_fire(&mouse);
+    if picker_open || listing.turning() || !focused {
         return;
     }
     if navigation.is_flying() {
         return;
     }
-    if pilot.captured || mouse.pressed(MouseButton::Right) {
+    if pilot.captured {
         let (yaw, pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
         pilot.yaw = yaw - motion.delta.x * 0.0025;
         pilot.pitch = (pitch - motion.delta.y * 0.0025).clamp(-1.5, 1.5);
@@ -1076,7 +1130,6 @@ fn targeting(
     explorer: Res<Explorer>,
     camera: Query<(&Camera, &Transform, &Pilot), PlayerCamera>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    mouse: Res<ButtonInput<MouseButton>>,
     facades: Query<&Facade>,
     sections: Query<(&Section, &Transform)>,
     hunks: Query<(&comparison_scene::HunkBlock, &Transform)>,
@@ -1089,17 +1142,15 @@ fn targeting(
     };
     nearest.screen = None;
     let window = windows.single().ok();
-    if let Some(window) = window.filter(|window| window.focused) {
+    if let Some(window) = window.filter(|window| window.focused || pilot.captured) {
         let size = Vec2::new(window.width(), window.height());
-        let locked = pilot.captured || mouse.pressed(MouseButton::Right);
-        nearest.screen = if locked {
+        nearest.screen = if pilot.captured {
             Some((size * 0.5, size))
         } else {
             window.cursor_position().map(|point| (point, size))
         };
     }
     let (origin, direction) = if !pilot.captured
-        && !mouse.pressed(MouseButton::Right)
         && let Some(window) = window
         && let Some(cursor) = window.cursor_position()
         && let Ok(ray) = projection.viewport_to_world(&GlobalTransform::from(*camera), cursor)
@@ -1116,7 +1167,7 @@ fn targeting(
     nearest.district = None;
     let mut distance = 250.;
     let mut near_distance = f32::INFINITY;
-    // Click targeting may use the pointer; proximity follows the center of view.
+    // The aim ray may use the free cursor. Proximity follows the camera.
     for f in facades
         .iter()
         .filter(|_| !(explorer.anchored && explorer.comparison_mode > 0))
@@ -1193,12 +1244,11 @@ fn targeting(
 
 fn interaction(
     keys: Res<ButtonInput<KeyCode>>,
-    mouse: Res<ButtonInput<MouseButton>>,
     wheel: Res<AccumulatedMouseScroll>,
     repo: Res<Repo>,
     nearest: Res<Nearest>,
     mut explorer: ResMut<Explorer>,
-    mut camera: Query<&mut Transform, PlayerCamera>,
+    mut camera: Query<(&mut Transform, &Pilot), PlayerCamera>,
     navigation: Res<city_navigation::Navigation>,
     picker: Res<file_picker::FilePicker>,
     mut progress: ResMut<progress::Progress>,
@@ -1209,12 +1259,10 @@ fn interaction(
     if navigation.guides_camera() {
         return;
     }
-    let Ok(mut camera) = camera.single_mut() else {
+    let Ok((mut camera, pilot)) = camera.single_mut() else {
         return;
     };
-    let hit = mouse.just_pressed(MouseButton::Left);
-    let shoot_cut = hit && nearest.function.is_some() && nearest.function == explorer.function;
-    if hit {
+    if pilot.shot {
         if let Some(index) = nearest.hunk {
             if let Some(diff) = &explorer.comparison
                 && let Some(h) = diff.hunks.get(index)
@@ -1227,12 +1275,10 @@ fn interaction(
             }
         } else if let Some(index) = nearest.function {
             explorer.function = Some(index);
-            explorer.page = 0;
-            explorer.rebuild = true;
-            explorer.notice = "Function selected. X detaches its source; R restores it.".into();
+            explorer.detach_selection(&repo.0);
         }
     }
-    if keys.just_pressed(KeyCode::KeyE) {
+    if keys.just_pressed(KeyCode::Enter) {
         let enter_wall = explorer.comparison_mode > 0 || !explorer.anchored;
         explorer.comparison_mode = 0;
         explorer.rebuild = true;
@@ -1248,7 +1294,7 @@ fn interaction(
         }
         explorer.anchored = enter_wall;
         explorer.notice = if explorer.anchored {
-            "Anchored to facade. WASD crawls; E returns to flight."
+            "Anchored to facade. WASD crawls. Enter returns to flight."
         } else {
             "Free flight."
         }
@@ -1311,16 +1357,8 @@ fn interaction(
         };
         explorer.rebuild = true;
     }
-    if keys.just_pressed(KeyCode::KeyX) || shoot_cut {
-        explorer.cut();
-        if explorer.pending_fracture {
-            let path = repo.0.files[explorer.selected].path.clone();
-            explorer.anatomy = Some(repo_world::anatomy::analyze(&path, &explorer.source));
-            explorer.function = None;
-            explorer.function_page = 0;
-            explorer.page = 0;
-            explorer.refresh(&repo.0);
-        }
+    if keys.just_pressed(KeyCode::KeyX) {
+        explorer.detach_selection(&repo.0);
     }
     if keys.just_pressed(KeyCode::KeyR) {
         explorer.reload(&repo.0);
@@ -1511,8 +1549,6 @@ fn detail_scene(
                 Transform::from_xyz(cx, 0.8 + height / 2., cz)
                     .with_scale(Vec3::new(2.9, height, length)),
                 Section { index: i },
-                RigidBody::Static,
-                Collider::cuboid(1., 1., 1.),
                 Detail,
             ));
             let title = format!(
@@ -1704,7 +1740,7 @@ fn hud(
                 explorer.reviewed.len(),
                 repo.0.files.len(),
                 format!(
-                    "\n{} hunks · {} · launch {}%",
+                    "\n{} hunks · {}",
                     explorer.comparison.as_ref().map_or(0, |c| c.hunks.len()),
                     navigation
                         .route_status()
@@ -1714,8 +1750,7 @@ fn hud(
                             _ if explorer.anchored => "SOURCE WALL",
                             _ => "EXPLORING CITY",
                         }
-                        .into()),
-                    (explorer.charge / 1.5 * 100.) as u32
+                        .into())
                 )
             )
         } else if aim {
@@ -1740,7 +1775,6 @@ fn smoke(
     sections: Query<(&Section, &Transform), Without<Camera3d>>,
     fragments: Query<Entity, With<physics::Fragment>>,
     debris: Query<Entity, With<physics::Lifetime>>,
-    blaster: Res<physics::Blaster>,
     listing: Res<listing::Listing>,
 ) {
     if check.pending {
@@ -1754,7 +1788,7 @@ fn smoke(
         }
         std::fs::write(
             check.directory.join("passed.txt"),
-            "Rendered pair, ghost, syntax wall, city overview, district mirror, diff and blame walls. A real projectile collision detached the exact declaration, spawned physical fragments, and restore recovered the immutable source and cleared debris.",
+            "Rendered pair, ghost, syntax wall, city overview, district mirror, diff and blame walls. The draft action detached the exact declaration, spawned physical fragments, and restore recovered the immutable source and cleared debris.",
         )
         .expect("smoke report");
         println!(
@@ -1797,7 +1831,7 @@ fn smoke(
                         .looking_at(Vec3::new(x, 6.2, z + 3.2), Vec3::Y);
                 }
                 3 => {
-                    let (section, transform) = sections
+                    let (section, _) = sections
                         .iter()
                         .find(|(section, _)| Some(section.index) == explorer.function)
                         .or_else(|| sections.iter().next())
@@ -1806,11 +1840,8 @@ fn smoke(
                     let mut expected = explorer.source.clone();
                     expected.replace_range(callable.start_byte..callable.end_byte, "");
                     check.expected_draft = Some(expected);
-                    let origin = transform.translation + Vec3::new(0., 3., 5.);
-                    let travel = 0.4;
-                    let velocity =
-                        (transform.translation - origin) / travel + Vec3::Y * (9.81 * travel / 2.);
-                    physics::spawn_projectile(&mut commands, &blaster, origin, velocity);
+                    explorer.function = Some(section.index);
+                    explorer.detach_selection(&repo.0);
                     // Keep the camera in the street between rows.
                     *camera = Transform::from_xyz(x - 4., 6.2, z + 14.5)
                         .looking_at(Vec3::new(x - 4., 6.2, z + 3.3), Vec3::Y);
@@ -1869,15 +1900,15 @@ fn smoke(
         return;
     }
     if check.stage == 3 {
-        assert!(explorer.dirty, "projectile did not detach a declaration");
+        assert!(explorer.dirty, "draft action did not detach a declaration");
         assert_eq!(
             Some(&explorer.source),
             check.expected_draft.as_ref(),
-            "impact detached the wrong declaration"
+            "draft action detached the wrong declaration"
         );
         assert!(
             !fragments.is_empty(),
-            "impact did not spawn physical fragments"
+            "draft action did not spawn physical fragments"
         );
     }
     if check.stage == 4 {

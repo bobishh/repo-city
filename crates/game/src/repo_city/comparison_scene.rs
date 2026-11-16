@@ -152,11 +152,9 @@ pub fn draw(
             ))
             .id();
         if !before && exists {
-            commands.entity(building).insert((
-                RigidBody::Static,
-                Collider::cuboid(1., 1., 1.),
-                physics::BuildingCollider(explorer.selected, true),
-            ));
+            commands
+                .entity(building)
+                .insert((RigidBody::Static, Collider::cuboid(1., 1., 1.)));
         }
         // Ghost edges remain legible even where transparent faces overlap.
         let edge = materials.add(StandardMaterial {
@@ -235,8 +233,6 @@ pub fn draw(
             MeshMaterial3d(material),
             Transform::from_xyz(hx, base + height / 2., z + 9.)
                 .with_scale(Vec3::new(3., height, 1.3)),
-            RigidBody::Static,
-            Collider::cuboid(1., 1., 1.),
             HunkBlock(i),
             Detail,
         ));

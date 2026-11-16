@@ -1,9 +1,9 @@
 //! Camera travel and code stops for the city world.
-use avian3d::prelude::{Collider, CollisionStart, Position, RigidBody};
 
 use super::*;
 
 const PAGE: usize = 23;
+const PLATFORM_SIZE: Vec3 = Vec3::new(16., 0.5, 7.);
 const PLATFORM_HEIGHT: f32 = listing::MAX_HEIGHT + 28.;
 
 #[derive(Clone, Copy)]
@@ -162,7 +162,7 @@ impl Navigation {
                 (RouteKind::Trace, false) => "W to follow the stack · S to go back · Esc to leave",
             };
             return if route.kind == RouteKind::Review && route.current > 0 {
-                format!("{hint}\nAim at a reviewed platform, then hold F and release to clear it")
+                format!("{hint}\nLeft-click an aimed reviewed platform to clear it")
             } else {
                 hint.into()
             };
@@ -171,7 +171,8 @@ impl Navigation {
             return "FULL DIFF · Scroll to read · G switches view · Esc to fly".into();
         }
         if explorer.anchored {
-            return "SOURCE WALL · Scroll to read · E or Esc to fly".into();
+            return "SOURCE WALL · Scroll to read · E flies to the facade · Enter closes the wall"
+                .into();
         }
         let trace = if self.trace.is_empty() {
             ""
@@ -180,7 +181,7 @@ impl Navigation {
         };
         let shortcut = file_picker::SHORTCUT;
         format!(
-            "Aim at a file or a beacon · Click a file to fly there\nScroll follows the text · Files / {shortcut} searches paths · WASD flies\nHold F close to wash source · Home frames the file · G diff · B blame · C reviews changes{trace}"
+            "Click to capture · Esc releases · E flies to the aimed file\nScroll follows the text · Files / {shortcut} searches paths · WASD flies\nHold left mouse close to wash source · Home frames the file · G diff · B blame · C reviews changes{trace}"
         )
     }
 }
@@ -244,7 +245,6 @@ fn fly_to_stop(navigation: &mut Navigation, camera: Transform, repo: &Repository
 pub(super) fn navigate(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
-    mouse: Res<ButtonInput<MouseButton>>,
     repo: Res<Repo>,
     nearest: Res<Nearest>,
     mut explorer: ResMut<Explorer>,
@@ -252,7 +252,6 @@ pub(super) fn navigate(
     mut picker: ResMut<file_picker::FilePicker>,
     mut listing: ResMut<listing::Listing>,
     mut saved_progress: ResMut<progress::Progress>,
-    file_buttons: Query<&bevy::picking::hover::Hovered, With<file_picker::FileButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut camera: Query<&mut Transform, PlayerCamera>,
 ) {
@@ -386,12 +385,10 @@ pub(super) fn navigate(
         (1..repo.0.files.len())
             .map(|offset| (explorer.selected + offset) % repo.0.files.len())
             .find(|&index| repo.0.files[index].change != Change::Unchanged)
-    } else if !explorer.anchored
-        && explorer.comparison_mode == 0
-        && mouse.just_pressed(MouseButton::Left)
-        && !file_buttons.iter().any(|hovered| hovered.get())
-    {
-        nearest.file
+    } else if keys.just_pressed(KeyCode::KeyE) {
+        nearest.file.or(nearest.near_source).or_else(|| {
+            (explorer.anchored || explorer.comparison_mode > 0).then_some(explorer.selected)
+        })
     } else {
         None
     };
@@ -534,7 +531,7 @@ pub(super) fn draw(
         let body = commands
             .spawn((
                 RouteVisual,
-                Mesh3d(meshes.add(Cuboid::new(16., 0.5, 7.))),
+                Mesh3d(meshes.add(Cuboid::from_size(PLATFORM_SIZE))),
                 MeshMaterial3d(materials.add(StandardMaterial {
                     base_color: color(if current { set.accent } else { set.shell }),
                     ..default()
@@ -543,11 +540,7 @@ pub(super) fn draw(
             ))
             .id();
         if route.kind == RouteKind::Review && index < route.current {
-            commands.entity(body).insert((
-                ReviewedPlatform(index),
-                RigidBody::Static,
-                Collider::cuboid(16., 0.5, 7.),
-            ));
+            commands.entity(body).insert(ReviewedPlatform(index));
         }
         match route.stops[index] {
             Stop::Review { hunk, row, count } => {
@@ -640,34 +633,42 @@ fn panel(
         .id()
 }
 
-pub(super) fn break_platforms(
+pub(super) fn shoot_reviewed_platform(
     mut commands: Commands,
-    mut events: MessageReader<CollisionStart>,
-    mut shots: Query<(&mut physics::Projectile, Option<&Position>)>,
+    camera: Query<(&Transform, &Pilot), PlayerCamera>,
     platforms: Query<(&Transform, &ReviewedPlatform)>,
     mut navigation: ResMut<Navigation>,
 ) {
-    for event in events.read() {
-        let (shot, platform) = if platforms.contains(event.collider1) {
-            (event.collider2, event.collider1)
-        } else {
-            (event.collider1, event.collider2)
-        };
-        let (Ok((mut projectile, position)), Ok((transform, stop))) =
-            (shots.get_mut(shot), platforms.get(platform))
-        else {
-            continue;
-        };
-        if projectile.used || !navigation.broken.insert(stop.0) {
-            continue;
-        }
-        projectile.used = true;
-        physics::splash(
-            &mut commands,
-            position.map_or(transform.translation, |p| p.0),
-        );
-        commands.entity(shot).despawn();
-        commands.entity(platform).despawn();
+    if navigation.is_flying() || navigation.route.is_none() {
+        return;
+    }
+    let Ok((camera, pilot)) = camera.single() else {
+        return;
+    };
+    if !pilot.shot {
+        return;
+    }
+    let origin = camera.translation;
+    let direction = camera.forward().as_vec3();
+    let half = PLATFORM_SIZE * 0.5;
+    let hit = platforms
+        .iter()
+        .filter(|(_, platform)| !navigation.broken.contains(&platform.0))
+        .filter_map(|(pose, platform)| {
+            ray_box(
+                origin,
+                direction,
+                pose.translation - half,
+                pose.translation + half,
+            )
+            .filter(|&distance| distance <= 60.)
+            .map(|distance| (distance, platform.0))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0));
+    if let Some((distance, index)) = hit {
+        navigation.broken.insert(index);
+        navigation.redraw = true;
+        physics::splash(&mut commands, origin + direction * distance);
     }
 }
 
@@ -712,6 +713,51 @@ mod tests {
     }
 
     #[test]
+    fn e_flies_to_the_target_and_primary_click_does_not() {
+        let mut repo = repository_picker::empty();
+        for (index, path) in ["current.rs", "target.rs"].into_iter().enumerate() {
+            repo.files.push(repo_world::File {
+                path: path.into(),
+                before: None,
+                after: None,
+                change: Change::Unchanged,
+                position: [90. * index as f32, 0.],
+            });
+        }
+        let mut app = App::new();
+        app.insert_resource(Repo(repo))
+            .insert_resource(Explorer::new(0))
+            .insert_resource(Nearest {
+                file: Some(1),
+                ..default()
+            })
+            .init_resource::<Time>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<Navigation>()
+            .init_resource::<file_picker::FilePicker>()
+            .init_resource::<listing::Listing>()
+            .init_resource::<progress::Progress>()
+            .add_systems(Update, navigate);
+        app.world_mut().spawn((Window::default(), PrimaryWindow));
+        app.world_mut()
+            .spawn((Camera3d::default(), Transform::from_xyz(0., 4., 10.)));
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+        assert_eq!(app.world().resource::<Explorer>().selected, 0);
+        assert!(!app.world().resource::<Navigation>().is_flying());
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyE);
+        app.update();
+        assert_eq!(app.world().resource::<Explorer>().selected, 1);
+        assert!(app.world().resource::<Navigation>().is_flying());
+    }
+
+    #[test]
     fn approach_clears_roofs_and_ends_at_the_reading_view() {
         let start = Transform::from_xyz(0., 5., 10.);
         let end = Transform::from_xyz(100., 8., 15.).looking_to(Vec3::NEG_X, Vec3::Y);
@@ -744,36 +790,41 @@ mod tests {
     }
 
     #[test]
-    fn repeated_platform_hits_spawn_no_dynamic_debris() {
+    fn a_click_clears_the_aimed_platform_once() {
         let mut app = App::new();
-        app.add_message::<CollisionStart>()
-            .init_resource::<Navigation>()
-            .add_systems(Update, break_platforms);
-        let shot = app
-            .world_mut()
-            .spawn(physics::Projectile { used: false })
-            .id();
-        let platform = app
-            .world_mut()
-            .spawn((ReviewedPlatform(0), Transform::default()))
-            .id();
-        for _ in 0..64 {
-            app.world_mut().write_message(CollisionStart {
-                collider1: shot,
-                collider2: platform,
-                body1: Some(shot),
-                body2: Some(platform),
-            });
+        let navigation = Navigation {
+            route: Some(Route {
+                kind: RouteKind::Review,
+                stops: vec![Stop::Review {
+                    hunk: 0,
+                    row: 0,
+                    count: 1,
+                }],
+                current: 0,
+            }),
+            ..default()
+        };
+        app.insert_resource(navigation)
+            .add_systems(Update, shoot_reviewed_platform);
+        let pilot = Pilot {
+            captured: true,
+            shot: true,
+            ..default()
+        };
+        app.world_mut()
+            .spawn((Camera3d::default(), Transform::from_xyz(0., 0., 5.), pilot));
+        app.world_mut()
+            .spawn((ReviewedPlatform(0), Transform::default()));
+        app.world_mut()
+            .spawn((ReviewedPlatform(1), Transform::from_xyz(15., 0., 0.)));
+        for _ in 0..3 {
             app.update();
         }
-        assert!(app.world().resource::<Navigation>().broken.contains(&0));
-        let mut tiles = app.world_mut().query::<(&RigidBody, &physics::Lifetime)>();
         assert_eq!(
-            tiles
-                .iter(app.world())
-                .filter(|(body, _)| **body == RigidBody::Dynamic)
-                .count(),
-            0
+            app.world().resource::<Navigation>().broken,
+            HashSet::from([0])
         );
+        let mut effects = app.world_mut().query::<&physics::Lifetime>();
+        assert_eq!(effects.iter(app.world()).count(), 1);
     }
 }

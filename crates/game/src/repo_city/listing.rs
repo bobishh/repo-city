@@ -558,27 +558,26 @@ fn turn_pose(
 pub(super) fn wash_stream(
     mut gizmos: Gizmos,
     time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
     explorer: Res<Explorer>,
     repo: Res<Repo>,
     mut listing: ResMut<Listing>,
     navigation: Res<city_navigation::Navigation>,
     nearest: Res<Nearest>,
-    camera: Query<&Transform, PlayerCamera>,
-    windows: Query<&Window, With<PrimaryWindow>>,
+    camera: Query<(&Transform, &Pilot), PlayerCamera>,
     picker: Res<file_picker::FilePicker>,
     mut progress: ResMut<progress::Progress>,
 ) {
-    if !keys.pressed(KeyCode::KeyF)
+    let Ok((camera, pilot)) = camera.single() else {
+        return;
+    };
+    if !pilot.firing
         || picker.is_open()
         || listing.turning()
         || !Listing::visible(&explorer, &navigation)
-        || !windows.single().is_ok_and(|window| window.focused)
     {
         listing.wash_remaining = 0.;
         return;
     }
-    let Ok(camera) = camera.single() else { return };
     let count = explorer.highlighted.len();
     let file = &repo.0.files[explorer.selected];
     let side = WallSide::new(

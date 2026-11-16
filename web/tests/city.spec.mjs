@@ -133,26 +133,40 @@ test("opens a public repository and fetches source after the WASM city starts", 
   await expect(dialog).toBeHidden();
 });
 
-test("Tab captures and Escape releases the browser pointer", async ({ page }) => {
-  // Exercise the canvas handlers with a stand-in for the OS pointer in headless Chromium.
+async function emulatePointerLock(page) {
+  // Headless Chromium does not reliably expose OS pointer lock to Playwright.
   await page.addInitScript(() => {
     let locked = null;
     Object.defineProperty(document, "pointerLockElement", { get: () => locked });
     HTMLCanvasElement.prototype.requestPointerLock = function () {
       locked = this;
+      queueMicrotask(() => document.dispatchEvent(new Event("pointerlockchange")));
       return Promise.resolve();
     };
-    document.exitPointerLock = () => { locked = null; };
+    document.exitPointerLock = () => {
+      locked = null;
+      queueMicrotask(() => document.dispatchEvent(new Event("pointerlockchange")));
+    };
   });
+}
+
+test("the first canvas click captures the pointer and Escape releases it", async ({ page }) => {
+  await emulatePointerLock(page);
   await page.goto("/");
   const canvas = page.locator("canvas");
-  await canvas.dispatchEvent("keydown", { code: "Tab" });
-  expect(await page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
-  await canvas.dispatchEvent("keydown", { code: "Escape" });
+  await canvas.evaluate(element => { element.hidden = false; });
+  await canvas.click({ position: { x: 400, y: 300 } });
+  await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
+  await expect(canvas).toHaveCSS("cursor", "none");
+  await page.keyboard.press("Escape");
+  await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id ?? null)).toBeNull();
+  await expect(canvas).not.toHaveCSS("cursor", "none");
+  await canvas.evaluate(element => element.setAttribute("data-pointer-ui", ""));
+  await canvas.click({ position: { x: 400, y: 300 } });
   expect(await page.evaluate(() => document.pointerLockElement)).toBeNull();
-  await canvas.dispatchEvent("pointerdown", { button: 0 });
-  expect(await page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
-
+  await canvas.evaluate(element => element.removeAttribute("data-pointer-ui"));
+  await canvas.click({ position: { x: 400, y: 300 } });
+  await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
 });
 
 test("reports missing repositories and keeps the form usable", async ({ page }) => {
@@ -317,6 +331,7 @@ test("finds account repositories and revisions in their own fields", async ({ pa
 });
 
 test("restores review progress after reload and resets only the open comparison", async ({ page }) => {
+  await emulatePointerLock(page);
   await page.route("https://api.github.com/**", async route => {
     const path = new URL(route.request().url()).pathname;
     const source = Array.from({ length: 30 }, (_, i) => `// row ${i}\n`).join("");
@@ -344,13 +359,17 @@ test("restores review progress after reload and resets only the open comparison"
   const separate = JSON.stringify(["owner/other", after, before]);
   const reviewed = JSON.stringify({ reviewed: "src/demo.rs" });
   await expect.poll(() => read(scope), polling).toContain(reviewed);
+  await canvas.click({ position: { x: 640, y: 400 }, delay: 150 });
+  await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
+  expect((await read(scope)).some(mark => JSON.parse(mark).reveal)).toBe(false);
   await expect.poll(async () => {
-    await page.keyboard.down("KeyF");
+    await page.mouse.down();
     await page.waitForTimeout(350);
-    await page.keyboard.up("KeyF");
+    await page.mouse.up();
     return (await read(scope)).some(mark => JSON.parse(mark).reveal);
   }, polling).toBe(true);
   const marks = await read(scope);
+  await page.keyboard.press("Escape");
   await page.evaluate(async ({ separate, reviewed }) => {
     const { writeProgress } = await import("/progress.mjs");
     await writeProgress(separate, [[reviewed, true]]);

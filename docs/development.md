@@ -15,7 +15,7 @@ To inspect a stack trace, save one repository-relative `path:line` frame
 per line, starting at the error. Pass `--trace FILE` and press **T** in the
 city. **W** and **S** follow the supplied trace.
 
-Press **E** to enter the source wall and aim at a function to detach its
+Press **Enter** to enter the source wall and left-click a function to detach its
 declaration into a private draft. **R** restores it. **F6** explicitly exports
 a changed draft under `sandbox/<commit>/<path>` in the Repo City project.
 The app reads the inspected checkout without modifying it. Drafts live in
