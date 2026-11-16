@@ -208,10 +208,11 @@ export function createReview({ canvas, release, onClose }) {
     try { const parsed = new URL(url); return parsed.origin === "https://github.com" ? parsed.href : null; }
     catch { return null; }
   }
-  function allowedDraft() { return Boolean(session?.review.pull && githubAccount()?.login); }
+  function allowedDraft() { return session?.review.pullState === "open" && Boolean(githubAccount()?.login); }
   function add(json) {
     if (!allowedDraft()) {
-      return session?.review.pull ? "Sign in with GitHub to leave a PR note." : "Open a pull request to leave a note in the browser.";
+      if (session?.review.pullState === "open") return "Sign in with GitHub to leave a PR note.";
+      return "Open an active pull request to leave a note in the browser.";
     }
     const data = session;
     const note = JSON.parse(json);
@@ -306,7 +307,9 @@ export function createReview({ canvas, release, onClose }) {
     dialog.dataset.view = "notes";
     const { review, pending, status, prior } = session;
     view(review.pull ? `Review · PR #${review.pull}` : "Review notes");
-    if (review.pull && !githubAccount()?.login) {
+    if (review.pull && review.pullState !== "open") {
+      dialog.append(make("p", review.pullState === "merged" ? "Merged pull request" : "Closed pull request"));
+    } else if (review.pull && !githubAccount()?.login) {
       dialog.append(make("p", "Sign in to create private review drafts."), signIn());
     } else if (!review.pull) {
       dialog.append(make("p", "Open a GitHub pull request to leave review notes."));
@@ -520,7 +523,7 @@ export function createReview({ canvas, release, onClose }) {
       preset.disabled = true;
       actions(button("Back", notesPanel), closeButton());
     } else {
-      if (!githubAccount()?.login && current(note, data.review)) dialog.append(signIn());
+      if (data.review.pullState === "open" && !githubAccount()?.login && current(note, data.review)) dialog.append(signIn());
       actions(button("Back", notesPanel), remove, save, ...(allowedDraft() && current(note, data.review) ? [prepare] : []));
     }
   }

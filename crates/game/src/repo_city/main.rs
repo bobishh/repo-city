@@ -62,7 +62,6 @@ struct Explorer {
     comparison_mode: u8,
     hunk: usize,
     pending_fracture: bool,
-    known_rows: std::collections::HashMap<usize, usize>,
     frame_loaded_source: bool,
 }
 impl Explorer {
@@ -90,7 +89,6 @@ impl Explorer {
             comparison_mode: 0,
             hunk: 0,
             pending_fracture: false,
-            known_rows: default(),
             frame_loaded_source: true,
         }
     }
@@ -127,11 +125,6 @@ impl Explorer {
         self.hunk = 0;
         self.pending_fracture = false;
         self.refresh(repo);
-        let file = &repo.files[self.selected];
-        if self.anatomy.is_some() && self.before == file.after.is_none() {
-            self.known_rows
-                .insert(self.selected, self.highlighted.len());
-        }
         if self.comparison_mode > 0 {
             self.page = self
                 .comparison
@@ -140,13 +133,6 @@ impl Explorer {
                 .map_or(0, |h| h.row / 23);
         }
         self.rebuild = true;
-    }
-    fn facade_size(&self, file: &repo_world::File, index: usize) -> Vec3 {
-        let rows = self.known_rows.get(&index).copied().or_else(|| {
-            (self.selected == index && !self.highlighted.is_empty())
-                .then_some(self.highlighted.len())
-        });
-        listing::block_size(file, rows)
     }
     fn refresh(&mut self, repo: &Repository) {
         let file = &repo.files[self.selected];
@@ -229,6 +215,7 @@ struct Palette {
     facade_closed: Handle<StandardMaterial>,
     facade_open: Handle<StandardMaterial>,
     facade_neutral: Handle<StandardMaterial>,
+    facade_rims: [Handle<StandardMaterial>; 3],
     edge: Handle<StandardMaterial>,
     removed: Handle<StandardMaterial>,
     plate: Handle<StandardMaterial>,
@@ -240,6 +227,8 @@ struct CityObject;
 struct Facade {
     index: usize,
 }
+#[derive(Component)]
+struct FacadeRim(usize);
 #[derive(Component)]
 struct Section {
     index: usize,
@@ -500,12 +489,6 @@ fn main() {
     app.init_resource::<guide::Guide>()
         .add_systems(Update, guide::update.before(flight));
     app.add_systems(Startup, district::setup);
-    app.add_systems(
-        Update,
-        file_facade::sync
-            .after(city_navigation::navigate)
-            .before(interaction),
-    );
     app.add_systems(Update, district::reflect.after(listing::draw_overview));
     #[cfg(target_arch = "wasm32")]
     app.add_systems(
@@ -691,8 +674,18 @@ fn setup(
                 images.add(code_texture::facade_overview(std::iter::once(coverage))),
             ))
         });
+    let facade_rims = code_texture::Coverage::ALL.map(|state| {
+        let [r, g, b] = state.accent();
+        materials.add(StandardMaterial {
+            base_color: Color::srgb_u8(r, g, b),
+            unlit: true,
+            cull_mode: None,
+            ..default()
+        })
+    });
+    let [r, g, b] = code_texture::FACADE_GLASS;
     let facade_neutral = materials.add(StandardMaterial {
-        base_color: Color::srgb_u8(19, 30, 36),
+        base_color: Color::srgb_u8(r, g, b),
         unlit: true,
         ..default()
     });
@@ -722,6 +715,7 @@ fn setup(
         facade_closed,
         facade_open,
         facade_neutral,
+        facade_rims,
         edge: edge.clone(),
         removed,
         plate: plate.clone(),
@@ -920,30 +914,28 @@ fn spawn_city(
     if let (
         Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)),
         Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)),
-        Some(bevy::mesh::VertexAttributeValues::Float32x2(stock_uvs)),
     ) = (
         block.attribute(Mesh::ATTRIBUTE_POSITION),
         block.attribute(Mesh::ATTRIBUTE_NORMAL),
-        block.attribute(Mesh::ATTRIBUTE_UV_0),
     ) {
         let uvs: Vec<_> = positions
             .iter()
             .zip(normals)
-            .zip(stock_uvs)
-            .map(|((&[x, y, z], &[nx, ny, nz]), &uv)| {
+            .map(|(&[x, y, z], &[nx, ny, nz])| {
                 if nx != 0. {
                     [0.5 - z * nx, 0.5 - y]
                 } else if nz != 0. {
                     [0.5 + x * nz, 0.5 - y]
                 } else {
                     debug_assert!(ny != 0.);
-                    uv
+                    [1., 1.]
                 }
             })
             .collect();
         block.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     }
     let block = meshes.add(block);
+    let rim = meshes.add(file_facade::roof_rim());
     let [added, removed, modified, unchanged] = [
         Change::Added,
         Change::Removed,
@@ -957,7 +949,7 @@ fn spawn_city(
             ..default()
         })
     });
-    use file_facade::{Attachment, Part, transform};
+    use file_facade::{Part, transform};
     let mirror = meshes.add(Rectangle::new(1., 1.));
     let glass = materials.add(StandardMaterial {
         base_color: Color::srgb(0.065, 0.10, 0.14),
@@ -966,16 +958,23 @@ fn spawn_city(
     });
     let beams = file_facade::INK.map(|ink| materials.add(file_facade::beam_material(ink)));
     for (i, file) in repo.0.files.iter().enumerate() {
-        let size = explorer.facade_size(file, i);
+        let size = listing::block_size(file);
         commands.spawn((
             CityObject,
             Facade { index: i },
-            Attachment(i, Part::Body),
             Mesh3d(block.clone()),
             MeshMaterial3d(palette.facade_closed.clone()),
             transform(file, size, Part::Body),
             RigidBody::Static,
             Collider::cuboid(1., 1., 1.),
+        ));
+        commands.spawn((
+            CityObject,
+            FacadeRim(i),
+            bevy::light::NotShadowCaster,
+            Mesh3d(rim.clone()),
+            MeshMaterial3d(palette.facade_rims[0].clone()),
+            transform(file, size, Part::Roof),
         ));
         let status = match file.change {
             Change::Added => &added,
@@ -987,7 +986,6 @@ fn spawn_city(
             let part = Part::Stripe(face);
             commands.spawn((
                 CityObject,
-                Attachment(i, part),
                 Mesh3d(block.clone()),
                 MeshMaterial3d(status.clone()),
                 transform(file, size, part),
@@ -1011,13 +1009,11 @@ fn spawn_city(
             1.,
             file_facade::INK[kind],
         );
-        commands.entity(sign).insert((
-            Attachment(i, Part::Label),
-            transform(file, size, Part::Label),
-        ));
+        commands
+            .entity(sign)
+            .insert(transform(file, size, Part::Label));
         commands.spawn((
             CityObject,
-            Attachment(i, Part::Beam),
             file_facade::FileBeam,
             bevy::light::NotShadowCaster,
             Mesh3d(block.clone()),
@@ -1026,7 +1022,6 @@ fn spawn_city(
         ));
         commands.spawn((
             CityObject,
-            Attachment(i, Part::Mirror),
             district::Glass,
             bevy::light::NotShadowCaster,
             Mesh3d(mirror.clone()),
@@ -1243,7 +1238,7 @@ fn targeting(
     {
         let file = &repo.0.files[f.index];
         let [x, z] = file.position;
-        let size = explorer.facade_size(file, f.index);
+        let size = listing::block_size(file);
         let min = Vec3::new(x - size.x / 2., 0., z - size.z / 2.);
         let max = Vec3::new(x + size.x / 2., size.y, z + size.z / 2.);
         let beam_min = Vec3::new(x - 0.55, size.y, z - 0.55);

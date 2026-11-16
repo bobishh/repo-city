@@ -299,7 +299,7 @@ test("opens the city while an older tab blocks the progress database upgrade", a
   }, scope)).toEqual([mark]);
 });
 
-test("opens a pull request from the URL using its fork head and merge base", async ({ page }, testInfo) => {
+test("opens a merged pull request from the URL using its fork head and merge base", async ({ page }, testInfo) => {
   const checked = [];
   const blameTargets = [];
   await page.route(/\/github\/blame\?/, async route => {
@@ -313,7 +313,7 @@ test("opens a pull request from the URL using its fork head and merge base", asy
     const path = new URL(route.request().url()).pathname;
     checked.push(path);
     if (path.endsWith("/pulls/8")) return route.fulfill({ json: {
-      state: "open",
+      state: "closed", merged: true,
       base: { sha: "c".repeat(40) },
       head: { sha: after, repo: { full_name: "fork/demo" } },
     } });
@@ -330,6 +330,7 @@ test("opens a pull request from the URL using its fork head and merge base", asy
   const snapshot = await page.evaluate(() => JSON.parse(globalThis.repoCity.snapshot()));
   expect(snapshot).toMatchObject({ name: "owner/demo#8", revision: after, baseline: before });
   expect(Object.keys(snapshot.after)).toContain("LICENSE");
+  expect(await page.evaluate(() => globalThis.repoCity.reviewCanPaint())).toBe(false);
   expect(checked).toContain(`/repos/fork/demo/git/trees/${after}`);
   expect(checked).toContain(`/repos/owner/demo/git/trees/${before}`);
   const blame = page.getByRole("link", { name: "Blame on GitHub" });
@@ -387,6 +388,44 @@ test("opens a pull request from the URL using its fork head and merge base", asy
   }
 });
 
+
+test("selects a closed PR in the picker while a signed-in viewer stays read-only", async ({ page }) => {
+  const seen = [];
+  await page.route("**/github/session", route => route.fulfill({ json: { enabled: true, login: "reviewer" } }));
+  await page.route("**/github/api/**", route => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    if (path.endsWith("/pulls")) {
+      seen.push(url.searchParams.get("state"));
+      return route.fulfill({ json: [
+        { number: 7, state: "closed", title: "Retired approach" },
+        { number: 8, state: "closed", merged_at: "2026-11-15T18:00:00Z", title: "Shipped approach" },
+      ] });
+    }
+    if (path.endsWith("/pulls/7")) return route.fulfill({ json: {
+      state: "closed", base: { sha: before }, head: { sha: after, repo: null },
+    } });
+    if (path.includes("/compare/")) return route.fulfill({ json: { merge_base_commit: { sha: before } } });
+    if (path.includes("/git/trees/")) return route.fulfill({ json: { tree: [{
+      path: "src/history.rs", type: "blob", mode: "100644", sha: path.endsWith(after) ? after : before, size: 16,
+    }] } });
+    if (path.includes("/git/blobs/")) {
+      const source = path.endsWith(after) ? "fn after() {}" : "fn before() {}";
+      return route.fulfill({ json: { encoding: "base64", content: Buffer.from(source).toString("base64"), size: source.length } });
+    }
+    return route.fulfill({ json: path.includes("installations") ? { installations: [] } : [] });
+  });
+  await page.goto("/?picker=1&repo=owner%2Fdemo");
+  await page.getByRole("button", { name: "Pull requests" }).click();
+  await expect(page.getByRole("option", { name: /Merged · Shipped approach/ })).toBeVisible();
+  await page.getByRole("option", { name: /Closed · Retired approach/ }).click();
+  await page.getByRole("button", { name: "Open city" }).click();
+  await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+  expect(seen).toEqual(["all"]);
+  const snapshot = await page.evaluate(() => JSON.parse(globalThis.repoCity.snapshot()));
+  expect(snapshot).toMatchObject({ name: "owner/demo#7", revision: after, baseline: before });
+  expect(await page.evaluate(() => globalThis.repoCity.reviewCanPaint())).toBe(false);
+});
 
 test("finds account repositories and revisions in their own fields", async ({ page }, testInfo) => {
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: true, login: "owner" } }));

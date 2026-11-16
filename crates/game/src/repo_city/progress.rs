@@ -236,7 +236,7 @@ pub(super) fn sync(
         && pilot.captured
         && let Some(file) = repo.0.files.get(explorer.selected)
     {
-        let size = explorer.facade_size(file, explorer.selected);
+        let size = listing::block_size(file);
         if let Some(face) =
             listing::Face::at_camera(file, size, eye, listing::tool_range(size.x) * 1.4)
         {

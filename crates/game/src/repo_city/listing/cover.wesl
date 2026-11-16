@@ -7,6 +7,10 @@ import bevy_render::color_operations::srgb_to_linear;
 
 struct CoverRows {
     info: vec4<u32>,
+    glass: vec4<f32>,
+    source_changes: array<vec4<f32>, 3>,
+    closed_accent: vec4<f32>,
+    closed_stroke: vec4<f32>,
     spans: array<vec4<f32>, 16>,
     paint: array<vec4<f32>, 16>,
 };
@@ -25,18 +29,19 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
             let x = in.uv.x * f32(cover.info.z);
             let y = fract(in.uv.y * f32(cover.info.y)) * f32(cover.info.w);
             let span = cover.spans[row];
-            var rgb = vec3<f32>(28.0, 43.0, 50.0);
-            if span.z == 1.0 { rgb = vec3<f32>(27.0, 56.0, 48.0); }
-            if span.z == 2.0 { rgb = vec3<f32>(64.0, 40.0, 47.0); }
+            var rgb = cover.glass.rgb;
             // Keep rasterized line numbers, indexed on the left of the source gutter.
             if x < 90.0 && max(ink.r, max(ink.g, ink.b)) > 0.035 {
                 rgb = mix(rgb, vec3<f32>(127.0, 168.0, 181.0), clamp(ink.b * 2.3, 0.0, 1.0));
             }
             if x >= 91.0 && x < 96.0 {
-                rgb = select(vec3<f32>(35.0, 69.0, 77.0), vec3<f32>(83.0, 148.0, 155.0), (u32(x + y) % 12u) < 5u);
+                rgb = cover.closed_accent.rgb;
+            }
+            if x >= 101.0 && x < 105.0 {
+                rgb = cover.source_changes[u32(span.z)].rgb;
             }
             if x >= span.x && x < span.y && y >= 12.0 && y < 15.0 {
-                rgb = vec3<f32>(68.0, 91.0, 101.0);
+                rgb = cover.closed_stroke.rgb;
             }
             ink = vec4<f32>(srgb_to_linear(rgb / 255.0), ink.a);
         }

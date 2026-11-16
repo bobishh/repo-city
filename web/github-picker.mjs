@@ -324,7 +324,7 @@ const pullChoices = suggest(pullSearch, document.querySelector("#pull-results"),
     if (!current()) return;
     const term = query.trim().toLowerCase();
     const matches = pulls.filter(pull => pull.label.toLowerCase().includes(term));
-    show(matches, matches.length ? "" : "No matching open pull requests.");
+    show(matches, matches.length ? "" : "No matching pull requests.");
   } catch (error) {
     show([], error.message);
   }

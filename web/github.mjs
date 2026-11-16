@@ -58,19 +58,23 @@ export async function loadRevisions(input, request = fetch) {
   ];
 }
 
+function pullState(pull) {
+  return pull.merged || pull.merged_at ? "merged" : pull.state;
+}
+
 export async function loadPullRequests(input, request = fetch) {
   const repository = parseRepository(input);
   const entries = [];
   for (let page = 1; page <= 4; page++) {
-    const response = await readGitHub(request, `/repos/${repository}/pulls?per_page=50&page=${page}`);
+    const response = await readGitHub(request, `/repos/${repository}/pulls?state=all&per_page=50&page=${page}`);
     const batch = await response.json();
-    if (!Array.isArray(batch)) throw new Error("Open pull requests are unavailable.");
-    entries.push(...batch.filter(pull => Number.isSafeInteger(pull.number) && pull.state === "open"));
+    if (!Array.isArray(batch)) throw new Error("Pull requests are unavailable.");
+    entries.push(...batch.filter(pull => Number.isSafeInteger(pull.number) && ["open", "closed"].includes(pull.state)));
     if (!response.headers.get("Link")?.includes('rel="next"')) break;
   }
   return entries.map(pull => ({
     value: `https://github.com/${repository}/pull/${pull.number}`,
-    label: `#${pull.number} · ${pull.title} · @${pull.user?.login ?? "unknown"} · ${pull.head?.ref ?? "?"} → ${pull.base?.ref ?? "?"}`,
+    label: `#${pull.number} · ${{ open: "Open", closed: "Closed", merged: "Merged" }[pullState(pull)]} · ${pull.title} · @${pull.user?.login ?? "unknown"} · ${pull.head?.ref ?? "?"} → ${pull.base?.ref ?? "?"}`,
   }));
 }
 
@@ -111,10 +115,10 @@ export async function loadGitHub(input, ref, base, request = fetch) {
   const read = async (path, repository = name) =>
     (await readGitHub(request, `/repos/${repository}${path}`)).json();
 
-  let head, baseline, headRepository = name;
+  let head, baseline, status = null, headRepository = name;
   if (pull) {
     const details = await read(`/pulls/${pull.number}`);
-    if (details.state !== "open") throw new Error("Repo City currently opens only open pull requests.");
+    status = pullState(details);
     head = details.head;
     if (!head?.sha || !details.base?.sha) throw new Error("Pull request revisions unavailable.");
     if (head.repo?.full_name) headRepository = parseRepository(head.repo.full_name);
@@ -151,7 +155,7 @@ export async function loadGitHub(input, ref, base, request = fetch) {
     };
   }
   return {
-    review: { repository: name, pull: pull?.number ?? null, revision: head.sha, baseline: baseline?.sha ?? null },
+    review: { repository: name, pull: pull?.number ?? null, pullState: status, revision: head.sha, baseline: baseline?.sha ?? null },
     progressScope: JSON.stringify([name.toLowerCase(), head.sha, baseline?.sha ?? null]),
     snapshot: JSON.stringify({ name: pull ? `${name}#${pull.number}` : name, revision: head.sha, baseline: baseline?.sha ?? null, before, after }),
     blameURL(path, useBase, line) {

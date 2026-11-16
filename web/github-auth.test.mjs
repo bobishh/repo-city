@@ -47,6 +47,16 @@ test("OAuth uses PKCE, binds state to the browser, and keeps the token in its en
   assert.match(allowed.headers.get("Cache-Control"), /no-store/);
   assert.equal((await allowed.json())[0].name, "private-branch");
   const blameQuery = new URLSearchParams({ owner: "owner", repo: "private", sha: "a".repeat(40), path: "src/hello [draft].rs" });
+  const history = await handleGitHub(request(
+    "/github/api/repos/owner/private/pulls?state=all&per_page=50&page=2", { headers }), env, async url => {
+    assert.equal(String(url), "https://api.github.com/repos/owner/private/pulls?state=all&per_page=50&page=2");
+    return Response.json([{ number: 1, state: "closed" }]);
+  });
+  assert.equal(history.status, 200);
+  assert.deepEqual(await history.json(), [{ number: 1, state: "closed" }]);
+  assert.equal((await handleGitHub(request(
+    "/github/api/repos/owner/private/pulls?state=invalid", { headers }), env)).status, 404);
+
   const blame = await handleGitHub(request("/github/blame?" + blameQuery, { headers }), env, async (url, options) => {
     assert.equal(url, "https://api.github.com/graphql");
     assert.equal(options.headers.Authorization, "Bearer " + token);

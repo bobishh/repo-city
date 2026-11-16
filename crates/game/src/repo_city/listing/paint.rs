@@ -45,7 +45,7 @@ pub(crate) fn draw(
     let Some(file) = repo.0.files.get(explorer.selected) else {
         return;
     };
-    let size = explorer.facade_size(file, explorer.selected);
+    let size = super::block_size(file);
     let sides = [
         (Face::Source, explorer.highlighted.len()),
         (Face::Diff, listing.diff_lines.len()),
@@ -69,7 +69,7 @@ pub(crate) fn draw(
         }
         let file = &repo.0.files[index];
         let [x, z] = file.position;
-        let bound = explorer.facade_size(file, index);
+        let bound = super::block_size(file);
         let roof = Vec3::new(x, bound.y + 0.28, z);
         if roof.distance_squared(camera.translation) > 140. * 140. {
             continue;
