@@ -359,15 +359,24 @@ test("restores review progress after reload and resets only the open comparison"
   const separate = JSON.stringify(["owner/other", after, before]);
   const reviewed = JSON.stringify({ reviewed: "src/demo.rs" });
   await expect.poll(() => read(scope), polling).toContain(reviewed);
+  await canvas.evaluate(element => {
+    element.addEventListener("pointerdown", () => {
+      // Simulate free mouse motion queued just before the click acquires lock.
+      const motion = new PointerEvent("pointermove", { pointerType: "mouse", button: -1, movementY: 650 });
+      Object.defineProperty(motion, "getCoalescedEvents", { value: () => [motion] });
+      window.dispatchEvent(motion);
+    }, { capture: true, once: true });
+  });
   await canvas.click({ position: { x: 640, y: 400 }, delay: 150 });
   await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   expect((await read(scope)).some(mark => JSON.parse(mark).reveal)).toBe(false);
-  await expect.poll(async () => {
-    await page.mouse.down();
-    await page.waitForTimeout(350);
+  await page.mouse.down();
+  try {
+    await expect.poll(async () => (await read(scope)).some(mark => JSON.parse(mark).reveal), polling).toBe(true);
+  } finally {
     await page.mouse.up();
-    return (await read(scope)).some(mark => JSON.parse(mark).reveal);
-  }, polling).toBe(true);
+  }
   const marks = await read(scope);
   await page.keyboard.press("Escape");
   await page.evaluate(async ({ separate, reviewed }) => {

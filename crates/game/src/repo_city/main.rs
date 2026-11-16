@@ -255,8 +255,6 @@ struct AimHud;
 struct TargetLabel;
 #[derive(Component, Default)]
 struct Pilot {
-    yaw: f32,
-    pitch: f32,
     captured: bool,
     fire_ready: bool,
     firing: bool,
@@ -706,14 +704,7 @@ fn setup(
         Camera { ..default() },
         Msaa::Sample4,
         Transform::default(),
-        Pilot {
-            yaw: 0.45,
-            pitch: -0.3,
-            captured: false,
-            fire_ready: false,
-            firing: false,
-            shot: false,
-        },
+        Pilot::default(),
     ));
     commands.spawn((
         DirectionalLight {
@@ -1010,7 +1001,8 @@ fn flight(
         return;
     };
     let picker_open = picker.is_open();
-    let over_button = !pilot.captured && file_buttons.iter().any(|hovered| hovered.get());
+    let was_captured = pilot.captured;
+    let over_button = !was_captured && file_buttons.iter().any(|hovered| hovered.get());
     #[cfg(target_arch = "wasm32")]
     {
         if let Some(document) = web_sys::window().and_then(|window| window.document()) {
@@ -1073,11 +1065,12 @@ fn flight(
     if navigation.is_flying() {
         return;
     }
-    if pilot.captured {
+    // This frame may contain movement from before the capture click.
+    if was_captured && pilot.captured && motion.delta != Vec2::ZERO {
         let (yaw, pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
-        pilot.yaw = yaw - motion.delta.x * 0.0025;
-        pilot.pitch = (pitch - motion.delta.y * 0.0025).clamp(-1.5, 1.5);
-        camera.rotation = Quat::from_euler(EulerRot::YXZ, pilot.yaw, pilot.pitch, 0.);
+        let yaw = yaw - motion.delta.x * 0.0025;
+        let pitch = (pitch - motion.delta.y * 0.0025).clamp(-1.5, 1.5);
+        camera.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.);
     }
     if navigation.guides_camera() {
         return;
