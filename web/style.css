@@ -153,6 +153,7 @@ form button:focus-visible, form summary:focus-visible, form a:focus-visible { ou
 }
 .review-field input[type="color"] { padding: 2px; width: 3em; }
 .review-field textarea { resize: vertical; }
+.review-toggle { display: flex; align-items: center; gap: .5em; margin-block: 9px; color: #a8f7e4; }
 .paint-preview { min-height: 1.4em; font: 700 1.12rem/1.4 Caveat, cursive; }
 .review-status { min-height: 1.4em; margin-block: 7px; color: #e9b8c8; }
 .review-copy { white-space: pre-wrap; overflow-wrap: anywhere; }

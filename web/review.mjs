@@ -64,7 +64,7 @@ export function createReview({ canvas, release, onClose }) {
     const scope = JSON.stringify(["notes", account, project, review.pull]);
     const projectScope = JSON.stringify(["project", account, project]);
     const data = { review, scope, projectScope, progressScope, snapshot, notes: [], threads: [], palette: [],
-      pending: Boolean(review.pull), status: "", prior: null };
+      threadPaints: new Map(), showResolved: false, pending: Boolean(review.pull), status: "", prior: null };
     const [notes, prefs] = await Promise.all([readReview(scope), readReview(projectScope)]).catch(() => {
       data.status = "Local review storage is unavailable.";
       return [[], []];
@@ -72,6 +72,10 @@ export function createReview({ canvas, release, onClose }) {
     data.notes = notes.filter(entry => entry?.anchor);
     data.palette = prefs.find(entry => entry.palette)?.palette ?? [];
     data.prior = notes.find(entry => entry.lastHead) ?? null;
+    data.showResolved = notes.some(entry => entry.showResolved === true);
+    for (const entry of notes) {
+      if (entry.threadId && entry.paint) data.threadPaints.set(entry.threadId, entry.paint);
+    }
     const prior = data.prior;
     // Carry only progress with a proven identical blob on the relevant side.
     if (prior?.progressScope && prior.lastHead !== review.revision) {
@@ -183,11 +187,17 @@ export function createReview({ canvas, release, onClose }) {
     const palette = session.palette.length ? session.palette : defaults;
     const localByUrl = new Map(session.notes.filter(note => note.published).map(note => [note.published, note]));
     const found = new Set();
-    const threads = session.threads.map(note => {
+    const threads = session.threads.flatMap(note => {
       const url = safeDiscussion(note.discussion[0]?.html_url);
       const local = localByUrl.get(url);
       if (local) found.add(local.id);
-      return { ...note, preset: local?.preset ?? palette.find(paint => paint?.id === note.presetId) ?? neutral };
+      if (note.resolved && !session.showResolved) return [];
+      const choice = session.threadPaints.get(note.id);
+      const paint = choice ?? local?.preset ?? palette.find(preset => preset?.id === note.presetId) ?? neutral;
+      const preset = note.resolved
+        ? { ...paint, color: paint.color.map(channel => Math.round(channel * 0.55 + 36)) }
+        : paint;
+      return [{ ...note, preset }];
     });
     return [...session.notes.filter(note => !found.has(note.id)), ...threads];
   }
@@ -305,6 +315,35 @@ export function createReview({ canvas, release, onClose }) {
       const query = new URLSearchParams({ repo: review.repository, ref: review.revision, base: prior.lastHead });
       dialog.append(make("p", "The PR has changed since your last review. Drafts keep their original lines."), link("Changes since your last review", "/?" + query));
     }
+    if (review.pull && githubAccount()?.login) {
+      const data = session;
+      const resolved = make("input", undefined, { type: "checkbox" });
+      resolved.checked = data.showResolved;
+      const feedback = make("span", "", { role: "status" });
+      const toggle = make("label", undefined, { class: "review-toggle" });
+      toggle.append(resolved, "Show resolved threads");
+      dialog.append(toggle, feedback);
+      resolved.addEventListener("change", async () => {
+        const showResolved = resolved.checked;
+        resolved.disabled = true;
+        try {
+          await saveReview(data.scope, "thread-display", { showResolved });
+          data.showResolved = showResolved;
+          if (session === data) {
+            repaint();
+            if (dialog.open && dialog.dataset.view === "notes") {
+              notesPanel();
+              dialog.querySelector('input[type="checkbox"]')?.focus();
+            }
+          }
+        } catch {
+          resolved.checked = data.showResolved;
+          feedback.textContent = "Could not save this preference.";
+        } finally {
+          resolved.disabled = false;
+        }
+      });
+    }
     if (status || pending) dialog.append(make("p", status || "Loading GitHub comments…", { role: "status" }));
     const list = make("div", undefined, { class: "review-list" });
     const entries = notes();
@@ -381,7 +420,39 @@ export function createReview({ canvas, release, onClose }) {
       if (href) article.append(link("View on GitHub", href));
       dialog.append(article);
     }
-    actions(button("Back", notesPanel), closeButton());
+    const data = session;
+    const prior = data.threadPaints.get(note.id);
+    const palette = (data.palette.length ? data.palette : defaults).filter(Boolean);
+    if (prior && !palette.some(paint => paint.id === prior.id)) palette.push(prior);
+    const paint = make("select");
+    paint.append(make("option", "Use thread color", { value: "" }));
+    for (const preset of palette) paint.append(make("option", preset.label, { value: preset.id }));
+    paint.value = prior?.id ?? "";
+    const feedback = make("p", "", { role: "status", class: "review-status" });
+    const save = button("Save local paint", async () => {
+      const chosen = palette.find(preset => preset.id === paint.value);
+      const key = "thread-paint-" + note.id;
+      save.disabled = true;
+      try {
+        if (chosen) {
+          await saveReview(data.scope, key, { threadId: note.id, paint: chosen });
+          data.threadPaints.set(note.id, chosen);
+        } else {
+          await deleteReview(data.scope, key);
+          data.threadPaints.delete(note.id);
+        }
+        if (session === data) {
+          repaint();
+          if (dialog.open && dialog.dataset.view === "thread") notesPanel();
+        }
+      } catch {
+        feedback.textContent = "Could not save the local paint.";
+      } finally {
+        save.disabled = false;
+      }
+    });
+    dialog.append(field("Local paint", paint), feedback);
+    actions(button("Back", notesPanel), save, closeButton());
   }
 
   function noteEditor(note) {

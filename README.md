@@ -79,6 +79,9 @@ The Mac app saves notes and palettes in SQLite without a GitHub login.
 Choose **Review notes** from the right-click menu to reopen or export them.
 In the browser, sign in with GitHub to save drafts for a pull request in
 IndexedDB. Existing public review threads are readable without signing in.
+Choose a local paint for a GitHub thread from its detail panel. GitHub still
+shows the original comment. Signed-in reviewers can show resolved threads from
+the review list.
 
 **Preview GitHub comment** shows the text before you send it. Publication
 requires repository access and **Pull requests: write** for the Repo City

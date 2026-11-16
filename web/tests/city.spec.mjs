@@ -487,8 +487,9 @@ test("paints a PR range, previews an explicit GitHub comment, and restores the n
       state: "open", base: { sha: before }, head: { sha: after },
     } });
     if (path.endsWith("/comments")) return route.fulfill({ json: [
-      { id: 13, path: "src/demo.rs", line: 25, side: "RIGHT", body: "Separate note", user: { login: "ada" } },
+      { id: 13, node_id: "comment-13", path: "src/demo.rs", line: 25, side: "RIGHT", body: "Separate note", user: { login: "ada" } },
       { id: 14, in_reply_to_id: 13, body: "Got it", user: { login: "sam" } },
+      { id: 15, node_id: "comment-15", path: "src/demo.rs", line: 26, side: "RIGHT", body: "Resolved note", user: { login: "ada" } },
     ] });
     if (path.includes("/compare/")) return route.fulfill({ json: { merge_base_commit: { sha: before } } });
     if (path.includes("/git/trees/")) return route.fulfill({ json: { tree: [{
@@ -501,7 +502,13 @@ test("paints a PR range, previews an explicit GitHub comment, and restores the n
   });
   const posts = [];
   await page.route("**/github/review/owner/demo/8", route => {
-    if (route.request().method() === "GET") return route.fulfill({ status: 404 });
+    if (route.request().method() === "GET") return route.fulfill({ json: {
+      headRefOid: after,
+      reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [
+        { isResolved: false, comments: { nodes: [{ id: "comment-13" }] } },
+        { isResolved: true, comments: { nodes: [{ id: "comment-15" }] } },
+      ] },
+    } });
     posts.push(route.request().postDataJSON());
     return posts.length === 1
       ? route.fulfill({ status: 403, json: { error: "Publishing needs Pull requests: write." } })
@@ -558,4 +565,27 @@ test("paints a PR range, previews an explicit GitHub comment, and restores the n
     published: "https://github.com/owner/demo/pull/8#discussion_r42",
     text: "Check this specific behavior.",
   });
+  await lock();
+  await page.mouse.click(center.x, center.y, { button: "right" });
+  await expect(canvas).toHaveAttribute("data-pointer-ui", "");
+  await page.keyboard.press("KeyJ", { delay: 120 });
+  const thread = review.getByRole("button", { name: /Comment.*demo\.rs:25.*GitHub thread/ });
+  await expect(thread).toBeVisible();
+  const resolved = review.getByRole("button", { name: /demo\.rs:26.*Resolved/ });
+  await expect(resolved).toHaveCount(0);
+  await review.getByRole("checkbox", { name: "Show resolved threads" }).check();
+  await expect(resolved).toBeVisible();
+  await thread.click();
+  await expect(review.getByText("Separate note")).toBeVisible();
+  await expect(review.getByText("Got it")).toBeVisible();
+  await review.getByLabel("Local paint").selectOption({ label: "Investigate" });
+  await review.getByRole("button", { name: "Save local paint" }).click();
+  await expect(review.getByRole("button", { name: /Investigate.*demo\.rs:25.*GitHub thread/ })).toBeVisible();
+  expect(posts).toHaveLength(2);
+  await page.reload();
+  await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+  await expect.poll(() => page.evaluate(() => JSON.parse(globalThis.repoCity.reviewRead()).notes
+    .filter(note => note.remote).map(note => [note.id, note.preset.label, note.resolved]))).toEqual([
+    ["github-13", "Investigate", false], ["github-15", "Comment", true],
+  ]);
 });
