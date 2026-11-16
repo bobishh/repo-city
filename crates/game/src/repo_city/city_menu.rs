@@ -42,16 +42,18 @@ pub(super) enum Action {
     Find,
     Paints,
     Notes,
+    FindText,
 }
 
 impl Action {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Approach,
         Self::Diff,
         Self::Blame,
         Self::Find,
         Self::Paints,
         Self::Notes,
+        Self::FindText,
     ];
 
     fn label(self) -> String {
@@ -61,6 +63,7 @@ impl Action {
             Self::Blame => "Blame          B".into(),
             Self::Paints => "Paints         U".into(),
             Self::Notes => "Review notes   J".into(),
+            Self::FindText => "Find in file   /".into(),
             Self::Find => format!("Find file    {}", file_picker::SHORTCUT),
         }
     }
@@ -69,17 +72,27 @@ impl Action {
         matches!(self, Self::Find | Self::Paints | Self::Notes)
     }
 
+    fn available(self, menu: &Menu, search: &listing::find::Search) -> bool {
+        if matches!(self, Self::FindText) {
+            search.available
+        } else {
+            self.global() || menu.aim.is_some()
+        }
+    }
+
     fn choose(
         self,
         menu: &mut Menu,
         picker: &mut file_picker::FilePicker,
         review: &mut review_notes::Review,
+        search: &mut listing::find::Search,
     ) {
-        if !menu.is_open() || (menu.aim.is_none() && !self.global()) {
+        if !menu.is_open() || !self.available(menu, search) {
             return;
         }
         match self {
             Self::Find => picker.open(),
+            Self::FindText => search.request = true,
             Self::Paints => review.request = Some(review_notes::Panel::Paints),
             Self::Notes => review.request = Some(review_notes::Panel::Notes),
             Self::Approach => menu.destination = menu.aim,
@@ -137,8 +150,8 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
                     panel.spawn((
                         action,
                         file_picker::button(&action.label(), font, ink, AlignSelf::Stretch),
-                        observe(move |_: On<Activate>, mut menu: ResMut<Menu>, mut picker: ResMut<file_picker::FilePicker>, mut review: ResMut<review_notes::Review>| {
-                            action.choose(&mut menu, &mut picker, &mut review);
+                        observe(move |_: On<Activate>, mut menu: ResMut<Menu>, mut picker: ResMut<file_picker::FilePicker>, mut review: ResMut<review_notes::Review>, mut search: ResMut<listing::find::Search>| {
+                            action.choose(&mut menu, &mut picker, &mut review, &mut search);
                         }),
                     ));
                 }
@@ -155,6 +168,7 @@ pub(super) fn update(
     listing: Res<listing::Listing>,
     mut menu: ResMut<Menu>,
     mut review: ResMut<review_notes::Review>,
+    mut search: ResMut<listing::find::Search>,
     mut overlay: Query<&mut Node, With<Overlay>>,
     mut panel: Query<&mut Node, (With<Panel>, Without<Overlay>)>,
     mut rows: Query<
@@ -164,7 +178,12 @@ pub(super) fn update(
 ) {
     menu.dismissed = false;
     let right_click = mouse.just_pressed(MouseButton::Right);
-    if review.blocked || picker.is_open() || navigation.guides_camera() || listing.turning() {
+    if review.blocked
+        || search.blocks_controls()
+        || picker.is_open()
+        || navigation.guides_camera()
+        || listing.turning()
+    {
         menu.close();
     } else if menu.is_open() && (keys.just_pressed(KeyCode::Escape) || right_click) {
         menu.close();
@@ -176,9 +195,10 @@ pub(super) fn update(
             (KeyCode::KeyB, Action::Blame),
             (KeyCode::KeyU, Action::Paints),
             (KeyCode::KeyJ, Action::Notes),
+            (KeyCode::Slash, Action::FindText),
         ] {
             if keys.just_pressed(key) {
-                action.choose(&mut menu, &mut picker, &mut review);
+                action.choose(&mut menu, &mut picker, &mut review, &mut search);
                 break;
             }
         }
@@ -200,11 +220,10 @@ pub(super) fn update(
     let (Some(anchor), Some((_, viewport))) = (menu.anchor, nearest.screen) else {
         return;
     };
-    let count = if menu.aim.is_some() {
-        Action::ALL.len()
-    } else {
-        Action::ALL.iter().filter(|action| action.global()).count()
-    } as f32;
+    let count = Action::ALL
+        .iter()
+        .filter(|action| action.available(&menu, &search))
+        .count() as f32;
     let height = ROW_HEIGHT * count + GAP * (count - 1.) + 2. * PADDING;
     let point = (anchor + Vec2::splat(12.)).clamp(
         Vec2::ZERO,
@@ -215,7 +234,7 @@ pub(super) fn update(
         panel.top = px(point.y);
     }
     for (action, hovered, mut row, mut background) in &mut rows {
-        let display = if menu.aim.is_some() || action.global() {
+        let display = if action.available(&menu, &search) {
             Display::Flex
         } else {
             Display::None

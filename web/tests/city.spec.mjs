@@ -462,6 +462,19 @@ test("restores review progress after reload and resets only the open comparison"
   await canvas.focus();
   await page.keyboard.press("KeyV", { delay: 150 });
   await expect.poll(() => read(scope), polling).toContain(reviewed);
+
+  await page.keyboard.press("Slash", { delay: 150 });
+  await expect(canvas).toHaveAttribute("data-pointer-ui", "");
+  await page.keyboard.type("row 2", { delay: 40 });
+  await canvas.screenshot({ path: testInfo.outputPath("city-find-text.png") });
+  await page.keyboard.press("Enter", { delay: 150 });
+  await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
+  await page.keyboard.press("KeyN", { delay: 150 });
+  await page.keyboard.press("Shift+KeyN", { delay: 150 });
+  await page.keyboard.press("KeyM", { delay: 150 });
+  await expect(canvas).toHaveAttribute("data-pointer-ui", "");
+  await page.keyboard.press("KeyM", { delay: 150 });
+  await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
 });
 
 test("paints a PR range, previews an explicit GitHub comment, and restores the note after reload", async ({ page }) => {

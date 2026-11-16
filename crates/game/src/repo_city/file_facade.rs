@@ -151,6 +151,79 @@ pub(super) fn sync(
     }
 }
 
+#[derive(Component)]
+pub(super) struct FileBeam;
+
+pub(super) struct ReadingPlane {
+    normal: Vec3,
+    gap: f32,
+    silhouette: f32,
+}
+
+pub(super) fn reading_plane(
+    repo: &Repository,
+    explorer: &Explorer,
+    camera: &Transform,
+) -> Option<ReadingPlane> {
+    let file = repo.files.get(explorer.selected)?;
+    let size = explorer.facade_size(file, explorer.selected);
+    let face = listing::Face::at_camera(file, size, camera, (size.x * 1.85).max(8.))?;
+    let normal = face.normal();
+    let [x, z] = file.position;
+    let center = Vec3::new(x, 0., z);
+    let gap = (camera.translation - center).dot(normal) - normal.abs().dot(size) / 2.;
+    let side = Vec3::Y.cross(normal);
+    let silhouette = (camera.translation - center).dot(side).abs() + size.dot(side.abs()) / 2.;
+    (gap > 0.).then_some(ReadingPlane {
+        normal,
+        gap,
+        silhouette,
+    })
+}
+
+pub(super) fn beam_visible(
+    beam: &Transform,
+    camera: &Transform,
+    reading: Option<&ReadingPlane>,
+) -> bool {
+    let delta = camera.translation - beam.translation;
+    let half = beam.scale.abs() / 2.;
+    if (delta.abs() - half).max(Vec3::ZERO).length_squared() < 16. {
+        return false;
+    }
+    if let Some(reading) = reading {
+        let depth = delta.dot(reading.normal);
+        let side = Vec3::Y.cross(reading.normal);
+        if depth > -half.dot(reading.normal.abs())
+            && depth < reading.gap + half.dot(reading.normal.abs())
+            && delta.dot(side).abs() < reading.silhouette + 0.75
+        {
+            return false;
+        }
+    }
+    true
+}
+
+pub(super) fn keep_beams_clear(
+    repo: Res<Repo>,
+    explorer: Res<Explorer>,
+    camera: Query<&Transform, PlayerCamera>,
+    mut beams: Query<(&Transform, &mut Visibility), Or<(With<FileBeam>, With<district::Beacon>)>>,
+) {
+    let Ok(camera) = camera.single() else {
+        return;
+    };
+    let reading = reading_plane(&repo.0, &explorer, camera);
+    for (pose, mut visibility) in &mut beams {
+        let visible = beam_visible(pose, camera, reading.as_ref());
+        visibility.set_if_neq(if visible {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
+    }
+}
+
 pub(super) fn kind(path: &str) -> usize {
     match extension(path) {
         "rs" | "go" | "c" | "h" | "cpp" | "swift" => 0,
@@ -179,6 +252,21 @@ pub(super) const INK: [[f32; 3]; 5] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_beacon_is_cleared_from_the_camera_and_reading_wall() {
+        let camera = Transform::from_xyz(12., 30., 25.);
+        let reading = ReadingPlane {
+            normal: Vec3::Z,
+            gap: 12.,
+            silhouette: 7.,
+        };
+        let beam = |x, z| Transform::from_xyz(x, 30., z).with_scale(Vec3::new(0.34, 72., 0.34));
+        assert!(!beam_visible(&beam(12.1, 24.), &camera, None));
+        assert!(!beam_visible(&beam(13., 18.), &camera, Some(&reading)));
+        assert!(beam_visible(&beam(24., 18.), &camera, Some(&reading)));
+        assert!(beam_visible(&beam(13., 8.), &camera, Some(&reading)));
+    }
 
     #[test]
     fn mirror_covers_the_rear_face_from_ground_to_roof() {

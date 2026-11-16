@@ -31,7 +31,7 @@ test("OAuth uses PKCE, binds state to the browser, and keeps the token in its en
     assert.equal(options.headers.Authorization, "Bearer " + token);
     return Response.json({ login: "owner" });
   });
-  assert.equal(callback.headers.get("Location"), "/?picker=1");
+  assert.equal(callback.headers.get("Location"), "/?picker=1&github=connected");
   const session = callback.headers.getSetCookie().find(value => value.startsWith("__Host-repo-city="));
   assert.ok(session.includes("HttpOnly") && session.includes("Secure") && !session.includes(token));
   const headers = { Cookie: session.split(";")[0] };

@@ -2,7 +2,7 @@ import { loadGitHub, parsePullRequest } from "./github.mjs";
 import { createAnalytics } from "./analytics.mjs";
 import { browserKey } from "./analytics-config.mjs";
 import { createSyntaxCache } from "./syntax.mjs";
-import { focusRepositoryPicker, githubRequest, refreshPickerFooter, refreshRepositoryPicker } from "./github-picker.mjs";
+import { focusRepositoryPicker, githubAccount, githubReady, githubRequest, refreshPickerFooter, refreshRepositoryPicker } from "./github-picker.mjs";
 import { setupPointer } from "./pointer.mjs";
 import { createReview } from "./review.mjs";
 import { readProgress, writeProgress } from "./progress.mjs";
@@ -20,6 +20,8 @@ const dialog = document.querySelector("#repository-dialog");
 const guide = document.querySelector("#help-dialog");
 const guideKey = "repo-city-guide-v1";
 let tourCommand = 0;
+let tourEntry = null;
+let activeTourEntry = null;
 const logo = document.querySelector("#logo");
 const close = document.querySelector("#close");
 const reset = document.querySelector("#reset-progress");
@@ -42,29 +44,38 @@ function focusCanvas() {
   if (running && !document.querySelector("dialog[open]")) canvas.focus({ preventScroll: true });
 }
 
-function openGuide() {
+function openGuide(entry) {
+  tourEntry = entry;
   releasePointer();
   if (!guide.open) guide.showModal();
 }
-document.querySelector("#help").addEventListener("click", openGuide);
+document.querySelector("#help").addEventListener("click", () => openGuide("help"));
 function dismissGuide() {
   try { localStorage.setItem(guideKey, "seen"); } catch { /* Storage may be disabled. */ }
   guide.close();
 }
 document.querySelector("#help-start").addEventListener("click", () => {
   tourCommand = ((tourCommand & ~1) + 2) | 1;
+  activeTourEntry = tourEntry;
+  analytics.tour("start", activeTourEntry);
   review.equipWater();
   dismissGuide();
   if (!running) focusRepositoryPicker();
 });
 document.querySelector("#help-skip").addEventListener("click", () => {
   tourCommand = (tourCommand & ~1) + 2;
+  analytics.tour("skip", tourEntry);
+  activeTourEntry = null;
   dismissGuide();
 });
-guide.addEventListener("cancel", event => { event.preventDefault(); dismissGuide(); });
+guide.addEventListener("cancel", event => {
+  event.preventDefault();
+  analytics.tour("skip", tourEntry);
+  dismissGuide();
+});
 guide.addEventListener("close", focusCanvas);
 for (const type of ["keydown", "keyup"]) guide.addEventListener(type, event => event.stopPropagation());
-try { if (!localStorage.getItem(guideKey)) openGuide(); } catch { openGuide(); }
+try { if (!localStorage.getItem(guideKey)) openGuide("first_run"); } catch { openGuide("first_run"); }
 
 logo.addEventListener("click", () => {
   if (!running) {
@@ -130,6 +141,11 @@ async function openRepository(repo, ref, base) {
       await stageRepository(repository);
       globalThis.repoCity = {
         tourCommand: () => tourCommand,
+        tourCompleted() {
+          if (!activeTourEntry) return;
+          analytics.tour("complete", activeTourEntry);
+          activeTourEntry = null;
+        },
         reviewVersion: review.version,
         reviewRead: review.snapshot,
         reviewSave: review.add,
@@ -238,5 +254,11 @@ form.addEventListener("submit", event => {
 });
 
 const initial = parameters.get("pr") || parameters.get("repo");
-if (parameters.has("github")) status.textContent = "GitHub sign-in did not complete.";
+if (parameters.get("github") === "failed") status.textContent = "GitHub sign-in did not complete.";
+if (parameters.get("github") === "connected") {
+  const clean = new URL(location.href);
+  clean.searchParams.delete("github");
+  history.replaceState(null, "", clean);
+  void githubReady().then(() => { if (githubAccount()?.login) analytics.githubConnected(); });
+}
 if (initial && !parameters.has("picker")) openRepository(initial, parameters.get("ref"), parameters.get("base"));

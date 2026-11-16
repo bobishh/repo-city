@@ -216,6 +216,7 @@ pub(super) fn update(
     keys: Res<ButtonInput<KeyCode>>,
     mut events: MessageReader<KeyboardInput>,
     mut picker: ResMut<FilePicker>,
+    search: Res<listing::find::Search>,
     repo: Res<Repo>,
     mut pilot: Query<&mut Pilot>,
     mut panels: Query<&mut Node, (With<PickerPanel>, Without<FileRow>)>,
@@ -233,6 +234,10 @@ pub(super) fn update(
     #[cfg(not(target_arch = "wasm32"))] reset_button: Query<&Children, With<ResetProgressButton>>,
 ) {
     picker.suppress_input = false;
+    if search.blocks_controls() {
+        events.clear();
+        return;
+    }
     let command = keys.any_pressed([
         KeyCode::SuperLeft,
         KeyCode::SuperRight,

@@ -235,48 +235,54 @@ impl Repository {
             let dir = f.path.rsplit_once('/').map_or("/", |(d, _)| d);
             groups.entry(dir.into()).or_default().push(i);
         }
-        let mut x = 0.;
-        let mut z = 0.;
-        let mut band_height = 0.0_f32;
-        for (n, (name, mut indices)) in groups.into_iter().enumerate() {
-            if n > 0 && n % 3 == 0 {
-                x = 0.;
-                z += band_height + 20.;
-                band_height = 0.;
-            }
-            let rows = indices.len().div_ceil(6);
-            let width = 112.;
-            let depth = rows as f32 * 20. + 16.;
-            let columns = indices.len().min(6);
-            let mut lots: Vec<_> = (0..indices.len()).collect();
-            lots.sort_by_key(|&lot| {
-                let (column, row) = (lot % 6, lot / 6);
-                let side = column.min(columns - 1 - column);
-                let end = row.min(rows - 1 - row);
-                (side.min(end), side + end, lot)
-            });
-            indices.sort_by_key(|&i| {
-                let file = &self.files[i];
-                let size = file
-                    .after
-                    .as_ref()
-                    .or(file.before.as_ref())
-                    .map_or(0, |blob| blob.size);
-                (std::cmp::Reverse(size), i)
-            });
-            for (j, i) in lots.into_iter().zip(indices) {
-                self.files[i].position = [
-                    x + 12. + (j % 6) as f32 * 17.,
-                    z + 12. + (j / 6) as f32 * 20.,
+        const LOT_WIDTH: f32 = 27.;
+        const LOT_DEPTH: f32 = 30.;
+        const BORDER: f32 = 4.;
+        let plans = groups
+            .into_iter()
+            .map(|(name, mut files)| {
+                let columns = (files.len() as f32 * LOT_DEPTH / LOT_WIDTH)
+                    .sqrt()
+                    .round()
+                    .max(1.) as usize;
+                let rows = files.len().div_ceil(columns);
+                let blob_size = |index: usize| {
+                    let file = &self.files[index];
+                    file.after
+                        .as_ref()
+                        .or(file.before.as_ref())
+                        .map_or(0, |blob| blob.size)
+                };
+                // From the front street, lower roofs lead to taller rows behind them.
+                files.sort_by_key(|&index| (std::cmp::Reverse(blob_size(index)), index));
+                let size = [
+                    columns as f32 * LOT_WIDTH + 2. * BORDER,
+                    rows as f32 * LOT_DEPTH + 2. * BORDER,
                 ];
+                (name, files, columns, size)
+            })
+            .collect::<Vec<_>>();
+        let boxes = plans
+            .iter()
+            .map(|(_, _, _, size)| *size)
+            .collect::<Vec<_>>();
+        let positions = pack_districts(&boxes);
+        self.districts.clear();
+        for ((name, files, columns, size), [x, z]) in plans.into_iter().zip(positions) {
+            for (row, slots) in files.chunks(columns).enumerate() {
+                let offset = (columns - slots.len()) as f32 * LOT_WIDTH * 0.5;
+                for (column, &index) in slots.iter().enumerate() {
+                    self.files[index].position = [
+                        x + BORDER + offset + (column as f32 + 0.5) * LOT_WIDTH,
+                        z + BORDER + (row as f32 + 0.5) * LOT_DEPTH,
+                    ];
+                }
             }
             self.districts.push(District {
                 name,
                 position: [x, z],
-                size: [width, depth],
+                size,
             });
-            x += width + 20.;
-            band_height = band_height.max(depth);
         }
     }
     pub fn source(&self, index: usize, before: bool) -> Result<String, String> {
@@ -337,6 +343,48 @@ impl Repository {
     }
 }
 
+// Pack rectangles on shelves from largest to smallest depth. Evaluate several
+// widths to keep the full plan compact even when folder sizes vary widely.
+fn pack_districts(boxes: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    const STREET: f32 = 17.;
+    let mut order = (0..boxes.len()).collect::<Vec<_>>();
+    order.sort_by(|&a, &b| {
+        boxes[b][1]
+            .total_cmp(&boxes[a][1])
+            .then_with(|| boxes[b][0].total_cmp(&boxes[a][0]))
+            .then_with(|| a.cmp(&b))
+    });
+    let area = boxes
+        .iter()
+        .map(|[width, depth]| (width + STREET) * (depth + STREET))
+        .sum::<f32>();
+    let widest = boxes.iter().map(|size| size[0]).fold(0., f32::max);
+    let mut best = (f32::INFINITY, vec![]);
+    for factor in [0.82, 0.96, 1.10, 1.24, 1.40, 1.58] {
+        let limit = (area.sqrt() * factor).max(widest);
+        let (mut x, mut z, mut height, mut extent) = (0., 0., 0., 0.0_f32);
+        let mut slots = vec![[0., 0.]; boxes.len()];
+        for &index in &order {
+            let [width, depth] = boxes[index];
+            if x > 0. && x + width > limit {
+                x = 0.;
+                z += height + STREET;
+                height = 0.;
+            }
+            slots[index] = [x, z];
+            extent = extent.max(x + width);
+            x += width + STREET;
+            height = height.max(depth);
+        }
+        let depth = z + height;
+        let cost = extent.max(depth) + (extent * depth).sqrt() * 0.30;
+        if cost < best.0 {
+            best = (cost, slots);
+        }
+    }
+    best.1
+}
+
 /// Remove a declaration from a private in-memory draft. Source files remain untouched.
 pub fn cut_lines(source: &str, start: u32, end: u32) -> String {
     source
@@ -354,7 +402,7 @@ pub fn cut_lines(source: &str, start: u32, end: u32) -> String {
 mod tests {
     use super::*;
     #[test]
-    fn tall_files_take_perimeter_lots_before_interior_lots() {
+    fn lower_roofs_face_the_street_and_no_tall_ring_blocks_them() {
         let files = (0..24)
             .map(|size| File {
                 path: format!("src/{size:02}.rs"),
@@ -367,21 +415,61 @@ mod tests {
                 change: Change::Added,
                 position: [0., 0.],
             })
-            .collect();
+            .collect::<Vec<_>>();
         let mut repo = Repository {
             root: PathBuf::new(),
             revision: String::new(),
             baseline: None,
             files,
-            districts: Vec::new(),
+            districts: vec![],
         };
         repo.layout();
         for (size, file) in repo.files.iter().enumerate() {
-            let [x, z] = file.position;
-            let edge = x == 12. || x == 97. || z == 12. || z == 72.;
-            assert_eq!(edge, size >= 8, "lot for {}", file.path);
+            assert!(
+                repo.files[size + 1..]
+                    .iter()
+                    .all(|larger| larger.position[1] <= file.position[1])
+            );
         }
+        assert!(repo.files[0].position[1] > repo.files[23].position[1]);
     }
+
+    #[test]
+    fn dozens_of_varied_districts_pack_compactly_with_streets_between_them() {
+        let boxes = (0..62)
+            .map(|i| {
+                if i % 13 == 0 {
+                    [155., 158.]
+                } else if i % 3 == 0 {
+                    [62., 68.]
+                } else {
+                    [35., 38.]
+                }
+            })
+            .collect::<Vec<_>>();
+        let slots = pack_districts(&boxes);
+        let mut extents: [f32; 2] = [0., 0.];
+        for (index, (&[x, z], &[width, depth])) in slots.iter().zip(&boxes).enumerate() {
+            extents[0] = extents[0].max(x + width);
+            extents[1] = extents[1].max(z + depth);
+            for (&[other_x, other_z], &[other_width, other_depth]) in
+                slots[index + 1..].iter().zip(&boxes[index + 1..])
+            {
+                assert!(
+                    x + width + 17. <= other_x
+                        || other_x + other_width + 17. <= x
+                        || z + depth + 17. <= other_z
+                        || other_z + other_depth + 17. <= z
+                );
+            }
+        }
+        assert!(
+            extents[0].max(extents[1]) / extents[0].min(extents[1]) < 1.38,
+            "{extents:?}"
+        );
+        assert_eq!(slots, pack_districts(&boxes));
+    }
+
     #[test]
     fn cutting_preserves_other_source_and_can_break_syntax() {
         let source = "fn keep() {}\nfn cut() {\n  panic!();\n}\nfn also_keep() {}\n";

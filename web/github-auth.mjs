@@ -242,7 +242,9 @@ export async function handleGitHub(request, env, upstream = fetch) {
         const { login } = await profile.json();
         if (typeof login !== "string" || !/^[\w-]+$/.test(login)) return failed();
         const age = Math.max(1, Math.min(28_800, Number(expires) || 28_800));
-        return redirect(flow.returnTo, [clear, await setCookie(SESSION, { token, login }, age, secret)]);
+        const connected = new URL(flow.returnTo, url.origin);
+        connected.searchParams.set("github", "connected");
+        return redirect(connected.pathname + connected.search, [clear, await setCookie(SESSION, { token, login }, age, secret)]);
       } catch {
         return failed();
       }

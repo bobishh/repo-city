@@ -45,6 +45,7 @@ enum Arrival {
     Facade(Option<file_facade::Aim>),
     Stop,
     Comparison,
+    Overview,
 }
 
 impl Hop {
@@ -129,9 +130,22 @@ pub(super) struct Navigation {
     hop: Option<Hop>,
     redraw: bool,
     broken: HashSet<usize>,
+    overview_return: Option<Transform>,
+    pub overview_requested: bool,
 }
 
 impl Navigation {
+    pub(super) fn overview(&self) -> bool {
+        self.overview_return.is_some()
+    }
+
+    fn overview_hop(&mut self, start: Transform, end: Transform) {
+        let mut hop = Hop::new(start, end, Arrival::Overview);
+        hop.duration =
+            (start.translation.distance(end.translation) / 260. + 0.35).clamp(0.50, 1.05);
+        self.hop = Some(hop);
+    }
+
     pub(super) fn new(repo: &Repository, trace_path: Option<&str>) -> Result<Self, String> {
         let trace = if let Some(path) = trace_path {
             let content = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
@@ -261,9 +275,20 @@ fn fly_to_stop(navigation: &mut Navigation, camera: Transform, repo: &Repository
     navigation.redraw = true;
 }
 
+fn district_view(district: &repo_world::District, aspect: f32) -> Transform {
+    let [x, z] = district.position;
+    let [width, depth] = district.size;
+    let center = Vec3::new(x + width / 2., 0., z + depth / 2.);
+    let diameter = (width / aspect.max(0.5)).max(depth) + 28.;
+    let half_fov = std::f32::consts::FRAC_PI_8;
+    let height = listing::MAX_HEIGHT + diameter * 0.5 / half_fov.tan();
+    Transform::from_translation(center + Vec3::Y * height).looking_to(Vec3::NEG_Y, Vec3::NEG_Z)
+}
+
 pub(super) fn navigate(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
     repo: Res<Repo>,
     nearest: Res<Nearest>,
     mut explorer: ResMut<Explorer>,
@@ -272,6 +297,7 @@ pub(super) fn navigate(
     mut listing: ResMut<listing::Listing>,
     mut menu: ResMut<city_menu::Menu>,
     mut saved_progress: ResMut<progress::Progress>,
+    search: Res<listing::find::Search>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut camera: Query<(&mut Transform, &Pilot), PlayerCamera>,
 ) {
@@ -282,6 +308,41 @@ pub(super) fn navigate(
         return;
     };
     if !window.focused {
+        return;
+    }
+
+    let overview =
+        keys.just_pressed(KeyCode::KeyM) || std::mem::take(&mut navigation.overview_requested);
+    if overview || (navigation.overview() && keys.just_pressed(KeyCode::Escape)) {
+        listing.reset_view();
+        if let Some(origin) = navigation.overview_return.take() {
+            navigation.overview_hop(*camera, origin);
+        } else {
+            let file = &repo.0.files[explorer.selected];
+            let name = file
+                .path
+                .rsplit_once('/')
+                .map_or("/", |(directory, _)| directory);
+            let target = nearest
+                .district
+                .and_then(|index| repo.0.districts.get(index))
+                .or_else(|| {
+                    repo.0
+                        .districts
+                        .iter()
+                        .find(|district| district.name == name)
+                });
+            if let Some(district) = target {
+                navigation.route = None;
+                navigation.redraw = true;
+                explorer.anchored = false;
+                explorer.comparison_mode = 0;
+                explorer.rebuild = true;
+                navigation.overview_return = Some(*camera);
+                let end = district_view(district, window.width() / window.height().max(1.));
+                navigation.overview_hop(*camera, end);
+            }
+        }
         return;
     }
 
@@ -298,16 +359,18 @@ pub(super) fn navigate(
         return;
     }
     if let Some(hop) = &mut navigation.hop {
-        if let Arrival::Facade(Some(aim)) = hop.arrival {
-            let file = &repo.0.files[aim.index];
-            let end = aim.view(
+        if let Arrival::Facade(aim) = hop.arrival {
+            let file = &repo.0.files[explorer.selected];
+            let end = listing.arrival_view(
+                &explorer,
                 file,
-                explorer.facade_size(file, aim.index),
+                explorer.facade_size(file, explorer.selected),
+                aim,
                 hop.start.translation,
             );
             if hop.end != end {
                 // Source loading can resize the wall. Retarget from the current pose.
-                *hop = Hop::facade(*camera, end, Some(aim), &repo.0, &explorer);
+                *hop = Hop::facade(*camera, end, aim, &repo.0, &explorer);
             }
         }
         hop.elapsed += time.delta_secs();
@@ -347,7 +410,7 @@ pub(super) fn navigate(
                     }
                     navigation.redraw = true;
                 }
-                Arrival::Facade(_) => {}
+                Arrival::Facade(_) | Arrival::Overview => {}
             }
         }
         return;
@@ -410,11 +473,15 @@ pub(super) fn navigate(
         fly_to_stop(&mut navigation, *camera, &repo.0, explorer.selected);
         return;
     }
-    let next_changed = keys.just_pressed(KeyCode::KeyN);
+    let next_changed = keys.just_pressed(KeyCode::KeyN) && !search.owns_next();
     let target = if let Some(aim) = menu.destination.take() {
         Some((aim.index, Some(aim)))
     } else if let Some(file) = picker.destination.take() {
         Some((file, None))
+    } else if navigation.overview()
+        && (mouse.just_pressed(MouseButton::Left) || keys.just_pressed(KeyCode::KeyE))
+    {
+        nearest.file.map(|aim| (aim.index, None))
     } else if next_changed {
         (1..repo.0.files.len())
             .map(|offset| (explorer.selected + offset) % repo.0.files.len())
@@ -439,6 +506,7 @@ pub(super) fn navigate(
         None
     };
     if let Some((index, aimed)) = target {
+        let from_overview = navigation.overview_return.take().is_some();
         listing.reset_view();
         explorer.anchored = false;
         explorer.comparison_mode = 0;
@@ -448,19 +516,20 @@ pub(super) fn navigate(
         explorer.rebuild = true;
         let file = &repo.0.files[index];
         let size = explorer.facade_size(file, index);
-        let end = if let Some(aim) = aimed {
-            explorer.frame_loaded_source = false;
-            aim.view(file, size, camera.translation)
-        } else {
-            listing::view_from_size(file, explorer.highlighted.len(), size)
-        };
+        explorer.frame_loaded_source = false;
+        let end = listing.arrival_view(&explorer, file, size, aimed, camera.translation);
         if camera.translation.distance_squared(end.translation) < 0.04
             && camera.rotation.dot(end.rotation).abs() > 0.9999
         {
             return;
         }
-        navigation.hop = Some(Hop::facade(*camera, end, aimed, &repo.0, &explorer));
-    } else if !explorer.anchored
+        let mut hop = Hop::facade(*camera, end, aimed, &repo.0, &explorer);
+        if from_overview {
+            hop.duration = hop.duration.min(1.65);
+        }
+        navigation.hop = Some(hop);
+    } else if !navigation.overview()
+        && !explorer.anchored
         && explorer.comparison_mode == 0
         && let Some(index) = nearest
             .near_source
@@ -716,6 +785,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn overview_frames_all_roofs_in_wide_and_narrow_windows() {
+        let district = repo_world::District {
+            name: "src".into(),
+            position: [100., 100.],
+            size: [175., 120.],
+        };
+        for aspect in [0.6, 1., 1.78] {
+            let eye = district_view(&district, aspect);
+            assert!(eye.forward().dot(Vec3::NEG_Y) > 0.999);
+            assert_eq!(eye.translation.xz(), Vec2::new(187.5, 160.));
+            let half =
+                (eye.translation.y - listing::MAX_HEIGHT) * std::f32::consts::FRAC_PI_8.tan();
+            assert!(half > 60. && half * aspect > 87.5);
+        }
+    }
+
+    #[test]
     fn approaching_another_front_reads_in_place_without_a_click() {
         let mut repo = repository_picker::empty();
         for path in ["current.rs", "nearby.toml"] {
@@ -738,6 +824,7 @@ mod tests {
             .init_resource::<city_menu::Menu>()
             .init_resource::<file_picker::FilePicker>()
             .init_resource::<listing::Listing>()
+            .init_resource::<listing::find::Search>()
             .init_resource::<progress::Progress>()
             .add_systems(Update, navigate);
         app.world_mut().spawn((Window::default(), PrimaryWindow));
@@ -778,6 +865,7 @@ mod tests {
             .init_resource::<city_menu::Menu>()
             .init_resource::<file_picker::FilePicker>()
             .init_resource::<listing::Listing>()
+            .init_resource::<listing::find::Search>()
             .init_resource::<progress::Progress>()
             .add_systems(Update, (targeting, navigate).chain());
         app.world_mut().spawn((Window::default(), PrimaryWindow));

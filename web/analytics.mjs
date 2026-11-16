@@ -35,21 +35,29 @@ export function createAnalytics(browserKey, browser = window) {
     } catch { /* Unavailable telemetry must not interrupt the city. */ }
   }
 
+  function telemetry(event, component, operation, status, duration, attrs) {
+    send(2, {
+      event, component, operation, status, attrs,
+      build: "", session_id: "", device_id: "", workspace_id: "", entity_type: "", entity_id: "",
+      trace_id: "", span_id: "", parent_span_id: "",
+      duration_ms: Number.isFinite(duration) ? Math.min(86_400_000, Math.max(0, duration)) : 0,
+    });
+  }
+
   return {
     pageView() {
       send(1, { event: "page_view", path: "/", target: "", referrer_host: "", properties: {} });
     },
     repositoryOpened(ok, elapsedMs, comparing) {
-      send(2, {
-        event: "repo_city.repository.open",
-        build: "", session_id: "", device_id: "", workspace_id: "", entity_type: "", entity_id: "",
-        trace_id: "", span_id: "", parent_span_id: "",
-        component: "repository",
-        operation: "open",
-        status: ok ? "ok" : "error",
-        duration_ms: Number.isFinite(elapsedMs) ? Math.min(86_400_000, Math.max(0, elapsedMs)) : 0,
-        attrs: { mode: comparing ? "comparison" : "snapshot" },
-      });
+      telemetry("repo_city.repository.open", "repository", "open", ok ? "ok" : "error",
+        elapsedMs, { mode: comparing ? "comparison" : "snapshot" });
+    },
+    tour(action, entry) {
+      if (!["start", "complete", "skip"].includes(action) || !["first_run", "help"].includes(entry)) return;
+      telemetry("repo_city.tour", "onboarding", action, "ok", 0, { entry });
+    },
+    githubConnected() {
+      telemetry("repo_city.github.connect", "github", "connect", "ok", 0, {});
     },
   };
 }

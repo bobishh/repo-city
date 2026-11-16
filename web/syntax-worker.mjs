@@ -3,6 +3,7 @@ import { createJavaScriptRegexEngine } from "@shikijs/engine-javascript";
 
 const grammars = {
   rust: () => import("@shikijs/langs/rust"),
+  go: () => import("@shikijs/langs/go"),
   javascript: () => import("@shikijs/langs/javascript"),
   typescript: () => import("@shikijs/langs/typescript"),
   tsx: () => import("@shikijs/langs/tsx"),

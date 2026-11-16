@@ -1,5 +1,5 @@
 const languages = new Map(Object.entries({
-  rs: "rust", js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "jsx",
+  rs: "rust", go: "go", js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "jsx",
   ts: "typescript", tsx: "tsx", rb: "ruby", rake: "ruby", ex: "elixir", exs: "elixir",
   elm: "elm", toml: "toml", json: "json",
 }));

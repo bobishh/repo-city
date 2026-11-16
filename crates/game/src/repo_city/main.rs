@@ -431,6 +431,7 @@ fn main() {
     .init_resource::<city_menu::Menu>()
     .init_resource::<file_picker::FilePicker>()
     .init_resource::<listing::Listing>()
+    .init_resource::<listing::find::Search>()
     .init_resource::<progress::Progress>()
     .init_resource::<review_notes::Review>()
     .init_resource::<guide::Tour>()
@@ -440,15 +441,31 @@ fn main() {
         (
             file_picker::update,
             flight,
-            targeting,
-            city_menu::update,
+            (file_facade::keep_beams_clear, targeting).chain(),
+            (city_menu::update, listing::find::update).chain(),
             (review_notes::update, review_notes::panels).chain(),
-            city_navigation::navigate.run_if(city_menu::gameplay_enabled),
-            interaction.run_if(city_menu::gameplay_enabled),
-            comparison_scene::controls.run_if(city_menu::gameplay_enabled),
-            listing::controls.run_if(city_menu::gameplay_enabled),
-            listing::wash_stream.run_if(city_menu::gameplay_enabled),
-            (guide::advance, listing::paint_notes, android::show_sprayer).chain(),
+            city_navigation::navigate
+                .run_if(city_menu::gameplay_enabled)
+                .run_if(listing::find::movement_enabled),
+            interaction
+                .run_if(city_menu::gameplay_enabled)
+                .run_if(listing::find::movement_enabled),
+            comparison_scene::controls
+                .run_if(city_menu::gameplay_enabled)
+                .run_if(listing::find::movement_enabled),
+            listing::controls
+                .run_if(city_menu::gameplay_enabled)
+                .run_if(listing::find::movement_enabled),
+            listing::wash_stream
+                .run_if(city_menu::gameplay_enabled)
+                .run_if(listing::find::movement_enabled),
+            (
+                guide::advance,
+                listing::paint_notes,
+                listing::find::mark,
+                android::show_sprayer,
+            )
+                .chain(),
             physics::splashes,
             city_navigation::shoot_reviewed_platform,
             physics::fractures,
@@ -737,6 +754,7 @@ fn setup(
     file_picker::spawn(&mut commands, &ui_font(13.), color(set.ink));
     city_menu::spawn(&mut commands, &ui_font(13.), color(set.ink));
     guide::spawn_hint(&mut commands, &ui_font(13.), color(set.ink));
+    listing::find::spawn(&mut commands, &ui_font(13.), color(set.ink));
     #[cfg(not(target_arch = "wasm32"))]
     guide::spawn(&mut commands, &ui_font(15.), color(set.ink));
     commands.spawn((
@@ -858,20 +876,21 @@ fn spawn_city(
         *pose = listing::view(&repo.0.files[explorer.selected], explorer.highlighted.len());
         pilot.captured = false;
     }
-    let extent_z = repo
+    let extent = repo
         .0
         .districts
         .iter()
-        .map(|d| d.position[1] + d.size[1])
-        .fold(200., f32::max);
+        .fold(Vec2::splat(22.), |extent, district| {
+            extent.max(Vec2::from_array(district.position) + Vec2::from_array(district.size))
+        });
     commands.spawn((
         CityObject,
         Mesh3d(unit.clone()),
         MeshMaterial3d(plate.clone()),
-        Transform::from_xyz(180., -0.7, extent_z / 2.).with_scale(Vec3::new(
-            450.,
+        Transform::from_xyz(extent.x / 2., -0.7, extent.y / 2.).with_scale(Vec3::new(
+            extent.x + 56.,
             1.,
-            extent_z + 80.,
+            extent.y + 56.,
         )),
         RigidBody::Static,
         Collider::cuboid(1., 1., 1.),
@@ -999,6 +1018,7 @@ fn spawn_city(
         commands.spawn((
             CityObject,
             Attachment(i, Part::Beam),
+            file_facade::FileBeam,
             bevy::light::NotShadowCaster,
             Mesh3d(block.clone()),
             MeshMaterial3d(beams[kind].clone()),
@@ -1031,6 +1051,7 @@ fn flight(
     listing: Res<listing::Listing>,
     file_buttons: Query<&bevy::picking::hover::Hovered, With<file_picker::FileButton>>,
     review: Res<review_notes::Review>,
+    search: Res<listing::find::Search>,
     #[cfg(target_arch = "wasm32")] mut previous_pointer_ui: Local<Option<bool>>,
 ) {
     let Ok((mut camera, mut pilot)) = camera.single_mut() else {
@@ -1039,7 +1060,11 @@ fn flight(
     let Ok(window) = windows.single() else {
         return;
     };
-    let pointer_ui_open = picker.is_open() || menu.is_open() || review.blocked;
+    let pointer_ui_open = picker.is_open()
+        || menu.is_open()
+        || review.blocked
+        || search.blocks_controls()
+        || navigation.overview();
     let was_captured = pilot.captured;
     let over_button = !was_captured && file_buttons.iter().any(|hovered| hovered.get());
     #[cfg(target_arch = "wasm32")]
@@ -1208,7 +1233,8 @@ fn targeting(
     nearest.hunk = None;
     nearest.near_source = None;
     nearest.district = None;
-    let mut distance = 250.;
+    let mut distance = 1000.;
+    let reading = file_facade::reading_plane(&repo.0, &explorer, camera);
     let mut near_distance = f32::INFINITY;
     // The aim ray may use the free cursor. Proximity follows the camera.
     for f in facades
@@ -1235,6 +1261,11 @@ fn targeting(
             });
         }
         if let Some(d) = ray_box(origin, direction, beam_min, beam_max)
+            && file_facade::beam_visible(
+                &file_facade::transform(file, size, file_facade::Part::Beam),
+                camera,
+                reading.as_ref(),
+            )
             && d < distance
         {
             distance = d;
@@ -1252,6 +1283,9 @@ fn targeting(
         }
     }
     for (marker, pose) in &district_beams {
+        if !file_facade::beam_visible(pose, camera, reading.as_ref()) {
+            continue;
+        }
         let half = Vec3::new(0.7, pose.scale.y / 2., 0.7);
         if let Some(d) = ray_box(
             origin,
@@ -1668,7 +1702,9 @@ fn hud(
 ) {
     let file = &repo.0.files[explorer.selected];
     if let Ok((mut text, mut tint, mut node)) = label.single_mut() {
-        let target = if !picker.is_open() && listing::Listing::visible(&explorer, &navigation) {
+        let target = if !picker.is_open()
+            && (navigation.overview() || listing::Listing::visible(&explorer, &navigation))
+        {
             nearest
                 .district
                 .map(|index| {
@@ -1680,7 +1716,12 @@ fn hud(
                 .or_else(|| {
                     nearest
                         .file
-                        .filter(|aim| aim.index != explorer.selected || aim.surface.is_none())
+                        .filter(|aim| {
+                            navigation.overview()
+                                || aim.index != explorer.selected
+                                || aim.surface.is_none()
+                                || nearest.file_distance > 24.
+                        })
                         .map(|aim| aim.index)
                         .map(|index| {
                             let path = repo.0.files[index].path.as_str();
@@ -1736,7 +1777,12 @@ fn hud(
                 &repo.0.revision[..8]
             )
         } else if bottom {
-            if tour.active() {
+            if navigation.overview() {
+                format!(
+                    "District view · Click or E flies to a file · {} finds files · M returns",
+                    file_picker::SHORTCUT
+                )
+            } else if tour.active() {
                 String::new()
             } else {
                 navigation.prompt(&explorer)

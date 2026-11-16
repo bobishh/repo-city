@@ -89,6 +89,7 @@ jobs:
             web/dist/
             web/worker.mjs
             web/github-auth.mjs
+            web/pr-review.mjs
             web/wrangler.jsonc
           retention-days: 7
           if-no-files-found: error
@@ -110,6 +111,9 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
+      - name: Check the Worker module in the deployment artifact
+        working-directory: release
+        run: node --input-type=module -e 'const { default: worker } = await import("./worker.mjs"); if (typeof worker.fetch !== "function") process.exit(1);'
       - name: Deploy the tested build
         working-directory: release
         env:

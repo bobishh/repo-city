@@ -91,3 +91,12 @@ comment publication. Read access still permits private drafts and GitHub
 thread viewing. The Worker accepts review writes only from the site origin
 with a valid user session, and checks that the comment still targets the
 current PR head and an available GitHub diff range.
+
+Browser syntax uses separately served Shiki grammars. Loading a Go file
+downloads the Go grammar on demand; the game WASM does not contain it.
+GitHub uses Linguist to choose its own grammars. Repo City pins its grammar
+assets and serves them from the same origin as the game.
+
+The optional web telemetry records coarse tour actions (start, complete,
+skip) and a successful GitHub connection. It sends no GitHub handle,
+repository name, source, search term, or comment.

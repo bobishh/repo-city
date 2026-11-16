@@ -80,9 +80,11 @@ pub(super) fn advance(
     if !review.blocked {
         tour.step = match tour.step {
             Step::Look if pilot.captured => Step::Travel,
-            Step::Travel if navigation.is_flying() => Step::Arriving,
+            Step::Travel if navigation.is_flying() && !navigation.overview() => Step::Arriving,
             Step::Arriving if !navigation.is_flying() => Step::Wash,
             Step::Wash if review.washing && review.nozzle > 0.85 => {
+                #[cfg(target_arch = "wasm32")]
+                browser_tour_completed();
                 Step::Finish(time.elapsed_secs())
             }
             Step::Finish(started) if time.elapsed_secs() > started + 9. => Step::Off,
@@ -105,7 +107,13 @@ pub(super) fn advance(
         Step::Arriving => "2 / 3   Flying to the wall…",
         Step::Wash if !pilot.captured => "3 / 3   Click to capture the cursor again.",
         Step::Wash => "3 / 3   Aim at a line. Hold left click to wash it with water (0).",
-        Step::Finish(_) => "Press U to try colored paints. Use ? to replay the tour.",
+        Step::Finish(_) => {
+            if cfg!(target_arch = "wasm32") {
+                "U opens paints. Sign in for PR notes. Publishing needs Pull requests: write."
+            } else {
+                "U opens paints. Your review notes stay on this Mac."
+            }
+        }
     };
     if text.0 != message {
         text.0 = message.into();
@@ -122,6 +130,17 @@ fn browser_tour() -> (u32, bool) {
     }
     let value = command();
     (value >> 1, value & 1 != 0)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_tour_completed() {
+    use wasm_bindgen::prelude::*;
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = tourCompleted)]
+        fn completed();
+    }
+    completed();
 }
 
 #[cfg(not(target_arch = "wasm32"))]

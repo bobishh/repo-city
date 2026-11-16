@@ -65,3 +65,22 @@ test("a failed telemetry request never interrupts a repository opening", async (
     assert.doesNotThrow(() => analytics.repositoryOpened(true, 1, false));
   }
 });
+
+test("tracks tour outcomes and GitHub connection without sending account or source data", () => {
+  const { requests, browser } = fixture();
+  const analytics = createAnalytics("project-browser-key", browser);
+  analytics.tour("start", "first_run");
+  analytics.tour("complete", "help");
+  analytics.tour("skip", "help");
+  analytics.tour("private-needle", "help");
+  analytics.tour("start", "private-repo");
+  analytics.githubConnected();
+  const events = requests.map(({ options }) => JSON.parse(options.body).events[0]);
+  assert.deepEqual(events.map(({ event, operation, attrs }) => [event, operation, attrs]), [
+    ["repo_city.tour", "start", { entry: "first_run" }],
+    ["repo_city.tour", "complete", { entry: "help" }],
+    ["repo_city.tour", "skip", { entry: "help" }],
+    ["repo_city.github.connect", "connect", {}],
+  ]);
+  for (const request of requests) assert.doesNotMatch(request.options.body, /private|prototype|repo=|#marker/);
+});

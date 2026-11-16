@@ -18,6 +18,7 @@ test("Rust colors real tokens across lines and measures ranges in UTF-8", async 
 
 test("supported languages have token colors and JSON/TOML may be loaded independently", async () => {
   for (const [language, source] of [
+    ["go", "package main\nfunc main() { println(42) }"],
     ["typescript", "const count: number = 3"],
     ["ruby", "puts 'robot'"],
     ["elixir", "defmodule City do\n  def demo, do: 123\nend"],

@@ -122,7 +122,7 @@ impl Lights {
             }
         }
 
-        let pane = Vec3::new(x + 12., 4.25, max_z);
+        let pane = Vec3::new(x + 3., 4.25, max_z);
         commands.spawn((
             CityObject,
             Glass,

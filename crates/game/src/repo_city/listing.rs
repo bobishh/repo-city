@@ -8,6 +8,7 @@ use std::{
 use super::*;
 
 mod cover;
+pub(super) mod find;
 mod paint;
 pub(super) use cover::Plugin as CoverPlugin;
 pub(super) use paint::draw as paint_notes;
@@ -207,6 +208,21 @@ pub(super) fn draw_overview(
     }
 }
 
+fn nearest_unopened(preferred: usize, count: usize, opened: impl Fn(usize) -> bool) -> usize {
+    (0..count)
+        .find_map(|offset| {
+            preferred
+                .checked_sub(offset)
+                .filter(|&row| !opened(row))
+                .or_else(|| {
+                    preferred
+                        .checked_add(offset)
+                        .filter(|&row| row < count && !opened(row))
+                })
+        })
+        .unwrap_or(0)
+}
+
 fn tile_rows(row: usize, total: usize) -> std::ops::Range<usize> {
     let first = row / TILE_ROWS * TILE_ROWS;
     first..(first + TILE_ROWS).min(total)
@@ -300,7 +316,51 @@ impl Listing {
         self.scroll_remaining = 0.;
     }
     pub(super) fn visible(explorer: &Explorer, navigation: &city_navigation::Navigation) -> bool {
-        explorer.comparison_mode == 0 && !explorer.anchored && !navigation.guides_camera()
+        explorer.comparison_mode == 0
+            && !explorer.anchored
+            && !navigation.guides_camera()
+            && !navigation.overview()
+    }
+
+    pub(super) fn arrival_view(
+        &self,
+        explorer: &Explorer,
+        file: &repo_world::File,
+        size: Vec3,
+        aim: Option<file_facade::Aim>,
+        eye: Vec3,
+    ) -> Transform {
+        let surface = aim.and_then(|aim| aim.surface);
+        let face = match surface.map(|surface| surface.normal) {
+            Some(Vec3::Y | Vec3::NEG_Z) => {
+                return aim.expect("surface has an aim").view(file, size, eye);
+            }
+            Some(Vec3::X) => Face::Diff,
+            Some(Vec3::NEG_X) => Face::Blame,
+            _ => Face::Source,
+        };
+        let count = if face == Face::Diff {
+            diff_rows(explorer)
+        } else {
+            explorer.highlighted.len()
+        };
+        let side = WallSide::new(file, count, face, size);
+        let y = if count == 0 {
+            side.wall.top * 0.92
+        } else {
+            let preferred =
+                surface.map_or(0, |surface| side.wall.row(size.y * surface.height, count));
+            let row = if face == Face::Source && self.counts(explorer).0 < count {
+                nearest_unopened(preferred, count, |row| {
+                    self.revealed
+                        .contains(&(explorer.selected, explorer.before, row + 1))
+                })
+            } else {
+                0
+            };
+            side.wall.y(row as f32 + 0.5)
+        };
+        side.view(y)
     }
 
     pub(super) fn counts(&self, explorer: &Explorer) -> (usize, usize) {
@@ -752,7 +812,7 @@ impl Face {
         }
     }
 
-    fn at_camera(
+    pub(super) fn at_camera(
         file: &repo_world::File,
         size: Vec3,
         camera: &Transform,
@@ -1621,6 +1681,13 @@ mod tests {
         assert!((side.width - size.z).abs() < 0.001);
         assert!(side.wall.y(1620.).abs() < 0.001);
         assert!((side.wall.y(0.) + side.heading_height - size.y).abs() < 0.001);
+    }
+
+    #[test]
+    fn arrival_prefers_the_nearest_closed_row_and_falls_back_to_the_top() {
+        assert_eq!(nearest_unopened(15, 40, |row| row < 32), 32);
+        assert_eq!(nearest_unopened(20, 40, |row| (16..32).contains(&row)), 15);
+        assert_eq!(nearest_unopened(20, 40, |_| true), 0);
     }
 
     #[test]
