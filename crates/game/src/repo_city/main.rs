@@ -9,10 +9,12 @@ mod comparison_scene;
 mod district;
 mod file_facade;
 mod file_picker;
+mod guide;
 mod listing;
 mod physics;
 mod progress;
 mod repository_picker;
+mod review_notes;
 #[path = "../shapes.rs"]
 mod shapes;
 mod world_set;
@@ -274,6 +276,7 @@ impl Pilot {
 #[derive(Resource, Default)]
 struct Nearest {
     file: Option<file_facade::Aim>,
+    file_distance: f32,
     near_source: Option<usize>,
     district: Option<usize>,
     screen: Option<(Vec2, Vec2)>,
@@ -413,7 +416,7 @@ fn main() {
         ..default()
     }))
     .insert_resource(ClearColor(color(set.background)))
-    .add_plugins(PhysicsPlugins::default())
+    .add_plugins((PhysicsPlugins::default(), listing::CoverPlugin))
     .insert_resource(GlobalAmbientLight {
         color: Color::srgb(0.64, 0.82, 0.85),
         brightness: 550.,
@@ -429,6 +432,8 @@ fn main() {
     .init_resource::<file_picker::FilePicker>()
     .init_resource::<listing::Listing>()
     .init_resource::<progress::Progress>()
+    .init_resource::<review_notes::Review>()
+    .init_resource::<guide::Tour>()
     .add_systems(Startup, setup)
     .add_systems(
         Update,
@@ -437,12 +442,13 @@ fn main() {
             flight,
             targeting,
             city_menu::update,
+            (review_notes::update, review_notes::panels).chain(),
             city_navigation::navigate.run_if(city_menu::gameplay_enabled),
             interaction.run_if(city_menu::gameplay_enabled),
             comparison_scene::controls.run_if(city_menu::gameplay_enabled),
             listing::controls.run_if(city_menu::gameplay_enabled),
             listing::wash_stream.run_if(city_menu::gameplay_enabled),
-            android::show_sprayer,
+            (guide::advance, listing::paint_notes, android::show_sprayer).chain(),
             physics::splashes,
             city_navigation::shoot_reviewed_platform,
             physics::fractures,
@@ -473,6 +479,9 @@ fn main() {
             .before(listing::draw)
             .run_if(repository_picker::has_city),
     );
+    #[cfg(not(target_arch = "wasm32"))]
+    app.init_resource::<guide::Guide>()
+        .add_systems(Update, guide::update.before(flight));
     app.add_systems(Startup, district::setup);
     app.add_systems(
         Update,
@@ -727,6 +736,27 @@ fn setup(
     };
     file_picker::spawn(&mut commands, &ui_font(13.), color(set.ink));
     city_menu::spawn(&mut commands, &ui_font(13.), color(set.ink));
+    guide::spawn_hint(&mut commands, &ui_font(13.), color(set.ink));
+    #[cfg(not(target_arch = "wasm32"))]
+    guide::spawn(&mut commands, &ui_font(15.), color(set.ink));
+    commands.spawn((
+        review_notes::ToolHud,
+        Text::new(""),
+        ui_font(13.),
+        TextColor(color(set.ink)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: percent(50.),
+            right: percent(50.),
+            margin: UiRect {
+                right: px(13.),
+                top: px(12.),
+                ..default()
+            },
+            ..default()
+        },
+        bevy::picking::Pickable::IGNORE,
+    ));
     #[cfg(not(target_arch = "wasm32"))]
     repository_picker::spawn(&mut commands, &ui_font(13.), color(set.ink));
     commands.spawn((
@@ -1000,6 +1030,7 @@ fn flight(
     menu: Res<city_menu::Menu>,
     listing: Res<listing::Listing>,
     file_buttons: Query<&bevy::picking::hover::Hovered, With<file_picker::FileButton>>,
+    review: Res<review_notes::Review>,
     #[cfg(target_arch = "wasm32")] mut previous_pointer_ui: Local<Option<bool>>,
 ) {
     let Ok((mut camera, mut pilot)) = camera.single_mut() else {
@@ -1008,7 +1039,7 @@ fn flight(
     let Ok(window) = windows.single() else {
         return;
     };
-    let pointer_ui_open = picker.is_open() || menu.is_open();
+    let pointer_ui_open = picker.is_open() || menu.is_open() || review.blocked;
     let was_captured = pilot.captured;
     let over_button = !was_captured && file_buttons.iter().any(|hovered| hovered.get());
     #[cfg(target_arch = "wasm32")]
@@ -1261,6 +1292,7 @@ fn targeting(
             nearest.file = None;
         }
     }
+    nearest.file_distance = distance;
 }
 
 fn interaction(
@@ -1620,6 +1652,7 @@ fn hud(
     nearest: Res<Nearest>,
     navigation: Res<city_navigation::Navigation>,
     listing: Res<listing::Listing>,
+    tour: Res<guide::Tour>,
     picker: Res<file_picker::FilePicker>,
     mut label: Query<(&mut Text, &mut TextColor, &mut Node), With<TargetLabel>>,
     mut texts: Query<
@@ -1703,7 +1736,11 @@ fn hud(
                 &repo.0.revision[..8]
             )
         } else if bottom {
-            navigation.prompt(&explorer)
+            if tour.active() {
+                String::new()
+            } else {
+                navigation.prompt(&explorer)
+            }
         } else if status && listing::Listing::visible(&explorer, &navigation) {
             let (opened, total) = listing.counts(&explorer);
             let anatomy = explorer

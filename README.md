@@ -20,13 +20,14 @@ pull request URL. For a repository, choose a branch, tag, or commit from the
 suggestions. Pick a comparison base to review a branch from its merge base.
 With no base specified, Repo City compares the revision with its first parent.
 A pull request opens its head tree and highlights changed lines in place. The
-diff wall also shows deleted lines.
+diff wall also shows deleted lines. Paste a pull request URL or choose **Pull
+requests** after selecting its repository.
 
 Use **Sign in with GitHub** below the search to find your repositories, stars,
 and forks from the repository field. Under your GitHub handle, use **Choose
 private repositories** to grant read access to selected repositories. Use
 **Default branch** or **Compare…** to find branches and tags or search commit messages
-on the default branch. Click the **Repo City** logo to reopen the picker.
+on the default branch. Click the **Repo City** logo to reopen the picker. Use **?** to start the interactive controls tour again.
 
 ### On your Mac
 
@@ -52,8 +53,10 @@ first argument.
 | Find a file by name or path | **P** in the browser, **⌘P** on Mac |
 | Fly | **WASD**, **Space** and **Ctrl** for altitude, **Shift** to boost |
 | Capture or release the cursor | Click the scene to capture. **Esc** releases. |
-| Open the camera menu | Right-click at a face to fly there, switch to its diff or blame, or open file search. Right-click empty space to open file search from the menu. |
-| Approach a wall | Aim at a face of a building and press **E** to fly to that face. Scroll along a reading wall. Hold the left mouse button close to the source wall to reveal covered lines. |
+| Open the actions menu | Right-click to open scene actions, file search, paints, or review notes. |
+| Approach a wall | Far away, left-click a building to fly to its source wall. Press **E** to fly to the aimed face. Scroll to move along the wall. |
+| Wash or paint lines | **0** equips water. Hold left click close to a source wall to reveal lines. **1–9** equip paints; drag from one readable line to another on the same side of the file. |
+| Edit paints and notes | **U** opens paints; **⌘ + scroll** cycles tools on Mac. **J** opens the note you are aiming at or the review list. |
 | Turn to the diff or blame wall | **G** for diff, **B** for blame. Sign in with GitHub for line attribution in the browser. |
 | Follow a file’s changes | **C** starts the review. **W** and **S** move between change platforms. |
 
@@ -62,6 +65,23 @@ Mac. The same repository and comparison restore those marks. Press **V** to
 toggle the selected file’s review mark. To start over on the open comparison,
 choose **Reset progress** in the browser’s repository dialog or the Mac
 **Files** menu.
+
+## Leave review notes
+
+Wash the source or use the readable diff wall. Pick a paint with **U** and
+drag over lines to save a draft. To add details, aim at a marked line and
+press **J**. Each draft keeps its original file, revision, and line range.
+Change a paint's name, color, spray text, or reusable prompt in **Paints**.
+
+The Mac app saves notes and palettes in SQLite without a GitHub login.
+Choose **Review notes** from the right-click menu to reopen or export them.
+In the browser, sign in with GitHub to save drafts for a pull request in
+IndexedDB. Existing public review threads are readable without signing in.
+
+**Preview GitHub comment** shows the text before you send it. Publication
+requires repository access and **Pull requests: write** for the Repo City
+GitHub App. If the PR moves or GitHub rejects the range, the draft stays
+local. Resetting reading progress leaves notes and paints in place.
 
 For local stack traces, draft editing, builds, and deployment, see
 [Development](docs/development.md).

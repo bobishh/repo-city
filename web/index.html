@@ -24,6 +24,7 @@
       </span>
       <span class="wordmark">Repo City</span>
     </button></h1>
+    <button id="help" type="button" aria-label="How to use Repo City" aria-haspopup="dialog" aria-controls="help-dialog" title="How to use Repo City">?</button>
     <a id="blame" target="_blank" rel="noopener noreferrer" aria-label="Blame on GitHub" hidden>Blame<span> on GitHub</span></a>
     <div id="start-controls">
       <form id="repository-form" aria-label="Open repository">
@@ -46,6 +47,7 @@
             <div id="revisions">
               <button id="choose-revision" type="button">Default branch</button>
               <button id="choose-base" type="button">Compare…</button>
+              <button id="choose-pull" type="button" aria-controls="pull-editor" aria-expanded="false">Pull requests</button>
             </div>
             <button id="open-city" type="submit">Open city</button>
           </div>
@@ -58,6 +60,14 @@
               <button id="use-revision" class="picker-icon" type="button" aria-label="Use revision">↵</button>
             </div>
             <div id="revision-results"></div>
+          </div>
+          <div id="pull-editor" hidden>
+            <div class="picker-row picker-search">
+              <label><span class="visually-hidden">Find an open pull request</span>
+                <input id="pull-search" placeholder="Find a pull request by number or title" autocomplete="off" spellcheck="false">
+              </label>
+            </div>
+            <div id="pull-results"></div>
           </div>
         </div>
         <input type="hidden" name="ref">
@@ -84,6 +94,15 @@
       </form>
     </div>
     <dialog id="repository-dialog" aria-label="Open repository"></dialog>
+    <dialog id="help-dialog" class="city-dialog" aria-labelledby="help-title">
+      <h2 id="help-title">Take a quick tour</h2>
+      <p>Open a repository or pull request. Then learn to look, fly to a file, and wash a line of code.</p>
+      <div class="dialog-actions">
+        <button id="help-skip" type="button">Skip</button>
+        <button id="help-start" type="button" autofocus>Start tour</button>
+      </div>
+    </dialog>
+    <dialog id="review-dialog" class="city-dialog" aria-labelledby="review-title"></dialog>
   </main>
 </body>
 </html>

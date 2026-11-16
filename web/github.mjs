@@ -58,6 +58,22 @@ export async function loadRevisions(input, request = fetch) {
   ];
 }
 
+export async function loadPullRequests(input, request = fetch) {
+  const repository = parseRepository(input);
+  const entries = [];
+  for (let page = 1; page <= 4; page++) {
+    const response = await readGitHub(request, `/repos/${repository}/pulls?per_page=50&page=${page}`);
+    const batch = await response.json();
+    if (!Array.isArray(batch)) throw new Error("Open pull requests are unavailable.");
+    entries.push(...batch.filter(pull => Number.isSafeInteger(pull.number) && pull.state === "open"));
+    if (!response.headers.get("Link")?.includes('rel="next"')) break;
+  }
+  return entries.map(pull => ({
+    value: `https://github.com/${repository}/pull/${pull.number}`,
+    label: `#${pull.number} · ${pull.title} · @${pull.user?.login ?? "unknown"} · ${pull.head?.ref ?? "?"} → ${pull.base?.ref ?? "?"}`,
+  }));
+}
+
 export async function loadLibrary(login, request) {
   async function pages(path, field) {
     const items = [];
@@ -135,6 +151,7 @@ export async function loadGitHub(input, ref, base, request = fetch) {
     };
   }
   return {
+    review: { repository: name, pull: pull?.number ?? null, revision: head.sha, baseline: baseline?.sha ?? null },
     progressScope: JSON.stringify([name.toLowerCase(), head.sha, baseline?.sha ?? null]),
     snapshot: JSON.stringify({ name: pull ? `${name}#${pull.number}` : name, revision: head.sha, baseline: baseline?.sha ?? null, before, after }),
     blameURL(path, useBase, line) {

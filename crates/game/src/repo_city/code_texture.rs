@@ -285,7 +285,7 @@ fn listing_background(open: bool, mark: Mark) -> [u8; 3] {
     }
 }
 
-fn covered_span(text: &str) -> (usize, usize) {
+pub(super) fn covered_span(text: &str) -> (usize, usize) {
     let indent = (text.len() - text.trim_start().len()).min(40);
     let start = 106 + indent * 12;
     let end = (106 + text.len().min(128) * 12).min((LISTING_WIDTH - 16) as usize);

@@ -11,6 +11,7 @@ createServer(async (request, response) => {
   if (pathname.startsWith("/github/")) {
     const result = await handleGitHub(new Request(`http://${request.headers.host}${request.url}`, {
       method: request.method, headers: request.headers,
+      ...(!["GET", "HEAD"].includes(request.method) && { body: request, duplex: "half" }),
     }), process.env);
     const headers = Object.fromEntries(result.headers);
     const cookies = result.headers.getSetCookie();

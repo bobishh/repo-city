@@ -61,6 +61,27 @@ test("OAuth uses PKCE, binds state to the browser, and keeps the token in its en
   blameQuery.set("path", "../somewhere");
   assert.equal((await handleGitHub(request("/github/blame?" + blameQuery, { headers }), env,
     () => assert.fail("An invalid path must not reach GitHub"))).status, 400);
+  const review = "/github/review/owner/private/123";
+  const blocked = await handleGitHub(request(review, { method: "POST", headers }), env,
+    () => assert.fail("Cross-origin review writes must never reach GitHub"));
+  assert.equal(blocked.status, 403);
+  const rejected = await handleGitHub(request(review, {
+    method: "POST",
+    headers: { ...headers, Origin: site, "Content-Type": "application/json" },
+    body: JSON.stringify({ path: "../bad" }),
+  }), env, () => assert.fail("Invalid review targets must never reach GitHub"));
+  assert.equal(rejected.status, 400);
+  const threads = await handleGitHub(request(review, { headers }), env, async (url, options) => {
+    assert.equal(url, "https://api.github.com/graphql");
+    const { query, variables } = JSON.parse(options.body);
+    assert.match(query, /reviewThreads\(first: 50/);
+    assert.deepEqual(variables, { owner: "owner", repo: "private", number: 123, cursor: null });
+    return Response.json({ data: { repository: { pullRequest: {
+      headRefOid: "b".repeat(40), reviewThreads: { nodes: [] },
+    } } } });
+  });
+  assert.equal(threads.status, 200);
+  assert.deepEqual((await threads.json()).reviewThreads.nodes, []);
   const search = new URLSearchParams({ q: 'repo:owner/private "robot" "motor"', per_page: "100" });
   const found = await handleGitHub(request("/github/api/search/commits?" + search, { headers }), env, async (url, options) => {
     assert.equal(url.pathname, "/search/commits");

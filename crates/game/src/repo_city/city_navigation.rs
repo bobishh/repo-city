@@ -273,12 +273,12 @@ pub(super) fn navigate(
     mut menu: ResMut<city_menu::Menu>,
     mut saved_progress: ResMut<progress::Progress>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    mut camera: Query<&mut Transform, PlayerCamera>,
+    mut camera: Query<(&mut Transform, &Pilot), PlayerCamera>,
 ) {
     if picker.is_open() || listing.turning() {
         return;
     }
-    let (Ok(mut camera), Ok(window)) = (camera.single_mut(), windows.single()) else {
+    let (Ok((mut camera, pilot)), Ok(window)) = (camera.single_mut(), windows.single()) else {
         return;
     };
     if !window.focused {
@@ -420,6 +420,12 @@ pub(super) fn navigate(
             .map(|offset| (explorer.selected + offset) % repo.0.files.len())
             .find(|&index| repo.0.files[index].change != Change::Unchanged)
             .map(|index| (index, None))
+    } else if let Some(aim) = pilot.shot.then_some(nearest.file).flatten().filter(|aim| {
+        let file = &repo.0.files[aim.index];
+        let size = explorer.facade_size(file, aim.index);
+        nearest.file_distance > listing::tool_range(size.x)
+    }) {
+        Some((aim.index, Some(aim.on_side(listing::Face::Source))))
     } else if keys.just_pressed(KeyCode::KeyE) {
         nearest.file.map(|aim| (aim.index, Some(aim))).or_else(|| {
             nearest
@@ -736,7 +742,10 @@ mod tests {
             .add_systems(Update, navigate);
         app.world_mut().spawn((Window::default(), PrimaryWindow));
         let pose = Transform::from_xyz(0., 1.65, 7.);
-        let camera = app.world_mut().spawn((Camera3d::default(), pose)).id();
+        let camera = app
+            .world_mut()
+            .spawn((Camera3d::default(), pose, Pilot::default()))
+            .id();
         app.update();
         assert_eq!(app.world().resource::<Explorer>().selected, 0);
         app.world_mut().resource_mut::<Nearest>().near_source = Some(1);
@@ -747,7 +756,7 @@ mod tests {
     }
 
     #[test]
-    fn e_flies_to_the_aimed_wall_and_primary_click_does_not() {
+    fn first_click_captures_then_far_click_flies_to_source_while_e_keeps_the_aimed_face() {
         let mut repo = repository_picker::empty();
         for (index, path) in ["current.rs", "target.rs"].into_iter().enumerate() {
             repo.files.push(repo_world::File {
@@ -773,14 +782,17 @@ mod tests {
             .add_systems(Update, (targeting, navigate).chain());
         app.world_mut().spawn((Window::default(), PrimaryWindow));
         let aim = Vec3::new(90., 0.6, 0.);
-        app.world_mut().spawn((
-            Camera3d::default(),
-            Transform::from_xyz(120., aim.y, 0.).looking_at(aim, Vec3::Y),
-            Pilot {
-                captured: true,
-                ..default()
-            },
-        ));
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Transform::from_xyz(120., aim.y, 0.).looking_at(aim, Vec3::Y),
+                Pilot {
+                    captured: true,
+                    ..default()
+                },
+            ))
+            .id();
         app.world_mut().spawn(Facade { index: 1 });
         app.world_mut()
             .resource_mut::<ButtonInput<MouseButton>>()
@@ -789,6 +801,13 @@ mod tests {
         assert_eq!(app.world().resource::<Explorer>().selected, 0);
         assert!(!app.world().resource::<Navigation>().is_flying());
 
+        app.world_mut().get_mut::<Pilot>(camera).unwrap().shot = true;
+        app.update();
+        assert_eq!(app.world().resource::<Explorer>().selected, 1);
+        let travel = app.world().resource::<Navigation>().hop.as_ref().unwrap();
+        assert!(travel.end.forward().dot(Vec3::NEG_Z) > 0.98);
+        app.world_mut().resource_mut::<Navigation>().hop = None;
+        app.world_mut().get_mut::<Pilot>(camera).unwrap().shot = false;
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::KeyE);

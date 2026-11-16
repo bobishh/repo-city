@@ -202,6 +202,12 @@ pub(super) fn setup(
         },
         RenderTarget::Image(robot.clone().into()),
         Tonemapping::None,
+        Projection::Orthographic(OrthographicProjection {
+            scaling_mode: bevy::camera::ScalingMode::FixedVertical {
+                viewport_height: 5.55,
+            },
+            ..OrthographicProjection::default_3d()
+        }),
         Transform::from_xyz(0., -0.04, 8.).looking_at(Vec3::Y * -0.04, Vec3::Y),
         RenderLayers::layer(android::LAYER),
     ));
@@ -223,12 +229,13 @@ pub(super) fn setup(
                 ..default()
             },
             Projection::Perspective(PerspectiveProjection {
-                fov: 0.59,
+                // Include the antenna and head through the reflection rig's full turn.
+                fov: 0.66,
                 ..default()
             }),
             RenderTarget::Image(face.clone().into()),
             Tonemapping::None,
-            Transform::from_xyz(0.25, 1.86, 2.22).looking_at(Vec3::new(-0.045, 1.78, 0.), Vec3::Y),
+            Transform::from_xyz(0.25, 1.86, 2.50).looking_at(Vec3::new(-0.045, 1.88, 0.), Vec3::Y),
             RenderLayers::layer(android::LAYER),
         ));
         commands.spawn((
@@ -328,9 +335,10 @@ pub(super) fn reflect(
     mut materials: ResMut<Assets<StandardMaterial>>,
     time: Res<Time>,
     mut motion: Local<MirrorMotion>,
+    review: Res<review_notes::Review>,
 ) {
     let (
-        Ok((eye, pilot)),
+        Ok((eye, _pilot)),
         Ok((mut pose, mut visibility, material)),
         Ok((mut view, mut mirror_pose)),
     ) = (camera.single(), sprite.single_mut(), render.single_mut())
@@ -354,7 +362,7 @@ pub(super) fn reflect(
         motion.drift = 0.;
         #[cfg(target_arch = "wasm32")]
         for (joint, mut local) in &mut joints {
-            android::animate(*joint, &mut local, time.elapsed_secs(), 0., 0.24, false);
+            android::animate(*joint, &mut local, time.elapsed_secs(), 0., 0.24, 0.);
         }
         return;
     };
@@ -365,7 +373,7 @@ pub(super) fn reflect(
     let offset = inverse * (eye.translation - pane.translation);
     let orbit = Vec3::new(
         (offset.x / offset.z.max(3.) * 2.1).clamp(-1.5, 1.5),
-        (offset.y / offset.z.max(3.) * 1.2).clamp(-0.7, 0.85) - 0.04,
+        (offset.y / offset.z.max(3.) * 0.75).clamp(-0.35, 0.45) - 0.04,
         8.,
     );
     mirror_pose.set_if_neq(Transform::from_translation(orbit).looking_at(Vec3::Y * -0.04, Vec3::Y));
@@ -385,7 +393,7 @@ pub(super) fn reflect(
             time.elapsed_secs(),
             motion.drift,
             yaw,
-            pilot.firing,
+            review.nozzle,
         );
     }
     visibility.set_if_neq(Visibility::Visible);

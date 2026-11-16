@@ -30,8 +30,8 @@ impl Menu {
     }
 }
 
-pub(super) fn gameplay_enabled(menu: Res<Menu>) -> bool {
-    !menu.is_open() && !menu.dismissed
+pub(super) fn gameplay_enabled(menu: Res<Menu>, review: Res<review_notes::Review>) -> bool {
+    !menu.is_open() && !menu.dismissed && !review.blocked
 }
 
 #[derive(Component, Clone, Copy)]
@@ -40,26 +40,48 @@ pub(super) enum Action {
     Diff,
     Blame,
     Find,
+    Paints,
+    Notes,
 }
 
 impl Action {
-    const ALL: [Self; 4] = [Self::Approach, Self::Diff, Self::Blame, Self::Find];
+    const ALL: [Self; 6] = [
+        Self::Approach,
+        Self::Diff,
+        Self::Blame,
+        Self::Find,
+        Self::Paints,
+        Self::Notes,
+    ];
 
     fn label(self) -> String {
         match self {
             Self::Approach => "Fly to face    E".into(),
             Self::Diff => "Diff           G".into(),
             Self::Blame => "Blame          B".into(),
+            Self::Paints => "Paints         U".into(),
+            Self::Notes => "Review notes   J".into(),
             Self::Find => format!("Find file    {}", file_picker::SHORTCUT),
         }
     }
 
-    fn choose(self, menu: &mut Menu, picker: &mut file_picker::FilePicker) {
-        if !menu.is_open() || (menu.aim.is_none() && !matches!(self, Self::Find)) {
+    fn global(self) -> bool {
+        matches!(self, Self::Find | Self::Paints | Self::Notes)
+    }
+
+    fn choose(
+        self,
+        menu: &mut Menu,
+        picker: &mut file_picker::FilePicker,
+        review: &mut review_notes::Review,
+    ) {
+        if !menu.is_open() || (menu.aim.is_none() && !self.global()) {
             return;
         }
         match self {
             Self::Find => picker.open(),
+            Self::Paints => review.request = Some(review_notes::Panel::Paints),
+            Self::Notes => review.request = Some(review_notes::Panel::Notes),
             Self::Approach => menu.destination = menu.aim,
             Self::Diff => menu.destination = menu.aim.map(|aim| aim.on_side(listing::Face::Diff)),
             Self::Blame => menu.destination = menu.aim.map(|aim| aim.on_side(listing::Face::Blame)),
@@ -115,8 +137,8 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
                     panel.spawn((
                         action,
                         file_picker::button(&action.label(), font, ink, AlignSelf::Stretch),
-                        observe(move |_: On<Activate>, mut menu: ResMut<Menu>, mut picker: ResMut<file_picker::FilePicker>| {
-                            action.choose(&mut menu, &mut picker);
+                        observe(move |_: On<Activate>, mut menu: ResMut<Menu>, mut picker: ResMut<file_picker::FilePicker>, mut review: ResMut<review_notes::Review>| {
+                            action.choose(&mut menu, &mut picker, &mut review);
                         }),
                     ));
                 }
@@ -132,6 +154,7 @@ pub(super) fn update(
     navigation: Res<city_navigation::Navigation>,
     listing: Res<listing::Listing>,
     mut menu: ResMut<Menu>,
+    mut review: ResMut<review_notes::Review>,
     mut overlay: Query<&mut Node, With<Overlay>>,
     mut panel: Query<&mut Node, (With<Panel>, Without<Overlay>)>,
     mut rows: Query<
@@ -141,7 +164,7 @@ pub(super) fn update(
 ) {
     menu.dismissed = false;
     let right_click = mouse.just_pressed(MouseButton::Right);
-    if picker.is_open() || navigation.guides_camera() || listing.turning() {
+    if review.blocked || picker.is_open() || navigation.guides_camera() || listing.turning() {
         menu.close();
     } else if menu.is_open() && (keys.just_pressed(KeyCode::Escape) || right_click) {
         menu.close();
@@ -151,9 +174,11 @@ pub(super) fn update(
             (KeyCode::KeyE, Action::Approach),
             (KeyCode::KeyG, Action::Diff),
             (KeyCode::KeyB, Action::Blame),
+            (KeyCode::KeyU, Action::Paints),
+            (KeyCode::KeyJ, Action::Notes),
         ] {
             if keys.just_pressed(key) {
-                action.choose(&mut menu, &mut picker);
+                action.choose(&mut menu, &mut picker, &mut review);
                 break;
             }
         }
@@ -178,7 +203,7 @@ pub(super) fn update(
     let count = if menu.aim.is_some() {
         Action::ALL.len()
     } else {
-        1
+        Action::ALL.iter().filter(|action| action.global()).count()
     } as f32;
     let height = ROW_HEIGHT * count + GAP * (count - 1.) + 2. * PADDING;
     let point = (anchor + Vec2::splat(12.)).clamp(
@@ -190,7 +215,7 @@ pub(super) fn update(
         panel.top = px(point.y);
     }
     for (action, hovered, mut row, mut background) in &mut rows {
-        let display = if menu.aim.is_some() || matches!(action, Action::Find) {
+        let display = if menu.aim.is_some() || action.global() {
             Display::Flex
         } else {
             Display::None

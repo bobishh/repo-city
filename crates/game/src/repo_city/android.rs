@@ -5,10 +5,11 @@ use bevy::{camera::visibility::RenderLayers, light::NotShadowCaster};
 pub(super) const LAYER: usize = 7;
 const SPRAYER_TIP: f32 = 0.23;
 
-fn sprayer_view() -> Transform {
-    Transform::from_xyz(0.25, -0.15, -0.73)
+fn sprayer_view(raised: f32, can: bool) -> Transform {
+    let y = -0.48 + 0.22 * (raised * raised * (3. - 2. * raised));
+    Transform::from_xyz(0.24, y, -0.76)
         .with_rotation(Quat::from_rotation_y(std::f32::consts::PI) * Quat::from_rotation_z(-0.18))
-        .with_scale(Vec3::splat(0.72))
+        .with_scale(Vec3::splat(if can { 0.61 } else { 0.66 }))
 }
 
 #[derive(Component, Clone, Copy)]
@@ -101,6 +102,47 @@ impl Workshop {
             .id()
     }
 
+    fn can(&self, commands: &mut Commands, parent: Entity, pigment: &Handle<StandardMaterial>) {
+        let mesh = |commands: &mut Commands,
+                    paint: Handle<StandardMaterial>,
+                    position: Vec3,
+                    size: Vec3| {
+            commands.spawn((
+                ChildOf(parent),
+                Mesh3d(self.pin.clone()),
+                MeshMaterial3d(paint),
+                Transform::from_translation(position).with_scale(size),
+                RenderLayers::layer(self.layer),
+                NotShadowCaster,
+            ));
+        };
+        mesh(
+            commands,
+            pigment.clone(),
+            Vec3::new(0., -0.061, 0.),
+            Vec3::new(0.145, 0.235, 0.145),
+        );
+        mesh(
+            commands,
+            self.paint[Paint::Metal as usize].clone(),
+            Vec3::Y * 0.06,
+            Vec3::new(0.145, 0.024, 0.145),
+        );
+        mesh(
+            commands,
+            self.paint[Paint::Dark as usize].clone(),
+            Vec3::Y * 0.091,
+            Vec3::new(0.082, 0.042, 0.082),
+        );
+        self.block(
+            commands,
+            parent,
+            Paint::Lamp,
+            [0., 0.088, 0.045],
+            [0.04, 0.018, 0.02],
+        );
+    }
+
     fn sprayer(&self, commands: &mut Commands, parent: Entity) {
         use Paint::*;
         let along_barrel = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
@@ -170,7 +212,11 @@ impl Workshop {
 }
 
 #[derive(Component)]
-pub(super) struct ViewSprayer;
+pub(super) struct ViewSprayer(bool);
+#[derive(Component)]
+pub(super) struct MirrorSprayer(bool);
+#[derive(Resource)]
+pub(super) struct CanPigment(Handle<StandardMaterial>);
 
 pub(super) fn build(
     commands: &mut Commands,
@@ -212,6 +258,11 @@ pub(super) fn build(
         }),
         layer: LAYER,
     };
+    let pigment = materials.add(StandardMaterial {
+        unlit: true,
+        ..default()
+    });
+    commands.insert_resource(CanPigment(pigment.clone()));
     let plume = meshes.add(Cone::new(0.5, 1.).mesh().resolution(12));
     let body = commands
         .spawn((Joint::Body, Transform::default(), Visibility::default()))
@@ -337,7 +388,24 @@ pub(super) fn build(
                     Visibility::default(),
                 ))
                 .id();
-            w.sprayer(commands, grip);
+            let water = commands
+                .spawn((
+                    ChildOf(grip),
+                    Transform::default(),
+                    Visibility::Hidden,
+                    MirrorSprayer(false),
+                ))
+                .id();
+            let can = commands
+                .spawn((
+                    ChildOf(grip),
+                    Transform::default(),
+                    Visibility::Hidden,
+                    MirrorSprayer(true),
+                ))
+                .id();
+            w.sprayer(commands, water);
+            w.can(commands, can, &pigment);
         }
 
         let hip = w.joint(commands, body, [side * 0.22, -0.51, 0.], Joint::Hip(side));
@@ -404,12 +472,28 @@ pub(super) fn build(
     let view = commands
         .spawn((
             ChildOf(pilot),
-            ViewSprayer,
-            sprayer_view(),
+            ViewSprayer(false),
+            sprayer_view(0., false),
             Visibility::Hidden,
         ))
         .id();
     let first_person = Workshop { layer: 0, ..w };
+    let can = commands
+        .spawn((
+            ChildOf(pilot),
+            ViewSprayer(true),
+            sprayer_view(0., true),
+            Visibility::Hidden,
+        ))
+        .id();
+    first_person.can(commands, can, &pigment);
+    first_person.block(
+        commands,
+        can,
+        Metal,
+        [-0.04, -0.105, -0.025],
+        [0.09, 0.085, 0.095],
+    );
     first_person.sprayer(commands, view);
     first_person.block(
         commands,
@@ -436,44 +520,72 @@ pub(super) fn build(
     }
 }
 
-pub(super) fn spray_origin(camera: &Transform) -> Vec3 {
-    camera.transform_point(sprayer_view().transform_point(Vec3::Z * SPRAYER_TIP))
+pub(super) fn spray_origin(camera: &Transform, raised: f32, can: bool) -> Vec3 {
+    let tip = if can {
+        Vec3::new(0., 0.088, 0.055)
+    } else {
+        Vec3::Z * SPRAYER_TIP
+    };
+    camera.transform_point(sprayer_view(raised, can).transform_point(tip))
 }
 
 pub(super) fn show_sprayer(
-    camera: Query<&Pilot, PlayerCamera>,
-    menu: Res<city_menu::Menu>,
-    mut view: Query<&mut Visibility, With<ViewSprayer>>,
+    review: Res<review_notes::Review>,
+    pigment: Option<Res<CanPigment>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut view: Query<(&ViewSprayer, &mut Transform, &mut Visibility)>,
+    mut mirror: Query<(&MirrorSprayer, &mut Visibility), Without<ViewSprayer>>,
 ) {
-    if let (Ok(pilot), Ok(mut visibility)) = (camera.single(), view.single_mut()) {
-        visibility.set_if_neq(if pilot.captured && !menu.is_open() {
+    let paint = review.paint();
+    let can = paint.is_some();
+    let raised = review.nozzle;
+    let shown = |is_can| {
+        if is_can == can && raised > 0.12 {
             Visibility::Inherited
         } else {
             Visibility::Hidden
-        });
+        }
+    };
+    for (tool, mut pose, mut visibility) in &mut view {
+        visibility.set_if_neq(shown(tool.0));
+        if raised > 0. {
+            pose.set_if_neq(sprayer_view(raised, tool.0));
+        }
+    }
+    for (tool, mut visibility) in &mut mirror {
+        visibility.set_if_neq(shown(tool.0));
+    }
+    if let (Some(preset), Some(pigment)) = (paint, pigment) {
+        let [r, g, b] = preset.color;
+        let color = Color::srgb_u8(r, g, b);
+        if materials
+            .get(&pigment.0)
+            .is_some_and(|value| value.base_color != color)
+            && let Some(mut value) = materials.get_mut(&pigment.0)
+        {
+            value.base_color = color;
+        }
     }
 }
 
-fn pose(joint: Joint, t: f32, drift: f32, turn: f32, spraying: bool) -> Quat {
+fn pose(joint: Joint, t: f32, drift: f32, turn: f32, raised: f32) -> Quat {
     let sway = (t * 2.1).sin();
     let swing = (t * 5.).sin() * drift;
     let (pitch, yaw, roll) = match joint {
         Joint::Body => (0.14 * drift, turn * 0.62, sway * 0.025),
         Joint::Head => (0.04 * sway, turn * 0.37, -0.18 + sway * 0.055),
         Joint::Shoulder(side) => (
-            0.06 * sway * side + swing * side * 0.32
-                - if spraying && side > 0. { 0.63 } else { 0. },
+            0.06 * sway * side + swing * side * 0.32 - if side > 0. { 0.63 * raised } else { 0. },
             0.,
             side * (0.17 + 0.12 * drift),
         ),
         Joint::Elbow(side) => (
-            -0.18 - 0.27 * drift + sway * side * 0.055
-                - if spraying && side > 0. { 0.51 } else { 0. },
+            -0.18 - 0.27 * drift + sway * side * 0.055 - if side > 0. { 0.51 * raised } else { 0. },
             0.,
             side * 0.08,
         ),
         Joint::Hip(side) => (0.10 + swing * side * 0.30, 0.04 * side, side * 0.12),
-        Joint::Knee(side) => (0.12 + (0.3 + swing * side * 0.25) * drift, 0., 0.),
+        Joint::Knee(side) => (0.08 + (0.12 + swing * side * 0.14) * drift, 0., 0.),
         Joint::Thruster(_) => return Quat::IDENTITY,
     };
     Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll)
@@ -485,13 +597,13 @@ pub(super) fn animate(
     t: f32,
     drift: f32,
     turn: f32,
-    spraying: bool,
+    raised: f32,
 ) {
     if let Joint::Thruster(side) = joint {
         transform.scale.y = 0.24 + drift * 1.42 + (t * 28. + side * 1.7).sin() * 0.10;
         return;
     }
-    transform.rotation = pose(joint, t, drift, turn, spraying);
+    transform.rotation = pose(joint, t, drift, turn, raised);
     if matches!(joint, Joint::Body) {
         transform.translation.y = (t * 2.1).sin() * (0.035 + drift * 0.045);
     }
@@ -504,16 +616,16 @@ mod tests {
     #[test]
     fn pilot_joints_animate_at_idle_and_answer_motion() {
         assert_ne!(
-            pose(Joint::Head, 0., 0., 0., false),
-            pose(Joint::Head, 0.6, 0., 0., false)
+            pose(Joint::Head, 0., 0., 0., 0.),
+            pose(Joint::Head, 0.6, 0., 0., 0.)
         );
         assert_ne!(
-            pose(Joint::Knee(1.), 0.4, 1., 0., false),
-            pose(Joint::Knee(1.), 0.4, 0., 0., false)
+            pose(Joint::Knee(1.), 0.4, 1., 0., 0.),
+            pose(Joint::Knee(1.), 0.4, 0., 0., 0.)
         );
         assert_ne!(
-            pose(Joint::Body, 0.4, 0., 0., false),
-            pose(Joint::Body, 0.4, 0., 0.5, false)
+            pose(Joint::Body, 0.4, 0., 0., 0.),
+            pose(Joint::Body, 0.4, 0., 0.5, 0.)
         );
     }
 }

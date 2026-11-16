@@ -5,6 +5,27 @@ const after = "b".repeat(40);
 const before = "a".repeat(40);
 const next = "e".repeat(40);
 
+test("shows the guide once and keeps it available from the help button", async ({ page }) => {
+  await page.goto("/");
+  const guide = page.getByRole("dialog", { name: "Take a quick tour" });
+  await expect(guide).toBeVisible();
+  await expect(guide.getByText("Then learn to look, fly to a file, and wash a line of code.", { exact: false })).toBeVisible();
+  await guide.getByRole("button", { name: "Skip", exact: true }).click();
+  await expect(guide).toBeHidden();
+  await page.reload();
+  await expect(guide).toBeHidden();
+  await page.getByRole("button", { name: "How to use Repo City" }).click();
+  await expect(guide).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(guide).toBeHidden();
+});
+
+test.beforeEach(async ({ page }, testInfo) => {
+  if (!testInfo.title.startsWith("shows the guide once")) {
+    await page.addInitScript(() => localStorage.setItem("repo-city-guide-v1", "seen"));
+  }
+});
+
 test("opens a public repository and fetches source after the WASM city starts", async ({ page }, testInfo) => {
   const faults = [];
   const consoleLog = [];
@@ -33,7 +54,7 @@ test("opens a public repository and fetches source after the WASM city starts", 
   });
   await page.goto("/");
   const cover = page.locator("#start-screen");
-  await expect(page.getByRole("button", { name: "Repo City" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Repo City", exact: true })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "GitHub repository" })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("landing.png") });
   const syntax = page.waitForResponse(response => new URL(response.url()).pathname === "/syntax-worker.mjs");
@@ -104,7 +125,7 @@ test("opens a public repository and fetches source after the WASM city starts", 
     await cdp.detach();
   }
   expect(faults).toEqual([]);
-  await page.getByRole("button", { name: "Repo City" }).click();
+  await page.getByRole("button", { name: "Repo City", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Open repository" });
   await expect(dialog).toBeVisible();
   await expect(canvas).toBeVisible();
@@ -128,7 +149,7 @@ test("opens a public repository and fetches source after the WASM city starts", 
   expect((await replacement).ok()).toBe(true);
   await expect(dialog).toBeHidden();
   await expect(page).toHaveURL(new RegExp("ref=" + next));
-  await page.getByRole("button", { name: "Repo City" }).click();
+  await page.getByRole("button", { name: "Repo City", exact: true }).click();
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 });
@@ -177,7 +198,7 @@ test("reports missing repositories and keeps the form usable", async ({ page }) 
   await page.getByRole("button", { name: "Open city" }).click();
   await expect(page.getByRole("status")).toHaveText("Repository, revision, or file not found. Private repositories need GitHub access.");
   await expect(page.getByRole("button", { name: "Open city" })).toBeEnabled();
-  await expect(page.getByRole("button", { name: "Repo City" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Repo City", exact: true })).toBeVisible();
 });
 
 test("opens a pull request from the URL using its fork head and merge base", async ({ page }, testInfo) => {
@@ -424,7 +445,7 @@ test("restores review progress after reload and resets only the open comparison"
   await page.keyboard.press("KeyV", { delay: 150 });
   await expect.poll(() => read(scope), polling).toContain(reviewed);
 
-  await page.getByRole("button", { name: "Repo City" }).click();
+  await page.getByRole("button", { name: "Repo City", exact: true }).click();
   await expect(summary).toHaveText(/1 file reviewed · [1-9][0-9]* lines revealed/);
   await page.getByText("Progress", { exact: true }).click();
   const reset = page.getByRole("button", { name: "Reset progress" });
@@ -441,4 +462,87 @@ test("restores review progress after reload and resets only the open comparison"
   await canvas.focus();
   await page.keyboard.press("KeyV", { delay: 150 });
   await expect.poll(() => read(scope), polling).toContain(reviewed);
+});
+
+test("paints a PR range, previews an explicit GitHub comment, and restores the note after reload", async ({ page }) => {
+  await emulatePointerLock(page);
+  await page.route("**/github/session", route => route.fulfill({ json: { enabled: true, login: "reviewer" } }));
+  await page.route(/\/github\/api\/|https:\/\/api.github.com\//, async route => {
+    const path = new URL(route.request().url()).pathname.replace("/github/api", "");
+    const source = Array.from({ length: 32 }, (_, i) => `// row ${i}${i === 3 && path.endsWith(before) ? " before" : ""}`).join("\n") + "\n";
+    if (path === "/repos/owner/demo/pulls/8") return route.fulfill({ json: {
+      state: "open", base: { sha: before }, head: { sha: after },
+    } });
+    if (path.endsWith("/comments")) return route.fulfill({ json: [
+      { id: 13, path: "src/demo.rs", line: 25, side: "RIGHT", body: "Separate note", user: { login: "ada" } },
+      { id: 14, in_reply_to_id: 13, body: "Got it", user: { login: "sam" } },
+    ] });
+    if (path.includes("/compare/")) return route.fulfill({ json: { merge_base_commit: { sha: before } } });
+    if (path.includes("/git/trees/")) return route.fulfill({ json: { tree: [{
+      path: "src/demo.rs", type: "blob", mode: "100644", sha: path.endsWith(after) ? after : before, size: source.length,
+    }] } });
+    if (path.includes("/git/blobs/")) return route.fulfill({ json: {
+      size: source.length, encoding: "base64", content: Buffer.from(source).toString("base64"),
+    } });
+    return route.fulfill({ json: path.includes("installations") ? { installations: [] } : [] });
+  });
+  const posts = [];
+  await page.route("**/github/review/owner/demo/8", route => {
+    if (route.request().method() === "GET") return route.fulfill({ status: 404 });
+    posts.push(route.request().postDataJSON());
+    return posts.length === 1
+      ? route.fulfill({ status: 403, json: { error: "Publishing needs Pull requests: write." } })
+      : route.fulfill({ status: 201, json: { comment: { html_url: "https://github.com/owner/demo/pull/8#discussion_r42" } } });
+  });
+  const url = "/?pr=https%3A%2F%2Fgithub.com%2Fowner%2Fdemo%2Fpull%2F8";
+  await page.goto(url);
+  await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+  const canvas = page.locator("canvas");
+  const center = { x: 640, y: 400 };
+  const lock = async () => {
+    await canvas.click({ position: center, delay: 150 });
+    await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  };
+  const review = page.locator("#review-dialog");
+  await lock();
+  await page.mouse.down();
+  await expect(page.locator("#progress-summary")).toHaveText(/[1-9]\d* lines revealed/, { timeout: 40_000 });
+  await page.mouse.up();
+  await page.keyboard.press("KeyU", { delay: 120 });
+  await expect(review).toBeVisible({ timeout: 20_000 });
+  await review.getByRole("button", { name: "Edit paint slot 8" }).click();
+  await review.getByLabel("Name").fill("Investigate");
+  await review.getByLabel("Spray text").fill("Check this path");
+  await review.getByLabel("Reusable prompt").fill("Reproduce first.");
+  await review.getByRole("button", { name: "Save paint" }).click();
+  await review.getByRole("button", { name: "8 · Investigate" }).click();
+  await lock();
+  await page.mouse.down();
+  await page.waitForTimeout(350);
+  await page.mouse.up();
+  await expect.poll(() => page.evaluate(() => JSON.parse(globalThis.repoCity.reviewRead()).notes.filter(note => !note.remote).length)).toBe(1);
+  await page.keyboard.press("KeyJ", { delay: 120 });
+  await expect(review).toBeVisible({ timeout: 20_000 });
+  const draft = review.getByRole("button", { name: /Investigate.*Draft/ });
+  if (await draft.isVisible()) await draft.click();
+  await expect(review.getByLabel("Comment")).toBeVisible();
+  await review.getByLabel("Comment").fill("Check this specific behavior.");
+  await review.getByRole("button", { name: "Preview GitHub comment" }).click();
+  await expect(review.getByText("Check this specific behavior.", { exact: false }).last()).toBeVisible();
+  expect(posts).toHaveLength(0);
+  await review.getByRole("button", { name: "Publish to GitHub" }).click();
+  await expect(review.getByRole("status")).toContainText("Pull requests: write");
+  await review.getByRole("button", { name: "Publish to GitHub" }).click();
+  await expect(review.getByRole("link", { name: "Published on GitHub" })).toBeVisible();
+  expect(posts[0]).toMatchObject({ path: "src/demo.rs", revision: after, before: false, text: "Check this specific behavior." });
+  await page.reload();
+  await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+  await expect.poll(() => page.evaluate(() => JSON.parse(globalThis.repoCity.reviewRead()).notes.length), { timeout: 20_000 }).toBe(2);
+  const restored = await page.evaluate(() => JSON.parse(globalThis.repoCity.reviewRead()));
+  expect(restored.palette[7].label).toBe("Investigate");
+  expect(restored.notes.find(note => !note.remote)).toMatchObject({
+    published: "https://github.com/owner/demo/pull/8#discussion_r42",
+    text: "Check this specific behavior.",
+  });
 });

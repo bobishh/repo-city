@@ -4,6 +4,7 @@ import { browserKey } from "./analytics-config.mjs";
 import { createSyntaxCache } from "./syntax.mjs";
 import { focusRepositoryPicker, githubRequest, refreshPickerFooter, refreshRepositoryPicker } from "./github-picker.mjs";
 import { setupPointer } from "./pointer.mjs";
+import { createReview } from "./review.mjs";
 import { readProgress, writeProgress } from "./progress.mjs";
 
 const analytics = createAnalytics(browserKey);
@@ -16,6 +17,9 @@ const blame = document.querySelector("#blame");
 const startScreen = document.querySelector("#start-screen");
 const startControls = document.querySelector("#start-controls");
 const dialog = document.querySelector("#repository-dialog");
+const guide = document.querySelector("#help-dialog");
+const guideKey = "repo-city-guide-v1";
+let tourCommand = 0;
 const logo = document.querySelector("#logo");
 const close = document.querySelector("#close");
 const reset = document.querySelector("#reset-progress");
@@ -24,6 +28,7 @@ const progressSummary = document.querySelector("#progress-summary");
 const submit = document.querySelector("#open-city");
 const syntax = createSyntaxCache();
 const releasePointer = setupPointer(canvas, dialog);
+const review = createReview({ canvas, release: releasePointer, onClose: focusCanvas });
 let active;
 let running = false;
 let sourceVersion = 0;
@@ -34,8 +39,32 @@ for (const name of ["repo", "ref", "base"]) form.elements[name].value = paramete
 if (parameters.get("pr")) form.elements.repo.value = parameters.get("pr");
 
 function focusCanvas() {
-  if (running && !dialog.open) canvas.focus({ preventScroll: true });
+  if (running && !document.querySelector("dialog[open]")) canvas.focus({ preventScroll: true });
 }
+
+function openGuide() {
+  releasePointer();
+  if (!guide.open) guide.showModal();
+}
+document.querySelector("#help").addEventListener("click", openGuide);
+function dismissGuide() {
+  try { localStorage.setItem(guideKey, "seen"); } catch { /* Storage may be disabled. */ }
+  guide.close();
+}
+document.querySelector("#help-start").addEventListener("click", () => {
+  tourCommand = ((tourCommand & ~1) + 2) | 1;
+  review.equipWater();
+  dismissGuide();
+  if (!running) focusRepositoryPicker();
+});
+document.querySelector("#help-skip").addEventListener("click", () => {
+  tourCommand = (tourCommand & ~1) + 2;
+  dismissGuide();
+});
+guide.addEventListener("cancel", event => { event.preventDefault(); dismissGuide(); });
+guide.addEventListener("close", focusCanvas);
+for (const type of ["keydown", "keyup"]) guide.addEventListener(type, event => event.stopPropagation());
+try { if (!localStorage.getItem(guideKey)) openGuide(); } catch { openGuide(); }
 
 logo.addEventListener("click", () => {
   if (!running) {
@@ -59,6 +88,7 @@ refreshRepositoryPicker();
 
 
 async function stageRepository(repository) {
+  await review.load(repository);
   const marks = await readProgress(repository.progressScope).catch(error => {
     console.warn("Could not load review progress", error);
     return [];
@@ -99,6 +129,14 @@ async function openRepository(repo, ref, base) {
       if (!graphics) throw new Error("WebGPU is unavailable. Open Repo City in a browser with WebGPU and graphics acceleration.");
       await stageRepository(repository);
       globalThis.repoCity = {
+        tourCommand: () => tourCommand,
+        reviewVersion: review.version,
+        reviewRead: review.snapshot,
+        reviewSave: review.add,
+        reviewPanel: review.panel,
+        reviewSlot: review.takeSlot,
+        reviewModal: review.modal,
+        reviewId: review.id,
         snapshot: () => active.repository.snapshot,
         repositoryVersion: () => repositoryVersion,
         sourceVersion: () => sourceVersion,

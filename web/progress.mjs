@@ -1,10 +1,14 @@
 const table = "marks";
+const reviewTable = "review";
 let open;
 
 function database() {
   open ??= new Promise((resolve, reject) => {
-    const request = indexedDB.open("repo-city-progress", 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(table);
+    const request = indexedDB.open("repo-city-progress", 2);
+    request.onupgradeneeded = event => {
+      if (event.oldVersion === 0) request.result.createObjectStore(table);
+      request.result.createObjectStore(reviewTable);
+    };
     request.onerror = () => reject(request.error);
     request.onsuccess = () => resolve(request.result);
   }).catch(error => {
@@ -43,3 +47,27 @@ export async function writeProgress(scope, changes) {
     }
   });
 }
+
+export async function readReview(scope) {
+  const db = await database();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(reviewTable);
+    const read = tx.objectStore(reviewTable).getAll(scopedKeys(scope));
+    tx.oncomplete = () => resolve(read.result);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+async function updateReview(scope, id, value) {
+  const db = await database();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(reviewTable, "readwrite");
+    const store = tx.objectStore(reviewTable);
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => reject(tx.error);
+    if (value === null) store.delete([scope, id]);
+    else store.put(value, [scope, id]);
+  });
+}
+export const saveReview = (scope, id, value) => updateReview(scope, id, value);
+export const deleteReview = (scope, id) => updateReview(scope, id, null);

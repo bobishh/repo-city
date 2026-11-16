@@ -85,3 +85,9 @@ repository-open outcomes, timings, and whether a comparison base was
 requested. Payloads exclude repository names, revisions, source, identifiers,
 URL parameters, and cookies. Local builds and previews skip tracking, as do
 browsers with Do Not Track or Global Privacy Control enabled.
+
+The optional GitHub App needs **Pull requests: write** for explicit PR
+comment publication. Read access still permits private drafts and GitHub
+thread viewing. The Worker accepts review writes only from the site origin
+with a valid user session, and checks that the comment still targets the
+current PR head and an available GitHub diff range.

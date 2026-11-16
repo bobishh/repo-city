@@ -7,6 +7,11 @@ use std::{
 
 use super::*;
 
+mod cover;
+mod paint;
+pub(super) use cover::Plugin as CoverPlugin;
+pub(super) use paint::draw as paint_notes;
+
 const TILE_ROWS: usize = 16;
 const TILES_PER_SIDE: usize = 6;
 const RETIRING_TILES: usize = 2;
@@ -16,6 +21,10 @@ const HEADING_RATIO: f32 = 0.055;
 pub(super) const MAX_HEIGHT: f32 = 72.;
 pub(super) const PANEL_OFFSET: f32 = 0.06;
 const OVERVIEW_BANDS: usize = 64;
+
+pub(super) fn tool_range(width: f32) -> f32 {
+    (width * 0.96).max(0.2)
+}
 
 fn texture_row_height(width: f32) -> f32 {
     width * code_texture::LISTING_ROW_PIXELS as f32 / code_texture::LISTING_WIDTH as f32
@@ -371,7 +380,6 @@ impl Listing {
             }
         }
         if changed {
-            self.source_tiles.dirty.insert(rows.start / TILE_ROWS);
             self.source_tiles.preview_dirty = true;
             if before == file.after.is_none() {
                 self.overview_dirty.insert(index);
@@ -390,9 +398,6 @@ impl Listing {
             .extend(self.reveal_progress.keys().map(|&(index, _)| index));
         self.revealed.clear();
         self.reveal_progress.clear();
-        self.source_tiles
-            .dirty
-            .extend(self.source_tiles.resident.keys().copied());
         self.source_tiles.preview_dirty = true;
     }
 }
@@ -408,8 +413,9 @@ pub(super) fn controls(
     mut camera: Query<&mut Transform, PlayerCamera>,
     windows: Query<&Window, With<PrimaryWindow>>,
     picker: Res<file_picker::FilePicker>,
+    review: Res<review_notes::Review>,
 ) {
-    if picker.is_open() {
+    if picker.is_open() || review.blocked {
         listing.scroll_remaining = 0.;
         return;
     }
@@ -484,7 +490,9 @@ pub(super) fn controls(
     }
     let step = f32::from(keys.just_pressed(KeyCode::PageUp))
         - f32::from(keys.just_pressed(KeyCode::PageDown));
-    let scroll = if wheel.unit == bevy::input::mouse::MouseScrollUnit::Pixel {
+    let scroll = if review_notes::command_scroll(&keys) {
+        0.
+    } else if wheel.unit == bevy::input::mouse::MouseScrollUnit::Pixel {
         wheel.delta.y / 40.
     } else {
         wheel.delta.y
@@ -566,11 +574,14 @@ pub(super) fn wash_stream(
     camera: Query<(&Transform, &Pilot), PlayerCamera>,
     picker: Res<file_picker::FilePicker>,
     mut progress: ResMut<progress::Progress>,
+    mut review: ResMut<review_notes::Review>,
 ) {
     let Ok((camera, pilot)) = camera.single() else {
         return;
     };
     if !pilot.firing
+        || review.slot != 0
+        || review.blocked
         || picker.is_open()
         || listing.turning()
         || !Listing::visible(&explorer, &navigation)
@@ -594,6 +605,7 @@ pub(super) fn wash_stream(
         listing.wash_remaining = 0.;
         return;
     };
+    review.washing = true;
     listing.wash_remaining -= time.delta_secs();
     if listing.wash_remaining <= 0. {
         if let Some(mark) = listing.wash(&explorer, file, hit.y) {
@@ -601,13 +613,17 @@ pub(super) fn wash_stream(
         }
         listing.wash_remaining = 0.12;
     }
-    physics::water_stream(
-        &mut gizmos,
-        camera,
-        hit,
-        side.wall.row_height,
-        time.elapsed_secs(),
-    );
+    if review.nozzle >= 0.85 {
+        physics::spray_stream(
+            &mut gizmos,
+            camera,
+            hit,
+            side.wall.row_height,
+            time.elapsed_secs(),
+            None,
+            review.nozzle,
+        );
+    }
 }
 
 #[derive(Default)]
@@ -622,8 +638,14 @@ struct Tiles {
 struct Tile {
     entity: Entity,
     image: Handle<Image>,
-    material: Handle<StandardMaterial>,
+    material: TileMaterial,
     alpha: f32,
+}
+
+#[derive(Clone, Debug)]
+enum TileMaterial {
+    Plain(Handle<StandardMaterial>),
+    Covered(Handle<cover::Material>),
 }
 
 struct WallSide {
@@ -677,7 +699,7 @@ impl WallSide {
     fn wash_hit(&self, camera: &Transform, count: usize) -> Option<Vec3> {
         // Arrival sits 0.84 widths away. Keep the jet inside that reading scale,
         // and only on a line under the reticle, never on the roof or from behind.
-        let (point, _) = self.ray_hit(camera, 0.72, (self.width * 0.96).max(0.20))?;
+        let (point, _) = self.ray_hit(camera, 0.72, tool_range(self.width))?;
         (count > 0 && point.y < self.wall.top).then_some(point)
     }
 
@@ -753,6 +775,7 @@ struct WallRender<'a, 'w, 's> {
     meshes: &'a mut Assets<Mesh>,
     materials: &'a mut Assets<StandardMaterial>,
     images: &'a mut Assets<Image>,
+    covered: &'a mut Assets<cover::Material>,
     remaining: usize,
     dt: f32,
 }
@@ -795,10 +818,18 @@ impl WallRender<'_, '_, '_> {
         tiles.dirty.clear();
     }
 
-    fn plane(&mut self, side: &WallSide, image: Image, y: f32, height: f32, layer: Layer) -> Tile {
+    fn plane(
+        &mut self,
+        side: &WallSide,
+        image: Image,
+        y: f32,
+        height: f32,
+        layer: Layer,
+        cover: Option<cover::CoverRows>,
+    ) -> Tile {
         let image = self.images.add(image);
         let alpha = if layer == Layer::Tile { 0. } else { 1. };
-        let material = self.materials.add(StandardMaterial {
+        let material = StandardMaterial {
             base_color: Color::WHITE.with_alpha(alpha),
             base_color_texture: Some(image.clone()),
             alpha_mode: if layer == Layer::Tile {
@@ -808,16 +839,25 @@ impl WallRender<'_, '_, '_> {
             },
             unlit: true,
             ..default()
-        });
-        let entity = self
-            .commands
-            .spawn((
-                ListingSurface(side.face),
-                Mesh3d(self.meshes.add(Rectangle::new(side.width, height))),
-                MeshMaterial3d(material.clone()),
-                layer.pose(side, y),
-            ))
-            .id();
+        };
+        let mut entity = self.commands.spawn((
+            ListingSurface(side.face),
+            Mesh3d(self.meshes.add(Rectangle::new(side.width, height))),
+            layer.pose(side, y),
+        ));
+        let material = if let Some(data) = cover {
+            let handle = self.covered.add(cover::Material {
+                base: material,
+                extension: cover::Cover { data },
+            });
+            entity.insert(MeshMaterial3d(handle.clone()));
+            TileMaterial::Covered(handle)
+        } else {
+            let handle = self.materials.add(material);
+            entity.insert(MeshMaterial3d(handle.clone()));
+            TileMaterial::Plain(handle)
+        };
+        let entity = entity.id();
         Tile {
             entity,
             image,
@@ -835,6 +875,7 @@ impl WallRender<'_, '_, '_> {
             side.top.y + height / 2.,
             height,
             Layer::Heading,
+            None,
         )
     }
 
@@ -861,6 +902,7 @@ impl WallRender<'_, '_, '_> {
                 side.wall.y(count as f32 / 2.),
                 count as f32 * side.wall.row_height,
                 Layer::Preview,
+                None,
             );
             state.preview = Some(tile.image);
             state.preview_dirty = false;
@@ -874,6 +916,10 @@ impl WallRender<'_, '_, '_> {
         read_y: f32,
         count: usize,
         texture: impl Fn(Range<usize>) -> Image,
+        source: Option<(
+            &dyn Fn(Range<usize>) -> u32,
+            &dyn Fn(Range<usize>, u32) -> cover::CoverRows,
+        )>,
     ) {
         let focus = side.wall.row(read_y, count);
         let window = side.window(focus, count);
@@ -892,13 +938,35 @@ impl WallRender<'_, '_, '_> {
                 let alpha = (tile.alpha + sign * self.dt / 0.14).clamp(0., 1.);
                 if alpha != tile.alpha {
                     tile.alpha = alpha;
-                    if let Some(mut material) = self.materials.get_mut(&tile.material) {
-                        material.base_color = Color::WHITE.with_alpha(alpha);
-                        material.alpha_mode = if alpha >= 1. {
-                            AlphaMode::Opaque
-                        } else {
-                            AlphaMode::Blend
-                        };
+                    let mode = if alpha >= 1. {
+                        AlphaMode::Opaque
+                    } else {
+                        AlphaMode::Blend
+                    };
+                    match &tile.material {
+                        TileMaterial::Plain(handle) => {
+                            if let Some(mut material) = self.materials.get_mut(handle) {
+                                material.base_color = Color::WHITE.with_alpha(alpha);
+                                material.alpha_mode = mode;
+                            }
+                        }
+                        TileMaterial::Covered(handle) => {
+                            if let Some(mut material) = self.covered.get_mut(handle) {
+                                material.base.base_color = Color::WHITE.with_alpha(alpha);
+                                material.base.alpha_mode = mode;
+                            }
+                        }
+                    }
+                }
+                if let (Some((mask, _)), TileMaterial::Covered(handle)) = (source, &tile.material) {
+                    let current = mask(tile_rows(*index * TILE_ROWS, count));
+                    if self
+                        .covered
+                        .get(handle)
+                        .is_some_and(|m| m.extension.data.mask() != current)
+                        && let Some(mut material) = self.covered.get_mut(handle)
+                    {
+                        material.extension.data.set_mask(current);
                     }
                 }
                 if wanted || alpha > 0. {
@@ -923,13 +991,21 @@ impl WallRender<'_, '_, '_> {
                 if !state.dirty.remove(&index) {
                     continue;
                 }
+                if let (Some((mask, metadata)), TileMaterial::Covered(handle)) =
+                    (source, &tile.material)
+                    && let Some(mut material) = self.covered.get_mut(handle)
+                {
+                    material.extension.data = metadata(rows.clone(), mask(rows.clone()));
+                }
                 if let Some(mut image) = self.images.get_mut(&tile.image) {
                     *image = texture(rows);
                 }
             } else {
                 let height = rows.len() as f32 * side.wall.row_height;
                 let center = side.wall.y((rows.start + rows.end) as f32 / 2.);
-                let tile = self.plane(side, texture(rows), center, height, Layer::Tile);
+                let metadata =
+                    source.map(|(mask, metadata)| metadata(rows.clone(), mask(rows.clone())));
+                let tile = self.plane(side, texture(rows), center, height, Layer::Tile, metadata);
                 state.resident.insert(index, tile);
             }
             self.remaining -= 1;
@@ -950,6 +1026,7 @@ pub(super) fn draw(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     time: Option<Res<Time>>,
+    mut covered: ResMut<Assets<cover::Material>>,
 ) {
     let visible = Listing::visible(&explorer, &navigation);
     let count = explorer.highlighted.len();
@@ -962,6 +1039,7 @@ pub(super) fn draw(
         meshes: &mut meshes,
         materials: &mut materials,
         images: &mut images,
+        covered: &mut covered,
         remaining: TEXTURES_PER_FRAME,
         dt: time.as_ref().map_or(1. / 60., |time| time.delta_secs()),
     };
@@ -1128,13 +1206,16 @@ pub(super) fn draw(
         })
         .collect::<Vec<_>>()
     };
+    let mask = |rows| cover::mask(rows, &is_revealed);
+    let metadata = |rows, bits| cover::CoverRows::new(&source_rows(rows), bits);
     match viewed {
         Some(Face::Source) => render.tiles(
             &source,
             source_tiles,
             source.look_height(camera),
             count,
-            |rows| code_texture::listing(&source_rows(rows), &is_revealed),
+            |rows| code_texture::listing(&source_rows(rows), &|_| true),
+            Some((&mask, &metadata)),
         ),
         Some(Face::Diff) => render.tiles(
             &diff,
@@ -1142,6 +1223,7 @@ pub(super) fn draw(
             diff.look_height(camera),
             diff_count,
             |rows| code_texture::listing(&diff_lines[rows], &|_| true),
+            None,
         ),
         Some(Face::Blame) => render.tiles(
             &blame,
@@ -1151,6 +1233,7 @@ pub(super) fn draw(
             |rows| {
                 code_texture::listing_with_notes(&source_rows(rows), &|_| true, attribution.notes())
             },
+            None,
         ),
         None => {}
     }
@@ -1335,7 +1418,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_hits_only_update_the_affected_texture_on_a_long_facade() {
+    fn repeated_hits_keep_the_source_texture_and_update_its_mask() {
         let file = fixture_file();
         let count = TILE_ROWS * 12;
         let mut repo = repository_picker::empty();
@@ -1349,6 +1432,7 @@ mod tests {
             .insert_resource(WorldSet::load(None).unwrap())
             .init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<cover::Material>>()
             .init_asset::<Image>()
             .init_resource::<city_navigation::Navigation>()
             .init_resource::<Listing>()
@@ -1411,7 +1495,20 @@ mod tests {
         );
         assert_eq!(app.world().resource::<Assets<Mesh>>().len(), mesh_count);
         assert_eq!(app.world().resource::<Assets<Image>>().len(), image_count);
-        assert_eq!(modified, [preview.id(), handles[&1].image.id()]);
+        assert_eq!(modified, [preview.id()]);
+        let TileMaterial::Covered(material) = &handles[&1].material else {
+            panic!("source tile must use the shader mask");
+        };
+        assert_eq!(
+            app.world()
+                .resource::<Assets<cover::Material>>()
+                .get(material)
+                .unwrap()
+                .extension
+                .data
+                .mask(),
+            u16::MAX as u32
+        );
         let listing = app.world().resource::<Listing>();
         assert_eq!(
             listing.counts(app.world().resource::<Explorer>()),
@@ -1438,6 +1535,7 @@ mod tests {
             .insert_resource(WorldSet::load(None).unwrap())
             .init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<cover::Material>>()
             .init_resource::<Assets<Image>>()
             .init_resource::<city_navigation::Navigation>()
             .init_resource::<Listing>()
@@ -1558,6 +1656,7 @@ mod tests {
             .init_resource::<city_navigation::Navigation>()
             .init_resource::<file_picker::FilePicker>()
             .init_resource::<Listing>()
+            .init_resource::<review_notes::Review>()
             .add_systems(Update, controls);
         app.world_mut().spawn((Window::default(), PrimaryWindow));
         let start = Transform::from_xyz(3., 13., 30.)

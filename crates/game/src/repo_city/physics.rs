@@ -33,18 +33,21 @@ pub(super) fn splashes(mut gizmos: Gizmos, flashes: Query<(&Splash, &Lifetime)>)
     }
 }
 /// A short fan of cyan streaks. It has no bodies, emitters, or persistent particles.
-pub(super) fn water_stream(
+pub(super) fn spray_stream(
     gizmos: &mut Gizmos,
     camera: &Transform,
     hit: Vec3,
     row_height: f32,
     time: f32,
+    pigment: Option<[u8; 3]>,
+    raised: f32,
 ) {
+    let [r, g, b] = pigment.map_or([0.32, 0.83, 1.], |rgb| rgb.map(|v| v as f32 / 255.));
     let right = camera.right().as_vec3();
     let up = camera.up().as_vec3();
     let length = camera.translation.distance(hit);
     let spread = (row_height * 2.4).min(length * 0.07);
-    let origin = android::spray_origin(camera);
+    let origin = android::spray_origin(camera, raised, pigment.is_some());
     let touch = hit + Vec3::Z * 0.025;
     for lane in 0..11 {
         let phase = (time * 9. + lane as f32 * 0.173).fract();
@@ -55,16 +58,16 @@ pub(super) fn water_stream(
         gizmos.line_gradient(
             point((phase - 0.26).max(0.)),
             point(phase),
-            Color::srgba(0.15, 0.76, 1., 0.18),
-            Color::srgba(0.59, 0.96, 1., 0.86),
+            Color::srgba(r, g, b, 0.18),
+            Color::srgba(r, g, b, 0.86),
         );
         if lane % 2 == 0 {
             let splash = (time * 6. + lane as f32 * 0.223).fract();
             gizmos.line_gradient(
                 touch + fan * splash,
                 touch + fan * (splash + 0.26) + Vec3::Z * spread * splash,
-                Color::srgba(0.58, 0.97, 1., (1. - splash) * 0.75),
-                Color::srgba(0.27, 0.76, 1., 0.),
+                Color::srgba(r, g, b, (1. - splash) * 0.75),
+                Color::srgba(r, g, b, 0.),
             );
         }
     }

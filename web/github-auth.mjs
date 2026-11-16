@@ -1,4 +1,5 @@
-// The Worker holds GitHub credentials and forwards only read requests used by the city.
+// The Worker holds GitHub credentials; reads and review-comment writes are allowlisted.
+import { readSmallJson, writeReviewComment } from "./pr-review.mjs";
 const API = "https://api.github.com";
 const SESSION = "__Host-repo-city";
 const FLOW = "__Host-repo-city-oauth";
@@ -67,7 +68,7 @@ function endpoint(url) {
     if (!q || q.length > 220 || !/^repo:[\w.-]+\/[\w.-]+(?: "[\p{L}\p{N}_-]+"){1,8}$/u.test(q)) return null;
     return new URL(path + "?" + new URLSearchParams({ q, per_page: "8" }), API);
   }
-  const repo = /^\/repos\/[\w.-]+\/[\w.-]+(?:\/(?:branches|tags|commits|commits\/[\w.%~-]+|compare\/[\w.%~:-]+|pulls\/[1-9]\d*|git\/(?:trees|blobs)\/[a-f\d]{40,64}))?$/i;
+  const repo = /^\/repos\/[\w.-]+\/[\w.-]+(?:\/(?:branches|tags|commits|commits\/[\w.%~-]+|compare\/[\w.%~:-]+|pulls(?:\/[1-9]\d{0,14}(?:\/comments)?)?|git\/(?:trees|blobs)\/[a-f\d]{40,64}))?$/i;
   const account = /^\/(?:user\/(?:starred|installations(?:\/\d+\/repositories)?)|users\/[\w-]+\/repos)$/;
   if (!repo.test(path) && !account.test(path)) return null;
   const decoded = decodeURIComponent(path);
@@ -145,6 +146,62 @@ export async function handleGitHub(request, env, upstream = fetch) {
       return new Response(null, {
         status: 204, headers: { ...noStore, "Set-Cookie": cookie(SESSION, "", 0) },
       });
+    }
+    const reviewTarget = /^\/github\/review\/([\w.-]{1,100})\/([\w.-]{1,100})\/([1-9]\d{0,14})$/.exec(path);
+    if (reviewTarget && request.method === "GET") {
+      const session = await readCookie(request, SESSION, secret);
+      if (!session) return json({ error: "Sign in with GitHub." }, 401);
+      const [, owner, repo, number] = reviewTarget;
+      const cursor = url.searchParams.get("cursor");
+      if (Number(number) > 2_147_483_647 || (cursor && !/^[\w+/=-]{1,300}$/.test(cursor))) {
+        return json({ error: "Invalid review request." }, 400);
+      }
+      const response = await upstream(API + "/graphql", {
+        method: "POST",
+        headers: { ...github(session.token), "Content-Type": "application/json" },
+        redirect: "manual",
+        signal: AbortSignal.timeout(12_000),
+        body: JSON.stringify({
+          query: `query CityReviewThreads($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+            repository(owner: $owner, name: $repo) {
+              pullRequest(number: $number) {
+                headRefOid
+                reviewThreads(first: 50, after: $cursor) {
+                  pageInfo { endCursor hasNextPage }
+                  nodes { isOutdated isResolved path line startLine originalLine originalStartLine diffSide startDiffSide
+                    comments(first: 1) { nodes { id } }
+                  }
+                }
+              }
+            }
+          }`,
+          variables: { owner, repo, number: Number(number), cursor },
+        }),
+      });
+      if (!response.ok) return relay(response);
+      const pull = (await response.json()).data?.repository?.pullRequest;
+      return pull?.reviewThreads ? json(pull) : json({ error: "Thread status unavailable." }, 404);
+    }
+    if (reviewTarget && request.method === "POST") {
+      if (request.headers.get("Origin") !== url.origin) return json({ error: "Invalid origin." }, 403);
+      const session = await readCookie(request, SESSION, secret);
+      if (!session) return json({ error: "Sign in with GitHub to publish." }, 401);
+      const [, owner, repo, number] = reviewTarget;
+      const input = await readSmallJson(request);
+      const base = API + `/repos/${owner}/${repo}/pulls/${number}`;
+      const result = await writeReviewComment(input, session.login, (suffix, body) => upstream(base + suffix, {
+        method: body ? "POST" : "GET",
+        headers: { ...github(session.token), ...(body && { "Content-Type": "application/json" }) },
+        redirect: "manual",
+        signal: AbortSignal.timeout(12_000),
+        ...(body && { body: JSON.stringify(body) }),
+      }));
+      if (result.status === 401) {
+        const expired = json(result.value, 401);
+        expired.headers.set("Set-Cookie", cookie(SESSION, "", 0));
+        return expired;
+      }
+      return json(result.value, result.status);
     }
     if (request.method !== "GET") return json({ error: "Method not allowed." }, 405);
     const callback = url.origin + "/github/callback";

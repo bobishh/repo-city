@@ -1,4 +1,4 @@
-import { loadLibrary, loadRevisions, parsePullRequest, parseRepository, searchCommits } from "./github.mjs";
+import { loadLibrary, loadPullRequests, loadRevisions, parsePullRequest, parseRepository, searchCommits } from "./github.mjs";
 
 const publicAPI = "https://api.github.com";
 const account = document.querySelector("#github-account");
@@ -15,10 +15,14 @@ const editor = document.querySelector("#revision-editor");
 const revisionSearch = document.querySelector("#revision-search");
 const revisionButton = document.querySelector("#choose-revision");
 const baseButton = document.querySelector("#choose-base");
+const pullButton = document.querySelector("#choose-pull");
+const pullEditor = document.querySelector("#pull-editor");
+const pullSearch = document.querySelector("#pull-search");
 let revisionField;
 let session, libraryData, libraryError, repository;
 const revisionCache = new Map();
 const searchCache = new Map();
+const pullCache = new Map();
 
 export async function githubRequest(url, options) {
   await ready;
@@ -30,6 +34,7 @@ export async function githubRequest(url, options) {
       libraryData = null;
       revisionCache.clear();
       searchCache.clear();
+      pullCache.clear();
       paintAccount();
       revisionChoices.refresh();
       repoChoices.refresh();
@@ -46,6 +51,9 @@ const ready = fetch("/github/session", { cache: "no-store", signal: AbortSignal.
     paintAccount();
     if (session?.login) void fillLibrary();
   }).catch(() => {});
+
+export const githubAccount = () => session;
+export const githubSignIn = () => "/github/login?return=" + encodeURIComponent(location.pathname + location.search);
 
 function paintAccount() {
   const login = session?.login;
@@ -282,6 +290,7 @@ function updateRevisionButtons() {
 }
 
 function showRevision(field) {
+  closePull();
   if (revisionField === field) return closeRevision(true);
   revisionField = field;
   editor.hidden = false;
@@ -307,6 +316,44 @@ function saveRevision() {
   closeRevision(true);
 }
 
+const pullChoices = suggest(pullSearch, document.querySelector("#pull-results"), async (query, show, current) => {
+  if (!repository) return show([]);
+  try {
+    show([], "Loading pull requests…");
+    const pulls = await cached(pullCache, repository, () => loadPullRequests(repository, githubRequest));
+    if (!current()) return;
+    const term = query.trim().toLowerCase();
+    const matches = pulls.filter(pull => pull.label.toLowerCase().includes(term));
+    show(matches, matches.length ? "" : "No matching open pull requests.");
+  } catch (error) {
+    show([], error.message);
+  }
+}, () => {
+  repo.value = pullSearch.value;
+  ref.value = base.value = "";
+  selectRepository(true);
+});
+
+function closePull() {
+  pullEditor.hidden = true;
+  pullButton.setAttribute("aria-expanded", "false");
+  pullChoices.close();
+}
+
+pullButton.addEventListener("click", () => {
+  if (!pullEditor.hidden) return closePull();
+  closeRevision();
+  pullSearch.value = "";
+  pullEditor.hidden = false;
+  pullButton.setAttribute("aria-expanded", "true");
+  pullSearch.focus();
+});
+pullSearch.addEventListener("keydown", event => {
+  if (event.defaultPrevented || event.isComposing) return;
+  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closePull(); pullButton.focus(); }
+  if (event.key === "Enter") event.preventDefault();
+});
+
 function selectRepository(focusNext = false) {
   const pull = parsePullRequest(repo.value);
   try {
@@ -326,6 +373,7 @@ function selectRepository(focusNext = false) {
   selection.hidden = false;
   status.textContent = "";
   closeRevision();
+  closePull();
   if (focusNext) document.querySelector("#open-city").focus();
 }
 
@@ -347,6 +395,7 @@ change.addEventListener("click", () => {
   repo.value = ref.value = base.value = "";
   repository = null;
   closeRevision();
+  closePull();
   selection.hidden = true;
   searchRow.hidden = false;
   status.textContent = "";

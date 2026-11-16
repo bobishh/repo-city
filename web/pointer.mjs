@@ -1,5 +1,6 @@
 export function setupPointer(canvas, menu) {
   const locked = () => document.pointerLockElement === canvas;
+  const modalOpen = () => menu.open || Boolean(document.querySelector("dialog[open]"));
   let pending = false;
 
   function release() {
@@ -7,7 +8,7 @@ export function setupPointer(canvas, menu) {
   }
 
   function capture() {
-    if (pending || canvas.hidden || menu.open || canvas.hasAttribute("data-pointer-ui") ||
+    if (pending || canvas.hidden || modalOpen() || canvas.hasAttribute("data-pointer-ui") ||
         document.pointerLockElement || !canvas.requestPointerLock) return;
     canvas.focus({ preventScroll: true });
     pending = true;
@@ -21,7 +22,7 @@ export function setupPointer(canvas, menu) {
   document.addEventListener("pointerlockchange", () => {
     pending = false;
     canvas.toggleAttribute("data-pointer-locked", locked());
-    if (menu.open || canvas.hasAttribute("data-pointer-ui")) release();
+    if (modalOpen() || canvas.hasAttribute("data-pointer-ui")) release();
   });
   document.addEventListener("pointerlockerror", () => { pending = false; });
   window.addEventListener("blur", release);
