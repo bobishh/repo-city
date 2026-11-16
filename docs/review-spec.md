@@ -91,3 +91,24 @@ Add live agent activity after the core review loop works. An optional runner can
 - Publish a range from an authorized PR review and reopen the PR. The comment appears once with its preset, author, and range. If the head moved or GitHub rejected the range, the draft stays editable.
 - Advance the PR head. The reviewer can find newly changed lines, the old discussion, and any outdated anchors without losing the original note.
 - Switch paint presets and spray once. The can, spray, and gutter marker use the same color. The reflection raises and lowers the tool together with the first-person animation, and the resting view leaves the source readable.
+
+## File relationships
+
+Build the first view around the focused file. Parse its imports on demand and
+show the files they resolve to. Expand one more hop when requested, with a
+bounded number of files per expansion. Cache parsed imports by language and
+content hash so a save invalidates only affected entries. Show unresolved
+imports without drawing a confirmed connection. Tree-sitter identifies the
+syntax. Language-specific resolution determines whether an import maps to a
+file in this snapshot. The city can draw the same relationship as a road that
+another world represents as a cross-reference.
+Use the same cache interface with SQLite on desktop and IndexedDB in the browser.
+
+## Revision travel from blame
+
+On the blame wall, aim at a line to see the author, date, and commit. Offer a
+jump to the snapshot at that commit, retaining the previous snapshot and camera
+position so the reviewer can return. Focus the historical file at the attributed
+line when it can be anchored. Mark missing files and ambiguous anchors in the
+historical snapshot. Keep private review notes and progress scoped to their
+original snapshots across the transition.

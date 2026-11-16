@@ -43,8 +43,15 @@ pub(super) fn empty() -> Repository {
 }
 
 pub(super) fn load(path: &Path, revision: &str, base: Option<&str>) -> Result<Repository, String> {
-    let repo = Repository::open_with_base(path, revision, base)
-        .map_err(|error| format!("Could not open {}\n{error}", path.display()))?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let opened = if revision == "WORKTREE" {
+        Repository::open_worktree(path)
+    } else {
+        Repository::open_with_base(path, revision, base)
+    };
+    #[cfg(target_arch = "wasm32")]
+    let opened = Repository::open_with_base(path, revision, base);
+    let repo = opened.map_err(|error| format!("Could not open {}\n{error}", path.display()))?;
     if repo.files.is_empty() {
         return Err(format!("{} has no committed files.", repo.root.display()));
     }
@@ -133,7 +140,14 @@ fn choose_revision(repo: &Repository) -> Result<Option<String>, String> {
     if repo.files.is_empty() {
         return Err("Open a local repository first.".into());
     }
-    let choices = repo_world::local_revisions(&repo.root)?;
+    let mut choices = repo_world::local_revisions(&repo.root)?;
+    choices.insert(
+        0,
+        (
+            "WORKTREE".into(),
+            "Live worktree · Compare with HEAD".into(),
+        ),
+    );
     let main = MainThreadMarker::new().ok_or("Revision picker needs the macOS main thread.")?;
     let menu = NSPopUpButton::initWithFrame_pullsDown(
         NSPopUpButton::alloc(main),
@@ -144,10 +158,9 @@ fn choose_revision(repo: &Repository) -> Result<Option<String>, String> {
     for (_, label) in &choices {
         menu.addItemWithTitle(&NSString::from_str(label));
     }
-    if let Some(index) = choices
-        .iter()
-        .position(|(revision, _)| revision == &repo.revision)
-    {
+    if let Some(index) = choices.iter().position(|(revision, _)| {
+        revision == &repo.revision || (revision == "WORKTREE" && repo.is_worktree())
+    }) {
         menu.selectItemAtIndex(index as isize);
     }
     let alert = NSAlert::new(main);
@@ -212,7 +225,7 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
 pub(super) type CityEntities<'w, 's> = Query<
     'w,
     's,
-    Entity,
+    (Entity, Has<CityObject>, Option<&'static FileBuilding>),
     Or<(
         With<CityObject>,
         With<Detail>,
@@ -224,14 +237,30 @@ pub(super) type CityEntities<'w, 's> = Query<
 
 pub(super) fn replace_city(commands: &mut Commands, old_city: &CityEntities, next: Repository) {
     let mut explorer = Explorer::new(next.initial_file());
-    explorer.open(&next, explorer.selected);
-    for entity in old_city {
-        commands.entity(entity).despawn();
+    if !next.files.is_empty() {
+        explorer.open(&next, explorer.selected);
+    }
+    replace_selection(commands, old_city, next, explorer, None);
+    commands.insert_resource(listing::Listing::default());
+}
+
+pub(super) fn replace_selection(
+    commands: &mut Commands,
+    old_city: &CityEntities,
+    next: Repository,
+    explorer: Explorer,
+    refreshed_files: Option<&HashSet<usize>>,
+) {
+    for (entity, city_object, building) in old_city {
+        if refreshed_files.is_none_or(|files| {
+            !city_object || building.is_some_and(|building| files.contains(&building.0))
+        }) {
+            commands.entity(entity).despawn();
+        }
     }
     commands.insert_resource(Repo(next));
     commands.insert_resource(explorer);
     commands.insert_resource(city_navigation::Navigation::default());
-    commands.insert_resource(listing::Listing::default());
     commands.insert_resource(file_picker::FilePicker::default());
     commands.insert_resource(Nearest::default());
     commands.insert_resource(city_menu::Menu::default());
@@ -252,6 +281,7 @@ pub(super) fn open_repository(
         (With<file_picker::FileControls>, Without<RepositoryStatus>),
     >,
     _main_thread: NonSendMarker,
+    #[cfg(not(target_arch = "wasm32"))] live: Res<live_worktree::Live>,
 ) {
     let Ok((mut window, mut cursor)) = windows.single_mut() else {
         return;
@@ -307,6 +337,12 @@ pub(super) fn open_repository(
             "Choose a local Git repository to explore."
         } else {
             ""
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let message = if message.is_empty() && repo.0.is_worktree() {
+            live.status()
+        } else {
+            message
         };
         if text.0 != message {
             text.0 = message.into();

@@ -52,6 +52,11 @@ without switching your working tree. For terminal use, `./scripts/run-native.sh`
 opens Repo City's checkout by default and accepts another checkout path as its
 first argument.
 
+Choose **Revisions… → Live worktree** to compare the working directory with
+`HEAD`. Saves update changed buildings, and new non-ignored files appear in
+the city. Press **G** at a changed file to read its diff. From the command line,
+run `./scripts/run-native.sh /path/to/checkout --live`.
+
 ## Controls
 
 | Action | Control |
@@ -60,13 +65,13 @@ first argument.
 | Fly | **WASD**, **Space** and **Ctrl** for altitude, **Shift** to boost |
 | Capture or release the cursor | Click the scene to capture. **Esc** releases. |
 | Use the actions menu | Right-click to open or close it. Scroll or use the arrow keys to highlight an action. Click or press **Enter** to select it. |
-| See the district from above | **M** toggles district view. Hover for a file name, then click or press **E** to fly there. |
+| See the district from above | **M** flies above the district. Look and fly freely on arrival. Aim at a file and click or press **E** to visit it. **M** returns to your previous position. |
 | Approach a wall | Far away, left-click a building to fly to its nearest covered lines or the top of its source wall. Press **E** to fly to the aimed face. Scroll to move along the wall. |
 | Wash or paint lines | **0** equips water. Hold left click close to a source wall to reveal lines. **1–9** equip paints; drag from one readable line to another on the same side of the file. |
 | Edit paints and notes | **U** opens paints; **⌘ + scroll** cycles tools on Mac. **J** opens the note you are aiming at or the review list. |
 | Find text on the current wall | **/** or **Find in file** in the actions menu. **Enter** keeps results; **N** and **Shift+N** visit matches. |
 | Turn to the diff or blame wall | **G** for diff, **B** for blame. Sign in with GitHub for line attribution in the browser. |
-| Follow a file’s changes | **C** starts the review. **W** climbs through the change platforms and **S** goes back down. **Q** returns to the diff wall. |
+| Follow a file’s changes | **C** starts the review. Scroll up or press **W** for the next stop. Scroll down or press **S** for the previous stop. **Q** returns to the diff wall. |
 
 Repo City saves revealed lines and reviewed files in your browser or on your
 Mac. The same repository and comparison restore those marks. Press **V** to

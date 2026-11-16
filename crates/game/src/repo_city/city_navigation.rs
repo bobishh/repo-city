@@ -1,5 +1,7 @@
 //! Camera travel and code stops for the city world.
 
+use bevy::input::mouse::MouseScrollUnit;
+
 use super::*;
 
 const PAGE: usize = 23;
@@ -29,6 +31,29 @@ struct Route {
     kind: RouteKind,
     stops: Vec<Stop>,
     current: usize,
+    scroll: f32,
+}
+
+impl Route {
+    fn scroll_step(&mut self, wheel: &AccumulatedMouseScroll) -> i32 {
+        if self.kind != RouteKind::Review {
+            return 0;
+        }
+        let delta = match wheel.unit {
+            MouseScrollUnit::Pixel => wheel.delta.y / 40.,
+            MouseScrollUnit::Line => wheel.delta.y,
+        };
+        if delta != 0. && self.scroll.signum() != delta.signum() {
+            self.scroll = 0.;
+        }
+        self.scroll += delta;
+        if self.scroll.abs() < 1. {
+            return 0;
+        }
+        let step = self.scroll.signum() as i32;
+        self.scroll = 0.;
+        step
+    }
 }
 
 struct Hop {
@@ -189,10 +214,10 @@ impl Navigation {
             let last = route.current + 1 == route.stops.len();
             let hint = match (route.kind, last) {
                 (RouteKind::Review, true) => {
-                    "W finishes review · S goes down · Q returns to the diff wall"
+                    "Scroll down / S to go back · W finishes review · Q returns to the diff wall"
                 }
                 (RouteKind::Review, false) => {
-                    "W goes up · S goes down · Q returns to the diff wall"
+                    "Scroll up / W for next · Scroll down / S for previous · Q returns to the diff wall"
                 }
                 (RouteKind::Trace, true) => "End of stack trace · S to go back · Esc to leave",
                 (RouteKind::Trace, false) => "W to follow the stack · S to go back · Esc to leave",
@@ -281,13 +306,15 @@ fn district_view(district: &repo_world::District, aspect: f32) -> Transform {
     let diameter = (width / aspect.max(0.5)).max(depth) + 28.;
     let half_fov = std::f32::consts::FRAC_PI_8;
     let height = listing::MAX_HEIGHT + diameter * 0.5 / half_fov.tan();
-    Transform::from_translation(center + Vec3::Y * height).looking_to(Vec3::NEG_Y, Vec3::NEG_Z)
+    let offset = Vec3::new(0., height, height / MAX_LOOK_PITCH.tan());
+    Transform::from_translation(center + offset)
+        .with_rotation(Quat::from_rotation_x(-MAX_LOOK_PITCH))
 }
 
 pub(super) fn navigate(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
-    mouse: Res<ButtonInput<MouseButton>>,
+    wheel: Res<AccumulatedMouseScroll>,
     repo: Res<Repo>,
     focus: Res<file_facade::ChangesOnly>,
     nearest: Res<Nearest>,
@@ -363,7 +390,7 @@ pub(super) fn navigate(
 
     let overview =
         keys.just_pressed(KeyCode::KeyM) || std::mem::take(&mut navigation.overview_requested);
-    if overview || (navigation.overview() && keys.just_pressed(KeyCode::Escape)) {
+    if overview {
         listing.reset_view();
         if let Some(origin) = navigation.overview_return.take() {
             navigation.overview_hop(*camera, origin);
@@ -488,7 +515,11 @@ pub(super) fn navigate(
     }
 
     if let Some(route) = &mut navigation.route {
-        if keys.just_pressed(KeyCode::KeyW) && route.current + 1 == route.stops.len() {
+        let forward = keys.just_pressed(KeyCode::KeyW);
+        let backward = keys.just_pressed(KeyCode::KeyS);
+        let scroll = route.scroll_step(&wheel);
+        let at_end = route.current + 1 == route.stops.len();
+        if forward && at_end {
             if route.kind == RouteKind::Review {
                 navigation.route = None;
                 navigation.redraw = true;
@@ -496,10 +527,10 @@ pub(super) fn navigate(
                 comparison_scene::focus(&mut end, &repo.0, &explorer);
                 navigation.hop = Some(Hop::new(*camera, end, Arrival::Comparison));
             }
-        } else if keys.just_pressed(KeyCode::KeyW) || keys.just_pressed(KeyCode::KeyS) {
+        } else if forward || backward || scroll != 0 {
             let old = route.current;
-            route.current = if keys.just_pressed(KeyCode::KeyW) {
-                old + 1
+            route.current = if forward || (!backward && scroll > 0) {
+                (old + 1).min(route.stops.len() - 1)
             } else {
                 old.saturating_sub(1)
             };
@@ -540,17 +571,23 @@ pub(super) fn navigate(
             kind,
             stops,
             current: 0,
+            scroll: 0.,
         });
         fly_to_stop(&mut navigation, *camera, &repo.0, explorer.selected);
         return;
     }
     let next_changed = keys.just_pressed(KeyCode::KeyN) && !search.owns_next();
+    let distant_shot = pilot.shot.then_some(nearest.file).flatten().filter(|aim| {
+        let file = &repo.0.files[aim.index];
+        let size = listing::block_size(file);
+        nearest.near_source != Some(aim.index)
+            && !aim.within_tool_reach(file, size, camera.translation, nearest.file_distance)
+    });
     let target = if let Some(aim) = menu.destination.take() {
         Some((aim.index, Some(aim)))
     } else if let Some(file) = picker.destination.take() {
         Some((file, None))
-    } else if navigation.overview()
-        && (mouse.just_pressed(MouseButton::Left) || keys.just_pressed(KeyCode::KeyE))
+    } else if navigation.overview() && (distant_shot.is_some() || keys.just_pressed(KeyCode::KeyE))
     {
         nearest.file.map(|aim| (aim.index, None))
     } else if next_changed {
@@ -558,12 +595,7 @@ pub(super) fn navigate(
             .map(|offset| (explorer.selected + offset) % repo.0.files.len())
             .find(|&index| repo.0.files[index].change != Change::Unchanged)
             .map(|index| (index, None))
-    } else if let Some(aim) = pilot.shot.then_some(nearest.file).flatten().filter(|aim| {
-        let file = &repo.0.files[aim.index];
-        let size = listing::block_size(file);
-        nearest.near_source != Some(aim.index)
-            && !aim.within_tool_reach(file, size, camera.translation, nearest.file_distance)
-    }) {
+    } else if let Some(aim) = distant_shot {
         Some((aim.index, Some(aim.on_side(listing::Face::Source))))
     } else if keys.just_pressed(KeyCode::KeyE) {
         nearest.file.map(|aim| (aim.index, Some(aim))).or_else(|| {
@@ -601,8 +633,7 @@ pub(super) fn navigate(
             hop.duration = hop.duration.min(1.65);
         }
         navigation.hop = Some(hop);
-    } else if !navigation.overview()
-        && !explorer.anchored
+    } else if !explorer.anchored
         && explorer.comparison_mode == 0
         && let Some(index) = nearest
             .near_source
@@ -865,11 +896,16 @@ mod tests {
         };
         for aspect in [0.6, 1., 1.78] {
             let eye = district_view(&district, aspect);
-            assert!(eye.forward().dot(Vec3::NEG_Y) > 0.999);
-            assert_eq!(eye.translation.xz(), Vec2::new(187.5, 160.));
-            let half =
-                (eye.translation.y - listing::MAX_HEIGHT) * std::f32::consts::FRAC_PI_8.tan();
-            assert!(half > 60. && half * aspect > 87.5);
+            assert!((eye.rotation.to_euler(EulerRot::YXZ).1 + MAX_LOOK_PITCH).abs() < 0.00001);
+            let half_fov = std::f32::consts::FRAC_PI_8.tan();
+            for x in [100., 275.] {
+                for z in [100., 220.] {
+                    let roof = Vec3::new(x, listing::MAX_HEIGHT, z);
+                    let local = eye.rotation.inverse() * (roof - eye.translation);
+                    assert!(local.y.abs() < -local.z * half_fov);
+                    assert!(local.x.abs() < -local.z * half_fov * aspect);
+                }
+            }
         }
     }
 
@@ -891,6 +927,7 @@ mod tests {
             .init_resource::<Time>()
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<AccumulatedMouseScroll>()
             .init_resource::<Nearest>()
             .init_resource::<Navigation>()
             .init_resource::<file_facade::ChangesOnly>()
@@ -934,6 +971,7 @@ mod tests {
             .init_resource::<Time>()
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<AccumulatedMouseScroll>()
             .init_resource::<Navigation>()
             .init_resource::<file_facade::ChangesOnly>()
             .init_resource::<city_menu::Menu>()
@@ -1040,6 +1078,7 @@ mod tests {
                 })
                 .collect(),
             current: 0,
+            scroll: 0.,
         };
         let lower = stop_position(&route, 0, &repo, 0);
         let upper = stop_position(&route, 1, &repo, 0);
@@ -1055,6 +1094,76 @@ mod tests {
     }
 
     #[test]
+    fn scroll_moves_between_review_stops_and_stays_on_the_last_stop() {
+        let mut repo = repository_picker::empty();
+        repo.files.push(repo_world::File {
+            path: "test.rs".into(),
+            before: None,
+            after: None,
+            change: Change::Modified,
+            position: [31., -19.],
+        });
+        let route = Route {
+            kind: RouteKind::Review,
+            stops: (0..2)
+                .map(|hunk| Stop::Review {
+                    hunk,
+                    row: hunk,
+                    count: 1,
+                })
+                .collect(),
+            current: 0,
+            scroll: 0.,
+        };
+        let start = stop_position(&route, 0, &repo, 0) + Vec3::new(0., 5., 15.);
+        let mut app = App::new();
+        app.insert_resource(Repo(repo))
+            .insert_resource(Explorer::new(0))
+            .insert_resource(Navigation {
+                route: Some(route),
+                ..default()
+            })
+            .init_resource::<Time>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<AccumulatedMouseScroll>()
+            .init_resource::<Nearest>()
+            .init_resource::<file_facade::ChangesOnly>()
+            .init_resource::<city_menu::Menu>()
+            .init_resource::<file_picker::FilePicker>()
+            .init_resource::<listing::Listing>()
+            .init_resource::<listing::find::Search>()
+            .init_resource::<progress::Progress>()
+            .add_systems(Update, navigate);
+        app.world_mut().spawn((Window::default(), PrimaryWindow));
+        app.world_mut().spawn((
+            Camera3d::default(),
+            Transform::from_translation(start),
+            Pilot::default(),
+        ));
+        let mut scroll = |delta| {
+            let mut input = app.world_mut().resource_mut::<AccumulatedMouseScroll>();
+            input.unit = bevy::input::mouse::MouseScrollUnit::Pixel;
+            input.delta.y = delta;
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(std::time::Duration::from_secs(1));
+            app.update();
+            app.world()
+                .resource::<Navigation>()
+                .route
+                .as_ref()
+                .unwrap()
+                .current
+        };
+        assert_eq!(scroll(18.), 0);
+        assert_eq!(scroll(24.), 1);
+        assert_eq!(scroll(120.), 1);
+        assert_eq!(scroll(120.), 1);
+        assert_eq!(scroll(-120.), 0);
+    }
+
+    #[test]
     fn a_click_clears_the_aimed_platform_once() {
         let mut app = App::new();
         let navigation = Navigation {
@@ -1066,6 +1175,7 @@ mod tests {
                     count: 1,
                 }],
                 current: 0,
+                scroll: 0.,
             }),
             ..default()
         };

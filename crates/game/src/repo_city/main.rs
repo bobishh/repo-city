@@ -11,6 +11,8 @@ mod file_facade;
 mod file_picker;
 mod guide;
 mod listing;
+#[cfg(not(target_arch = "wasm32"))]
+mod live_worktree;
 mod physics;
 mod progress;
 mod repository_picker;
@@ -35,6 +37,7 @@ use world_set::{WorldSet, color};
 type PlayerCamera = (With<Camera3d>, Without<district::MirrorCamera>);
 
 const CAMERA_FLOOR: f32 = 0.05;
+const MAX_LOOK_PITCH: f32 = 1.5;
 
 #[derive(Resource)]
 struct Repo(Repository);
@@ -110,7 +113,12 @@ impl Explorer {
                 self.source = source.clone();
                 self.original = source;
                 self.anatomy = Some(anatomy);
-                self.notice = "Source loaded from the selected commit.".into();
+                self.notice = if repo.is_worktree() && !self.before {
+                    "Source loaded from the worktree."
+                } else {
+                    "Source loaded from the selected commit."
+                }
+                .into();
             }
             Err(e) => {
                 self.source = String::new();
@@ -224,6 +232,8 @@ struct Palette {
 #[derive(Component)]
 struct CityObject;
 #[derive(Component)]
+struct FileBuilding(usize);
+#[derive(Component)]
 struct Facade {
     index: usize,
 }
@@ -292,7 +302,7 @@ fn main() {
     };
     if args.iter().any(|a| a == "--help") {
         println!(
-            "repo-city --repo PATH [--rev HEAD] [--base REF] [--trace FILE] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · E flies to the aimed face · Space/Ctrl altitude · Shift boost · Click captures the cursor · Esc releases it\nHold left mouse close to wash source · Home frames the file · G diff · B blame\nC reviews changes · T follows a supplied stack · W/S fly between platforms · Esc returns to the city\nG ghost/pair · [ ] hunks · Enter source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
+            "repo-city --repo PATH [--rev HEAD | --live] [--base REF] [--trace FILE] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · E flies to the aimed face · Space/Ctrl altitude · Shift boost · Click captures the cursor · Esc releases it\nHold left mouse close to wash source · Home frames the file · G diff · B blame\nC reviews changes · T follows a supplied stack · W/S or scroll fly between review stops · Q returns to the diff wall\nG ghost/pair · [ ] hunks · Enter source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
         );
         return;
     }
@@ -307,7 +317,12 @@ fn main() {
     #[cfg(not(target_arch = "wasm32"))]
     let repo = match root {
         Some(root) => {
-            match repository_picker::load(&root, arg("--rev").unwrap_or("HEAD"), arg("--base")) {
+            let revision = if args.iter().any(|arg| arg == "--live") {
+                "WORKTREE"
+            } else {
+                arg("--rev").unwrap_or("HEAD")
+            };
+            match repository_picker::load(&root, revision, arg("--base")) {
                 Ok(repo) => repo,
                 Err(error) if explicit.is_none() => {
                     startup_error = error;
@@ -473,6 +488,8 @@ fn main() {
         Update,
         (
             repository_picker::open_repository,
+            #[cfg(not(target_arch = "wasm32"))]
+            live_worktree::update,
             spawn_city,
             progress::restore,
         )
@@ -487,7 +504,14 @@ fn main() {
             .run_if(repository_picker::has_city),
     );
     #[cfg(not(target_arch = "wasm32"))]
-    app.init_resource::<guide::Guide>()
+    app.init_resource::<live_worktree::Live>()
+        .add_systems(
+            Update,
+            live_worktree::animate
+                .after(spawn_city)
+                .before(listing::draw),
+        )
+        .init_resource::<guide::Guide>()
         .add_systems(Update, guide::update.before(flight));
     app.add_systems(Startup, district::setup);
     app.add_systems(Update, district::reflect.after(listing::draw_overview));
@@ -749,6 +773,8 @@ fn setup(
     file_picker::spawn(&mut commands, &ui_font(13.), color(set.ink));
     city_menu::spawn(&mut commands, &ui_font(13.), color(set.ink));
     guide::spawn_hint(&mut commands, &ui_font(13.), color(set.ink));
+    #[cfg(not(target_arch = "wasm32"))]
+    review_notes::spawn_empty_hint(&mut commands, ui_font(13.), color(set.ink));
     listing::find::spawn(&mut commands, &ui_font(13.), color(set.ink));
     #[cfg(not(target_arch = "wasm32"))]
     guide::spawn(&mut commands, &ui_font(15.), color(set.ink));
@@ -860,6 +886,7 @@ fn spawn_city(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    #[cfg(not(target_arch = "wasm32"))] mut live: ResMut<live_worktree::Live>,
 ) {
     if !repo.is_changed() || repo.0.files.is_empty() {
         return;
@@ -867,48 +894,58 @@ fn spawn_city(
     let unit = &palette.unit;
     let plate = &palette.plate;
     let shell = &palette.shell;
-    if let Ok((mut pose, mut pilot)) = camera.single_mut() {
+    #[cfg(not(target_arch = "wasm32"))]
+    let keep_camera = std::mem::take(&mut live.keep_camera);
+    #[cfg(target_arch = "wasm32")]
+    let keep_camera = false;
+    #[cfg(not(target_arch = "wasm32"))]
+    let refreshed_files = live.refreshed_files.take();
+    #[cfg(target_arch = "wasm32")]
+    let refreshed_files: Option<HashSet<usize>> = None;
+    if !keep_camera && let Ok((mut pose, mut pilot)) = camera.single_mut() {
         *pose = listing::view(&repo.0.files[explorer.selected], explorer.highlighted.len());
         pilot.captured = false;
     }
-    let extent = repo
-        .0
-        .districts
-        .iter()
-        .fold(Vec2::splat(22.), |extent, district| {
-            extent.max(Vec2::from_array(district.position) + Vec2::from_array(district.size))
-        });
-    commands.spawn((
-        CityObject,
-        Mesh3d(unit.clone()),
-        MeshMaterial3d(plate.clone()),
-        Transform::from_xyz(extent.x / 2., -0.7, extent.y / 2.).with_scale(Vec3::new(
-            extent.x + 56.,
-            1.,
-            extent.y + 56.,
-        )),
-        RigidBody::Static,
-        Collider::cuboid(1., 1., 1.),
-    ));
-    let lights = district::Lights::new(&mut meshes, &mut materials);
-    for (index, district) in repo.0.districts.iter().enumerate() {
-        let [x, z] = district.position;
-        let [w, d] = district.size;
+    if refreshed_files.is_none() {
+        let extent = repo
+            .0
+            .districts
+            .iter()
+            .fold(Vec2::splat(22.), |extent, district| {
+                extent.max(Vec2::from_array(district.position) + Vec2::from_array(district.size))
+            });
         commands.spawn((
             CityObject,
             Mesh3d(unit.clone()),
-            MeshMaterial3d(shell.clone()),
-            Transform::from_xyz(x + w / 2. - 3., -0.12, z + d / 2. - 1.)
-                .with_scale(Vec3::new(w, 0.18, d)),
+            MeshMaterial3d(plate.clone()),
+            Transform::from_xyz(extent.x / 2., -0.7, extent.y / 2.).with_scale(Vec3::new(
+                extent.x + 56.,
+                1.,
+                extent.y + 56.,
+            )),
+            RigidBody::Static,
+            Collider::cuboid(1., 1., 1.),
         ));
-        lights.spawn(
-            &mut commands,
-            &mut meshes,
-            &mut materials,
-            &mut images,
-            district,
-            index,
-        );
+        let lights = district::Lights::new(&mut meshes, &mut materials);
+        for (index, district) in repo.0.districts.iter().enumerate() {
+            let [x, z] = district.position;
+            let [w, d] = district.size;
+            commands.spawn((
+                CityObject,
+                Mesh3d(unit.clone()),
+                MeshMaterial3d(shell.clone()),
+                Transform::from_xyz(x + w / 2. - 3., -0.12, z + d / 2. - 1.)
+                    .with_scale(Vec3::new(w, 0.18, d)),
+            ));
+            lights.spawn(
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                &mut images,
+                district,
+                index,
+            );
+        }
     }
     let mut block = Mesh::from(Cuboid::from_size(Vec3::ONE));
     // The stock cuboid rotates its UVs by face. Keep row height aligned on every wall.
@@ -959,6 +996,12 @@ fn spawn_city(
     });
     let beams = file_facade::INK.map(|ink| materials.add(file_facade::beam_material(ink)));
     for (i, file) in repo.0.files.iter().enumerate() {
+        if refreshed_files
+            .as_ref()
+            .is_some_and(|files| !files.contains(&i))
+        {
+            continue;
+        }
         let size = listing::block_size(file);
         let body = commands
             .spawn((
@@ -1040,17 +1083,34 @@ fn spawn_city(
                 transform(file, size, Part::Mirror),
             ))
             .id();
+        let parts = [
+            (body, Part::Body),
+            (roof, Part::Roof),
+            (sign, Part::Label),
+            (beam, Part::Beam),
+            (pane, Part::Mirror),
+        ]
+        .into_iter()
+        .chain(stripes);
+        for (entity, _) in parts.clone() {
+            commands.entity(entity).insert(FileBuilding(i));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(&previous) = live.growth.get(&i) {
+            for (entity, part) in parts.clone() {
+                live_worktree::grow(
+                    &mut commands,
+                    entity,
+                    file,
+                    part,
+                    previous,
+                    size,
+                    live.growing_until,
+                );
+            }
+        }
         if file.change == Change::Unchanged {
-            for (entity, part) in [
-                (body, Part::Body),
-                (roof, Part::Roof),
-                (sign, Part::Label),
-                (beam, Part::Beam),
-                (pane, Part::Mirror),
-            ]
-            .into_iter()
-            .chain(stripes)
-            {
+            for (entity, part) in parts {
                 commands
                     .entity(entity)
                     .insert(file_facade::SinkPart::new(file, size, part));
@@ -1084,8 +1144,7 @@ fn flight(
         return;
     };
     let menu_open = menu.is_open();
-    let pointer_ui_open =
-        picker.is_open() || review.blocked || search.blocks_controls() || navigation.overview();
+    let pointer_ui_open = picker.is_open() || review.blocked || search.blocks_controls();
     let was_captured = pilot.captured;
     let over_button = !was_captured && file_buttons.iter().any(|hovered| hovered.get());
     #[cfg(target_arch = "wasm32")]
@@ -1162,7 +1221,7 @@ fn flight(
     if was_captured && pilot.captured && motion.delta != Vec2::ZERO {
         let (yaw, pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
         let yaw = yaw - motion.delta.x * 0.0025;
-        let pitch = (pitch - motion.delta.y * 0.0025).clamp(-1.5, 1.5);
+        let pitch = (pitch - motion.delta.y * 0.0025).clamp(-MAX_LOOK_PITCH, MAX_LOOK_PITCH);
         camera.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.);
     }
     if navigation.guides_camera() {
@@ -1808,12 +1867,16 @@ fn hud(
                 repo.0.files.len(),
                 repo.0.districts.len(),
                 repo.0.baseline.as_ref().map_or("empty", |s| &s[..8]),
-                &repo.0.revision[..8]
+                if repo.0.is_worktree() {
+                    "WORKTREE"
+                } else {
+                    &repo.0.revision[..8]
+                }
             )
         } else if bottom {
             if navigation.overview() {
                 format!(
-                    "District view · Click or E flies to a file · {} finds files · M returns",
+                    "District view · WASD flies · Click or E visits a file · {} searches · M returns",
                     file_picker::SHORTCUT
                 )
             } else if tour.active() {

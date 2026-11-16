@@ -190,14 +190,6 @@ pub(super) fn panel(review: &mut Review, panel: Panel) -> Result<(), String> {
             };
             let index = if let Some(id) = id {
                 review.notes.iter().position(|note| note.id == id)
-            } else if review.notes.is_empty() {
-                alert.setMessageText(&string("No review notes"));
-                alert.setInformativeText(&string(
-                    "Wash the code, choose a paint, then drag across the lines to make a note.",
-                ));
-                alert.addButtonWithTitle(&string("Close"));
-                alert.runModal();
-                return Ok(());
             } else {
                 let choices = NSPopUpButton::initWithFrame_pullsDown(
                     NSPopUpButton::alloc(main),

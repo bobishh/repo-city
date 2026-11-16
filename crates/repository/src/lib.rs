@@ -5,6 +5,8 @@ pub mod blame;
 pub mod anatomy;
 pub mod comparison;
 pub mod syntax;
+#[cfg(not(target_arch = "wasm32"))]
+mod worktree;
 
 pub use anatomy::{CallableAnatomy, FileAnatomy};
 use serde::Serialize;
@@ -21,7 +23,7 @@ pub enum Change {
     Modified,
     Unchanged,
 }
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct Blob {
     pub id: String,
     pub size: usize,
@@ -51,6 +53,7 @@ pub struct Repository {
 }
 fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let output = Command::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .arg("-C")
         .arg(root)
         .args(args)
@@ -159,6 +162,10 @@ fn tree(root: &Path, rev: &str) -> Result<BTreeMap<String, Blob>, String> {
     Ok(files)
 }
 impl Repository {
+    pub fn is_worktree(&self) -> bool {
+        self.revision.starts_with("worktree:")
+    }
+
     pub fn open(root: &Path, rev: &str) -> Result<Self, String> {
         Self::open_with_base(root, rev, None)
     }
@@ -297,7 +304,11 @@ impl Repository {
             return Err("Source exceeds the 1 MiB inspection limit".into());
         }
         #[cfg(not(target_arch = "wasm32"))]
-        let bytes = git(&self.root, &["cat-file", "blob", &blob.id])?;
+        let bytes = if blob.id.starts_with("worktree:") {
+            worktree::source(&self.root, &f.path, blob)?
+        } else {
+            git(&self.root, &["cat-file", "blob", &blob.id])?
+        };
         #[cfg(target_arch = "wasm32")]
         let bytes = browser_blob(&blob.id).map_err(|error| {
             error

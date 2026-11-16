@@ -324,6 +324,14 @@ impl Listing {
     pub(super) fn turning(&self) -> bool {
         self.turn.is_some()
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn live_reset(&self) -> Self {
+        Self {
+            overview_dirty: self.listing_facade.into_iter().collect(),
+            ..default()
+        }
+    }
     pub(super) fn reset_view(&mut self) {
         self.viewing = None;
         self.destination = None;
@@ -332,10 +340,7 @@ impl Listing {
         self.scroll_remaining = 0.;
     }
     pub(super) fn visible(explorer: &Explorer, navigation: &city_navigation::Navigation) -> bool {
-        explorer.comparison_mode == 0
-            && !explorer.anchored
-            && !navigation.guides_camera()
-            && !navigation.overview()
+        explorer.comparison_mode == 0 && !explorer.anchored && !navigation.guides_camera()
     }
 
     pub(super) fn arrival_view(
@@ -1296,8 +1301,18 @@ pub(super) fn draw(
     time: Option<Res<Time>>,
     mut covered: ResMut<Assets<cover::Material>>,
     review: Option<Res<review_notes::Review>>,
+    #[cfg(not(target_arch = "wasm32"))] live: Option<Res<live_worktree::Live>>,
 ) {
     let visible = Listing::visible(&explorer, &navigation);
+    #[cfg(not(target_arch = "wasm32"))]
+    let visible = visible
+        && !live
+            .as_ref()
+            .zip(time.as_ref())
+            .is_some_and(|(live, time)| {
+                time.elapsed_secs_f64() < live.growing_until
+                    && live.growth.contains_key(&explorer.selected)
+            });
     let count = explorer.highlighted.len();
     let key = visible.then_some((explorer.selected, explorer.before, count));
     let changed = key != listing.rendered;

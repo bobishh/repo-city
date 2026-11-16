@@ -60,6 +60,13 @@ pub(super) fn gameplay_enabled(menu: Res<Menu>, review: Res<review_notes::Review
     !menu.is_open() && !menu.dismissed && !review.blocked
 }
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = takeChangesOnlyRequest)]
+    fn browser_filter_requested() -> bool;
+}
+
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Action {
     Approach,
@@ -237,15 +244,10 @@ pub(super) fn update(
 ) {
     menu.dismissed = false;
     let right_click = mouse.just_pressed(MouseButton::Right);
-    let filter = keys.just_pressed(KeyCode::KeyF)
-        && !keys.any_pressed([
-            KeyCode::SuperLeft,
-            KeyCode::SuperRight,
-            KeyCode::ControlLeft,
-            KeyCode::ControlRight,
-            KeyCode::AltLeft,
-            KeyCode::AltRight,
-        ]);
+    #[cfg(target_arch = "wasm32")]
+    let filter = browser_filter_requested();
+    #[cfg(not(target_arch = "wasm32"))]
+    let filter = false;
     if review.blocked || search.blocks_controls() || picker.is_open() {
         menu.close();
     } else if filter && focus.available {

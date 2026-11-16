@@ -645,8 +645,13 @@ test("restores review progress after reload and resets only the open comparison"
   await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
   await page.keyboard.press("KeyN", { delay: 150 });
   await page.keyboard.press("Shift+KeyN", { delay: 150 });
+  await canvas.evaluate(element => element.requestPointerLock());
+  await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
   await page.keyboard.press("KeyM", { delay: 150 });
-  await expect(canvas).toHaveAttribute("data-pointer-ui", "");
+  // Fly after the overview hop, with the same pointer lock as before it.
+  await page.keyboard.press("KeyD", { delay: 1_500 });
+  await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
+  await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
   await page.keyboard.press("KeyM", { delay: 150 });
   await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
   head = next;

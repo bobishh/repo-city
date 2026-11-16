@@ -23,6 +23,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAppl
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSString", "NSURL", "NSGeometry", "objc2-core-foundation"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 bevy = { version = "0.20", default-features = true }
 avian3d = { version = "0.8", default-features = false, features = ["parallel"] }

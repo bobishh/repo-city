@@ -143,6 +143,40 @@ struct Payload {
 #[derive(Component)]
 pub(super) struct ToolHud;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Component)]
+pub(super) struct EmptyNotesHint;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn spawn_empty_hint(commands: &mut Commands, font: TextFont, ink: Color) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: percent(50.),
+                width: percent(100.),
+                padding: UiRect::top(px(54.)),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            EmptyNotesHint,
+            Visibility::Hidden,
+            bevy::picking::Pickable::IGNORE,
+        ))
+        .with_child((
+            Text::new("No review notes yet. Choose a paint and spray the lines you want to mark."),
+            font,
+            TextColor(ink),
+            BackgroundColor(Color::srgba(0.024, 0.066, 0.08, 0.95)),
+            Node {
+                max_width: percent(80.),
+                padding: UiRect::axes(px(12.), px(8.)),
+                ..default()
+            },
+            bevy::picking::Pickable::IGNORE,
+        ));
+}
+
 #[derive(Resource)]
 pub(super) struct Review {
     pub palette: Vec<Option<Preset>>,
@@ -299,7 +333,7 @@ pub(super) fn update(
         }
     }
     #[cfg(not(target_arch = "wasm32"))]
-    if repo.is_changed() {
+    if repo.is_changed() && review.scope != repo.0.root.to_string_lossy() {
         review.scope = repo.0.root.to_string_lossy().into_owned();
         match native::load(&review.scope) {
             Ok(payload) => {
@@ -371,8 +405,27 @@ pub(super) fn panels(
     mut explorer: ResMut<Explorer>,
     mut camera: Query<&mut Pilot, PlayerCamera>,
     #[cfg(not(target_arch = "wasm32"))] mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    #[cfg(not(target_arch = "wasm32"))] time: Res<Time>,
+    #[cfg(not(target_arch = "wasm32"))] mut hint: Query<&mut Visibility, With<EmptyNotesHint>>,
+    #[cfg(not(target_arch = "wasm32"))] mut hint_until: Local<f32>,
     #[cfg(not(target_arch = "wasm32"))] _main_thread: bevy::ecs::system::NonSendMarker,
 ) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if review.notes.is_empty() && matches!(review.request, Some(Panel::Notes | Panel::Aimed)) {
+            review.request = None;
+            *hint_until = time.elapsed_secs() + 3.5;
+        } else if review.request.is_some() {
+            *hint_until = 0.;
+        }
+        if let Ok(mut hint) = hint.single_mut() {
+            hint.set_if_neq(if time.elapsed_secs() < *hint_until {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            });
+        }
+    }
     let Some(panel) = review.request.take() else {
         return;
     };
@@ -451,6 +504,48 @@ fn new_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn opening_empty_notes_keeps_capture_and_the_hint_expires() {
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default())
+            .insert_resource(Explorer::new(0))
+            .insert_resource(Review {
+                request: Some(Panel::Notes),
+                ..default()
+            })
+            .add_systems(Update, panels);
+        let hint = app
+            .world_mut()
+            .spawn((EmptyNotesHint, Visibility::Hidden))
+            .id();
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Pilot {
+                    captured: true,
+                    ..default()
+                },
+            ))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(hint),
+            Some(&Visibility::Inherited)
+        );
+        assert!(app.world().get::<Pilot>(camera).unwrap().captured);
+        assert!(app.world().resource::<Review>().request.is_none());
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs(4));
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(hint),
+            Some(&Visibility::Hidden)
+        );
+    }
 
     #[test]
     fn a_drag_extends_only_within_one_file_and_side_and_can_move_back() {

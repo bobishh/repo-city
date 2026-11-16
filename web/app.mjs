@@ -22,6 +22,7 @@ const help = document.querySelector("#help");
 const guideKey = "repo-city-guide-v1";
 let tourCommand = 0;
 let tourEntry = null;
+let changesOnlyRequested = false;
 let activeTourEntry = null;
 const logo = document.querySelector("#logo");
 const close = document.querySelector("#close");
@@ -46,6 +47,14 @@ if (parameters.get("pr")) form.elements.repo.value = parameters.get("pr");
 function focusCanvas() {
   if (running && !document.querySelector("dialog[open]")) canvas.focus({ preventScroll: true });
 }
+
+canvas.addEventListener("keydown", event => {
+  if (event.code !== "KeyF" || event.repeat || event.metaKey || event.ctrlKey ||
+      event.altKey || canvas.hasAttribute("data-pointer-ui") ||
+      document.querySelector("dialog[open]") || !active?.canFilterChanges) return;
+  event.preventDefault();
+  changesOnlyRequested = !changesOnlyRequested;
+});
 
 function openGuide(entry) {
   tourEntry = entry;
@@ -126,6 +135,7 @@ async function stageRepository(repository, ref, base) {
   const canFilterChanges = Boolean(pull) && (Object.keys(before).length !== Object.keys(after).length ||
     Object.entries(before).some(([path, blob]) => after[path]?.id !== blob.id || after[path]?.mode !== blob.mode));
   active = { repository, blobs: new Map(), blameFiles: new Map(), marks, progressError, canFilterChanges };
+  changesOnlyRequested = false;
   progressPanel.hidden = false;
   repositoryVersion++;
   blame.hidden = true;
@@ -172,6 +182,11 @@ async function openRepository(repo, ref, base) {
         reviewSlot: review.takeSlot,
         reviewDestination: review.takeDestination,
         canFilterChanges: () => active.canFilterChanges,
+        takeChangesOnlyRequest() {
+          const requested = changesOnlyRequested;
+          changesOnlyRequested = false;
+          return requested;
+        },
         reviewModal: review.modal,
         reviewCanPaint: review.canPaint,
         reviewId: review.id,
