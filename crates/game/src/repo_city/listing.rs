@@ -124,7 +124,7 @@ pub(super) struct Listing {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Face {
+pub(super) enum Face {
     Source,
     Diff,
     Blame,
@@ -722,7 +722,7 @@ impl Face {
         }
     }
 
-    fn normal(self) -> Vec3 {
+    pub(super) fn normal(self) -> Vec3 {
         match self {
             Self::Source => Vec3::Z,
             Self::Diff => Vec3::X,

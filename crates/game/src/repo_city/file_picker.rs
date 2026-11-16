@@ -29,6 +29,11 @@ impl FilePicker {
     pub(super) fn is_open(&self) -> bool {
         self.open || self.suppress_input
     }
+    pub(super) fn open(&mut self) {
+        if !self.open {
+            self.toggle();
+        }
+    }
     fn toggle(&mut self) {
         self.open = !self.open;
         #[cfg(not(target_arch = "wasm32"))]

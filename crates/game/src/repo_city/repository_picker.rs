@@ -234,6 +234,7 @@ pub(super) fn replace_city(commands: &mut Commands, old_city: &CityEntities, nex
     commands.insert_resource(listing::Listing::default());
     commands.insert_resource(file_picker::FilePicker::default());
     commands.insert_resource(Nearest::default());
+    commands.insert_resource(city_menu::Menu::default());
 }
 
 pub(super) fn open_repository(

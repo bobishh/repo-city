@@ -16,6 +16,16 @@ pub(super) struct Surface {
 }
 
 impl Aim {
+    pub(super) fn on_side(self, face: listing::Face) -> Self {
+        Self {
+            surface: Some(Surface {
+                normal: face.normal(),
+                height: self.surface.map_or(0.9, |surface| surface.height.min(0.9)),
+            }),
+            ..self
+        }
+    }
+
     pub(super) fn view(self, file: &repo_world::File, size: Vec3, eye: Vec3) -> Transform {
         let [x, z] = file.position;
         let center = Vec3::new(x, 0., z);

@@ -330,7 +330,7 @@ test("finds account repositories and revisions in their own fields", async ({ pa
   await expect(page.locator("form")).toBeHidden({ timeout: 90_000 });
 });
 
-test("restores review progress after reload and resets only the open comparison", async ({ page }) => {
+test("restores review progress after reload and resets only the open comparison", async ({ page }, testInfo) => {
   await emulatePointerLock(page);
   await page.route("https://api.github.com/**", async route => {
     const path = new URL(route.request().url()).pathname;
@@ -371,6 +371,23 @@ test("restores review progress after reload and resets only the open comparison"
   await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   expect((await read(scope)).some(mark => JSON.parse(mark).reveal)).toBe(false);
+  await canvas.click({ position: { x: 640, y: 400 }, button: "right" });
+  await expect(canvas).toHaveAttribute("data-pointer-ui", "");
+  await expect.poll(() => page.evaluate(() => document.pointerLockElement)).toBeNull();
+  await canvas.screenshot({ path: testInfo.outputPath("city-actions.png") });
+  await page.keyboard.press("Escape");
+  await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
+  await canvas.click({ position: { x: 640, y: 400 }, button: "right" });
+  await expect(canvas).toHaveAttribute("data-pointer-ui", "");
+  await canvas.click({ position: { x: 712, y: 528 }, delay: 150 });
+  await page.keyboard.type("demo.rs", { delay: 45 });
+  await expect(canvas).toHaveAttribute("data-pointer-ui", "");
+  await canvas.screenshot({ path: testInfo.outputPath("city-file-search.png") });
+  await page.keyboard.press("Escape");
+  await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
+  await canvas.click({ position: { x: 640, y: 400 }, delay: 150 });
+  await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await page.mouse.down();
   try {
     await expect.poll(async () => (await read(scope)).some(mark => JSON.parse(mark).reveal), polling).toBe(true);

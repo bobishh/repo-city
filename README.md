@@ -52,6 +52,7 @@ first argument.
 | Find a file by name or path | **P** in the browser, **⌘P** on Mac |
 | Fly | **WASD**, **Space** and **Ctrl** for altitude, **Shift** to boost |
 | Capture or release the cursor | Click the scene to capture. **Esc** releases. |
+| Open the camera menu | Right-click at a face to fly there, switch to its diff or blame, or open file search. Right-click empty space to open file search from the menu. |
 | Approach a wall | Aim at a face of a building and press **E** to fly to that face. Scroll along a reading wall. Hold the left mouse button close to the source wall to reveal covered lines. |
 | Turn to the diff or blame wall | **G** for diff, **B** for blame. The browser blame wall links to GitHub. |
 | Follow a file’s changes | **C** starts the review. **W** and **S** move between change platforms. |

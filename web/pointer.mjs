@@ -40,7 +40,7 @@ export function setupPointer(canvas, menu) {
     if (event.button === 0) capture();
   });
   canvas.addEventListener("contextmenu", event => {
-    if (locked()) event.preventDefault();
+    event.preventDefault();
   });
   return release;
 }

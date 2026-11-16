@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 mod android;
 mod blame;
+mod city_menu;
 mod city_navigation;
 mod code_texture;
 mod comparison_scene;
@@ -424,6 +425,7 @@ fn main() {
     .insert_resource(navigation)
     .insert_resource(repository_picker::RepositoryPicker::new(startup_error))
     .init_resource::<Nearest>()
+    .init_resource::<city_menu::Menu>()
     .init_resource::<file_picker::FilePicker>()
     .init_resource::<listing::Listing>()
     .init_resource::<progress::Progress>()
@@ -434,11 +436,12 @@ fn main() {
             file_picker::update,
             flight,
             targeting,
-            city_navigation::navigate,
-            interaction,
-            comparison_scene::controls,
-            listing::controls,
-            listing::wash_stream,
+            city_menu::update,
+            city_navigation::navigate.run_if(city_menu::gameplay_enabled),
+            interaction.run_if(city_menu::gameplay_enabled),
+            comparison_scene::controls.run_if(city_menu::gameplay_enabled),
+            listing::controls.run_if(city_menu::gameplay_enabled),
+            listing::wash_stream.run_if(city_menu::gameplay_enabled),
             physics::splashes,
             city_navigation::shoot_reviewed_platform,
             physics::fractures,
@@ -719,6 +722,7 @@ fn setup(
         ..default()
     };
     file_picker::spawn(&mut commands, &ui_font(13.), color(set.ink));
+    city_menu::spawn(&mut commands, &ui_font(13.), color(set.ink));
     #[cfg(not(target_arch = "wasm32"))]
     repository_picker::spawn(&mut commands, &ui_font(13.), color(set.ink));
     commands.spawn((
@@ -989,6 +993,7 @@ fn flight(
     windows: Query<&Window, With<PrimaryWindow>>,
     #[cfg(not(target_arch = "wasm32"))] mut cursors: Query<&mut CursorOptions, With<PrimaryWindow>>,
     picker: Res<file_picker::FilePicker>,
+    menu: Res<city_menu::Menu>,
     listing: Res<listing::Listing>,
     file_buttons: Query<&bevy::picking::hover::Hovered, With<file_picker::FileButton>>,
     #[cfg(target_arch = "wasm32")] mut previous_pointer_ui: Local<Option<bool>>,
@@ -999,13 +1004,13 @@ fn flight(
     let Ok(window) = windows.single() else {
         return;
     };
-    let picker_open = picker.is_open();
+    let pointer_ui_open = picker.is_open() || menu.is_open();
     let was_captured = pilot.captured;
     let over_button = !was_captured && file_buttons.iter().any(|hovered| hovered.get());
     #[cfg(target_arch = "wasm32")]
     {
         if let Some(document) = web_sys::window().and_then(|window| window.document()) {
-            let pointer_ui = picker_open || over_button;
+            let pointer_ui = pointer_ui_open || over_button;
             if *previous_pointer_ui != Some(pointer_ui)
                 && let Some(canvas) = document.get_element_by_id("repo-city")
             {
@@ -1019,7 +1024,7 @@ fn flight(
             pilot.captured = document
                 .pointer_lock_element()
                 .is_some_and(|element| element.id() == "repo-city");
-            if pilot.captured && picker_open {
+            if pilot.captured && pointer_ui_open {
                 document.exit_pointer_lock();
                 pilot.captured = false;
             }
@@ -1027,7 +1032,7 @@ fn flight(
     }
     let focused = window.focused || (cfg!(target_arch = "wasm32") && pilot.captured);
     #[cfg(not(target_arch = "wasm32"))]
-    if focused && !picker_open && !over_button {
+    if focused && !pointer_ui_open && !over_button {
         if keys.just_pressed(KeyCode::Tab) {
             pilot.captured = !pilot.captured;
         } else if mouse.just_pressed(MouseButton::Left) {
@@ -1036,9 +1041,11 @@ fn flight(
     }
     if keys.just_pressed(KeyCode::Escape) {
         pilot.captured = false;
-        explorer.anchored = false;
+        if !menu.is_open() {
+            explorer.anchored = false;
+        }
     }
-    if !focused || picker_open {
+    if !focused || pointer_ui_open {
         pilot.captured = false;
     }
     // Updating CursorOptions on the web reapplies winit's grab mode (None)
@@ -1058,7 +1065,7 @@ fn flight(
         }
     }
     pilot.update_fire(&mouse);
-    if picker_open || listing.turning() || !focused {
+    if pointer_ui_open || listing.turning() || !focused {
         return;
     }
     if navigation.is_flying() {

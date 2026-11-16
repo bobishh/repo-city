@@ -200,7 +200,7 @@ impl Navigation {
         };
         let shortcut = file_picker::SHORTCUT;
         format!(
-            "Click to capture · Esc releases · E flies to the aimed face\nScroll follows the text · Files / {shortcut} searches paths · WASD flies\nHold left mouse close to wash source · Home frames the file · G diff · B blame · C reviews changes{trace}"
+            "Click to capture · Esc releases · Right-click opens actions · E flies to the aimed face\nScroll follows the text · Files / {shortcut} searches paths · WASD flies\nHold left mouse close to wash source · Home frames the file · G diff · B blame · C reviews changes{trace}"
         )
     }
 }
@@ -270,6 +270,7 @@ pub(super) fn navigate(
     mut navigation: ResMut<Navigation>,
     mut picker: ResMut<file_picker::FilePicker>,
     mut listing: ResMut<listing::Listing>,
+    mut menu: ResMut<city_menu::Menu>,
     mut saved_progress: ResMut<progress::Progress>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut camera: Query<&mut Transform, PlayerCamera>,
@@ -410,7 +411,9 @@ pub(super) fn navigate(
         return;
     }
     let next_changed = keys.just_pressed(KeyCode::KeyN);
-    let target = if let Some(file) = picker.destination.take() {
+    let target = if let Some(aim) = menu.destination.take() {
+        Some((aim.index, Some(aim)))
+    } else if let Some(file) = picker.destination.take() {
         Some((file, None))
     } else if next_changed {
         (1..repo.0.files.len())
@@ -726,6 +729,7 @@ mod tests {
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<Nearest>()
             .init_resource::<Navigation>()
+            .init_resource::<city_menu::Menu>()
             .init_resource::<file_picker::FilePicker>()
             .init_resource::<listing::Listing>()
             .init_resource::<progress::Progress>()
@@ -762,6 +766,7 @@ mod tests {
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<Navigation>()
+            .init_resource::<city_menu::Menu>()
             .init_resource::<file_picker::FilePicker>()
             .init_resource::<listing::Listing>()
             .init_resource::<progress::Progress>()
