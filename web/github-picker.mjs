@@ -61,7 +61,6 @@ function paintAccount() {
   loginButton.hidden = !session?.enabled || Boolean(login);
   account.hidden = !login;
   repo.placeholder = login ? "Find a repository or paste a PR URL" : "Enter owner/repository or a PR URL";
-  refreshPickerFooter();
   install.hidden = !session?.installUrl;
   if (session?.installUrl) install.href = session.installUrl;
   const user = document.querySelector("#github-user");
@@ -376,11 +375,6 @@ function selectRepository(focusNext = false) {
   closeRevision();
   closePull();
   if (focusNext) document.querySelector("#open-city").focus();
-}
-
-export function refreshPickerFooter() {
-  const progress = document.querySelector("#comparison-progress");
-  document.querySelector("#picker-footer").hidden = progress.hidden && account.hidden && loginButton.hidden;
 }
 
 export function refreshRepositoryPicker() {

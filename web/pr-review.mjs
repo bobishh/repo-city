@@ -4,7 +4,15 @@ const presetId = /^[a-z\d-]{1,80}$/i;
 const sha = /^[a-f\d]{40}$/i;
 const fail = (status, error, extra) => ({ status, value: { error, ...extra } });
 const metadata = (id, preset) => `<!-- repo-city:v1:${id}:${preset} -->`;
-export const commentText = (text, id, preset) => `${text.trim()}\n\n${metadata(id, preset)}`;
+export const replacementLimit = 8000;
+export function suggestionBlock(replacement) {
+  const fence = "`".repeat(Math.max(3, ...(replacement.match(/`+/g) ?? []).map(run => run.length + 1)));
+  return `${fence}suggestion\n${replacement}${replacement.endsWith("\n") ? "" : "\n"}${fence}`;
+}
+export function commentText(text, id, preset, replacement) {
+  return [text.trim(), replacement === undefined ? "" : suggestionBlock(replacement), metadata(id, preset)]
+    .filter(Boolean).join("\n\n");
+}
 export const readCommentText = body => {
   const match = /\n\n<!-- repo-city:v1:([a-f\d-]{36}):([a-z\d-]{1,80}) -->$/i.exec(body ?? "");
   return match ? { text: body.slice(0, match.index), id: match[1], preset: match[2] } : { text: body ?? "" };
@@ -44,7 +52,7 @@ export async function readSmallJson(request) {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) return JSON.parse(text + decode.decode());
-      if ((length += value.byteLength) > 16_384) { await reader.cancel(); return null; }
+      if ((length += value.byteLength) > 96 * 1024) { await reader.cancel(); return null; }
       text += decode.decode(value, { stream: true });
     }
   } catch {
@@ -56,13 +64,18 @@ export async function readSmallJson(request) {
 }
 
 export async function writeReviewComment(input, login, call) {
-  const { id, revision, path, before, start, end, preset, text, fileLevel } = input ?? {};
+  const { id, revision, path, before, start, end, preset, text, fileLevel, replacement } = input ?? {};
+  const suggestion = replacement !== undefined;
   if (typeof id !== "string" || !noteId.test(id) || typeof revision !== "string" || !sha.test(revision) ||
       !validPath(path) || typeof before !== "boolean" || !Number.isSafeInteger(start) || start < 1 ||
       !Number.isSafeInteger(end) || end < start || typeof preset !== "string" || !presetId.test(preset) ||
-      typeof text !== "string" || !text.trim() || text.length > 6000 ||
+      typeof text !== "string" || text.length > 6000 || (!suggestion && !text.trim()) ||
       (fileLevel !== undefined && typeof fileLevel !== "boolean")) {
     return fail(400, "Invalid draft comment.");
+  }
+  if (suggestion && (fileLevel || before || typeof replacement !== "string" || !replacement.length ||
+      replacement.length > replacementLimit)) {
+    return fail(400, "A suggestion needs replacement code and lines on the current side of the diff.");
   }
   // A previous response may have been lost after GitHub stored the comment.
   for (let page = 1; page <= 12; page++) {
@@ -88,10 +101,11 @@ export async function writeReviewComment(input, login, call) {
   }
   if (!file) return fail(422, "That file is not in the current GitHub diff. Keep your draft or reselect a changed file.");
   if (!fileLevel && !containsRange(file.patch, before, start, end)) {
+    if (suggestion) return fail(422, "Select lines within one GitHub diff hunk. Your suggestion is still saved.");
     return fail(422, "That range is outside a single GitHub diff hunk. Keep it private, reselect the lines, or publish at file level.", { fileLevel: true });
   }
   const side = before ? "LEFT" : "RIGHT";
-  const body = commentText(text, id, preset);
+  const body = commentText(text, id, preset, replacement);
   let response;
   try {
     response = await call("/comments", {
@@ -103,7 +117,7 @@ export async function writeReviewComment(input, login, call) {
   }
   if (response.status === 422) {
     await response.body?.cancel();
-    return fail(422, "GitHub rejected the anchor. Your draft is still saved.", { fileLevel: !fileLevel });
+    return fail(422, "GitHub rejected the anchor. Your draft is still saved.", { fileLevel: !fileLevel && !suggestion });
   }
   if (!response.ok) return accessError(response);
   return { status: 201, value: { comment: await response.json() } };

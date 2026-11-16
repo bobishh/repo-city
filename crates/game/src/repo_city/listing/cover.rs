@@ -45,6 +45,7 @@ impl MaterialExtension for Cover {
 pub(super) struct CoverRows {
     info: UVec4,
     spans: [Vec4; TILE_ROWS],
+    paint: [Vec4; TILE_ROWS],
 }
 
 impl CoverRows {
@@ -70,6 +71,7 @@ impl CoverRows {
                 code_texture::LISTING_ROW_PIXELS,
             ),
             spans,
+            paint: [Vec4::ZERO; TILE_ROWS],
         }
     }
 
@@ -79,6 +81,10 @@ impl CoverRows {
 
     pub fn set_mask(&mut self, mask: u32) {
         self.info.x = mask;
+    }
+
+    pub fn set_paint(&mut self, paint: [Vec4; TILE_ROWS]) {
+        self.paint = paint;
     }
 }
 

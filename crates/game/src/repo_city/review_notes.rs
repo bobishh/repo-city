@@ -126,6 +126,7 @@ pub(super) struct Review {
     pub drag: Option<(Anchor, Anchor)>,
     pub request: Option<Panel>,
     pub blocked: bool,
+    pub can_paint: bool,
     pub nozzle: f32,
     pub washing: bool,
     pub aim_note: Option<String>,
@@ -152,6 +153,7 @@ impl Default for Review {
             drag: None,
             request: None,
             blocked: false,
+            can_paint: !cfg!(target_arch = "wasm32"),
             nozzle: 0.,
             washing: false,
             aim_note: None,
@@ -172,7 +174,8 @@ impl Review {
 
     pub(super) fn select(&mut self, slot: usize) {
         if self.slot != slot
-            && (slot == 0 || self.palette.get(slot - 1).is_some_and(Option::is_some))
+            && (slot == 0
+                || self.can_paint && self.palette.get(slot - 1).is_some_and(Option::is_some))
         {
             self.slot = slot;
             self.drag = None;
@@ -260,6 +263,10 @@ pub(super) fn update(
             review.version = version;
         }
         review.blocked = browser_modal();
+        review.can_paint = browser_can_paint();
+        if !review.can_paint {
+            review.select(0);
+        }
         if let Ok(slot) = usize::try_from(browser_slot()) {
             review.select(slot);
         }
@@ -288,7 +295,7 @@ pub(super) fn update(
     if review.blocked || picker.is_open() || menu.is_open() || keys.just_pressed(KeyCode::Escape) {
         review.drag = None;
     } else if pilot.captured {
-        if keys.just_pressed(KeyCode::KeyU) {
+        if keys.just_pressed(KeyCode::KeyU) && review.can_paint {
             review.request = Some(Panel::Paints);
         } else if keys.just_pressed(KeyCode::KeyJ) {
             review.request = Some(Panel::Aimed);
@@ -384,6 +391,8 @@ extern "C" {
     fn browser_slot() -> i32;
     #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = reviewModal)]
     fn browser_modal() -> bool;
+    #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = reviewCanPaint)]
+    fn browser_can_paint() -> bool;
     #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = reviewId)]
     fn new_id() -> String;
 }

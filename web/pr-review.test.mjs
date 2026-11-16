@@ -15,6 +15,30 @@ test("validates the whole inclusive range on one GitHub diff side", () => {
   assert.equal(containsRange("something else", false, 2, 2), false);
 });
 
+test("publishes a line replacement and keeps invalid suggestion anchors private", async () => {
+  const replacement = '    new_code();\n    // ```';
+  let posted;
+  const call = async (suffix, payload) => {
+    if (!suffix) return Response.json({ state: "open", head: { sha } });
+    if (suffix.startsWith("/files")) return Response.json([{ filename: path, patch }]);
+    if (!payload) return Response.json([]);
+    posted = payload;
+    return Response.json({ id: 42 });
+  };
+  const run = fields => writeReviewComment({ ...comment, text: "", replacement, ...fields }, "reviewer", call);
+  assert.equal((await run({ before: true })).status, 400);
+  assert.equal((await run({ fileLevel: true })).status, 400);
+  const outside = await run({ end: 19 });
+  assert.equal(outside.status, 422);
+  assert.equal(outside.value.fileLevel, undefined);
+  assert.equal(posted, undefined);
+  assert.equal((await run({})).status, 201);
+  assert.equal(posted.side, "RIGHT");
+  assert.equal(posted.start_line, 2);
+  assert.equal(posted.line, 4);
+  assert.match(posted.body, /^````suggestion\n    new_code\(\);\n    \/\/ ```\n````\n\n<!-- repo-city:v1:/);
+});
+
 test("publishes explicit diff coordinates, retains stale anchors, and finds a prior uncertain write", async () => {
   let seen, writes = 0, moved = false;
   const call = async (suffix, payload) => {

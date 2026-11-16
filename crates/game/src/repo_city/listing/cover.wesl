@@ -8,6 +8,7 @@ import bevy_render::color_operations::srgb_to_linear;
 struct CoverRows {
     info: vec4<u32>,
     spans: array<vec4<f32>, 16>,
+    paint: array<vec4<f32>, 16>,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100)
@@ -19,6 +20,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
     var ink = pbr.material.base_color;
     if (cover.info.y > 0u) {
         let row = min(u32(in.uv.y * f32(cover.info.y)), cover.info.y - 1u);
+        let paint = cover.paint[row];
         if ((cover.info.x >> row) & 1u) == 0u {
             let x = in.uv.x * f32(cover.info.z);
             let y = fract(in.uv.y * f32(cover.info.y)) * f32(cover.info.w);
@@ -37,6 +39,17 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
                 rgb = vec3<f32>(68.0, 91.0, 101.0);
             }
             ink = vec4<f32>(srgb_to_linear(rgb / 255.0), ink.a);
+        }
+        if paint.a > 0.0 {
+            let x = in.uv.x;
+            let y = fract(in.uv.y * f32(cover.info.y));
+            let grain = fract(dot(floor(vec2<f32>(x * 640.0, y * 21.0)), vec2<f32>(0.75488, 0.56984)));
+            let edge = 0.91 + (grain - 0.5) * 0.032;
+            let shape = smoothstep(0.025, 0.055, x) * (1.0 - smoothstep(edge - 0.06, edge, x));
+            let band = smoothstep(0.0, 0.16, y) * (1.0 - smoothstep(0.84, 1.0, y));
+            let gutter = smoothstep(0.02, 0.035, x) * (1.0 - smoothstep(0.057, 0.076, x));
+            let opacity = paint.a * max(shape * band * (0.16 + 0.17 * grain), gutter * band * 0.82);
+            ink = vec4<f32>(mix(ink.rgb, srgb_to_linear(paint.rgb), opacity), ink.a);
         }
     }
     var out: FragmentOutput;

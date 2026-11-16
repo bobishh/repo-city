@@ -2,7 +2,7 @@ import { loadGitHub, parsePullRequest } from "./github.mjs";
 import { createAnalytics } from "./analytics.mjs";
 import { browserKey } from "./analytics-config.mjs";
 import { createSyntaxCache } from "./syntax.mjs";
-import { focusRepositoryPicker, githubAccount, githubReady, githubRequest, refreshPickerFooter, refreshRepositoryPicker } from "./github-picker.mjs";
+import { focusRepositoryPicker, githubAccount, githubReady, githubRequest, refreshRepositoryPicker } from "./github-picker.mjs";
 import { setupPointer } from "./pointer.mjs";
 import { createReview } from "./review.mjs";
 import { readProgress, rememberExploration, writeProgress } from "./progress.mjs";
@@ -123,7 +123,6 @@ async function stageRepository(repository, ref, base) {
   });
   active = { repository, blobs: new Map(), blameFiles: new Map(), marks, progressError };
   progressPanel.hidden = false;
-  refreshPickerFooter();
   repositoryVersion++;
   blame.hidden = true;
   blame.removeAttribute("href");
@@ -168,6 +167,7 @@ async function openRepository(repo, ref, base) {
         reviewPanel: review.panel,
         reviewSlot: review.takeSlot,
         reviewModal: review.modal,
+        reviewCanPaint: review.canPaint,
         reviewId: review.id,
         snapshot: () => active.repository.snapshot,
         repositoryVersion: () => repositoryVersion,
