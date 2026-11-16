@@ -395,6 +395,12 @@ extern "C" {
     fn browser_snapshot() -> String;
     #[wasm_bindgen(js_namespace = repoCity, js_name = showBlame)]
     fn browser_blame_link(path: &str, before: bool, line: usize);
+    #[wasm_bindgen(js_namespace = repoCity, js_name = repositoryVersion)]
+    pub fn browser_repository_version() -> u32;
+    #[wasm_bindgen(js_namespace = repoCity, js_name = syntaxVersion)]
+    pub fn browser_syntax_version() -> u32;
+    #[wasm_bindgen(js_namespace = repoCity, js_name = syntaxSpans)]
+    fn browser_syntax_spans(path: &str, source: &str) -> Vec<u32>;
     #[wasm_bindgen(js_namespace = repoCity, js_name = sourceVersion)]
     pub fn browser_source_version() -> u32;
 }

@@ -448,9 +448,13 @@ fn main() {
     #[cfg(target_arch = "wasm32")]
     app.add_systems(
         Update,
-        browser_refresh
-            .before(file_picker::update)
-            .run_if(repository_picker::has_city),
+        (
+            browser_switch.before(spawn_city),
+            browser_refresh
+                .after(spawn_city)
+                .before(file_picker::update)
+                .run_if(repository_picker::has_city),
+        ),
     );
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -495,10 +499,27 @@ fn main() {
 }
 
 #[cfg(target_arch = "wasm32")]
+fn browser_switch(
+    mut commands: Commands,
+    mut observed: Local<Option<u32>>,
+    old_city: repository_picker::CityEntities,
+) {
+    let next = repo_world::browser_repository_version();
+    if observed
+        .replace(next)
+        .is_some_and(|previous| previous != next)
+        && let Ok(repo) = repo_world::open_browser()
+    {
+        repository_picker::replace_city(&mut commands, &old_city, repo);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 fn browser_refresh(
     repo: Res<Repo>,
     mut explorer: ResMut<Explorer>,
     mut version: Local<u32>,
+    mut styling: Local<u32>,
     mut listing: ResMut<listing::Listing>,
     mut camera: Query<&mut Transform, PlayerCamera>,
 ) {
@@ -526,6 +547,35 @@ fn browser_refresh(
                 }
             }
         }
+    }
+    let syntax_version = repo_world::browser_syntax_version();
+    if syntax_version != *styling {
+        *styling = syntax_version;
+        let file = &repo.0.files[explorer.selected];
+        explorer.highlighted = syntax::highlight(&file.path, &explorer.source);
+        let dirty = explorer.dirty;
+        let displayed = (dirty && !explorer.before).then(|| explorer.source.clone());
+        let selected = explorer.selected;
+        if let Some(diff) = explorer.comparison.as_mut() {
+            for (before, rows) in [(true, &mut diff.before), (false, &mut diff.after)] {
+                if rows.is_empty() {
+                    continue;
+                }
+                let source = if !before && dirty {
+                    displayed.clone().ok_or_else(|| "Missing draft".to_owned())
+                } else {
+                    repo.0.source(selected, before)
+                };
+                if let Ok(source) = source {
+                    let styled = syntax::highlight(&file.path, &source);
+                    if styled.len() == rows.len() {
+                        *rows = styled;
+                    }
+                }
+            }
+        }
+        explorer.rebuild = true;
+        listing.recolor();
     }
 }
 
@@ -651,7 +701,11 @@ fn setup(
         Node {
             position_type: PositionType::Absolute,
             left: px(24.),
-            top: px(20.),
+            top: px(if cfg!(target_arch = "wasm32") {
+                75.
+            } else {
+                20.
+            }),
             ..default()
         },
         TopHud,
@@ -678,7 +732,11 @@ fn setup(
         Node {
             position_type: PositionType::Absolute,
             right: px(24.),
-            top: px(20.),
+            top: px(if cfg!(target_arch = "wasm32") {
+                65.
+            } else {
+                20.
+            }),
             max_width: px(460.),
             padding: UiRect::all(px(14.)),
             ..default()
@@ -1544,14 +1602,19 @@ fn hud(
     }
     for (mut text, top, bottom, status, aim) in &mut texts {
         let value = if top {
+            let title = repo
+                .0
+                .root
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+            let name = if cfg!(target_arch = "wasm32") {
+                repo.0.root.to_string_lossy().into_owned()
+            } else {
+                format!("{}  /  {title}", set.name)
+            };
             format!(
-                "{}  /  {}\n{} files · {} districts · {} → {}",
-                set.name,
-                repo.0
-                    .root
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy(),
+                "{name}\n{} files · {} districts · {} → {}",
                 repo.0.files.len(),
                 repo.0.districts.len(),
                 repo.0.baseline.as_ref().map_or("empty", |s| &s[..8]),

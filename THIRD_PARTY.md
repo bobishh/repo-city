@@ -14,3 +14,8 @@ Source: https://github.com/google/fonts/tree/main/ofl/notosansjp
 Map fixtures (`fixtures/kreuzberg.json`, `fixtures/koertestrasse.json`) and bundled neighbourhood data are © OpenStreetMap contributors, available under the Open Database License (ODbL).
 Copyright and license: https://www.openstreetmap.org/copyright
 The Körtestraße fixture records public map geometry used to regress courtyard passage access.
+
+
+The browser syntax worker bundles Shiki and its TextMate grammars, plus the
+JavaScript regex engine and its dependencies. The web build publishes their
+license notices under `syntax-licenses/`.

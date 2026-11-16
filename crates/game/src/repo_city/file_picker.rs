@@ -82,8 +82,16 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
             FileControls,
             Node {
                 position_type: PositionType::Absolute,
-                top: px(77.),
-                left: px(190.),
+                top: px(if cfg!(target_arch = "wasm32") {
+                    125.
+                } else {
+                    77.
+                }),
+                left: px(if cfg!(target_arch = "wasm32") {
+                    24.
+                } else {
+                    190.
+                }),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4.),
                 ..default()

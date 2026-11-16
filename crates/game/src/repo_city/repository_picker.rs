@@ -152,6 +152,33 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
     ));
 }
 
+pub(super) type CityEntities<'w, 's> = Query<
+    'w,
+    's,
+    Entity,
+    Or<(
+        With<CityObject>,
+        With<Detail>,
+        With<listing::ListingSurface>,
+        With<city_navigation::RouteVisual>,
+        With<physics::Lifetime>,
+    )>,
+>;
+
+pub(super) fn replace_city(commands: &mut Commands, old_city: &CityEntities, next: Repository) {
+    let mut explorer = Explorer::new(next.initial_file());
+    explorer.open(&next, explorer.selected);
+    for entity in old_city {
+        commands.entity(entity).despawn();
+    }
+    commands.insert_resource(Repo(next));
+    commands.insert_resource(explorer);
+    commands.insert_resource(city_navigation::Navigation::default());
+    commands.insert_resource(listing::Listing::default());
+    commands.insert_resource(file_picker::FilePicker::default());
+    commands.insert_resource(Nearest::default());
+}
+
 pub(super) fn open_repository(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
@@ -160,16 +187,7 @@ pub(super) fn open_repository(
     set: Res<WorldSet>,
     mut windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
     mut pilot: Query<&mut Pilot>,
-    old_city: Query<
-        Entity,
-        Or<(
-            With<CityObject>,
-            With<Detail>,
-            With<listing::ListingSurface>,
-            With<city_navigation::RouteVisual>,
-            With<physics::Lifetime>,
-        )>,
-    >,
+    old_city: CityEntities,
     mut status: Query<(&mut Text, &mut Node), With<RepositoryStatus>>,
     mut file_controls: Query<
         &mut Node,
@@ -193,19 +211,9 @@ pub(super) fn open_repository(
             .and_then(|path| path.map(|path| load(&path, "HEAD", None)).transpose())
         {
             Ok(Some(next)) => {
-                let mut explorer = Explorer::new(next.initial_file());
-                explorer.open(&next, explorer.selected);
                 window.title = window_title(&set, &next);
                 picker.status = remember(&next.root).err().unwrap_or_default();
-                for entity in &old_city {
-                    commands.entity(entity).despawn();
-                }
-                commands.insert_resource(Repo(next));
-                commands.insert_resource(explorer);
-                commands.insert_resource(city_navigation::Navigation::default());
-                commands.insert_resource(listing::Listing::default());
-                commands.insert_resource(file_picker::FilePicker::default());
-                commands.insert_resource(Nearest::default());
+                replace_city(&mut commands, &old_city, next);
                 opened = true;
             }
             Ok(None) => {}

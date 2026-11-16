@@ -123,6 +123,10 @@ pub fn highlight(path: &str, source: &str) -> Vec<Line> {
         }
     }
     spans.sort_by_key(|s| s.bytes.start);
+    lines_with_spans(source, &spans)
+}
+
+fn lines_with_spans(source: &str, spans: &[Span]) -> Vec<Line> {
     let mut offset = 0;
     let mut first = 0;
     source
@@ -153,16 +157,26 @@ pub fn highlight(path: &str, source: &str) -> Vec<Line> {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn highlight(_: &str, source: &str) -> Vec<Line> {
-    source
-        .lines()
-        .enumerate()
-        .map(|(index, text)| Line {
-            number: index + 1,
-            text: text.into(),
-            spans: vec![],
+pub fn highlight(path: &str, source: &str) -> Vec<Line> {
+    let packed = crate::browser_syntax_spans(path, source);
+    let spans = packed
+        .chunks_exact(3)
+        .filter_map(|span| {
+            let kind = match span[2] {
+                1 => Kind::Keyword,
+                2 => Kind::String,
+                3 => Kind::Comment,
+                4 => Kind::Number,
+                5 => Kind::Type,
+                6 => Kind::Function,
+                _ => return None,
+            };
+            let bytes = span[0] as usize..span[1] as usize;
+            (!bytes.is_empty() && source.get(bytes.clone()).is_some())
+                .then_some(Span { bytes, kind })
         })
-        .collect()
+        .collect::<Vec<_>>();
+    lines_with_spans(source, &spans)
 }
 
 #[cfg(test)]

@@ -35,13 +35,16 @@ it with the merge base. Changed source rows are tinted in place; the diff
 wall shows removals. For a repository, choose a revision and optionally a base ref. With a
 base ref, the city compares the merge base against the chosen revision.
 Without one, it compares the first parent. Files load as you approach them.
-Use a browser with WebGPU enabled. The browser displays plain source and line
-diffs. It uses GitHub's public API
-and its unauthenticated rate limit.
+Use a browser with WebGPU enabled. The landing form opens public repositories,
+pull requests, branches, tags, and individual commits. Click the Repo City
+logo during play to switch without leaving the current city until the new
+snapshot is ready. The browser uses GitHub's public API and its
+unauthenticated rate limit.
 
 ```sh
 rustup target add wasm32-unknown-unknown
 # Install wasm-bindgen-cli at the wasm-bindgen version in Cargo.lock.
+npm ci --prefix web
 ./scripts/build-web.sh
 cd web
 node tests/serve.mjs 18791
@@ -145,10 +148,13 @@ Rust, JS/TS, Ruby, Elixir and Elm. Unsupported languages still have source views
 they do not receive fabricated function geometry. Svelte markup is currently
 source-only. Body size and branch measurements remain partial syntax facts.
 
-Syntax highlighting parses the complete selected source with Tree-sitter before
-splitting it into display pages, preserving multiline comments/strings and
-UTF-8 offsets. Supported syntax: Rust, JS/JSX, TS/TSX, Ruby, Elixir and Elm.
-Other languages remain plain text. Diff hunks come from local Git with external
+Native syntax highlighting parses the selected source with Tree-sitter.
+The browser uses TextMate grammars in a Web Worker. It loads its worker and
+the selected language only on demand and applies colors in place when
+ready. Both handle multiline comments and strings and preserve UTF-8
+offsets. Supported syntax: Rust, JS/JSX, TS/TSX, Ruby, Elixir and Elm. The
+browser also colors TOML and JSON. Other languages remain plain text.
+Diff hunks come from local Git with external
 diff drivers disabled. Replacements align old/new rows for reading; pairing
 lines does not imply semantic equivalence or infer renames.
 

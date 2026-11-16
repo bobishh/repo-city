@@ -31,6 +31,9 @@ pub(super) struct Reflection;
 #[derive(Component)]
 pub(super) struct MirrorCamera;
 
+#[derive(Component)]
+pub(super) struct LogoCamera;
+
 #[derive(Default)]
 pub(super) struct MirrorMotion {
     last_eye: Option<Vec3>,
@@ -203,6 +206,45 @@ pub(super) fn setup(
         Transform::from_xyz(0., 0.12, 7.3).looking_at(Vec3::Y * 0.12, Vec3::Y),
         RenderLayers::layer(android::LAYER),
     ));
+    #[cfg(target_arch = "wasm32")]
+    {
+        let face = images.add(Image::new_target_texture(
+            96,
+            96,
+            TextureFormat::Rgba8Unorm,
+            Some(TextureFormat::Rgba8UnormSrgb),
+        ));
+        commands.spawn((
+            MirrorCamera,
+            LogoCamera,
+            Camera3d::default(),
+            Camera {
+                order: -2,
+                clear_color: Color::NONE.into(),
+                ..default()
+            },
+            Projection::Perspective(PerspectiveProjection {
+                fov: 0.59,
+                ..default()
+            }),
+            RenderTarget::Image(face.clone().into()),
+            Tonemapping::None,
+            Transform::from_xyz(0.25, 1.86, 2.22).looking_at(Vec3::new(-0.045, 1.78, 0.), Vec3::Y),
+            RenderLayers::layer(android::LAYER),
+        ));
+        commands.spawn((
+            ImageNode::new(face),
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(16.),
+                top: px(16.),
+                width: px(48.),
+                height: px(48.),
+                ..default()
+            },
+            bevy::picking::Pickable::IGNORE,
+        ));
+    }
     for (location, color, lux) in [
         (Vec3::new(2.5, 5., 6.), Color::srgb(0.89, 0.95, 1.), 10_500.),
         (Vec3::new(-4., 1., 2.), Color::srgb(1., 0.48, 0.73), 4_500.),
@@ -279,7 +321,10 @@ pub(super) fn reflect(
         ),
         (With<Reflection>, Without<Camera3d>),
     >,
-    mut render: Query<(&mut Camera, &mut Transform), (With<MirrorCamera>, With<Camera3d>)>,
+    mut render: Query<
+        (&mut Camera, &mut Transform),
+        (With<MirrorCamera>, With<Camera3d>, Without<LogoCamera>),
+    >,
     mut joints: Query<(&android::Joint, &mut Transform), (Without<Camera3d>, Without<Reflection>)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     time: Res<Time>,
@@ -305,6 +350,10 @@ pub(super) fn reflect(
         }
         motion.last_eye = None;
         motion.drift = 0.;
+        #[cfg(target_arch = "wasm32")]
+        for (joint, mut local) in &mut joints {
+            android::animate(*joint, &mut local, time.elapsed_secs(), 0., 0.24);
+        }
         return;
     };
     if !view.is_active {

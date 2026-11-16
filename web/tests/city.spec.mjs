@@ -3,6 +3,7 @@ import { writeFile } from "node:fs/promises";
 
 const after = "b".repeat(40);
 const before = "a".repeat(40);
+const next = "e".repeat(40);
 
 test("opens a public repository and fetches source after the WASM city starts", async ({ page }, testInfo) => {
   const faults = [];
@@ -24,15 +25,18 @@ test("opens a public repository and fetches source after the WASM city starts", 
       "",
     ].join("\n");
     if (path === "/repos/owner/demo") return route.fulfill({ json: { default_branch: "main" } });
-    if (path.includes("/commits/")) return route.fulfill({ json: { sha: after, parents: [{ sha: before }] } });
+    if (path.includes("/commits/")) return route.fulfill({ json: { sha: path.endsWith(next) ? next : after, parents: [{ sha: before }] } });
     if (path.includes("/git/trees/")) return route.fulfill({ json: {
-      tree: [{ path: "src/demo.rs", type: "blob", mode: "100644", sha: path.endsWith(after) ? after : before, size: source.length }],
+      tree: [{ path: "src/demo.rs", type: "blob", mode: "100644", sha: path.split("/").at(-1), size: source.length }],
     } });
     return route.fulfill({ json: { size: source.length, encoding: "base64", content: Buffer.from(source).toString("base64") } });
   });
   await page.goto("/");
   const cover = page.locator("#start-screen");
-  await expect(cover.getByText("Repo City", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Repo City" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Public GitHub repository" })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("landing.png") });
+  const syntax = page.waitForResponse(response => new URL(response.url()).pathname === "/syntax-worker.mjs");
   await expect.poll(() => cover.locator("img").evaluate(image => image.naturalWidth)).toBeGreaterThan(0);
   await page.getByRole("textbox", { name: "Public GitHub repository" }).fill("owner/demo");
   const blob = page.waitForResponse(response => response.url().includes("/git/blobs/"), { timeout: 75_000 }).catch(() => null);
@@ -43,6 +47,9 @@ test("opens a public repository and fetches source after the WASM city starts", 
   const canvas = page.locator("canvas");
   await expect(canvas).toBeVisible();
   await expect(cover).toBeHidden();
+  await expect.poll(() => canvas.evaluate(element => element.getBoundingClientRect().top)).toBe(0);
+  expect(await syntax).not.toBeNull();
+  await expect.poll(() => page.evaluate(() => globalThis.repoCity.syntaxVersion())).toBeGreaterThan(0);
   const cdp = await page.context().newCDPSession(page);
   const { x, y, width, height } = await canvas.boundingBox();
   let png;
@@ -73,6 +80,21 @@ test("opens a public repository and fetches source after the WASM city starts", 
         return stripeRows.size;
       }, data);
     }, { timeout: 100_000, message: "Render the modified file's vertical amber marker" }).toBeGreaterThan(50);
+    const portrait = await page.evaluate(async data => {
+      const image = await createImageBitmap(new Blob([Uint8Array.fromBase64(data)], { type: "image/png" }));
+      const head = new OffscreenCanvas(48, 48).getContext("2d");
+      head.drawImage(image, 16, 16, 48, 48, 0, 0, 48, 48);
+      image.close();
+      const { data: pixels } = head.getImageData(0, 0, 48, 48);
+      let metal = 0;
+      for (let i = 0; i < pixels.length; i += 4) {
+        const [red, green, blue] = pixels.subarray(i, i + 3);
+        if (red > 110 && red > green + 12 && green > blue + 7) metal++;
+      }
+      return metal;
+    }, png.toString("base64"));
+    expect(portrait, "WebGPU renders the android in the logo").toBeGreaterThan(30);
+    await writeFile(testInfo.outputPath("city.png"), png);
   } catch (error) {
     if (png) await writeFile(testInfo.outputPath("last-canvas.png"), png);
     await writeFile(testInfo.outputPath("browser-console.txt"), consoleLog.join("\n"));
@@ -81,6 +103,27 @@ test("opens a public repository and fetches source after the WASM city starts", 
     await cdp.detach();
   }
   expect(faults).toEqual([]);
+  await page.getByRole("button", { name: "Repo City" }).click();
+  const dialog = page.getByRole("dialog", { name: "Open repository" });
+  await expect(dialog).toBeVisible();
+  await expect(canvas).toBeVisible();
+  await page.route("https://api.github.com/repos/owner/missing", route => route.fulfill({ status: 404 }));
+  await dialog.getByRole("textbox", { name: "Public GitHub repository" }).fill("owner/missing");
+  await dialog.getByRole("button", { name: "Open city" }).click();
+  await expect(dialog.getByRole("status")).toHaveText("Public repository, revision, or file not found.");
+  await expect(canvas).toBeVisible();
+  await dialog.getByRole("textbox", { name: "Public GitHub repository" }).fill("owner/demo");
+  await dialog.getByRole("textbox", { name: "Branch, tag, or commit" }).fill(next);
+  const committed = page.waitForRequest(request => request.url().endsWith("/commits/" + next));
+  const replacement = page.waitForResponse(response => response.url().endsWith("/git/blobs/" + next));
+  await dialog.getByRole("button", { name: "Open city" }).click();
+  await committed;
+  expect((await replacement).ok()).toBe(true);
+  await expect(dialog).toBeHidden();
+  await expect(page).toHaveURL(new RegExp("ref=" + next));
+  await page.getByRole("button", { name: "Repo City" }).click();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
 });
 
 test("Tab captures and Escape releases the browser pointer", async ({ page }) => {
@@ -109,10 +152,10 @@ test("reports missing repositories and keeps the form usable", async ({ page }) 
   await page.getByRole("button", { name: "Open city" }).click();
   await expect(page.getByRole("status")).toHaveText("Public repository, revision, or file not found.");
   await expect(page.getByRole("button", { name: "Open city" })).toBeEnabled();
-  await expect(page.locator("#start-screen").getByText("Repo City", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Repo City" })).toBeVisible();
 });
 
-test("opens a pull request from the URL using its fork head and merge base", async ({ page }) => {
+test("opens a pull request from the URL using its fork head and merge base", async ({ page }, testInfo) => {
   const checked = [];
   await page.route("https://api.github.com/**", async route => {
     const path = new URL(route.request().url()).pathname;
@@ -150,26 +193,39 @@ test("opens a pull request from the URL using its fork head and merge base", asy
   await expect(blame).toBeHidden({ timeout: 25_000 });
   const cdp = await page.context().newCDPSession(page);
   const { x, y, width, height } = await canvas.boundingBox();
+  let screenshot;
   try {
     await expect.poll(async () => {
       const { data } = await cdp.send("Page.captureScreenshot", {
         format: "png", clip: { x, y, width, height, scale: 1 }, fromSurface: true,
       });
+      screenshot = Buffer.from(data, "base64");
       return page.evaluate(async data => {
         const image = await createImageBitmap(new Blob([Uint8Array.fromBase64(data)], { type: "image/png" }));
         const sample = new OffscreenCanvas(256, 128).getContext("2d");
         sample.drawImage(image, 0, 0, 256, 128);
+        const original = new OffscreenCanvas(image.width, image.height).getContext("2d");
+        original.drawImage(image, 0, 0);
+        const ink = original.getImageData(
+          image.width * .075, image.height * .41, image.width * .24, image.height * .17,
+        ).data;
         image.close();
-        const { data: pixels } = sample.getImageData(50, 45, 156, 55);
+        let keyword = 0;
+        for (let i = 0; i < ink.length; i += 4) {
+          const [red, green, blue] = ink.subarray(i, i + 3);
+          if (blue > 130 && blue > red + 10 && blue > green + 30 && red > green + 14) keyword++;
+        }
+        const { data: pixels } = sample.getImageData(17, 45, 189, 55);
         let removal = 0, addition = 0;
         for (let i = 0; i < pixels.length; i += 4) {
           const [red, green, blue] = pixels.subarray(i, i + 3);
           if (red > 50 && red - green > 21 && red - blue > 15) removal++;
           if (green > 40 && green - red > 20 && green - blue > 8) addition++;
         }
-        return Math.min(removal, addition);
+        return keyword >= 4 ? Math.min(removal, addition) : 0;
       }, data);
-    }, { timeout: 25_000, message: "G shows both changed rows on the rendered diff wall" }).toBeGreaterThan(70);
+    }, { timeout: 25_000, message: "G shows both diff colors and syntax-colored keywords on the same wall" }).toBeGreaterThan(70);
+    await writeFile(testInfo.outputPath("syntax-diff.png"), screenshot);
   } finally {
     await cdp.detach();
   }

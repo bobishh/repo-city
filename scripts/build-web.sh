@@ -5,7 +5,17 @@ cd "$(dirname "$0")/.."
 cargo build --locked -p repo-city --profile web-release --target wasm32-unknown-unknown
 output=web/dist
 mkdir -p "$output/game" "$output/assets"
-cp web/index.html web/style.css web/app.mjs web/github.mjs web/analytics.mjs "$output/"
+cp web/index.html web/style.css web/app.mjs web/github.mjs web/analytics.mjs web/syntax.mjs "$output/"
+# Keep the worker and each language out of the initial game download.
+rm -rf "$output/syntax-chunks"
+web/node_modules/.bin/esbuild web/syntax-worker.mjs --bundle --format=esm --splitting \
+  --minify --legal-comments=linked --target=chrome122 --out-extension:.js=.mjs \
+  --chunk-names='syntax-chunks/[name]-[hash]' --outdir="$output"
+mkdir -p "$output/syntax-licenses"
+for package in @shikijs/{core,primitive,langs,engine-javascript} oniguruma-to-es oniguruma-parser regex regex-recursion regex-utilities; do
+  cp "web/node_modules/$package/LICENSE" "$output/syntax-licenses/${package##*/}.txt"
+done
+cp web/node_modules/@shikijs/vscode-textmate/LICENSE.md "$output/syntax-licenses/vscode-textmate.txt"
 python3 - "$output/analytics-config.mjs" <<'PYCODE'
 from pathlib import Path
 import json

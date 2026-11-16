@@ -114,6 +114,7 @@ pub(super) struct Listing {
     scroll_remaining: f32,
     rendered: Option<(usize, bool, usize)>,
     invalidated: bool,
+    recolored: bool,
     source_tiles: Tiles,
     diff_tiles: Tiles,
     blame_tiles: Tiles,
@@ -265,6 +266,18 @@ impl Listing {
     #[cfg(target_arch = "wasm32")]
     pub(super) fn invalidate(&mut self) {
         self.invalidated = true;
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn recolor(&mut self) {
+        self.recolored = true;
+        for tiles in [
+            &mut self.source_tiles,
+            &mut self.diff_tiles,
+            &mut self.blame_tiles,
+        ] {
+            tiles.dirty.extend(tiles.resident.keys().copied());
+        }
     }
 
     pub(super) fn turning(&self) -> bool {
@@ -885,6 +898,7 @@ pub(super) fn draw(
     let key = visible.then_some((explorer.selected, explorer.before, count));
     let changed = key != listing.rendered;
     let diff_changed = std::mem::take(&mut listing.invalidated) || changed;
+    let recolored = std::mem::take(&mut listing.recolored);
     let mut render = WallRender {
         commands: &mut commands,
         meshes: &mut meshes,
@@ -902,14 +916,16 @@ pub(super) fn draw(
         }
     }
     if diff_changed {
-        let mut source_marks = vec![Mark::Context; count];
         render.clear(&mut listing.diff_tiles);
-        listing.diff_lines.clear();
         for (entity, surface) in &old {
             if changed || surface.0 == Face::Diff {
                 render.commands.entity(entity).despawn();
             }
         }
+    }
+    if diff_changed || recolored {
+        let mut source_marks = vec![Mark::Context; count];
+        listing.diff_lines.clear();
         if visible
             && let Some(diff) = &explorer.comparison
             && !diff.hunks.is_empty()
