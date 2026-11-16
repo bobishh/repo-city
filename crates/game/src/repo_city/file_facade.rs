@@ -3,6 +3,52 @@ use super::*;
 
 pub(super) const BEAM_HEIGHT: f32 = 14.;
 
+#[derive(Clone, Copy)]
+pub(super) struct Aim {
+    pub index: usize,
+    pub surface: Option<Surface>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct Surface {
+    pub normal: Vec3,
+    pub height: f32,
+}
+
+impl Aim {
+    pub(super) fn view(self, file: &repo_world::File, size: Vec3, eye: Vec3) -> Transform {
+        let [x, z] = file.position;
+        let center = Vec3::new(x, 0., z);
+        let toward_eye = eye - center;
+        let side = if toward_eye.x.abs() > toward_eye.z.abs() {
+            Vec3::X * toward_eye.x.signum()
+        } else if toward_eye.z < 0. {
+            Vec3::NEG_Z
+        } else {
+            Vec3::Z
+        };
+        let surface = self.surface.unwrap_or(Surface {
+            normal: side,
+            height: 0.9,
+        });
+        let normal = if surface.normal == Vec3::ZERO {
+            side
+        } else {
+            surface.normal
+        };
+        let (target, width, up) = if normal == Vec3::Y {
+            (center.with_y(size.y), size.x.max(size.z), Vec3::NEG_Z)
+        } else {
+            let width = if normal.x == 0. { size.x } else { size.z };
+            let target = center.with_y(size.y * surface.height)
+                + normal * (normal.abs().dot(size) / 2. + listing::PANEL_OFFSET);
+            (target, width, Vec3::Y)
+        };
+        let position = target + normal * (width * 0.84).max(0.18);
+        Transform::from_translation(position.with_y(position.y.max(1.))).looking_at(target, up)
+    }
+}
+
 pub(super) fn beam_material([r, g, b]: [f32; 3]) -> StandardMaterial {
     StandardMaterial {
         base_color: Color::srgb(r, g, b),

@@ -42,7 +42,7 @@ struct Hop {
 
 #[derive(Clone, Copy)]
 enum Arrival {
-    Facade,
+    Facade(Option<file_facade::Aim>),
     Stop,
     Comparison,
 }
@@ -60,6 +60,25 @@ impl Hop {
         }
     }
 
+    fn facade(
+        start: Transform,
+        end: Transform,
+        aim: Option<file_facade::Aim>,
+        repo: &Repository,
+        explorer: &Explorer,
+    ) -> Self {
+        let mut hop = Self::new(start, end, Arrival::Facade(aim));
+        hop.roof = hop.roof.max(flight_roof(
+            start.translation,
+            end.translation,
+            repo,
+            explorer,
+        ));
+        let climb = hop.roof - start.translation.y.min(end.translation.y);
+        hop.duration = hop.duration.max((climb / 24. + 0.65).min(3.8));
+        hop
+    }
+
     fn pose(&self, progress: f32) -> Transform {
         let t = progress.clamp(0., 1.);
         let eased = t * t * (3. - 2. * t);
@@ -67,7 +86,7 @@ impl Hop {
         let mut translation = self.start.translation.lerp(self.end.translation, eased);
         translation.y += lift * (std::f32::consts::PI * eased).sin().max(0.);
         let mut rotation = self.start.rotation.slerp(self.end.rotation, eased);
-        if matches!(self.arrival, Arrival::Facade) {
+        if matches!(self.arrival, Arrival::Facade(_)) {
             let smooth = |v: f32| {
                 let v = v.clamp(0., 1.);
                 v * v * (3. - 2. * v)
@@ -181,7 +200,7 @@ impl Navigation {
         };
         let shortcut = file_picker::SHORTCUT;
         format!(
-            "Click to capture · Esc releases · E flies to the aimed file\nScroll follows the text · Files / {shortcut} searches paths · WASD flies\nHold left mouse close to wash source · Home frames the file · G diff · B blame · C reviews changes{trace}"
+            "Click to capture · Esc releases · E flies to the aimed face\nScroll follows the text · Files / {shortcut} searches paths · WASD flies\nHold left mouse close to wash source · Home frames the file · G diff · B blame · C reviews changes{trace}"
         )
     }
 }
@@ -278,6 +297,18 @@ pub(super) fn navigate(
         return;
     }
     if let Some(hop) = &mut navigation.hop {
+        if let Arrival::Facade(Some(aim)) = hop.arrival {
+            let file = &repo.0.files[aim.index];
+            let end = aim.view(
+                file,
+                explorer.facade_size(file, aim.index),
+                hop.start.translation,
+            );
+            if hop.end != end {
+                // Source loading can resize the wall. Retarget from the current pose.
+                *hop = Hop::facade(*camera, end, Some(aim), &repo.0, &explorer);
+            }
+        }
         hop.elapsed += time.delta_secs();
         let progress = hop.elapsed / hop.duration;
         *camera = hop.pose(progress);
@@ -315,7 +346,7 @@ pub(super) fn navigate(
                     }
                     navigation.redraw = true;
                 }
-                Arrival::Facade => {}
+                Arrival::Facade(_) => {}
             }
         }
         return;
@@ -380,19 +411,25 @@ pub(super) fn navigate(
     }
     let next_changed = keys.just_pressed(KeyCode::KeyN);
     let target = if let Some(file) = picker.destination.take() {
-        Some(file)
+        Some((file, None))
     } else if next_changed {
         (1..repo.0.files.len())
             .map(|offset| (explorer.selected + offset) % repo.0.files.len())
             .find(|&index| repo.0.files[index].change != Change::Unchanged)
+            .map(|index| (index, None))
     } else if keys.just_pressed(KeyCode::KeyE) {
-        nearest.file.or(nearest.near_source).or_else(|| {
-            (explorer.anchored || explorer.comparison_mode > 0).then_some(explorer.selected)
+        nearest.file.map(|aim| (aim.index, Some(aim))).or_else(|| {
+            nearest
+                .near_source
+                .or_else(|| {
+                    (explorer.anchored || explorer.comparison_mode > 0).then_some(explorer.selected)
+                })
+                .map(|index| (index, None))
         })
     } else {
         None
     };
-    if let Some(index) = target {
+    if let Some((index, aimed)) = target {
         listing.reset_view();
         explorer.anchored = false;
         explorer.comparison_mode = 0;
@@ -401,27 +438,19 @@ pub(super) fn navigate(
         }
         explorer.rebuild = true;
         let file = &repo.0.files[index];
-        let end = listing::view_from_size(
-            file,
-            explorer.highlighted.len(),
-            explorer.facade_size(file, index),
-        );
+        let size = explorer.facade_size(file, index);
+        let end = if let Some(aim) = aimed {
+            explorer.frame_loaded_source = false;
+            aim.view(file, size, camera.translation)
+        } else {
+            listing::view_from_size(file, explorer.highlighted.len(), size)
+        };
         if camera.translation.distance_squared(end.translation) < 0.04
             && camera.rotation.dot(end.rotation).abs() > 0.9999
         {
             return;
         }
-        let mut hop = Hop::new(*camera, end, Arrival::Facade);
-        hop.roof = flight_roof(
-            hop.start.translation,
-            hop.end.translation,
-            &repo.0,
-            &explorer,
-        )
-        .max(hop.roof);
-        let climb = hop.roof - hop.start.translation.y.min(hop.end.translation.y);
-        hop.duration = hop.duration.max((climb / 24. + 0.65).min(3.8));
-        navigation.hop = Some(hop);
+        navigation.hop = Some(Hop::facade(*camera, end, aimed, &repo.0, &explorer));
     } else if !explorer.anchored
         && explorer.comparison_mode == 0
         && let Some(index) = nearest
@@ -475,8 +504,9 @@ pub(super) fn draw(
     if !navigation.guides_camera()
         && !explorer.anchored
         && explorer.comparison_mode == 0
-        && let Some(index) = nearest.file
+        && let Some(aim) = nearest.file
     {
+        let index = aim.index;
         let file = &repo.0.files[index];
         let [x, z] = file.position;
         let size = explorer.facade_size(file, index);
@@ -713,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn e_flies_to_the_target_and_primary_click_does_not() {
+    fn e_flies_to_the_aimed_wall_and_primary_click_does_not() {
         let mut repo = repository_picker::empty();
         for (index, path) in ["current.rs", "target.rs"].into_iter().enumerate() {
             repo.files.push(repo_world::File {
@@ -727,10 +757,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(Repo(repo))
             .insert_resource(Explorer::new(0))
-            .insert_resource(Nearest {
-                file: Some(1),
-                ..default()
-            })
+            .init_resource::<Nearest>()
             .init_resource::<Time>()
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
@@ -738,10 +765,18 @@ mod tests {
             .init_resource::<file_picker::FilePicker>()
             .init_resource::<listing::Listing>()
             .init_resource::<progress::Progress>()
-            .add_systems(Update, navigate);
+            .add_systems(Update, (targeting, navigate).chain());
         app.world_mut().spawn((Window::default(), PrimaryWindow));
-        app.world_mut()
-            .spawn((Camera3d::default(), Transform::from_xyz(0., 4., 10.)));
+        let aim = Vec3::new(90., 0.6, 0.);
+        app.world_mut().spawn((
+            Camera3d::default(),
+            Transform::from_xyz(120., aim.y, 0.).looking_at(aim, Vec3::Y),
+            Pilot {
+                captured: true,
+                ..default()
+            },
+        ));
+        app.world_mut().spawn(Facade { index: 1 });
         app.world_mut()
             .resource_mut::<ButtonInput<MouseButton>>()
             .press(MouseButton::Left);
@@ -754,14 +789,16 @@ mod tests {
             .press(KeyCode::KeyE);
         app.update();
         assert_eq!(app.world().resource::<Explorer>().selected, 1);
-        assert!(app.world().resource::<Navigation>().is_flying());
+        let hop = app.world().resource::<Navigation>().hop.as_ref().unwrap();
+        assert!(hop.end.translation.x > aim.x);
+        assert!(hop.end.forward().dot(Vec3::NEG_X) > 0.99);
     }
 
     #[test]
     fn approach_clears_roofs_and_ends_at_the_reading_view() {
         let start = Transform::from_xyz(0., 5., 10.);
         let end = Transform::from_xyz(100., 8., 15.).looking_to(Vec3::NEG_X, Vec3::Y);
-        let hop = Hop::new(start, end, Arrival::Facade);
+        let hop = Hop::new(start, end, Arrival::Facade(None));
         assert_eq!(hop.pose(0.).translation, start.translation);
         assert!(hop.pose(0.5).translation.y > 18.);
         assert_eq!(hop.pose(1.).translation, end.translation);

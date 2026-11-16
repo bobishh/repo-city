@@ -272,8 +272,7 @@ impl Pilot {
 
 #[derive(Resource, Default)]
 struct Nearest {
-    file: Option<usize>,
-    file_beacon: bool,
+    file: Option<file_facade::Aim>,
     near_source: Option<usize>,
     district: Option<usize>,
     screen: Option<(Vec2, Vec2)>,
@@ -300,7 +299,7 @@ fn main() {
     };
     if args.iter().any(|a| a == "--help") {
         println!(
-            "repo-city --repo PATH [--rev HEAD] [--base REF] [--trace FILE] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · E flies to the aimed file · Space/Ctrl altitude · Shift boost · Click captures the cursor · Esc releases it\nHold left mouse close to wash source · Home frames the file · G diff · B blame\nC reviews changes · T follows a supplied stack · W/S fly between platforms · Esc returns to the city\nG ghost/pair · [ ] hunks · Enter source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
+            "repo-city --repo PATH [--rev HEAD] [--base REF] [--trace FILE] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · E flies to the aimed face · Space/Ctrl altitude · Shift boost · Click captures the cursor · Esc releases it\nHold left mouse close to wash source · Home frames the file · G diff · B blame\nC reviews changes · T follows a supplied stack · W/S fly between platforms · Esc returns to the city\nG ghost/pair · [ ] hunks · Enter source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
         );
         return;
     }
@@ -1099,8 +1098,13 @@ fn flight(
 }
 
 fn ray_box(origin: Vec3, direction: Vec3, min: Vec3, max: Vec3) -> Option<f32> {
+    ray_box_entry(origin, direction, min, max).map(|(distance, _)| distance)
+}
+
+fn ray_box_entry(origin: Vec3, direction: Vec3, min: Vec3, max: Vec3) -> Option<(f32, Vec3)> {
     let mut near = 0.0_f32;
     let mut far = f32::INFINITY;
+    let mut normal = Vec3::ZERO;
     for axis in 0..3 {
         if direction[axis].abs() < 0.00001 {
             if origin[axis] < min[axis] || origin[axis] > max[axis] {
@@ -1109,14 +1113,19 @@ fn ray_box(origin: Vec3, direction: Vec3, min: Vec3, max: Vec3) -> Option<f32> {
         } else {
             let a = (min[axis] - origin[axis]) / direction[axis];
             let b = (max[axis] - origin[axis]) / direction[axis];
-            near = near.max(a.min(b));
+            let entry = a.min(b);
+            if entry >= near {
+                near = entry;
+                normal = Vec3::ZERO;
+                normal[axis] = -direction[axis].signum();
+            }
             far = far.min(a.max(b));
             if near > far {
                 return None;
             }
         }
     }
-    Some(near)
+    Some((near, normal))
 }
 fn targeting(
     repo: Res<Repo>,
@@ -1153,7 +1162,6 @@ fn targeting(
         (camera.translation, camera.forward().as_vec3())
     };
     nearest.file = None;
-    nearest.file_beacon = false;
     nearest.function = None;
     nearest.hunk = None;
     nearest.near_source = None;
@@ -1172,17 +1180,26 @@ fn targeting(
         let max = Vec3::new(x + size.x / 2., size.y, z + size.z / 2.);
         let beam_min = Vec3::new(x - 0.55, size.y, z - 0.55);
         let beam_max = Vec3::new(x + 0.55, size.y + file_facade::BEAM_HEIGHT, z + 0.55);
-        let beam_hit = ray_box(origin, direction, beam_min, beam_max);
-        let hit = [ray_box(origin, direction, min, max), beam_hit]
-            .into_iter()
-            .flatten()
-            .min_by(f32::total_cmp);
-        if let Some(d) = hit
+        if let Some((d, normal)) = ray_box_entry(origin, direction, min, max)
             && d < distance
         {
             distance = d;
-            nearest.file = Some(f.index);
-            nearest.file_beacon = beam_hit == Some(d);
+            nearest.file = Some(file_facade::Aim {
+                index: f.index,
+                surface: Some(file_facade::Surface {
+                    normal,
+                    height: ((origin.y + direction.y * d) / size.y).clamp(0., 1.),
+                }),
+            });
+        }
+        if let Some(d) = ray_box(origin, direction, beam_min, beam_max)
+            && d < distance
+        {
+            distance = d;
+            nearest.file = Some(file_facade::Aim {
+                index: f.index,
+                surface: None,
+            });
         }
         if let Some(d) = file_facade::approach(camera, min, max)
             && d <= (size.x * 0.96).clamp(4.5, 14.)
@@ -1276,7 +1293,7 @@ fn interaction(
         explorer.comparison_mode = 0;
         explorer.rebuild = true;
         if enter_wall {
-            if let Some(index) = nearest.file
+            if let Some(index) = nearest.file.map(|aim| aim.index)
                 && index != explorer.selected
             {
                 explorer.open(&repo.0, index);
@@ -1619,7 +1636,8 @@ fn hud(
                 .or_else(|| {
                     nearest
                         .file
-                        .filter(|&index| index != explorer.selected || nearest.file_beacon)
+                        .filter(|aim| aim.index != explorer.selected || aim.surface.is_none())
+                        .map(|aim| aim.index)
                         .map(|index| {
                             let path = repo.0.files[index].path.as_str();
                             (path, file_facade::INK[file_facade::kind(path)])
@@ -1959,15 +1977,12 @@ mod tests {
     use super::*;
     #[test]
     fn ray_selects_frontmost_positive_intersection() {
-        assert_eq!(
-            ray_box(
-                Vec3::new(0., 0., 10.),
-                Vec3::NEG_Z,
-                Vec3::splat(-1.),
-                Vec3::splat(1.)
-            ),
-            Some(9.)
-        );
+        for normal in [Vec3::Z, Vec3::X, Vec3::NEG_X, Vec3::NEG_Z, Vec3::Y] {
+            assert_eq!(
+                ray_box_entry(normal * 10., -normal, Vec3::splat(-1.), Vec3::splat(1.)),
+                Some((9., normal))
+            );
+        }
         assert!(
             ray_box(
                 Vec3::new(5., 0., 10.),
