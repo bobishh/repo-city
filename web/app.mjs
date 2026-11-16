@@ -19,7 +19,6 @@ const startControls = document.querySelector("#start-controls");
 const dialog = document.querySelector("#repository-dialog");
 const guide = document.querySelector("#help-dialog");
 const help = document.querySelector("#help");
-const changedOnly = document.querySelector("#changed-only");
 const guideKey = "repo-city-guide-v1";
 let tourCommand = 0;
 let tourEntry = null;
@@ -47,10 +46,6 @@ if (parameters.get("pr")) form.elements.repo.value = parameters.get("pr");
 function focusCanvas() {
   if (running && !document.querySelector("dialog[open]")) canvas.focus({ preventScroll: true });
 }
-changedOnly.addEventListener("click", () => {
-  changedOnly.setAttribute("aria-pressed", String(changedOnly.getAttribute("aria-pressed") !== "true"));
-  focusCanvas();
-});
 
 function openGuide(entry) {
   tourEntry = entry;
@@ -127,12 +122,10 @@ async function stageRepository(repository, ref, base) {
     progressError = error;
     return [];
   });
-  active = { repository, blobs: new Map(), blameFiles: new Map(), marks, progressError };
   const { before, after } = snapshot;
-  const hasChanges = Object.keys(before).length !== Object.keys(after).length ||
-    Object.entries(before).some(([path, blob]) => after[path]?.id !== blob.id || after[path]?.mode !== blob.mode);
-  changedOnly.hidden = !pull || !hasChanges;
-  changedOnly.setAttribute("aria-pressed", "false");
+  const canFilterChanges = Boolean(pull) && (Object.keys(before).length !== Object.keys(after).length ||
+    Object.entries(before).some(([path, blob]) => after[path]?.id !== blob.id || after[path]?.mode !== blob.mode));
+  active = { repository, blobs: new Map(), blameFiles: new Map(), marks, progressError, canFilterChanges };
   progressPanel.hidden = false;
   repositoryVersion++;
   blame.hidden = true;
@@ -178,7 +171,7 @@ async function openRepository(repo, ref, base) {
         reviewPanel: review.panel,
         reviewSlot: review.takeSlot,
         reviewDestination: review.takeDestination,
-        changedOnly: () => !changedOnly.hidden && changedOnly.getAttribute("aria-pressed") === "true",
+        canFilterChanges: () => active.canFilterChanges,
         reviewModal: review.modal,
         reviewCanPaint: review.canPaint,
         reviewId: review.id,

@@ -15,6 +15,7 @@ pub(super) use paint::draw as paint_notes;
 
 const TILE_ROWS: usize = 16;
 const TILES_PER_SIDE: usize = 6;
+const MAX_VISIBLE_TILES: usize = 10;
 const RETIRING_TILES: usize = 2;
 const TEXTURES_PER_FRAME: usize = 2;
 pub(super) const WIDTH: f32 = 14.;
@@ -823,6 +824,11 @@ impl WallSide {
         self.face.normal()
     }
 
+    fn glyph_scale(&self) -> Vec2 {
+        let vertical_stretch = self.wall.row_height / texture_row_height(self.width);
+        Vec2::new(vertical_stretch.min(1.), vertical_stretch.recip().min(1.))
+    }
+
     fn ray_hit(&self, camera: &Transform, facing_limit: f32, range: f32) -> Option<(Vec3, f32)> {
         let normal = self.normal();
         let facing = camera.forward().dot(normal);
@@ -844,26 +850,49 @@ impl WallSide {
         (self.width * 2.4).min(DETAIL_RAY_REACH)
     }
 
-    fn keeps_detail(&self, camera: &Transform) -> bool {
+    fn detail_distance(&self, camera: &Transform, aspect: f32, retained: bool) -> Option<f32> {
         let normal = self.normal();
         let offset = camera.translation - self.top;
         let across = Vec3::Y.cross(normal);
+        if offset.dot(normal) <= 0. {
+            return None;
+        }
         let along = offset.dot(across).clamp(-self.width / 2., self.width / 2.);
-        let nearest = self.top.with_y(
-            camera
-                .translation
-                .y
-                .clamp(0., self.top.y + self.heading_height),
-        ) + across * along;
-        offset.dot(normal) > 0.
-            && camera.forward().dot(normal) < -0.025
-            && camera.translation.distance_squared(nearest) <= (self.detail_range() * 1.15).powi(2)
+        let height = self.top.y + self.heading_height;
+        let nearest = self.top.with_y(camera.translation.y.clamp(0., height)) + across * along;
+        let distance = camera.translation.distance_squared(nearest);
+        let range = self.detail_range().max(2.) * if retained { 1.18 } else { 1. };
+        if distance > range.powi(2) {
+            return None;
+        }
+        // The wall can fill the edge of the screen even when the reticle misses it.
+        let center = self.top.with_y(height * 0.5) - camera.translation;
+        let forward = camera.forward().as_vec3();
+        let up = camera.up().as_vec3();
+        let right = camera.right().as_vec3();
+        let slope = std::f32::consts::FRAC_PI_8.tan() * if retained { 1.10 } else { 1. };
+        [
+            forward,
+            forward * slope + up,
+            forward * slope - up,
+            forward * (slope * aspect) + right,
+            forward * (slope * aspect) - right,
+        ]
+        .into_iter()
+        .all(|plane| {
+            center.dot(plane)
+                + across.dot(plane).abs() * self.width * 0.5
+                + plane.y.abs() * height * 0.5
+                >= 0.
+        })
+        .then_some(distance)
     }
 
-    fn visible_height(&self, camera: &Transform) -> f32 {
-        let half_fov = std::f32::consts::FRAC_PI_8;
-        let forward = camera.forward().as_vec3() * half_fov.cos();
-        let vertical = camera.up().as_vec3() * half_fov.sin();
+    fn visible_rows(&self, camera: &Transform, count: usize, aspect: f32) -> Range<usize> {
+        let slope = std::f32::consts::FRAC_PI_8.tan();
+        let forward = camera.forward().as_vec3();
+        let vertical = camera.up().as_vec3() * slope;
+        let horizontal = camera.right().as_vec3() * (slope * aspect);
         let normal = self.normal();
         let gap = (camera.translation - self.top).dot(normal);
         let edge = |direction: Vec3| {
@@ -876,7 +905,14 @@ impl WallSide {
                 0.
             }
         };
-        (edge(forward + vertical) + edge(forward - vertical)) * 0.5
+        let [a, b, c, d] = [
+            forward + vertical + horizontal,
+            forward + vertical - horizontal,
+            forward - vertical + horizontal,
+            forward - vertical - horizontal,
+        ]
+        .map(|ray| self.wall.row(edge(ray), count));
+        a.min(b).min(c).min(d)..a.max(b).max(c).max(d).saturating_add(1).min(count)
     }
 
     fn wash_hit(&self, camera: &Transform, count: usize) -> Option<Vec3> {
@@ -907,12 +943,25 @@ impl WallSide {
         Transform::from_translation(eye.with_y(eye.y.max(1.))).looking_at(target, Vec3::Y)
     }
 
-    fn window(&self, focus: usize, count: usize) -> Range<usize> {
+    fn window(&self, visible: Range<usize>, focus: usize, count: usize) -> Range<usize> {
         let total = count.div_ceil(TILE_ROWS);
+        let visible_tiles = visible.end.div_ceil(TILE_ROWS) - visible.start / TILE_ROWS;
+        let capacity = (visible_tiles + 2).clamp(TILES_PER_SIDE, MAX_VISIBLE_TILES);
         let start = (focus / TILE_ROWS)
-            .saturating_sub(TILES_PER_SIDE / 2)
-            .min(total.saturating_sub(TILES_PER_SIDE));
-        start..(start + TILES_PER_SIDE).min(total)
+            .saturating_sub(capacity / 2)
+            .min(total.saturating_sub(capacity));
+        start..(start + capacity).min(total)
+    }
+
+    fn focus_row(&self, visible: &Range<usize>, aim: usize) -> usize {
+        let visible_tiles = visible.end.div_ceil(TILE_ROWS) - visible.start / TILE_ROWS;
+        if visible_tiles > MAX_VISIBLE_TILES {
+            return aim.clamp(
+                visible.start,
+                visible.end.saturating_sub(1).max(visible.start),
+            );
+        }
+        (visible.start + visible.end) / 2
     }
 
     fn pose(&self, y: f32) -> Transform {
@@ -1026,13 +1075,13 @@ impl WallRender<'_, '_, '_> {
         height: f32,
         layer: Layer,
         cover: Option<cover::CoverRows>,
+        alpha: f32,
     ) -> Tile {
         let image = self.images.add(image);
-        let alpha = if layer == Layer::Tile { 0. } else { 1. };
         let material = StandardMaterial {
             base_color: Color::WHITE.with_alpha(alpha),
             base_color_texture: Some(image.clone()),
-            alpha_mode: if layer == Layer::Tile {
+            alpha_mode: if alpha < 1. {
                 AlphaMode::Blend
             } else {
                 AlphaMode::Opaque
@@ -1076,6 +1125,7 @@ impl WallRender<'_, '_, '_> {
             height,
             Layer::Heading,
             None,
+            1.,
         )
     }
 
@@ -1103,6 +1153,7 @@ impl WallRender<'_, '_, '_> {
                 count as f32 * side.wall.row_height,
                 Layer::Preview,
                 None,
+                1.,
             );
             state.preview = Some(tile.image);
             state.preview_dirty = false;
@@ -1113,13 +1164,16 @@ impl WallRender<'_, '_, '_> {
         &mut self,
         side: &WallSide,
         state: &mut Tiles,
-        read_y: f32,
+        visible: Range<usize>,
+        aim: usize,
         count: usize,
         texture: impl Fn(Range<usize>) -> Image,
         details: Option<TileDetails<'_>>,
     ) {
-        let focus = side.wall.row(read_y, count);
-        let window = side.window(focus, count);
+        let focus = side.focus_row(&visible, aim);
+        let visible_tiles = visible.start / TILE_ROWS..visible.end.div_ceil(TILE_ROWS);
+        let window = side.window(visible, focus, count);
+        let reading = !state.resident.is_empty();
         let mut retiring: Vec<_> = state
             .resident
             .keys()
@@ -1181,7 +1235,13 @@ impl WallRender<'_, '_, '_> {
             .dirty
             .retain(|index| state.resident.contains_key(index));
         let mut priority = window.collect::<Vec<_>>();
-        priority.sort_unstable_by_key(|index| (index.abs_diff(focus / TILE_ROWS), *index));
+        priority.sort_unstable_by_key(|index| {
+            (
+                !visible_tiles.contains(index),
+                index.abs_diff(focus / TILE_ROWS),
+                *index,
+            )
+        });
         for index in priority {
             if self.remaining == 0 {
                 break;
@@ -1203,7 +1263,16 @@ impl WallRender<'_, '_, '_> {
                 let height = rows.len() as f32 * side.wall.row_height;
                 let center = side.wall.y((rows.start + rows.end) as f32 / 2.);
                 let metadata = details.as_ref().map(|details| details.build(rows.clone()));
-                let tile = self.plane(side, texture(rows), center, height, Layer::Tile, metadata);
+                let alpha = f32::from(reading && visible_tiles.contains(&index));
+                let tile = self.plane(
+                    side,
+                    texture(rows),
+                    center,
+                    height,
+                    Layer::Tile,
+                    metadata,
+                    alpha,
+                );
                 state.resident.insert(index, tile);
             }
             self.remaining -= 1;
@@ -1220,6 +1289,7 @@ pub(super) fn draw(
     mut listing: ResMut<Listing>,
     old: Query<(Entity, &ListingSurface)>,
     camera: Query<&Transform, PlayerCamera>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
@@ -1344,15 +1414,21 @@ pub(super) fn draw(
 
     let fallback = view(file, count);
     let camera = camera.single().unwrap_or(&fallback);
+    let aspect = windows
+        .single()
+        .map_or(16. / 9., |window| window.width() / window.height().max(1.));
+    let near = |face, retained| {
+        WallSide::new(file, 1, face, size).detail_distance(camera, aspect, retained)
+    };
     let viewed = Face::at_camera(file, size, camera, DETAIL_RAY_REACH)
-        .filter(|face| {
-            let side = WallSide::new(file, 1, *face, size);
-            side.ray_hit(camera, 0.12, side.detail_range()).is_some()
-        })
+        .filter(|&face| near(face, false).is_some())
+        .or_else(|| listing.viewing.filter(|&face| near(face, true).is_some()))
         .or_else(|| {
-            listing
-                .viewing
-                .filter(|face| WallSide::new(file, 1, *face, size).keeps_detail(camera))
+            [Face::Source, Face::Diff, Face::Blame]
+                .into_iter()
+                .filter_map(|face| near(face, false).map(|distance| (face, distance)))
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(face, _)| face)
         });
     if listing.turn.is_none() {
         listing.viewing = viewed;
@@ -1390,10 +1466,22 @@ pub(super) fn draw(
     let source_row = |index| (Some(&explorer.highlighted[index]), source_marks[index]);
     let diff_row = |index: usize| (diff_lines[index].0.as_ref(), diff_lines[index].1);
     render.preview(&source, source_tiles, count, || {
-        code_texture::listing_preview(count, source_row, is_revealed, Face::Source)
+        code_texture::listing_preview(
+            count,
+            source_row,
+            is_revealed,
+            Face::Source,
+            source.glyph_scale(),
+        )
     });
     render.preview(&diff, diff_tiles, diff_count, || {
-        code_texture::listing_preview(diff_count, diff_row, |_| true, Face::Diff)
+        code_texture::listing_preview(
+            diff_count,
+            diff_row,
+            |_| true,
+            Face::Diff,
+            diff.glyph_scale(),
+        )
     });
     if viewed != Some(Face::Source) {
         render.hide_side(source_tiles);
@@ -1415,7 +1503,8 @@ pub(super) fn draw(
         .collect::<Vec<_>>()
     };
     let mask = |rows| cover::mask(rows, &is_revealed);
-    let metadata = |rows, bits| cover::CoverRows::new(&source_rows(rows), bits);
+    let metadata =
+        |rows, bits| cover::CoverRows::new(&source_rows(rows), bits, source.glyph_scale());
     let tone = |[r, g, b]: [u8; 3], alpha| {
         Vec4::new(r as f32 / 255., g as f32 / 255., b as f32 / 255., alpha)
     };
@@ -1466,9 +1555,10 @@ pub(super) fn draw(
         Some(Face::Source) => render.tiles(
             &source,
             source_tiles,
-            source.visible_height(camera),
+            source.visible_rows(camera, count, aspect),
+            source.wall.row(source.look_height(camera), count),
             count,
-            |rows| code_texture::listing(&source_rows(rows), Face::Source),
+            |rows| code_texture::listing(&source_rows(rows), Face::Source, source.glyph_scale()),
             Some(TileDetails {
                 mask: &mask,
                 metadata: &metadata,
@@ -1478,24 +1568,29 @@ pub(super) fn draw(
         Some(Face::Diff) => render.tiles(
             &diff,
             diff_tiles,
-            diff.visible_height(camera),
+            diff.visible_rows(camera, diff_count, aspect),
+            diff.wall.row(diff.look_height(camera), diff_count),
             diff_count,
-            |rows| code_texture::listing(&diff_lines[rows], Face::Diff),
+            |rows| code_texture::listing(&diff_lines[rows], Face::Diff, diff.glyph_scale()),
             Some(TileDetails {
                 mask: &|_| u32::MAX,
-                metadata: &|rows, bits| cover::CoverRows::new(&diff_lines[rows], bits),
+                metadata: &|rows, bits| {
+                    cover::CoverRows::new(&diff_lines[rows], bits, diff.glyph_scale())
+                },
                 paint: &diff_paint,
             }),
         ),
         Some(Face::Blame) => render.tiles(
             &blame,
             blame_tiles,
-            blame.visible_height(camera),
+            blame.visible_rows(camera, count, aspect),
+            blame.wall.row(blame.look_height(camera), count),
             count,
             |rows| {
                 code_texture::listing_with_notes(
                     &source_rows(rows),
                     Face::Blame,
+                    blame.glyph_scale(),
                     attribution.notes(),
                 )
             },
@@ -1575,6 +1670,37 @@ mod tests {
             mode: "100644".into(),
         });
         file
+    }
+
+    #[test]
+    fn glyphs_keep_equal_world_scale_with_mismatched_row_counts() {
+        let file = fixture_with_rows(80);
+        let size = block_size(&file);
+        for face in [Face::Source, Face::Diff, Face::Blame] {
+            for count in [32, 80, 190] {
+                let side = WallSide::new(&file, count, face, size);
+                let scale = side.glyph_scale();
+                let horizontal = side.width * scale.x / code_texture::LISTING_WIDTH as f32;
+                let vertical =
+                    side.wall.row_height * scale.y / code_texture::LISTING_ROW_PIXELS as f32;
+                assert!((horizontal - vertical).abs() < 0.00001);
+            }
+        }
+    }
+
+    #[test]
+    fn wider_reading_window_covers_visible_rows_and_preloads_around_them() {
+        let file = fixture_with_rows(724);
+        let side = WallSide::new(&file, 724, Face::Source, block_size(&file));
+        let before = side.window(120..125, 122, 724);
+        let after = side.window(221..352, 286, 724);
+        assert_eq!(before.len(), TILES_PER_SIDE);
+        assert_eq!(after.len(), MAX_VISIBLE_TILES);
+        assert!(after.contains(&(221 / TILE_ROWS)));
+        assert!(after.contains(&(351 / TILE_ROWS)));
+        let visible = 0..724;
+        let glancing = side.window(visible.clone(), side.focus_row(&visible, 60), 724);
+        assert!(glancing.contains(&(60 / TILE_ROWS)));
     }
 
     #[test]
@@ -1667,10 +1793,18 @@ mod tests {
                 .ray_hit(&camera, 0.12, source.detail_range())
                 .is_none()
         );
-        assert!(source.keeps_detail(&camera));
-        assert!(source.visible_height(&camera) > 0.);
+        assert!(source.detail_distance(&camera, 16. / 9., false).is_some());
+        assert!(!source.visible_rows(&camera, count, 16. / 9.).is_empty());
         assert!(source.wash_hit(&camera, count).is_none());
-        assert!(!source.keeps_detail(&camera.with_translation(eye + Vec3::Z * 32.)));
+        assert!(
+            source
+                .detail_distance(
+                    &camera.with_translation(eye + Vec3::Z * 32.),
+                    16. / 9.,
+                    true
+                )
+                .is_none()
+        );
     }
 
     #[test]

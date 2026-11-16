@@ -57,13 +57,15 @@ pub(super) struct CoverRows {
 }
 
 impl CoverRows {
-    pub fn new(rows: &[(Option<syntax::Line>, Mark)], mask: u32) -> Self {
+    pub fn new(rows: &[(Option<syntax::Line>, Mark)], mask: u32, glyph_scale: Vec2) -> Self {
         let mut spans = [Vec4::ZERO; TILE_ROWS];
         for (slot, (line, mark)) in spans.iter_mut().zip(rows) {
             let (left, right) = line
                 .as_ref()
                 .filter(|line| !line.text.trim().is_empty())
-                .map_or((0, 0), |line| code_texture::covered_span(&line.text));
+                .map_or((0, 0), |line| {
+                    code_texture::covered_span(&line.text, glyph_scale.x)
+                });
             let kind = match mark {
                 Mark::Context => 0.,
                 Mark::Added => 1.,

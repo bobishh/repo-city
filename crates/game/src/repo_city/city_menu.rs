@@ -43,10 +43,11 @@ pub(super) enum Action {
     Paints,
     Notes,
     FindText,
+    ChangesOnly,
 }
 
 impl Action {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::Approach,
         Self::Diff,
         Self::Blame,
@@ -54,9 +55,10 @@ impl Action {
         Self::Paints,
         Self::Notes,
         Self::FindText,
+        Self::ChangesOnly,
     ];
 
-    fn label(self) -> String {
+    fn label(self, filtered: bool) -> String {
         match self {
             Self::Approach => "Fly to face    E".into(),
             Self::Diff => "Diff           G".into(),
@@ -65,6 +67,8 @@ impl Action {
             Self::Notes => "Review notes   J".into(),
             Self::FindText => "Find in file   /".into(),
             Self::Find => format!("Find file    {}", file_picker::SHORTCUT),
+            Self::ChangesOnly if filtered => "Show all files F".into(),
+            Self::ChangesOnly => "Only changes   F".into(),
         }
     }
 
@@ -72,7 +76,16 @@ impl Action {
         matches!(self, Self::Find | Self::Paints | Self::Notes)
     }
 
-    fn available(self, menu: &Menu, search: &listing::find::Search, can_paint: bool) -> bool {
+    fn available(
+        self,
+        menu: &Menu,
+        search: &listing::find::Search,
+        can_paint: bool,
+        can_filter: bool,
+    ) -> bool {
+        if matches!(self, Self::ChangesOnly) {
+            return can_filter;
+        }
         if matches!(self, Self::Paints) && !can_paint {
             return false;
         }
@@ -89,8 +102,9 @@ impl Action {
         picker: &mut file_picker::FilePicker,
         review: &mut review_notes::Review,
         search: &mut listing::find::Search,
+        focus: &mut file_facade::ChangesOnly,
     ) {
-        if !menu.is_open() || !self.available(menu, search, review.can_paint) {
+        if !menu.is_open() || !self.available(menu, search, review.can_paint, focus.available) {
             return;
         }
         match self {
@@ -101,6 +115,10 @@ impl Action {
             Self::Approach => menu.destination = menu.aim,
             Self::Diff => menu.destination = menu.aim.map(|aim| aim.on_side(listing::Face::Diff)),
             Self::Blame => menu.destination = menu.aim.map(|aim| aim.on_side(listing::Face::Blame)),
+            Self::ChangesOnly => {
+                focus.toggle();
+                menu.dismissed = true;
+            }
         }
         menu.close();
     }
@@ -152,9 +170,9 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
                 for action in Action::ALL {
                     panel.spawn((
                         action,
-                        file_picker::button(&action.label(), font, ink, AlignSelf::Stretch),
-                        observe(move |_: On<Activate>, mut menu: ResMut<Menu>, mut picker: ResMut<file_picker::FilePicker>, mut review: ResMut<review_notes::Review>, mut search: ResMut<listing::find::Search>| {
-                            action.choose(&mut menu, &mut picker, &mut review, &mut search);
+                        file_picker::button(&action.label(false), font, ink, AlignSelf::Stretch),
+                        observe(move |_: On<Activate>, mut menu: ResMut<Menu>, mut picker: ResMut<file_picker::FilePicker>, mut review: ResMut<review_notes::Review>, mut search: ResMut<listing::find::Search>, mut focus: ResMut<file_facade::ChangesOnly>| {
+                            action.choose(&mut menu, &mut picker, &mut review, &mut search, &mut focus);
                         }),
                     ));
                 }
@@ -172,21 +190,47 @@ pub(super) fn update(
     mut menu: ResMut<Menu>,
     mut review: ResMut<review_notes::Review>,
     mut search: ResMut<listing::find::Search>,
+    mut focus: ResMut<file_facade::ChangesOnly>,
     mut overlay: Query<&mut Node, With<Overlay>>,
     mut panel: Query<&mut Node, (With<Panel>, Without<Overlay>)>,
     mut rows: Query<
-        (&Action, &Hovered, &mut Node, &mut BackgroundColor),
+        (
+            &Action,
+            &Children,
+            &Hovered,
+            &mut Node,
+            &mut BackgroundColor,
+        ),
         (Without<Overlay>, Without<Panel>),
     >,
+    mut labels: Query<&mut Text>,
 ) {
     menu.dismissed = false;
     let right_click = mouse.just_pressed(MouseButton::Right);
-    if review.blocked
-        || search.blocks_controls()
-        || picker.is_open()
-        || navigation.guides_camera()
-        || listing.turning()
-    {
+    let filter = keys.just_pressed(KeyCode::KeyF)
+        && !keys.any_pressed([
+            KeyCode::SuperLeft,
+            KeyCode::SuperRight,
+            KeyCode::ControlLeft,
+            KeyCode::ControlRight,
+            KeyCode::AltLeft,
+            KeyCode::AltRight,
+        ]);
+    if review.blocked || search.blocks_controls() || picker.is_open() {
+        menu.close();
+    } else if filter && focus.available {
+        if menu.is_open() {
+            Action::ChangesOnly.choose(
+                &mut menu,
+                &mut picker,
+                &mut review,
+                &mut search,
+                &mut focus,
+            );
+        } else {
+            focus.toggle();
+        }
+    } else if navigation.guides_camera() || listing.turning() {
         menu.close();
     } else if menu.is_open() && (keys.just_pressed(KeyCode::Escape) || right_click) {
         menu.close();
@@ -201,7 +245,7 @@ pub(super) fn update(
             (KeyCode::Slash, Action::FindText),
         ] {
             if keys.just_pressed(key) {
-                action.choose(&mut menu, &mut picker, &mut review, &mut search);
+                action.choose(&mut menu, &mut picker, &mut review, &mut search, &mut focus);
                 break;
             }
         }
@@ -225,7 +269,7 @@ pub(super) fn update(
     };
     let count = Action::ALL
         .iter()
-        .filter(|action| action.available(&menu, &search, review.can_paint))
+        .filter(|action| action.available(&menu, &search, review.can_paint, focus.available))
         .count() as f32;
     let height = ROW_HEIGHT * count + GAP * (count - 1.) + 2. * PADDING;
     let point = (anchor + Vec2::splat(12.)).clamp(
@@ -236,14 +280,22 @@ pub(super) fn update(
         panel.left = px(point.x);
         panel.top = px(point.y);
     }
-    for (action, hovered, mut row, mut background) in &mut rows {
-        let display = if action.available(&menu, &search, review.can_paint) {
+    for (action, children, hovered, mut row, mut background) in &mut rows {
+        let display = if action.available(&menu, &search, review.can_paint, focus.available) {
             Display::Flex
         } else {
             Display::None
         };
         if row.display != display {
             row.display = display;
+        }
+        if matches!(action, Action::ChangesOnly)
+            && let Ok(mut label) = labels.get_mut(children[0])
+        {
+            let title = action.label(focus.enabled);
+            if label.0 != title {
+                label.0 = title;
+            }
         }
         background.set_if_neq(BackgroundColor(if hovered.get() {
             Color::srgb_u8(33, 65, 73)

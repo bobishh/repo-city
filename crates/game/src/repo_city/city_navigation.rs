@@ -606,7 +606,7 @@ pub(super) fn navigate(
         && explorer.comparison_mode == 0
         && let Some(index) = nearest
             .near_source
-            .filter(|&index| index != explorer.selected)
+            .filter(|&index| index != explorer.selected && focus.includes(&repo.0.files[index]))
     {
         listing.reset_view();
         explorer.open(&repo.0, index);

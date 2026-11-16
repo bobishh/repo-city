@@ -5,11 +5,17 @@ pub(super) const BEAM_HEIGHT: f32 = 14.;
 
 #[derive(Resource, Default)]
 pub(super) struct ChangesOnly {
-    enabled: bool,
+    pub(super) available: bool,
+    pub(super) enabled: bool,
     lowered: f32,
 }
 
 impl ChangesOnly {
+    pub(super) fn toggle(&mut self) {
+        if self.available {
+            self.enabled = !self.enabled;
+        }
+    }
     pub(super) fn includes(&self, file: &repo_world::File) -> bool {
         !self.enabled || file.change != Change::Unchanged
     }
@@ -37,8 +43,8 @@ impl SinkPart {
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]
 extern "C" {
-    #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = changedOnly)]
-    fn browser_changed_only() -> bool;
+    #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = canFilterChanges)]
+    fn browser_can_filter_changes() -> bool;
 }
 
 pub(super) fn lower_unchanged(
@@ -51,27 +57,28 @@ pub(super) fn lower_unchanged(
     mut parts: Query<(&SinkPart, &mut Transform)>,
 ) {
     #[cfg(target_arch = "wasm32")]
-    let enabled = browser_changed_only();
+    let available = browser_can_filter_changes();
     #[cfg(not(target_arch = "wasm32"))]
-    let enabled = false;
+    let available = false;
+    focus.available = available;
     if repo.is_changed() {
         focus.lowered = 0.;
+        focus.enabled = false;
     }
-    if focus.enabled != enabled {
-        focus.enabled = enabled;
-        if enabled
-            && !focus.includes(&repo.0.files[explorer.selected])
-            && let Some(index) = repo.0.files.iter().position(|file| focus.includes(file))
-        {
-            explorer.open(&repo.0, index);
-            explorer.frame_loaded_source = false;
-            explorer.anchored = false;
-            explorer.comparison_mode = 0;
-            listing.reset_view();
-            *navigation = city_navigation::Navigation::default();
-        }
+    if !available {
+        focus.enabled = false;
     }
-    let target = f32::from(enabled);
+    if !focus.includes(&repo.0.files[explorer.selected])
+        && let Some(index) = repo.0.files.iter().position(|file| focus.includes(file))
+    {
+        explorer.open(&repo.0, index);
+        explorer.frame_loaded_source = false;
+        explorer.anchored = false;
+        explorer.comparison_mode = 0;
+        listing.reset_view();
+        *navigation = city_navigation::Navigation::default();
+    }
+    let target = f32::from(focus.enabled);
     if focus.lowered == target {
         return;
     }

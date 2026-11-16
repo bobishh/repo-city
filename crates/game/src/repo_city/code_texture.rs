@@ -57,6 +57,18 @@ struct Canvas {
 }
 impl Canvas {
     fn text(&mut self, text: &str, x: f32, y: f32, size: f32, color: impl Fn(usize) -> [f32; 3]) {
+        self.scaled_text(text, x, y, size, Vec2::ONE, color);
+    }
+
+    fn scaled_text(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        size: f32,
+        scale: Vec2,
+        color: impl Fn(usize) -> [f32; 3],
+    ) {
         let font = FontRef::from_index(
             include_bytes!("../../../../assets/fonts/FiraMono-Medium.ttf"),
             0,
@@ -64,18 +76,22 @@ impl Canvas {
         .unwrap();
         let metrics = font.glyph_metrics(&[]).scale(size);
         let mut scaler = self.context.builder(font).size(size).hint(true).build();
+        let mut render = Render::new(&[Source::Outline]);
+        if scale != Vec2::ONE {
+            render.transform(Some(swash::zeno::Transform::scale(scale.x, scale.y)));
+        }
         let mut x = x;
         for (byte, ch) in text.char_indices() {
             if x >= self.width as f32 - 14. {
                 break;
             }
             if ch == '\t' {
-                x += metrics.advance_width(font.charmap().map(' ')) * 4.;
+                x += metrics.advance_width(font.charmap().map(' ')) * 4. * scale.x;
                 continue;
             }
             let id = font.charmap().map(ch);
             let ink = color(byte);
-            if let Some(glyph) = Render::new(&[Source::Outline]).render(&mut scaler, id) {
+            if let Some(glyph) = render.render(&mut scaler, id) {
                 let p = glyph.placement;
                 for gy in 0..p.height {
                     for gx in 0..p.width {
@@ -98,7 +114,7 @@ impl Canvas {
                     }
                 }
             }
-            x += metrics.advance_width(id);
+            x += metrics.advance_width(id) * scale.x;
         }
     }
     fn band(&mut self, start: u32, end: u32, rgb: [u8; 3]) {
@@ -257,6 +273,7 @@ pub(super) fn listing_preview<'a>(
     row: impl Fn(usize) -> (Option<&'a Line>, Mark),
     revealed: impl Fn(usize) -> bool,
     face: Face,
+    glyph_scale: Vec2,
 ) -> Image {
     const WIDTH: usize = 256;
     let height = (count * 4).clamp(64, 2048);
@@ -287,7 +304,7 @@ pub(super) fn listing_preview<'a>(
                 continue;
             }
             let stroke = coverage.stroke();
-            let (start, end) = covered_span(&line.text);
+            let (start, end) = covered_span(&line.text, glyph_scale.x);
             let start = start * WIDTH / LISTING_WIDTH as usize;
             let end = (end * WIDTH / LISTING_WIDTH as usize).max(start + 1);
             for x in start..end {
@@ -326,20 +343,22 @@ pub(super) fn source_change_ink(face: Face, mark: Mark) -> Option<[u8; 3]> {
     }
 }
 
-pub(super) fn covered_span(text: &str) -> (usize, usize) {
+pub(super) fn covered_span(text: &str, x_scale: f32) -> (usize, usize) {
     let indent = (text.len() - text.trim_start().len()).min(40);
-    let start = 106 + indent * 12;
-    let end = (106 + text.len().min(128) * 12).min((LISTING_WIDTH - 16) as usize);
+    let start = 106 + (indent as f32 * 12. * x_scale) as usize;
+    let end = (106 + (text.len().min(128) as f32 * 12. * x_scale) as usize)
+        .min((LISTING_WIDTH - 16) as usize);
     (start, end)
 }
 
-pub fn listing(rows: &[(Option<Line>, Mark)], face: Face) -> Image {
-    listing_with_notes(rows, face, None)
+pub fn listing(rows: &[(Option<Line>, Mark)], face: Face, glyph_scale: Vec2) -> Image {
+    listing_with_notes(rows, face, glyph_scale, None)
 }
 
 pub(super) fn listing_with_notes(
     rows: &[(Option<Line>, Mark)],
     face: Face,
+    glyph_scale: Vec2,
     notes: Option<&[String]>,
 ) -> Image {
     let width = LISTING_WIDTH;
@@ -368,10 +387,16 @@ pub(super) fn listing_with_notes(
             }
         }
         let Some(line) = line else { continue };
-        let baseline = y as f32 + 21.;
-        canvas.text(&format!("{:>6}", line.number), 12., baseline, 20., |_| {
-            [0.50, 0.66, 0.71]
-        });
+        let row_center = LISTING_ROW_PIXELS as f32 / 2.;
+        let baseline = y as f32 + row_center + (21. - row_center) * glyph_scale.y;
+        canvas.scaled_text(
+            &format!("{:>6}", line.number),
+            84. - 72. * glyph_scale.x,
+            baseline,
+            20.,
+            glyph_scale,
+            |_| [0.50, 0.66, 0.71],
+        );
         let text_start = if let Some(notes) = notes {
             if let Some(author) = notes.get(line.number.saturating_sub(1)) {
                 let (limit, size) = if cfg!(target_arch = "wasm32") {
@@ -380,7 +405,9 @@ pub(super) fn listing_with_notes(
                     (28, 17.)
                 };
                 let short = author.chars().take(limit).collect::<String>();
-                canvas.text(&short, 106., baseline, size, |_| [0.53, 0.83, 0.78]);
+                canvas.scaled_text(&short, 106., baseline, size, glyph_scale, |_| {
+                    [0.53, 0.83, 0.78]
+                });
             }
             if cfg!(target_arch = "wasm32") {
                 470
@@ -390,7 +417,8 @@ pub(super) fn listing_with_notes(
         } else {
             106
         };
-        canvas.text(&line.text, text_start as f32, baseline, 20., |byte| {
+        let start = 106. + (text_start as f32 - 106.) * glyph_scale.x;
+        canvas.scaled_text(&line.text, start, baseline, 20., glyph_scale, |byte| {
             ink(line
                 .spans
                 .iter()
