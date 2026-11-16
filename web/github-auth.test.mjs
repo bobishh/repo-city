@@ -85,6 +85,7 @@ test("OAuth uses PKCE, binds state to the browser, and keeps the token in its en
     assert.equal(url, "https://api.github.com/graphql");
     const { query, variables } = JSON.parse(options.body);
     assert.match(query, /reviewThreads\(first: 50/);
+    assert.match(query, /reactionGroups\s*\{\s*content\s+viewerHasReacted\s*\}/);
     assert.deepEqual(variables, { owner: "owner", repo: "private", number: 123, cursor: null });
     return Response.json({ data: { repository: { pullRequest: {
       headRefOid: "b".repeat(40), reviewThreads: { nodes: [] },
@@ -92,6 +93,32 @@ test("OAuth uses PKCE, binds state to the browser, and keeps the token in its en
   });
   assert.equal(threads.status, 200);
   assert.deepEqual((await threads.json()).reviewThreads.nodes, []);
+  const eyes = review + "/comments/456/eyes";
+  const react = (upstream, origin = site) => handleGitHub(request(eyes, {
+    method: "POST", headers: { ...headers, Origin: origin },
+  }), env, upstream);
+  assert.equal((await react(() => assert.fail("Cross-origin reaction"), "https://example.com")).status, 403);
+  const comment = "https://api.github.com/repos/owner/private/pulls/comments/456";
+  const wrongPR = await react(async (url, options) => {
+    assert.equal(url, comment);
+    assert.equal(options.method, "GET");
+    return Response.json({ pull_request_url: "https://api.github.com/repos/owner/private/pulls/124" });
+  });
+  assert.equal(wrongPR.status, 404);
+  for (const result of [201, 200, 403]) {
+    const response = await react(async (url, options) => {
+      assert.equal(options.headers.Authorization, "Bearer " + token);
+      if (options.method === "GET") {
+        assert.equal(url, comment);
+        return Response.json({ pull_request_url: "https://api.github.com/repos/owner/private/pulls/123" });
+      }
+      assert.equal(url, comment + "/reactions");
+      assert.deepEqual(JSON.parse(options.body), { content: "eyes" });
+      return Response.json({ content: "eyes", user: { login: "owner" } }, { status: result });
+    });
+    assert.equal(response.status, result === 403 ? 403 : 200);
+    if (result !== 403) assert.deepEqual(await response.json(), { viewed: true });
+  }
   const search = new URLSearchParams({ q: 'repo:owner/private "robot" "motor"', per_page: "100" });
   const found = await handleGitHub(request("/github/api/search/commits?" + search, { headers }), env, async (url, options) => {
     assert.equal(url.pathname, "/search/commits");

@@ -60,7 +60,12 @@ pub(crate) fn draw(
             .collect();
     }
     let mut marked = HashSet::new();
-    for note in &review.notes {
+    let outstanding = review.notes.iter().filter(|note| note.attention);
+    let other_notes = review.notes.iter().filter(|note| !note.attention);
+    for note in outstanding
+        .chain(other_notes)
+        .filter(|note| Review::on_snapshot(note, &repo.0))
+    {
         let Some(&index) = files_by_path.get(&note.anchor.path) else {
             continue;
         };
@@ -70,15 +75,31 @@ pub(crate) fn draw(
         let file = &repo.0.files[index];
         let [x, z] = file.position;
         let bound = super::block_size(file);
-        let roof = Vec3::new(x, bound.y + 0.28, z);
+        let roof = Vec3::new(x, bound.y + 0.6, z);
         if roof.distance_squared(camera.translation) > 140. * 140. {
             continue;
         }
-        let [r, g, b] = note.preset.color;
-        let tint = Color::srgba(r as f32 / 255., g as f32 / 255., b as f32 / 255., 0.46);
-        let tip = 0.38;
-        gizmos.line(roof - Vec3::X * tip, roof + Vec3::X * tip, tint);
-        gizmos.line(roof - Vec3::Z * tip, roof + Vec3::Z * tip, tint);
+        let [r, g, b] = note.ink();
+        let tint = Color::srgb_u8(r, g, b).with_alpha(if note.resolved == Some(true) {
+            0.44
+        } else {
+            0.92
+        });
+        let tip = (bound.x * 0.18).clamp(0.6, 2.4);
+        for axis in [Vec3::X, Vec3::Z] {
+            let span = axis * tip;
+            let peak = Vec3::Y * (tip * 0.65);
+            gizmos.linestrip(
+                [
+                    roof - span,
+                    roof + peak,
+                    roof + span,
+                    roof - peak,
+                    roof - span,
+                ],
+                tint,
+            );
+        }
     }
     let mut target = None;
     if visible && !explorer.dirty {
@@ -143,10 +164,10 @@ pub(crate) fn draw(
                 {
                     let top = mark_offset.with_y(side.wall.y(start as f32));
                     let bottom = mark_offset.with_y(side.wall.y(end as f32));
-                    let tick = Vec3::Y.cross(side.normal()) * (side.width * 0.014);
-                    gizmos.line(top, bottom, tint);
-                    gizmos.line(top, top + tick, tint);
-                    gizmos.line(bottom, bottom + tick, tint);
+                    let tick = Vec3::Y.cross(side.normal()) * (side.width * 0.052);
+                    let inside = tick * 0.14;
+                    gizmos.linestrip([top + tick, top, bottom, bottom + tick], tint);
+                    gizmos.line(top + inside, bottom + inside, tint);
                 }
             };
             for note in review
@@ -154,7 +175,7 @@ pub(crate) fn draw(
                 .iter()
                 .filter(|note| note.anchor.path == file.path && Review::on_snapshot(note, &repo.0))
             {
-                let [r, g, b] = note.preset.color;
+                let [r, g, b] = note.ink();
                 let tint = Color::srgb_u8(r, g, b).with_alpha(if note.resolved == Some(true) {
                     0.38
                 } else {
@@ -176,7 +197,8 @@ pub(crate) fn draw(
             .notes
             .iter()
             .rev()
-            .find(|note| Review::on_snapshot(note, &repo.0) && note.anchor.includes(line))
+            .filter(|note| Review::on_snapshot(note, &repo.0) && note.anchor.includes(line))
+            .max_by_key(|note| note.attention)
     });
     let aimed = note.map(|note| (note.id.clone(), note.preset.label.clone()));
     review.aim_note = aimed.as_ref().map(|(id, _)| id.clone());

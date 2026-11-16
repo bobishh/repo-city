@@ -52,8 +52,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
             let edge = 0.91 + (grain - 0.5) * 0.032;
             let shape = smoothstep(0.025, 0.055, x) * (1.0 - smoothstep(edge - 0.06, edge, x));
             let band = smoothstep(0.0, 0.16, y) * (1.0 - smoothstep(0.84, 1.0, y));
-            let gutter = smoothstep(0.02, 0.035, x) * (1.0 - smoothstep(0.057, 0.076, x));
-            let opacity = paint.a * max(shape * band * (0.16 + 0.17 * grain), gutter * band * 0.82);
+            let gutter = smoothstep(0.065, 0.071, x) * (1.0 - smoothstep(0.082, 0.09, x));
+            let opacity = paint.a * max(shape * band * (0.22 + 0.20 * grain), gutter * band * 0.96);
             ink = vec4<f32>(mix(ink.rgb, srgb_to_linear(paint.rgb), opacity), ink.a);
         }
     }

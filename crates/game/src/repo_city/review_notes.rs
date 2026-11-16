@@ -107,6 +107,31 @@ pub(super) struct Note {
     pub remote: bool,
     #[serde(default)]
     pub resolved: Option<bool>,
+    #[serde(default)]
+    pub attention: bool,
+}
+
+impl Note {
+    pub(super) fn ink(&self) -> [u8; 3] {
+        if self.attention {
+            [255, 202, 104]
+        } else {
+            self.preset.color
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct Destination {
+    pub anchor: Anchor,
+    pub revision: String,
+}
+
+pub(super) fn take_destination() -> Option<Destination> {
+    #[cfg(target_arch = "wasm32")]
+    return serde_json::from_str(&browser_destination()).ok();
+    #[cfg(not(target_arch = "wasm32"))]
+    None
 }
 
 #[derive(Serialize, Deserialize)]
@@ -196,6 +221,7 @@ impl Review {
             published: None,
             remote: false,
             resolved: None,
+            attention: false,
         };
         self.write_note(&note)?;
         self.notes.push(note.clone());
@@ -389,6 +415,8 @@ extern "C" {
     fn browser_panel(panel: &str, palette: &str, slot: usize, note: &str);
     #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = reviewSlot)]
     fn browser_slot() -> i32;
+    #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = reviewDestination)]
+    fn browser_destination() -> String;
     #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = reviewModal)]
     fn browser_modal() -> bool;
     #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = reviewCanPaint)]

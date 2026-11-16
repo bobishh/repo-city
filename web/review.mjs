@@ -24,11 +24,14 @@ const link = (label, href) => make("a", label, { href, target: "_blank", rel: "n
 const pathLabel = note => note.anchor.start < 1 ? note.anchor.path :
   `${note.anchor.path}:${note.anchor.start}${note.anchor.start === note.anchor.end ? "" : "–" + note.anchor.end}`;
 const current = (note, review) => note.revision === review.revision && note.baseline === review.baseline;
+const mentions = (body, login) =>
+  [...body.matchAll(/(^|[^\w@/.-])@([a-z\d-]+)(?![\w/-])/gi)]
+    .some(([, , name]) => name.toLowerCase() === login.toLowerCase());
 const uuid = () => crypto.randomUUID();
 
 export function createReview({ canvas, release, onClose }) {
   const dialog = document.querySelector("#review-dialog");
-  let session, version = 0, selected = 0, pendingSlot = -1, busy = false;
+  let session, version = 0, selected = 0, pendingSlot = -1, busy = false, destination;
   const repaint = () => { version++; };
   let defaults = [];
 
@@ -63,7 +66,7 @@ export function createReview({ canvas, release, onClose }) {
     const project = review.repository.toLowerCase();
     const scope = JSON.stringify(["notes", account, project, review.pull]);
     const projectScope = JSON.stringify(["project", account, project]);
-    const data = { review, scope, projectScope, progressScope, snapshot, notes: [], threads: [], palette: [],
+    const data = { review, scope, projectScope, progressScope, snapshot, account, notes: [], threads: [], palette: [],
       threadPaints: new Map(), showResolved: false, pending: Boolean(review.pull), status: "", prior: null };
     const [notes, prefs] = await Promise.all([readReview(scope), readReview(projectScope)]).catch(() => {
       data.status = "Local review storage is unavailable.";
@@ -100,6 +103,7 @@ export function createReview({ canvas, release, onClose }) {
       } catch { data.status = "Couldn't carry progress from the previous review."; }
     }
     session = data;
+    destination = undefined;
     selected = 0;
     pendingSlot = 0;
     repaint();
@@ -162,13 +166,22 @@ export function createReview({ canvas, release, onClose }) {
         const visible = !(state?.isOutdated ?? item.position === null) && Number.isSafeInteger(line) && line > 0;
         const anchored = visible && startSide === side && (side === "RIGHT" || side === "LEFT");
         const end = anchored ? line : state?.originalLine ?? item.original_line ?? 0;
+        const discussion = [item, ...(replies.get(item.id) ?? [])];
+        const addressed = anchored && state?.isResolved === false && data.account
+          ? discussion.filter(comment => mentions(readCommentText(comment.body).text, data.account))
+          : [];
+        const reactions = new Map(state?.comments.nodes.map(comment => [comment.id, comment.reactionGroups ?? []]));
+        const personal = addressed.filter(comment => reactions.has(comment.node_id)).map(comment => ({
+          id: comment.id,
+          viewed: reactions.get(comment.node_id).some(group => group.content === "EYES" && group.viewerHasReacted),
+        }));
         return {
           id: `github-${item.id}`, revision: anchored ? review.revision : item.original_commit_id ?? review.revision,
           baseline: review.baseline, remote: true, preset: neutral, presetId: parsed.preset,
           anchor: { path: state?.path ?? item.path, before: side === "LEFT",
             start: anchored ? start ?? end : state?.originalStartLine ?? item.original_start_line ?? end, end },
           text: parsed.text, original: !anchored, fileLevel: item.subject_type === "file", resolved: state?.isResolved ?? null,
-          discussion: [item, ...(replies.get(item.id) ?? [])],
+          discussion, personal,
         };
       });
     } catch (error) {
@@ -197,7 +210,7 @@ export function createReview({ canvas, release, onClose }) {
       const preset = note.resolved
         ? { ...paint, color: paint.color.map(channel => Math.round(channel * 0.55 + 36)) }
         : paint;
-      return [{ ...note, preset }];
+      return [{ ...note, preset, attention: note.personal.some(comment => !comment.viewed) }];
     });
     return [...session.notes.filter(note => !found.has(note.id)), ...threads];
   }
@@ -215,7 +228,8 @@ export function createReview({ canvas, release, onClose }) {
       return "Open an active pull request to leave a note in the browser.";
     }
     const data = session;
-    const note = JSON.parse(json);
+    const draft = JSON.parse(json);
+    const note = { ...draft, text: draft.text || draft.preset.prompt };
     if (!current(note, data.review)) return "The revision changed. Mark the lines again.";
     data.notes.push(note);
     repaint();
@@ -350,8 +364,15 @@ export function createReview({ canvas, release, onClose }) {
     if (status || pending) dialog.append(make("p", status || "Loading GitHub comments…", { role: "status" }));
     const list = make("div", undefined, { class: "review-list" });
     const entries = notes();
+    const addressed = entries.filter(note => note.attention);
+    if (addressed.length) dialog.append(button("Fly to next mention", () => {
+      const index = addressed.findIndex(note => note.id === session.lastMention);
+      const note = addressed[(index + 1) % addressed.length];
+      session.lastMention = note.id;
+      flyTo(note);
+    }));
     for (const note of entries) {
-      const caption = note.remote ? (note.resolved ? "Resolved" : note.fileLevel ? "File comment" : note.original ? "Original location" : "GitHub thread") :
+      const caption = note.remote ? (note.attention ? "For you" : note.resolved ? "Resolved" : note.fileLevel ? "File comment" : note.original ? "Original location" : "GitHub thread") :
         note.published ? "Published" : current(note, review) ? "Draft" : "Earlier draft";
       const item = button(`${note.preset.label} · ${pathLabel(note)} · ${caption}`, () => note.remote ? threadPanel(note) : noteEditor(note));
       item.prepend(swatch(note.preset));
@@ -384,6 +405,11 @@ export function createReview({ canvas, release, onClose }) {
     actions(...controls);
   }
 
+  function flyTo(note) {
+    destination = { anchor: note.anchor, revision: note.revision };
+    close();
+  }
+
   function exportPanel() {
     dialog.dataset.view = "export";
     view("Export review notes");
@@ -411,6 +437,7 @@ export function createReview({ canvas, release, onClose }) {
     actions(button("Back", notesPanel), save);
   }
   function threadPanel(note) {
+    const data = session;
     dialog.dataset.view = "thread";
     view(pathLabel(note));
     dialog.append(make("p", note.fileLevel ? "File comment" : note.original ? "Original location · no current line anchor" : "GitHub thread"));
@@ -421,9 +448,38 @@ export function createReview({ canvas, release, onClose }) {
         make("p", readCommentText(item.body).text, { class: "review-copy" }));
       const href = safeDiscussion(item.html_url);
       if (href) article.append(link("View on GitHub", href));
+      const personal = note.personal.find(comment => comment.id === item.id);
+      if (personal) {
+        const feedback = make("span", personal.viewed ? "Viewed on GitHub 👀" : "", { role: "status" });
+        const viewed = button("Mark viewed on GitHub 👀", async () => {
+          viewed.disabled = true;
+          try {
+            const response = await fetch(`/github/review/${data.review.repository}/${data.review.pull}/comments/${item.id}/eyes`, {
+              method: "POST", signal: AbortSignal.timeout(15_000),
+            });
+            const result = await response.json();
+            if (!response.ok || !result.viewed) {
+              feedback.textContent = result.error || "GitHub did not confirm the reaction.";
+              if (response.status === 401) feedback.append(" ", signIn());
+              const install = safeDiscussion(githubAccount()?.installUrl);
+              if (response.status === 403 && install) feedback.append(" ", link("Manage repository access", install));
+              return;
+            }
+            personal.viewed = true;
+            if (session === data) repaint();
+            feedback.textContent = "Viewed on GitHub 👀";
+            viewed.remove();
+          } catch {
+            feedback.textContent = "GitHub did not confirm the reaction. Try again.";
+          } finally {
+            viewed.disabled = false;
+          }
+        });
+        if (!personal.viewed) article.append(" ", viewed);
+        article.append(" ", feedback);
+      }
       dialog.append(article);
     }
-    const data = session;
     const prior = data.threadPaints.get(note.id);
     const palette = (data.palette.length ? data.palette : defaults).filter(Boolean);
     if (prior && !palette.some(paint => paint.id === prior.id)) palette.push(prior);
@@ -455,7 +511,8 @@ export function createReview({ canvas, release, onClose }) {
       }
     });
     dialog.append(field("Local paint", paint), feedback);
-    actions(button("Back", notesPanel), save, closeButton());
+    const travel = note.original || note.fileLevel ? [] : [button("Fly to line", () => flyTo(note))];
+    actions(button("Back", notesPanel), ...travel, save, closeButton());
   }
 
   function noteEditor(note) {
@@ -472,18 +529,34 @@ export function createReview({ canvas, release, onClose }) {
     const data = session;
     const palette = [note.preset, ...(data.palette.length ? data.palette : defaults).filter(p => p && p.id !== note.preset.id)];
     for (const paint of palette) preset.append(make("option", paint.label, { value: paint.id }));
-    const prompt = make("p", note.preset.prompt, { class: "review-copy" });
     const chosen = () => palette.find(paint => paint.id === preset.value) ?? note.preset;
-    preset.addEventListener("change", () => { prompt.textContent = chosen().prompt; });
+    const paintLabel = make("p", note.preset.label);
+    paintLabel.prepend(swatch(note.preset));
+    const paintField = field("Paint", preset);
+    const textField = field("Comment", text);
+    const preview = make("pre", note.text, { class: "review-copy" });
     const codeField = field("Replacement code", code);
+    const edit = button("Edit comment", () => {
+      editing = true;
+      refreshEditor();
+      text.focus();
+    });
+    let editing = !note.published && (suggesting || !note.text.trim());
+    const write = button("Write a comment", () => {
+      editing = true;
+      text.value = "";
+      refreshEditor();
+      text.focus();
+    });
     const suggest = button("Suggest replacement", () => {
       suggesting = !suggesting;
-      refreshSuggestion();
+      if (suggesting) editing = true;
+      refreshEditor();
       if (suggesting) code.focus();
     });
-    const canSuggest = allowedDraft() && !note.anchor.before && current(note, session.review) && !note.published;
-    suggest.hidden = !canSuggest;
-    dialog.append(field("Paint", preset), prompt, field("Comment", text), suggest, codeField);
+    const canPublish = allowedDraft() && current(note, session.review) && !note.published;
+    const canSuggest = canPublish && !note.anchor.before;
+    dialog.append(paintLabel, paintField, preview, textField, codeField, edit, write, suggest);
     const status = make("p", "", { role: "status", class: "review-status" });
     dialog.append(status);
     const persist = async () => {
@@ -496,20 +569,32 @@ export function createReview({ canvas, release, onClose }) {
     const save = button("Save draft", async () => {
       try { await persist(); notesPanel(); } catch { status.textContent = "Could not save this draft."; }
     });
-    const prepare = button("Preview GitHub comment", async () => {
+    const prepare = button("Publish to GitHub", async () => {
+      if (busy) return;
       if (suggesting ? !code.value.length : !text.value.trim()) {
         status.textContent = suggesting ? "Enter the replacement code." : "Write the comment you want to publish.";
         (suggesting ? code : text).focus();
         return;
       }
-      try { publishPanel(await persist()); } catch { status.textContent = "Could not save this draft."; }
+      if (suggesting) {
+        try { publishPanel(await persist()); } catch { status.textContent = "Could not save this draft."; }
+      } else {
+        await submitNote(data, persist, status);
+      }
     });
-    function refreshSuggestion() {
+    function refreshEditor() {
+      paintLabel.hidden = editing;
+      paintField.hidden = note.published || !editing;
+      preview.hidden = editing || !note.text.trim();
+      textField.hidden = !editing;
       codeField.hidden = !suggesting;
+      edit.hidden = editing || note.published;
+      write.hidden = editing || note.published || !canPublish;
+      suggest.hidden = !canSuggest;
       suggest.textContent = suggesting ? "Use plain comment" : "Suggest replacement";
-      prepare.textContent = suggesting ? "Preview GitHub suggestion" : "Preview GitHub comment";
+      prepare.textContent = suggesting ? "Preview GitHub suggestion" : "Publish to GitHub";
     }
-    refreshSuggestion();
+    refreshEditor();
     const remove = button("Delete draft", async () => {
       try {
         await deleteReview(data.scope, note.id);
@@ -524,7 +609,7 @@ export function createReview({ canvas, release, onClose }) {
       actions(button("Back", notesPanel), closeButton());
     } else {
       if (data.review.pullState === "open" && !githubAccount()?.login && current(note, data.review)) dialog.append(signIn());
-      actions(button("Back", notesPanel), remove, save, ...(allowedDraft() && current(note, data.review) ? [prepare] : []));
+      actions(button("Back", notesPanel), remove, save, ...(canPublish ? [prepare] : []));
     }
   }
 
@@ -543,38 +628,53 @@ export function createReview({ canvas, release, onClose }) {
     const status = make("p", "", { role: "status", class: "review-status" });
     dialog.append(status);
     const back = button("Back to draft", () => noteEditor(note));
-    const submit = button("Publish to GitHub", async () => {
-      submit.disabled = back.disabled = busy = true;
-      status.textContent = "Publishing…";
-      try {
-        const response = await fetch(`/github/review/${data.review.repository}/${data.review.pull}`, {
-          method: "POST", headers: { "Content-Type": "application/json" }, signal: AbortSignal.timeout(40_000),
-          body: JSON.stringify({ ...note.anchor, id: note.id, revision: note.revision, text: note.text,
-            replacement: note.replacement, preset: note.preset.id, fileLevel }),
-        });
-        const result = await response.json();
-        if (!response.ok) {
-          status.textContent = result.error || "GitHub did not publish the comment.";
-          if (result.fileLevel) status.append(" ", button("Preview file comment", () => publishPanel(note, true)));
-          if (response.status === 401) status.append(" ", signIn());
-          return;
-        }
-        const published = safeDiscussion(result.comment?.html_url);
-        if (!published) throw new Error("GitHub did not confirm the comment.");
-        const updated = { ...note, published };
-        data.notes = data.notes.map(value => value.id === note.id ? updated : value);
-        repaint();
-        await saveReview(data.scope, note.id, updated).catch(() => {
-          data.status = "Published on GitHub. The browser could not save its local status.";
-        });
-        noteEditor(updated);
-      } catch {
-        status.textContent = "GitHub did not confirm the comment. Your draft is still saved; retry to check for it.";
-      } finally {
-        submit.disabled = back.disabled = busy = false;
-      }
-    });
+    const submit = button("Publish to GitHub", () => submitNote(data, async () => note, status, fileLevel));
     actions(back, submit);
+  }
+
+  async function submitNote(data, persist, status, fileLevel = false) {
+    if (busy) return;
+    busy = true;
+    const controls = [...dialog.querySelectorAll("button, textarea, select")];
+    const enabled = controls.filter(control => !control.disabled);
+    for (const control of enabled) control.disabled = true;
+    status.textContent = "Saving draft…";
+    try {
+      let note;
+      try { note = await persist(); }
+      catch { status.textContent = "Could not save this draft."; return; }
+      status.textContent = "Publishing…";
+      const response = await fetch(`/github/review/${data.review.repository}/${data.review.pull}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, signal: AbortSignal.timeout(40_000),
+        body: JSON.stringify({ ...note.anchor, id: note.id, revision: note.revision, text: note.text,
+          replacement: note.replacement, preset: note.preset.id, fileLevel }),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        status.textContent = result.error || "GitHub did not publish the comment.";
+        if (result.fileLevel) status.append(" ", button("Preview file comment", () => publishPanel(note, true)));
+        if (response.status === 401) status.append(" ", signIn());
+        if (response.status === 403) {
+          const install = safeDiscussion(githubAccount()?.installUrl);
+          if (install) status.append(" ", link("Manage repository access", install));
+        }
+        return;
+      }
+      const published = safeDiscussion(result.comment?.html_url);
+      if (!published) throw new Error("GitHub did not confirm the comment.");
+      const updated = { ...note, published };
+      data.notes = data.notes.map(value => value.id === note.id ? updated : value);
+      repaint();
+      await saveReview(data.scope, note.id, updated).catch(() => {
+        data.status = "Published on GitHub. The browser could not save its local status.";
+      });
+      if (session === data) noteEditor(updated);
+    } catch {
+      status.textContent = "GitHub did not confirm the comment. Your draft is still saved; retry to check for it.";
+    } finally {
+      for (const control of enabled) control.disabled = false;
+      busy = false;
+    }
   }
 
   function panel(kind, palette, slot, id) {
@@ -592,6 +692,11 @@ export function createReview({ canvas, release, onClose }) {
     load, version: () => version, snapshot, add, panel, id: uuid, canPaint: allowedDraft,
     equipWater() { pendingSlot = 0; },
     takeSlot() { const value = pendingSlot; pendingSlot = -1; return value; },
+    takeDestination() {
+      const value = destination;
+      destination = undefined;
+      return value ? JSON.stringify(value) : "";
+    },
     modal: () => Boolean(document.querySelector("dialog[open]")),
   };
 }

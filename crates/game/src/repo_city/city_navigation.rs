@@ -45,6 +45,7 @@ enum Arrival {
     Facade(Option<file_facade::Aim>),
     Stop,
     ReviewWall,
+    ReviewLine,
     Comparison,
     Overview,
 }
@@ -88,7 +89,7 @@ impl Hop {
             translation.y += lift * (std::f32::consts::PI * eased).sin().max(0.);
         }
         let mut rotation = self.start.rotation.slerp(self.end.rotation, eased);
-        if matches!(self.arrival, Arrival::Facade(_)) {
+        if matches!(self.arrival, Arrival::Facade(_) | Arrival::ReviewLine) {
             let smooth = |v: f32| {
                 let v = v.clamp(0., 1.);
                 v * v * (3. - 2. * v)
@@ -132,6 +133,7 @@ pub(super) struct Navigation {
     redraw: bool,
     broken: HashSet<usize>,
     overview_return: Option<Transform>,
+    review_line: Option<(usize, f32)>,
     pub overview_requested: bool,
 }
 
@@ -308,6 +310,56 @@ pub(super) fn navigate(
         return;
     }
 
+    if let Some(destination) = review_notes::take_destination()
+        && destination.revision == repo.0.revision
+        && let Some(index) = repo
+            .0
+            .files
+            .iter()
+            .position(|file| file.path == destination.anchor.path)
+    {
+        navigation.route = None;
+        navigation.hop = None;
+        navigation.overview_return = None;
+        navigation.redraw = true;
+        explorer.anchored = false;
+        explorer.comparison_mode = 0;
+        if explorer.selected != index {
+            explorer.open(&repo.0, index);
+        }
+        if explorer.before != destination.anchor.before {
+            explorer.before = destination.anchor.before;
+            explorer.reload(&repo.0);
+        }
+        explorer.frame_loaded_source = false;
+        explorer.rebuild = true;
+        listing.reset_view();
+        navigation.review_line = Some((destination.anchor.start, time.elapsed_secs() + 10.));
+    }
+    if let Some((line, deadline)) = navigation.review_line {
+        let file = &repo.0.files[explorer.selected];
+        if let Some(end) = listing::Listing::review_line_view(&explorer, file, line) {
+            navigation.review_line = None;
+            navigation.hop = Some(
+                if camera
+                    .translation
+                    .xz()
+                    .distance_squared(end.translation.xz())
+                    < 0.04
+                {
+                    Hop::new(*camera, end, Arrival::ReviewWall)
+                } else {
+                    let mut hop = Hop::facade(*camera, end, None, &repo.0);
+                    hop.arrival = Arrival::ReviewLine;
+                    hop
+                },
+            );
+        } else if time.elapsed_secs() >= deadline || keys.just_pressed(KeyCode::Escape) {
+            navigation.review_line = None;
+        }
+        return;
+    }
+
     let overview =
         keys.just_pressed(KeyCode::KeyM) || std::mem::take(&mut navigation.overview_requested);
     if overview || (navigation.overview() && keys.just_pressed(KeyCode::Escape)) {
@@ -425,7 +477,10 @@ pub(super) fn navigate(
                     }
                     navigation.redraw = true;
                 }
-                Arrival::Facade(_) | Arrival::Overview | Arrival::ReviewWall => {}
+                Arrival::Facade(_)
+                | Arrival::Overview
+                | Arrival::ReviewWall
+                | Arrival::ReviewLine => {}
             }
         }
         return;

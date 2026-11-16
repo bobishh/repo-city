@@ -166,6 +166,7 @@ async function openRepository(repo, ref, base) {
         reviewSave: review.add,
         reviewPanel: review.panel,
         reviewSlot: review.takeSlot,
+        reviewDestination: review.takeDestination,
         reviewModal: review.modal,
         reviewCanPaint: review.canPaint,
         reviewId: review.id,

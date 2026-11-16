@@ -91,13 +91,21 @@ Choose a local paint for a GitHub thread from its detail panel. GitHub still
 shows the original comment. Signed-in reviewers can show resolved threads from
 the review list.
 
-**Preview GitHub comment** shows the text before you send it. Publication
-requires repository access and **Pull requests: write** for the Repo City
-GitHub App. Select **Suggest replacement** in a draft on the current side
-of a pull request to preview and publish replacement code. GitHub accepts
-the suggestion on lines within one diff hunk. If the PR moves or GitHub
-rejects the range, the draft stays local. Resetting reading progress leaves
-notes and paints in place.
+The draft starts with the paint's reusable prompt. **Publish to GitHub**
+sends that comment in one action. Use **Edit comment** to adapt it or
+**Write a comment** to start blank. Publication requires repository access
+and **Pull requests: write** for the Repo City GitHub App. Select **Suggest
+replacement** on the current side of a pull request to preview and publish
+replacement code. GitHub accepts suggestions within one diff hunk. If the
+PR moves or GitHub rejects the range, the draft stays local. Resetting
+reading progress leaves notes and paints in place.
+
+On a signed-in review, unresolved inline comments that mention your GitHub
+handle are marked in gold until you view them. Open **Review notes** and
+choose **Fly to next mention**. Click the city to capture the cursor and
+press **J** at the marked lines.
+**Mark viewed on GitHub 👀** adds the reaction from your account and restores
+the thread's usual color when you have marked its mentions viewed.
 
 For local stack traces, draft editing, builds, and deployment, see
 [Development](docs/development.md).

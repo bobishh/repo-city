@@ -174,7 +174,7 @@ export async function handleGitHub(request, env, upstream = fetch) {
                 reviewThreads(first: 50, after: $cursor) {
                   pageInfo { endCursor hasNextPage }
                   nodes { isOutdated isResolved path line startLine originalLine originalStartLine diffSide startDiffSide
-                    comments(first: 1) { nodes { id } }
+                    comments(first: 50) { nodes { id reactionGroups { content viewerHasReacted } } }
                   }
                 }
               }
@@ -186,6 +186,32 @@ export async function handleGitHub(request, env, upstream = fetch) {
       if (!response.ok) return relay(response);
       const pull = (await response.json()).data?.repository?.pullRequest;
       return pull?.reviewThreads ? json(pull) : json({ error: "Thread status unavailable." }, 404);
+    }
+    const reactionTarget = /^\/github\/review\/([\w.-]{1,100})\/([\w.-]{1,100})\/([1-9]\d{0,14})\/comments\/([1-9]\d{0,15})\/eyes$/.exec(path);
+    if (reactionTarget && request.method === "POST") {
+      if (request.headers.get("Origin") !== url.origin) return json({ error: "Invalid origin." }, 403);
+      const session = await readCookie(request, SESSION, secret);
+      if (!session) return json({ error: "Sign in with GitHub to mark a comment viewed." }, 401);
+      const [, owner, repo, number, commentId] = reactionTarget;
+      const base = API + `/repos/${owner}/${repo}/pulls`;
+      const comment = base + "/comments/" + commentId;
+      const options = { headers: github(session.token), redirect: "manual", signal: AbortSignal.timeout(12_000) };
+      const target = await upstream(comment, { ...options, method: "GET" });
+      if (!target.ok) return relay(target);
+      if ((await target.json()).pull_request_url?.toLowerCase() !== (base + "/" + number).toLowerCase()) {
+        return json({ error: "This comment is outside the selected pull request." }, 404);
+      }
+      const reaction = await upstream(comment + "/reactions", {
+        ...options, method: "POST", headers: { ...options.headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "eyes" }),
+      });
+      if (reaction.status === 403) return json({ error: "Marking viewed needs Pull requests: write." }, 403);
+      if (!reaction.ok) return relay(reaction);
+      const result = await reaction.json();
+      if (result.content !== "eyes" || result.user?.login?.toLowerCase() !== session.login.toLowerCase()) {
+        return json({ error: "GitHub did not confirm your reaction." }, 502);
+      }
+      return json({ viewed: true });
     }
     if (reviewTarget && request.method === "POST") {
       if (request.headers.get("Origin") !== url.origin) return json({ error: "Invalid origin." }, 403);

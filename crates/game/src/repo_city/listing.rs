@@ -392,6 +392,37 @@ impl Listing {
         side.view(side.wall.y(row.min(count.saturating_sub(1)) as f32 + 0.5))
     }
 
+    pub(super) fn review_line_view(
+        explorer: &Explorer,
+        file: &repo_world::File,
+        line: usize,
+    ) -> Option<Transform> {
+        let source_row = line.checked_sub(1)?;
+        let diff_count = diff_rows(explorer);
+        if diff_count > 0 {
+            let mut row = 0;
+            for pair in &explorer.comparison.as_ref()?.rows {
+                let removed = pair.before.is_some() && (pair.changed || pair.after.is_none());
+                let target = if explorer.before {
+                    (removed && pair.before == Some(source_row)).then_some(row)
+                } else {
+                    (pair.after == Some(source_row)).then_some(row + usize::from(removed))
+                };
+                if let Some(target) = target {
+                    let side = WallSide::new(file, diff_count, Face::Diff, block_size(file));
+                    return Some(side.view(side.wall.y(target as f32 + 0.5)));
+                }
+                row += diff_row_width(pair);
+            }
+        }
+        let count = explorer.highlighted.len();
+        if source_row >= count {
+            return None;
+        }
+        let side = WallSide::new(file, count, Face::Source, block_size(file));
+        Some(side.view(side.wall.y(source_row as f32 + 0.5)))
+    }
+
     fn readable_hit(
         &self,
         explorer: &Explorer,
@@ -1402,7 +1433,7 @@ pub(super) fn draw(
                     (
                         &note.anchor,
                         tone(
-                            note.preset.color,
+                            note.ink(),
                             if note.resolved == Some(true) {
                                 0.38
                             } else {
@@ -1544,6 +1575,25 @@ mod tests {
             mode: "100644".into(),
         });
         file
+    }
+
+    #[test]
+    fn review_line_centers_github_line_numbers_on_the_correct_side() {
+        let file = fixture_with_rows(32);
+        let mut explorer = Explorer::new(0);
+        let prefix = "let start = 1;\n";
+        let suffix = "let end = 2;\n".repeat(28);
+        let before = format!("{prefix}let old = 1;\n{suffix}");
+        let after = format!("{prefix}let new = 1;\n{suffix}");
+        explorer.comparison = Some(Comparison::new(&file.path, &before, &after).unwrap());
+        let count = diff_rows(&explorer);
+        let side = WallSide::new(&file, count, Face::Diff, block_size(&file));
+        for (before, expected) in [(false, 2), (true, 1)] {
+            explorer.before = before;
+            let camera = Listing::review_line_view(&explorer, &file, 2).unwrap();
+            let hit = side.ray_hit(&camera, 0.12, side.detail_range()).unwrap().0;
+            assert_eq!(side.wall.row(hit.y, count), expected);
+        }
     }
 
     #[test]
