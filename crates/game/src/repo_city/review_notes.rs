@@ -357,6 +357,10 @@ pub(super) fn update(
             review.scroll = 0.;
         }
     }
+    if navigation.guides_camera() {
+        review.nozzle = 0.;
+        return;
+    }
     let raised = pilot.firing && !review.blocked && !picker.is_open() && !menu.is_open();
     let direction = if raised { 1. } else { -1. };
     review.nozzle = (review.nozzle + direction * time.delta_secs() / 0.11).clamp(0., 1.);

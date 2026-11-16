@@ -531,6 +531,7 @@ pub(super) fn spray_origin(camera: &Transform, raised: f32, can: bool) -> Vec3 {
 
 pub(super) fn show_sprayer(
     review: Res<review_notes::Review>,
+    navigation: Res<city_navigation::Navigation>,
     pigment: Option<Res<CanPigment>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut view: Query<(&ViewSprayer, &mut Transform, &mut Visibility)>,
@@ -538,7 +539,11 @@ pub(super) fn show_sprayer(
 ) {
     let paint = review.paint();
     let can = paint.is_some();
-    let raised = review.nozzle;
+    let raised = if navigation.guides_camera() {
+        0.
+    } else {
+        review.nozzle
+    };
     let shown = |is_can| {
         if is_can == can && raised > 0.12 {
             Visibility::Inherited

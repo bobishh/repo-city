@@ -59,7 +59,7 @@ first argument.
 | Find a file by name or path | **P** in the browser, **⌘P** on Mac |
 | Fly | **WASD**, **Space** and **Ctrl** for altitude, **Shift** to boost |
 | Capture or release the cursor | Click the scene to capture. **Esc** releases. |
-| Open the actions menu | Right-click to open scene actions, file search, paints, or review notes. |
+| Use the actions menu | Right-click to open or close it. Scroll or use the arrow keys to highlight an action. Click or press **Enter** to select it. |
 | See the district from above | **M** toggles district view. Hover for a file name, then click or press **E** to fly there. |
 | Approach a wall | Far away, left-click a building to fly to its nearest covered lines or the top of its source wall. Press **E** to fly to the aimed face. Scroll to move along the wall. |
 | Wash or paint lines | **0** equips water. Hold left click close to a source wall to reveal lines. **1–9** equip paints; drag from one readable line to another on the same side of the file. |

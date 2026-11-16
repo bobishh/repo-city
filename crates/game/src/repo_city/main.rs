@@ -1083,11 +1083,9 @@ fn flight(
     let Ok(window) = windows.single() else {
         return;
     };
-    let pointer_ui_open = picker.is_open()
-        || menu.is_open()
-        || review.blocked
-        || search.blocks_controls()
-        || navigation.overview();
+    let menu_open = menu.is_open();
+    let pointer_ui_open =
+        picker.is_open() || review.blocked || search.blocks_controls() || navigation.overview();
     let was_captured = pilot.captured;
     let over_button = !was_captured && file_buttons.iter().any(|hovered| hovered.get());
     #[cfg(target_arch = "wasm32")]
@@ -1115,7 +1113,7 @@ fn flight(
     }
     let focused = window.focused || (cfg!(target_arch = "wasm32") && pilot.captured);
     #[cfg(not(target_arch = "wasm32"))]
-    if focused && !pointer_ui_open && !over_button {
+    if focused && !pointer_ui_open && !menu_open && !over_button {
         if keys.just_pressed(KeyCode::Tab) {
             pilot.captured = !pilot.captured;
         } else if mouse.just_pressed(MouseButton::Left) {
@@ -1146,6 +1144,12 @@ fn flight(
         if cursor.visible == pilot.captured {
             cursor.visible = !pilot.captured;
         }
+    }
+    if menu_open {
+        pilot.fire_ready = false;
+        pilot.firing = false;
+        pilot.shot = false;
+        return;
     }
     pilot.update_fire(&mouse);
     if pointer_ui_open || listing.turning() || !focused {

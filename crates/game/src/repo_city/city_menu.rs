@@ -1,8 +1,5 @@
 //! Mouse actions for the file and face under the cursor when the menu opens.
-use bevy::{
-    picking::hover::Hovered,
-    ui_widgets::{Activate, Button, observe},
-};
+use bevy::input::mouse::MouseScrollUnit;
 
 use super::*;
 
@@ -17,6 +14,8 @@ pub(super) struct Menu {
     aim: Option<file_facade::Aim>,
     pub(super) destination: Option<file_facade::Aim>,
     dismissed: bool,
+    selected: usize,
+    scroll: f32,
 }
 
 impl Menu {
@@ -25,8 +24,35 @@ impl Menu {
     }
 
     fn close(&mut self) {
+        self.dismissed = self.is_open();
         self.anchor = None;
         self.aim = None;
+        self.selected = 0;
+        self.scroll = 0.;
+    }
+
+    fn select(
+        &mut self,
+        wheel: &AccumulatedMouseScroll,
+        keys: &ButtonInput<KeyCode>,
+        count: usize,
+    ) {
+        let delta = match wheel.unit {
+            MouseScrollUnit::Pixel => wheel.delta.y / 40.,
+            MouseScrollUnit::Line => wheel.delta.y,
+        };
+        if delta != 0. && self.scroll.signum() != delta.signum() {
+            self.scroll = 0.;
+        }
+        self.scroll += delta;
+        let mut step = isize::from(keys.just_pressed(KeyCode::ArrowDown))
+            - isize::from(keys.just_pressed(KeyCode::ArrowUp));
+        if self.scroll.abs() >= 1. {
+            step -= self.scroll.signum() as isize;
+            self.scroll = 0.;
+        }
+        self.selected =
+            (self.selected.min(count - 1) as isize + step).rem_euclid(count as isize) as usize;
     }
 }
 
@@ -34,7 +60,7 @@ pub(super) fn gameplay_enabled(menu: Res<Menu>, review: Res<review_notes::Review
     !menu.is_open() && !menu.dismissed && !review.blocked
 }
 
-#[derive(Component, Clone, Copy)]
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Action {
     Approach,
     Diff,
@@ -78,7 +104,7 @@ impl Action {
 
     fn available(
         self,
-        menu: &Menu,
+        aimed: bool,
         search: &listing::find::Search,
         can_paint: bool,
         can_filter: bool,
@@ -92,7 +118,7 @@ impl Action {
         if matches!(self, Self::FindText) {
             search.available
         } else {
-            self.global() || menu.aim.is_some()
+            self.global() || aimed
         }
     }
 
@@ -104,7 +130,14 @@ impl Action {
         search: &mut listing::find::Search,
         focus: &mut file_facade::ChangesOnly,
     ) {
-        if !menu.is_open() || !self.available(menu, search, review.can_paint, focus.available) {
+        if !menu.is_open()
+            || !self.available(
+                menu.aim.is_some(),
+                search,
+                review.can_paint,
+                focus.available,
+            )
+        {
             return;
         }
         match self {
@@ -115,10 +148,7 @@ impl Action {
             Self::Approach => menu.destination = menu.aim,
             Self::Diff => menu.destination = menu.aim.map(|aim| aim.on_side(listing::Face::Diff)),
             Self::Blame => menu.destination = menu.aim.map(|aim| aim.on_side(listing::Face::Blame)),
-            Self::ChangesOnly => {
-                focus.toggle();
-                menu.dismissed = true;
-            }
+            Self::ChangesOnly => focus.toggle(),
         }
         menu.close();
     }
@@ -145,16 +175,6 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
         ))
         .with_children(|ui| {
             ui.spawn((
-                Button,
-                Node {
-                    position_type: PositionType::Absolute,
-                    width: percent(100.),
-                    height: percent(100.),
-                    ..default()
-                },
-                observe(|_: On<Activate>, mut menu: ResMut<Menu>| menu.close()),
-            ));
-            ui.spawn((
                 Panel,
                 Node {
                     position_type: PositionType::Absolute,
@@ -170,12 +190,26 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
                 for action in Action::ALL {
                     panel.spawn((
                         action,
-                        file_picker::button(&action.label(false), font, ink, AlignSelf::Stretch),
-                        observe(move |_: On<Activate>, mut menu: ResMut<Menu>, mut picker: ResMut<file_picker::FilePicker>, mut review: ResMut<review_notes::Review>, mut search: ResMut<listing::find::Search>, mut focus: ResMut<file_facade::ChangesOnly>| {
-                            action.choose(&mut menu, &mut picker, &mut review, &mut search, &mut focus);
-                        }),
+                        Node {
+                            min_height: px(ROW_HEIGHT),
+                            align_items: AlignItems::Center,
+                            padding: UiRect::horizontal(px(10.)),
+                            ..default()
+                        },
+                        BackgroundColor::default(),
+                        children![(Text::new(action.label(false)), font.clone(), TextColor(ink))],
                     ));
                 }
+                panel.spawn((
+                    Text::new("Scroll · click"),
+                    font.clone(),
+                    TextColor(Color::srgb_u8(153, 188, 192)),
+                    Node {
+                        min_height: px(ROW_HEIGHT),
+                        padding: UiRect::axes(px(10.), px(5.)),
+                        ..default()
+                    },
+                ));
             });
         });
 }
@@ -183,6 +217,7 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
 pub(super) fn update(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
+    wheel: Res<AccumulatedMouseScroll>,
     nearest: Res<Nearest>,
     mut picker: ResMut<file_picker::FilePicker>,
     navigation: Res<city_navigation::Navigation>,
@@ -194,16 +229,11 @@ pub(super) fn update(
     mut overlay: Query<&mut Node, With<Overlay>>,
     mut panel: Query<&mut Node, (With<Panel>, Without<Overlay>)>,
     mut rows: Query<
-        (
-            &Action,
-            &Children,
-            &Hovered,
-            &mut Node,
-            &mut BackgroundColor,
-        ),
+        (&Action, &Children, &mut Node, &mut BackgroundColor),
         (Without<Overlay>, Without<Panel>),
     >,
     mut labels: Query<&mut Text>,
+    #[cfg(target_arch = "wasm32")] mut browser_selection: Local<Option<Action>>,
 ) {
     menu.dismissed = false;
     let right_click = mouse.just_pressed(MouseButton::Right);
@@ -234,20 +264,30 @@ pub(super) fn update(
         menu.close();
     } else if menu.is_open() && (keys.just_pressed(KeyCode::Escape) || right_click) {
         menu.close();
-        menu.dismissed = true;
     } else if menu.is_open() {
-        for (key, action) in [
+        let shortcut = [
             (KeyCode::KeyE, Action::Approach),
             (KeyCode::KeyG, Action::Diff),
             (KeyCode::KeyB, Action::Blame),
             (KeyCode::KeyU, Action::Paints),
             (KeyCode::KeyJ, Action::Notes),
             (KeyCode::Slash, Action::FindText),
-        ] {
-            if keys.just_pressed(key) {
-                action.choose(&mut menu, &mut picker, &mut review, &mut search, &mut focus);
-                break;
-            }
+        ]
+        .into_iter()
+        .find_map(|(key, action)| keys.just_pressed(key).then_some(action));
+        let aimed = menu.aim.is_some();
+        let available = Action::ALL
+            .into_iter()
+            .filter(|action| action.available(aimed, &search, review.can_paint, focus.available));
+        menu.select(&wheel, &keys, available.clone().count());
+        let confirm = mouse.just_pressed(MouseButton::Left)
+            || keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]);
+        if let Some(action) = shortcut.or_else(|| {
+            confirm
+                .then(|| available.clone().nth(menu.selected))
+                .flatten()
+        }) {
+            action.choose(&mut menu, &mut picker, &mut review, &mut search, &mut focus);
         }
     } else if right_click && let Some((point, _)) = nearest.screen {
         menu.anchor = Some(point);
@@ -264,13 +304,32 @@ pub(super) fn update(
     if overlay.display != display {
         overlay.display = display;
     }
+    let aimed = menu.aim.is_some();
+    let available = Action::ALL
+        .into_iter()
+        .filter(|action| action.available(aimed, &search, review.can_paint, focus.available));
+    let selected = if menu.is_open() {
+        available.clone().nth(menu.selected)
+    } else {
+        None
+    };
+    #[cfg(target_arch = "wasm32")]
+    if *browser_selection != selected
+        && let Some(canvas) = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.get_element_by_id("repo-city"))
+    {
+        if let Some(action) = selected {
+            let _ = canvas.set_attribute("data-action-menu", &action.label(focus.enabled));
+        } else {
+            let _ = canvas.remove_attribute("data-action-menu");
+        }
+        *browser_selection = selected;
+    }
     let (Some(anchor), Some((_, viewport))) = (menu.anchor, nearest.screen) else {
         return;
     };
-    let count = Action::ALL
-        .iter()
-        .filter(|action| action.available(&menu, &search, review.can_paint, focus.available))
-        .count() as f32;
+    let count = (available.count() + 1) as f32;
     let height = ROW_HEIGHT * count + GAP * (count - 1.) + 2. * PADDING;
     let point = (anchor + Vec2::splat(12.)).clamp(
         Vec2::ZERO,
@@ -280,8 +339,8 @@ pub(super) fn update(
         panel.left = px(point.x);
         panel.top = px(point.y);
     }
-    for (action, children, hovered, mut row, mut background) in &mut rows {
-        let display = if action.available(&menu, &search, review.can_paint, focus.available) {
+    for (action, children, mut row, mut background) in &mut rows {
+        let display = if action.available(aimed, &search, review.can_paint, focus.available) {
             Display::Flex
         } else {
             Display::None
@@ -297,10 +356,32 @@ pub(super) fn update(
                 label.0 = title;
             }
         }
-        background.set_if_neq(BackgroundColor(if hovered.get() {
-            Color::srgb_u8(33, 65, 73)
+        background.set_if_neq(BackgroundColor(if selected == Some(*action) {
+            Color::srgb_u8(42, 83, 91)
         } else {
             Color::srgb_u8(20, 40, 46)
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wheel_wraps_and_accumulates_trackpad_motion() {
+        let mut menu = Menu::default();
+        let keys = ButtonInput::default();
+        let mut wheel = AccumulatedMouseScroll {
+            unit: MouseScrollUnit::Pixel,
+            delta: Vec2::new(0., 24.),
+        };
+        menu.select(&wheel, &keys, 4);
+        assert_eq!(menu.selected, 0);
+        menu.select(&wheel, &keys, 4);
+        assert_eq!(menu.selected, 3);
+        wheel.delta.y = -120.;
+        menu.select(&wheel, &keys, 4);
+        assert_eq!(menu.selected, 0);
     }
 }

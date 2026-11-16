@@ -8,6 +8,7 @@ export function setupPointer(canvas, menu) {
 
   function capture() {
     if (canvas.hidden || modalOpen() || canvas.hasAttribute("data-pointer-ui") ||
+        canvas.hasAttribute("data-action-menu") ||
         document.pointerLockElement || !canvas.requestPointerLock) return;
     canvas.focus({ preventScroll: true });
     try {

@@ -401,16 +401,23 @@ test("opens a merged pull request from the URL using its fork head and merge bas
   await expect(canvas).toHaveAttribute("data-pointer-ui", "");
   await page.keyboard.press("Escape", { delay: 150 });
   await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
-  await canvas.click({ position: { x: 800, y: 35 }, button: "right", delay: 180 });
-  await expect(canvas).toHaveAttribute("data-pointer-ui", "");
-  // Over the sky, Show all files is the fourth row while a listing is loaded.
-  await canvas.click({ position: { x: 902, y: 164 }, delay: 180 });
-  await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
-  await page.keyboard.press("KeyP", { delay: 150 });
-  await expect(canvas).toHaveAttribute("data-pointer-ui", "");
-  await page.keyboard.type("LICENSE", { delay: 55 });
-  await page.keyboard.press("Enter", { delay: 150 });
-  await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
+  await canvas.click({ position: center, delay: 180 });
+  await expect.poll(capture).toBe("repo-city");
+  await canvas.click({ position: center, button: "right", delay: 180 });
+  await expect(canvas).toHaveAttribute("data-action-menu", /^(Fly to face|Find file)/);
+  await expect.poll(capture).toBe("repo-city");
+  await page.mouse.wheel(0, -120);
+  await expect(canvas).toHaveAttribute("data-action-menu", /Show all files/);
+  await page.mouse.click(center.x, center.y, { delay: 180 });
+  await expect(canvas).not.toHaveAttribute("data-action-menu");
+  await expect.poll(capture).toBe("repo-city");
+  await canvas.click({ position: center, button: "right", delay: 180 });
+  await expect(canvas).toHaveAttribute("data-action-menu", /^(Fly to face|Find file)/);
+  await page.mouse.wheel(0, -120);
+  await expect(canvas).toHaveAttribute("data-action-menu", /Only changes/);
+  await canvas.click({ position: center, button: "right", delay: 180 });
+  await expect(canvas).not.toHaveAttribute("data-action-menu");
+  await expect.poll(capture).toBe("repo-city");
 });
 
 
@@ -570,14 +577,16 @@ test("restores review progress after reload and resets only the open comparison"
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   expect((await read(scope)).some(mark => JSON.parse(mark).reveal)).toBe(false);
   await canvas.click({ position: { x: 640, y: 400 }, button: "right" });
-  await expect(canvas).toHaveAttribute("data-pointer-ui", "");
-  await expect.poll(() => page.evaluate(() => document.pointerLockElement)).toBeNull();
+  await expect(canvas).toHaveAttribute("data-action-menu");
+  await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
   await canvas.screenshot({ path: testInfo.outputPath("city-actions.png") });
   await page.keyboard.press("Escape");
-  await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
+  await expect(canvas).not.toHaveAttribute("data-action-menu");
+  await expect.poll(() => page.evaluate(() => document.pointerLockElement)).toBeNull();
   await canvas.click({ position: { x: 640, y: 400 }, button: "right" });
+  await expect(canvas).toHaveAttribute("data-action-menu");
+  await page.keyboard.press("KeyP", { delay: 150 });
   await expect(canvas).toHaveAttribute("data-pointer-ui", "");
-  await canvas.click({ position: { x: 712, y: 528 }, delay: 150 });
   await page.keyboard.type("demo.rs", { delay: 45 });
   await expect(canvas).toHaveAttribute("data-pointer-ui", "");
   await canvas.screenshot({ path: testInfo.outputPath("city-file-search.png") });
@@ -795,7 +804,8 @@ test("publishes a painted preset in one action and still supports suggestions", 
   });
   await lock();
   await page.mouse.click(center.x, center.y, { button: "right" });
-  await expect(canvas).toHaveAttribute("data-pointer-ui", "");
+  await expect(canvas).toHaveAttribute("data-action-menu");
+  await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
   await page.keyboard.press("KeyJ", { delay: 120 });
   const thread = review.getByRole("button", { name: /Comment.*demo\.rs:25.*For you/ });
   await expect(thread).toBeVisible();
