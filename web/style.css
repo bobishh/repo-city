@@ -36,17 +36,19 @@ h1 { position: absolute; z-index: 2; inset-block-start: 14px; inset-inline-start
 :root:not([data-playing]) .wordmark { font-size: clamp(4rem, 7vw, 6.25rem); }
 #blame { position: absolute; z-index: 2; inset-inline-end: 60px; inset-block-start: 22px; color: #baffed; background: #071419d6; padding: 5px 8px; text-underline-offset: 0.2em; }
 #help { position: absolute; z-index: 2; inset: 16px 16px auto auto; width: 32px; height: 32px; }
+#changed-only { position: absolute; z-index: 2; inset: 125px auto auto 111px; padding: 4px 7px; font-size: .8rem; }
+#changed-only[aria-pressed="true"] { border-color: #91fbdf; background: #173432; }
 #progress-warning {
   position: absolute; z-index: 2; top: 74px; left: 50%; transform: translateX(-50%);
   display: flex; align-items: start; gap: 8px; width: min(30rem, calc(100% - 32px));
   padding: 8px 10px; background: #151d27; border: 1px solid #a88143; color: #ffe6b7; font-size: .82rem;
 }
 #progress-warning button { border: 0; padding: 0 3px; color: inherit; background: none; font: inherit; cursor: pointer; }
-#help, .city-dialog button {
+#help, #changed-only, .city-dialog button {
   color: #c2ffef; background: #0a171e; border: 1px solid #41616a; border-radius: 0;
   cursor: pointer; font: inherit;
 }
-#help:hover, .city-dialog button:hover { border-color: #91fbdf; background: #173432; }
+#help:hover, #changed-only:hover, .city-dialog button:hover { border-color: #91fbdf; background: #173432; }
 .city-dialog {
   width: min(520px, calc(100% - 32px)); max-height: calc(100% - 32px);
   padding: 18px 22px; border: 1px solid #55707c; color: #e4f2f2;

@@ -419,6 +419,7 @@ fn main() {
     .init_resource::<Nearest>()
     .init_resource::<city_menu::Menu>()
     .init_resource::<file_picker::FilePicker>()
+    .init_resource::<file_facade::ChangesOnly>()
     .init_resource::<listing::Listing>()
     .init_resource::<listing::find::Search>()
     .init_resource::<progress::Progress>()
@@ -428,7 +429,7 @@ fn main() {
     .add_systems(
         Update,
         (
-            file_picker::update,
+            (file_facade::lower_unchanged, file_picker::update).chain(),
             flight,
             (file_facade::keep_beams_clear, targeting).chain(),
             (city_menu::update, listing::find::update).chain(),
@@ -476,7 +477,7 @@ fn main() {
             progress::restore,
         )
             .chain()
-            .before(file_picker::update),
+            .before(file_facade::lower_unchanged),
     );
     app.add_systems(
         Update,
@@ -959,38 +960,45 @@ fn spawn_city(
     let beams = file_facade::INK.map(|ink| materials.add(file_facade::beam_material(ink)));
     for (i, file) in repo.0.files.iter().enumerate() {
         let size = listing::block_size(file);
-        commands.spawn((
-            CityObject,
-            Facade { index: i },
-            Mesh3d(block.clone()),
-            MeshMaterial3d(palette.facade_closed.clone()),
-            transform(file, size, Part::Body),
-            RigidBody::Static,
-            Collider::cuboid(1., 1., 1.),
-        ));
-        commands.spawn((
-            CityObject,
-            FacadeRim(i),
-            bevy::light::NotShadowCaster,
-            Mesh3d(rim.clone()),
-            MeshMaterial3d(palette.facade_rims[0].clone()),
-            transform(file, size, Part::Roof),
-        ));
+        let body = commands
+            .spawn((
+                CityObject,
+                Facade { index: i },
+                Mesh3d(block.clone()),
+                MeshMaterial3d(palette.facade_closed.clone()),
+                transform(file, size, Part::Body),
+                RigidBody::Static,
+                Collider::cuboid(1., 1., 1.),
+            ))
+            .id();
+        let roof = commands
+            .spawn((
+                CityObject,
+                FacadeRim(i),
+                bevy::light::NotShadowCaster,
+                Mesh3d(rim.clone()),
+                MeshMaterial3d(palette.facade_rims[0].clone()),
+                transform(file, size, Part::Roof),
+            ))
+            .id();
         let status = match file.change {
             Change::Added => &added,
             Change::Removed => &removed,
             Change::Modified => &modified,
             Change::Unchanged => &unchanged,
         };
-        for face in [-1., 1.] {
+        let stripes = [-1., 1.].map(|face| {
             let part = Part::Stripe(face);
-            commands.spawn((
-                CityObject,
-                Mesh3d(block.clone()),
-                MeshMaterial3d(status.clone()),
-                transform(file, size, part),
-            ));
-        }
+            let stripe = commands
+                .spawn((
+                    CityObject,
+                    Mesh3d(block.clone()),
+                    MeshMaterial3d(status.clone()),
+                    transform(file, size, part),
+                ))
+                .id();
+            (stripe, part)
+        });
         let kind = file_facade::kind(&file.path);
         let name = file.path.rsplit('/').next().unwrap_or(&file.path);
         let extension = file_facade::extension(&file.path);
@@ -1012,22 +1020,42 @@ fn spawn_city(
         commands
             .entity(sign)
             .insert(transform(file, size, Part::Label));
-        commands.spawn((
-            CityObject,
-            file_facade::FileBeam,
-            bevy::light::NotShadowCaster,
-            Mesh3d(block.clone()),
-            MeshMaterial3d(beams[kind].clone()),
-            transform(file, size, Part::Beam),
-        ));
-        commands.spawn((
-            CityObject,
-            district::Glass,
-            bevy::light::NotShadowCaster,
-            Mesh3d(mirror.clone()),
-            MeshMaterial3d(glass.clone()),
-            transform(file, size, Part::Mirror),
-        ));
+        let beam = commands
+            .spawn((
+                CityObject,
+                file_facade::FileBeam,
+                bevy::light::NotShadowCaster,
+                Mesh3d(block.clone()),
+                MeshMaterial3d(beams[kind].clone()),
+                transform(file, size, Part::Beam),
+            ))
+            .id();
+        let pane = commands
+            .spawn((
+                CityObject,
+                district::Glass,
+                bevy::light::NotShadowCaster,
+                Mesh3d(mirror.clone()),
+                MeshMaterial3d(glass.clone()),
+                transform(file, size, Part::Mirror),
+            ))
+            .id();
+        if file.change == Change::Unchanged {
+            for (entity, part) in [
+                (body, Part::Body),
+                (roof, Part::Roof),
+                (sign, Part::Label),
+                (beam, Part::Beam),
+                (pane, Part::Mirror),
+            ]
+            .into_iter()
+            .chain(stripes)
+            {
+                commands
+                    .entity(entity)
+                    .insert(file_facade::SinkPart::new(file, size, part));
+            }
+        }
     }
 }
 
@@ -1191,6 +1219,7 @@ fn ray_box_entry(origin: Vec3, direction: Vec3, min: Vec3, max: Vec3) -> Option<
 }
 fn targeting(
     repo: Res<Repo>,
+    focus: Res<file_facade::ChangesOnly>,
     explorer: Res<Explorer>,
     camera: Query<(&Camera, &Transform, &Pilot), PlayerCamera>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -1237,6 +1266,9 @@ fn targeting(
         .filter(|_| !(explorer.anchored && explorer.comparison_mode > 0))
     {
         let file = &repo.0.files[f.index];
+        if !focus.includes(file) {
+            continue;
+        }
         let [x, z] = file.position;
         let size = listing::block_size(file);
         let min = Vec3::new(x - size.x / 2., 0., z - size.z / 2.);

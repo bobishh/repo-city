@@ -289,6 +289,7 @@ pub(super) fn navigate(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     repo: Res<Repo>,
+    focus: Res<file_facade::ChangesOnly>,
     nearest: Res<Nearest>,
     mut explorer: ResMut<Explorer>,
     mut navigation: ResMut<Navigation>,
@@ -316,7 +317,7 @@ pub(super) fn navigate(
             .0
             .files
             .iter()
-            .position(|file| file.path == destination.anchor.path)
+            .position(|file| file.path == destination.anchor.path && focus.includes(file))
     {
         navigation.route = None;
         navigation.hop = None;
@@ -576,7 +577,8 @@ pub(super) fn navigate(
     } else {
         None
     };
-    if let Some((index, aimed)) = target {
+    if let Some((index, aimed)) = target.filter(|(index, _)| focus.includes(&repo.0.files[*index]))
+    {
         let from_overview = navigation.overview_return.take().is_some();
         listing.reset_view();
         explorer.anchored = false;
@@ -891,6 +893,7 @@ mod tests {
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<Nearest>()
             .init_resource::<Navigation>()
+            .init_resource::<file_facade::ChangesOnly>()
             .init_resource::<city_menu::Menu>()
             .init_resource::<file_picker::FilePicker>()
             .init_resource::<listing::Listing>()
@@ -932,6 +935,7 @@ mod tests {
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<Navigation>()
+            .init_resource::<file_facade::ChangesOnly>()
             .init_resource::<city_menu::Menu>()
             .init_resource::<file_picker::FilePicker>()
             .init_resource::<listing::Listing>()

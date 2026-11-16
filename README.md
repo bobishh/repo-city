@@ -24,6 +24,8 @@ diff wall also shows deleted lines. Paste a pull request URL or choose **Pull
 requests** after selecting its repository. Closed and merged pull requests
 show their historical changes and comments. Publishing review notes requires
 an open pull request.
+Choose **Changed files only** to lower untouched buildings below the street
+and filter the file picker. Click again to restore the full city.
 
 Use **Sign in with GitHub** below the search to find your repositories, stars,
 and forks from the repository field. Under your GitHub handle, use **Choose

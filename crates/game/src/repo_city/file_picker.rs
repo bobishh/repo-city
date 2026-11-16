@@ -218,6 +218,7 @@ pub(super) fn update(
     mut picker: ResMut<FilePicker>,
     search: Res<listing::find::Search>,
     repo: Res<Repo>,
+    focus: Res<file_facade::ChangesOnly>,
     mut pilot: Query<&mut Pilot>,
     mut panels: Query<&mut Node, (With<PickerPanel>, Without<FileRow>)>,
     mut rows: Query<
@@ -301,6 +302,7 @@ pub(super) fn update(
             .files
             .iter()
             .enumerate()
+            .filter(|(_, file)| focus.includes(file))
             .filter_map(|(index, file)| rank(&file.path, &query).map(|score| (score, index)))
             .collect::<Vec<_>>();
         matches.sort_unstable();

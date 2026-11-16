@@ -386,6 +386,25 @@ test("opens a merged pull request from the URL using its fork head and merge bas
   } finally {
     await cdp.detach();
   }
+  const changedOnly = page.getByRole("button", { name: "Changed files only" });
+  await expect(changedOnly).toHaveAttribute("aria-pressed", "false");
+  await changedOnly.click();
+  await expect(changedOnly).toHaveAttribute("aria-pressed", "true");
+  await canvas.focus();
+  await page.keyboard.press("KeyP", { delay: 150 });
+  await expect(canvas).toHaveAttribute("data-pointer-ui", "");
+  await page.keyboard.type("LICENSE", { delay: 55 });
+  await page.keyboard.press("Enter", { delay: 150 });
+  await expect(canvas).toHaveAttribute("data-pointer-ui", "");
+  await page.keyboard.press("Escape", { delay: 150 });
+  await changedOnly.click();
+  await expect(changedOnly).toHaveAttribute("aria-pressed", "false");
+  await canvas.focus();
+  await page.keyboard.press("KeyP", { delay: 150 });
+  await expect(canvas).toHaveAttribute("data-pointer-ui", "");
+  await page.keyboard.type("LICENSE", { delay: 55 });
+  await page.keyboard.press("Enter", { delay: 150 });
+  await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
 });
 
 

@@ -25,6 +25,7 @@ pub(crate) fn draw(
     mut gizmos: Gizmos,
     time: Res<Time>,
     repo: Res<Repo>,
+    focus: Res<file_facade::ChangesOnly>,
     mut explorer: ResMut<Explorer>,
     navigation: Res<city_navigation::Navigation>,
     mut review: ResMut<review_notes::Review>,
@@ -73,6 +74,9 @@ pub(crate) fn draw(
             continue;
         }
         let file = &repo.0.files[index];
+        if !focus.includes(file) {
+            continue;
+        }
         let [x, z] = file.position;
         let bound = super::block_size(file);
         let roof = Vec3::new(x, bound.y + 0.6, z);

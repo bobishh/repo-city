@@ -3,6 +3,86 @@ use super::*;
 
 pub(super) const BEAM_HEIGHT: f32 = 14.;
 
+#[derive(Resource, Default)]
+pub(super) struct ChangesOnly {
+    enabled: bool,
+    lowered: f32,
+}
+
+impl ChangesOnly {
+    pub(super) fn includes(&self, file: &repo_world::File) -> bool {
+        !self.enabled || file.change != Change::Unchanged
+    }
+}
+
+#[derive(Component)]
+pub(super) struct SinkPart {
+    street_y: f32,
+    depth: f32,
+}
+
+impl SinkPart {
+    pub(super) fn new(file: &repo_world::File, size: Vec3, part: Part) -> Self {
+        Self {
+            street_y: transform(file, size, part).translation.y,
+            depth: size.y + BEAM_HEIGHT + 1.,
+        }
+    }
+
+    fn height(&self, lowered: f32) -> f32 {
+        self.street_y - self.depth * lowered
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = changedOnly)]
+    fn browser_changed_only() -> bool;
+}
+
+pub(super) fn lower_unchanged(
+    time: Res<Time>,
+    repo: Res<Repo>,
+    mut focus: ResMut<ChangesOnly>,
+    mut explorer: ResMut<Explorer>,
+    mut listing: ResMut<listing::Listing>,
+    mut navigation: ResMut<city_navigation::Navigation>,
+    mut parts: Query<(&SinkPart, &mut Transform)>,
+) {
+    #[cfg(target_arch = "wasm32")]
+    let enabled = browser_changed_only();
+    #[cfg(not(target_arch = "wasm32"))]
+    let enabled = false;
+    if repo.is_changed() {
+        focus.lowered = 0.;
+    }
+    if focus.enabled != enabled {
+        focus.enabled = enabled;
+        if enabled
+            && !focus.includes(&repo.0.files[explorer.selected])
+            && let Some(index) = repo.0.files.iter().position(|file| focus.includes(file))
+        {
+            explorer.open(&repo.0, index);
+            explorer.frame_loaded_source = false;
+            explorer.anchored = false;
+            explorer.comparison_mode = 0;
+            listing.reset_view();
+            *navigation = city_navigation::Navigation::default();
+        }
+    }
+    let target = f32::from(enabled);
+    if focus.lowered == target {
+        return;
+    }
+    let step = time.delta_secs() / 0.65;
+    focus.lowered += (target - focus.lowered).clamp(-step, step);
+    let eased = focus.lowered * focus.lowered * (3. - 2. * focus.lowered);
+    for (part, mut pose) in &mut parts {
+        pose.translation.y = part.height(eased);
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct Aim {
     pub index: usize,
@@ -294,6 +374,41 @@ pub(super) const INK: [[f32; 3]; 5] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_changes_filter_lowers_every_part_and_restores_its_street_position() {
+        let mut file = repo_world::File {
+            path: "unchanged.rs".into(),
+            before: None,
+            after: None,
+            change: Change::Unchanged,
+            position: [70., 28.],
+        };
+        let focus = ChangesOnly {
+            enabled: true,
+            ..default()
+        };
+        assert!(!focus.includes(&file));
+        for size in [Vec3::new(4., 1., 4.), Vec3::new(16., 130., 12.)] {
+            for part in [
+                Part::Body,
+                Part::Roof,
+                Part::Stripe(1.),
+                Part::Label,
+                Part::Beam,
+                Part::Mirror,
+            ] {
+                let pose = transform(&file, size, part);
+                let sink = SinkPart::new(&file, size, part);
+                assert_eq!(sink.height(0.), pose.translation.y);
+                assert!(sink.height(1.) + pose.scale.y / 2. <= -1.);
+            }
+        }
+        for change in [Change::Added, Change::Modified, Change::Removed] {
+            file.change = change;
+            assert!(focus.includes(&file));
+        }
+    }
 
     #[test]
     fn the_beacon_is_cleared_from_the_camera_and_reading_wall() {
