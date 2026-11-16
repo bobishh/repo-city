@@ -4,6 +4,7 @@ import { browserKey } from "./analytics-config.mjs";
 import { createSyntaxCache } from "./syntax.mjs";
 import { githubRequest, suggestRevisions } from "./github-picker.mjs";
 import { setupPointer } from "./pointer.mjs";
+import { readProgress, writeProgress } from "./progress.mjs";
 
 const analytics = createAnalytics(browserKey);
 analytics.pageView();
@@ -17,6 +18,9 @@ const startControls = document.querySelector("#start-controls");
 const dialog = document.querySelector("#repository-dialog");
 const logo = document.querySelector("#logo");
 const close = document.querySelector("#close");
+const reset = document.querySelector("#reset-progress");
+const progressPanel = document.querySelector("#comparison-progress");
+const progressSummary = document.querySelector("#progress-summary");
 const submit = form.querySelector('button[type="submit"]');
 const syntax = createSyntaxCache();
 const releasePointer = setupPointer(canvas, dialog);
@@ -24,6 +28,7 @@ let active;
 let running = false;
 let sourceVersion = 0;
 let repositoryVersion = 0;
+let progressResetVersion = 0;
 const parameters = new URLSearchParams(location.search);
 for (const name of ["repo", "ref", "base"]) form.elements[name].value = parameters.get(name) ?? "";
 if (parameters.get("pr")) form.elements.repo.value = parameters.get("pr");
@@ -51,14 +56,22 @@ logo.addEventListener("click", () => {
 });
 close.addEventListener("click", () => dialog.close());
 dialog.addEventListener("close", focusCanvas);
+dialog.addEventListener("cancel", event => {
+  if (reset.disabled) event.preventDefault();
+});
 dialog.addEventListener("keydown", event => event.stopPropagation());
 dialog.addEventListener("keyup", event => event.stopPropagation());
 form.elements.repo.addEventListener("input", toggleRevisionInputs);
 toggleRevisionInputs();
 
 
-function stageRepository(repository) {
-  active = { repository, blobs: new Map() };
+async function stageRepository(repository) {
+  const marks = await readProgress(repository.progressScope).catch(error => {
+    console.warn("Could not load review progress", error);
+    return [];
+  });
+  active = { repository, blobs: new Map(), marks };
+  progressPanel.hidden = false;
   repositoryVersion++;
   blame.hidden = true;
   blame.removeAttribute("href");
@@ -82,7 +95,7 @@ async function openRepository(repo, ref, base) {
   status.textContent = running ? "Loading repository…" : "Loading repository and browser engine…";
   try {
     if (running) {
-      stageRepository(await loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest));
+      await stageRepository(await loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest));
     } else {
       const [repository, engine] = await Promise.all([
         loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest),
@@ -90,13 +103,26 @@ async function openRepository(repo, ref, base) {
       ]);
       const graphics = await navigator.gpu?.requestAdapter();
       if (!graphics) throw new Error("WebGPU is unavailable. Open Repo City in a browser with WebGPU and graphics acceleration.");
-      stageRepository(repository);
+      await stageRepository(repository);
       globalThis.repoCity = {
         snapshot: () => active.repository.snapshot,
         repositoryVersion: () => repositoryVersion,
         sourceVersion: () => sourceVersion,
         syntaxVersion: syntax.version,
         syntaxSpans: syntax.spans,
+        progressScope: () => active.repository.progressScope,
+        progressMarks: () => JSON.stringify(active.marks),
+        progressResetVersion: () => progressResetVersion,
+        reportProgress(reviewed, revealed) {
+          const files = reviewed === 1 ? "file" : "files";
+          const lines = revealed === 1 ? "line" : "lines";
+          progressSummary.textContent = `${reviewed} ${files} reviewed · ${revealed} ${lines} revealed`;
+        },
+        writeProgress(scope, json) {
+          writeProgress(scope, JSON.parse(json)).catch(error => {
+            console.warn("Could not save review progress", error);
+          });
+        },
         showBlame(path, before, line) {
           const href = active.repository.blameURL(path, before, line);
           if (href) blame.href = href;
@@ -138,6 +164,27 @@ async function openRepository(repo, ref, base) {
     form.removeAttribute("aria-busy");
   }
 }
+
+reset.addEventListener("click", async () => {
+  if (submit.disabled || !active ||
+      !window.confirm("Reset revealed lines and reviewed files for this comparison?")) return;
+  reset.disabled = true;
+  close.disabled = true;
+  submit.disabled = true;
+  try {
+    await writeProgress(active.repository.progressScope, null);
+    active.marks = [];
+    progressResetVersion++;
+    status.textContent = "Progress reset for this comparison.";
+  } catch (error) {
+    status.textContent = "Could not reset progress.";
+    console.warn("Could not reset review progress", error);
+  } finally {
+    reset.disabled = false;
+    close.disabled = false;
+    submit.disabled = false;
+  }
+});
 
 form.addEventListener("submit", event => {
   event.preventDefault();

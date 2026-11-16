@@ -18,8 +18,12 @@ city. **W** and **S** follow the supplied trace.
 Press **E** to enter the source wall and aim at a function to detach its
 declaration into a private draft. **R** restores it. **F6** explicitly exports
 a changed draft under `sandbox/<commit>/<path>` in the Repo City project.
-The app reads the inspected checkout without modifying it. Review markers
-and drafts live in the current session.
+The app reads the inspected checkout without modifying it. Drafts live in
+the current session. Revealed ranges and review marks are keyed by checkout
+or GitHub repository, revision, and comparison base. The browser uses
+IndexedDB and the Mac app stores `progress.sqlite3` in
+`~/Library/Application Support/Repo City/`. Reset clears the active
+comparison in the current browser profile or desktop installation.
 
 The city uses directory paths and file metadata to position buildings.
 Source loads on demand. The native app uses Tree-sitter to highlight Rust,

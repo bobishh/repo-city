@@ -55,6 +55,12 @@ first argument.
 | Turn to the diff or blame wall | **G** for diff, **B** for blame. The browser blame wall links to GitHub. |
 | Follow a file’s changes | **C** starts the review. **W** and **S** move between change platforms. |
 
+Repo City saves revealed lines and reviewed files in your browser or on your
+Mac. The same repository and comparison restore those marks. Press **V** to
+toggle the selected file’s review mark. To start over on the open comparison,
+choose **Reset progress** in the browser’s repository dialog or the Mac
+**Files** menu.
+
 For local stack traces, draft editing, builds, and deployment, see
 [Development](docs/development.md).
 

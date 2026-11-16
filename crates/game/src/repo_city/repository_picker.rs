@@ -62,7 +62,7 @@ pub(super) fn has_city(repo: Res<Repo>) -> bool {
     !repo.0.files.is_empty()
 }
 
-fn settings_file() -> Option<PathBuf> {
+pub(super) fn settings_file() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     let mut directory = PathBuf::from(home);
     if cfg!(target_os = "macos") {

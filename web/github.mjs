@@ -113,6 +113,7 @@ export async function loadGitHub(input, ref, base, request = fetch) {
 
   const forkBlobs = headRepository === name ? null : new Set(Object.values(after).map(file => file.id));
   return {
+    progressScope: JSON.stringify([name.toLowerCase(), head.sha, baseline?.sha ?? null]),
     snapshot: JSON.stringify({ name: pull ? `${name}#${pull.number}` : name, revision: head.sha, baseline: baseline?.sha ?? null, before, after }),
     blameURL(path, useBase, line) {
       if (!Number.isSafeInteger(line) || line < 1 || !Object.hasOwn(useBase ? before : after, path)) return null;

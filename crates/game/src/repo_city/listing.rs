@@ -304,10 +304,15 @@ impl Listing {
         (visible, total)
     }
 
-    fn wash(&mut self, explorer: &Explorer, file: &repo_world::File, y: f32) {
+    fn wash(
+        &mut self,
+        explorer: &Explorer,
+        file: &repo_world::File,
+        y: f32,
+    ) -> Option<progress::Mark> {
         let count = explorer.highlighted.len();
         if count == 0 {
-            return;
+            return None;
         }
         let row = WallSide::new(
             file,
@@ -317,15 +322,49 @@ impl Listing {
         )
         .wall
         .row(y, count);
-        let rows = tile_rows(row, count);
-        let key = (explorer.selected, explorer.before);
+        let range = tile_rows(row, count);
+        self.reveal(
+            explorer.selected,
+            explorer.before,
+            file,
+            range.clone(),
+            count,
+        )
+        .then(|| progress::Mark::Reveal {
+            path: file.path.clone(),
+            before: explorer.before,
+            start: range.start,
+            end: range.end,
+            rows: count,
+        })
+    }
+
+    pub(super) fn reveal(
+        &mut self,
+        index: usize,
+        before: bool,
+        file: &repo_world::File,
+        rows: Range<usize>,
+        count: usize,
+    ) -> bool {
+        if rows.is_empty()
+            || rows.end > count
+            || rows.len() > TILE_ROWS
+            || rows.start % TILE_ROWS != 0
+            || count > 1024 * 1024
+        {
+            return false;
+        }
         let progress = self
             .reveal_progress
-            .entry(key)
+            .entry((index, before))
             .or_insert_with(|| RevealProgress::new(count));
+        if progress.rows != count {
+            return false;
+        }
         let mut changed = false;
         for row in rows.clone() {
-            if self.revealed.insert((key.0, key.1, row + 1)) {
+            if self.revealed.insert((index, before, row + 1)) {
                 progress.opened += 1;
                 progress.bands[row * count.min(OVERVIEW_BANDS) / count] += 1;
                 changed = true;
@@ -334,10 +373,27 @@ impl Listing {
         if changed {
             self.source_tiles.dirty.insert(rows.start / TILE_ROWS);
             self.source_tiles.preview_dirty = true;
-            if explorer.before == file.after.is_none() {
-                self.overview_dirty.insert(explorer.selected);
+            if before == file.after.is_none() {
+                self.overview_dirty.insert(index);
             }
         }
+        changed
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn revealed_count(&self) -> usize {
+        self.revealed.len()
+    }
+
+    pub(super) fn clear_progress(&mut self) {
+        self.overview_dirty
+            .extend(self.reveal_progress.keys().map(|&(index, _)| index));
+        self.revealed.clear();
+        self.reveal_progress.clear();
+        self.source_tiles
+            .dirty
+            .extend(self.source_tiles.resident.keys().copied());
+        self.source_tiles.preview_dirty = true;
     }
 }
 
@@ -511,6 +567,7 @@ pub(super) fn wash_stream(
     camera: Query<&Transform, PlayerCamera>,
     windows: Query<&Window, With<PrimaryWindow>>,
     picker: Res<file_picker::FilePicker>,
+    mut progress: ResMut<progress::Progress>,
 ) {
     if !keys.pressed(KeyCode::KeyF)
         || picker.is_open()
@@ -540,7 +597,9 @@ pub(super) fn wash_stream(
     };
     listing.wash_remaining -= time.delta_secs();
     if listing.wash_remaining <= 0. {
-        listing.wash(&explorer, file, hit.y);
+        if let Some(mark) = listing.wash(&explorer, file, hit.y) {
+            progress.mark(mark, true);
+        }
         listing.wash_remaining = 0.12;
     }
     physics::water_stream(

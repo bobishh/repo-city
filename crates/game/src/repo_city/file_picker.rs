@@ -18,6 +18,8 @@ pub(super) struct FilePicker {
     open: bool,
     suppress_input: bool,
     query: String,
+    #[cfg(not(target_arch = "wasm32"))]
+    confirm_reset: bool,
     results: Vec<usize>,
     selected: usize,
     pub(super) destination: Option<usize>,
@@ -29,6 +31,10 @@ impl FilePicker {
     }
     fn toggle(&mut self) {
         self.open = !self.open;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.confirm_reset = false;
+        }
         self.query.clear();
         self.selected = 0;
     }
@@ -66,6 +72,9 @@ fn rank(path: &str, query: &str) -> Option<usize> {
 pub(super) struct PickerQuery;
 #[derive(Component)]
 pub(super) struct PickerHint;
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Component)]
+pub(super) struct ResetProgressButton;
 
 #[derive(Component)]
 pub(super) struct PickerPanel;
@@ -147,6 +156,21 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
                         ),
                     ));
                 }
+                #[cfg(not(target_arch = "wasm32"))]
+                panel.spawn((
+                    ResetProgressButton,
+                    button("Reset progress…", font, ink, AlignSelf::FlexStart),
+                    observe(
+                        |_: On<Activate>,
+                         mut picker: ResMut<FilePicker>,
+                         mut progress: ResMut<progress::Progress>| {
+                            if picker.confirm_reset {
+                                progress.request_reset();
+                            }
+                            picker.confirm_reset = !picker.confirm_reset;
+                        },
+                    ),
+                ));
                 panel.spawn((
                     PickerHint,
                     Text::new(""),
@@ -201,6 +225,7 @@ pub(super) fn update(
         Without<PickerPanel>,
     >,
     mut labels: Query<(&mut Text, Has<PickerQuery>, Has<PickerHint>)>,
+    #[cfg(not(target_arch = "wasm32"))] reset_button: Query<&Children, With<ResetProgressButton>>,
 ) {
     picker.suppress_input = false;
     let command = keys.any_pressed([
@@ -291,6 +316,19 @@ pub(super) fn update(
     }
     if !picker.open {
         return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Ok(children) = reset_button.single()
+        && let Ok((mut text, _, _)) = labels.get_mut(children[0])
+    {
+        let label = if picker.confirm_reset {
+            "Confirm reset for this comparison"
+        } else {
+            "Reset progress…"
+        };
+        if text.0 != label {
+            text.0 = label.into();
+        }
     }
     for (mut text, query, hint) in &mut labels {
         let value = if query {

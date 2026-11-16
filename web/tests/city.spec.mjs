@@ -281,3 +281,71 @@ test("offers GitHub libraries and applies a commit suggestion to the comparison 
   expect((await blob).ok()).toBe(true);
   await expect(page.locator("form")).toBeHidden({ timeout: 90_000 });
 });
+
+test("restores review progress after reload and resets only the open comparison", async ({ page }) => {
+  await page.route("https://api.github.com/**", async route => {
+    const path = new URL(route.request().url()).pathname;
+    const source = Array.from({ length: 30 }, (_, i) => `// row ${i}\n`).join("");
+    if (path.includes("/commits/")) return route.fulfill({ json: { sha: after, parents: [{ sha: before }] } });
+    if (path.includes("/git/trees/")) return route.fulfill({ json: {
+      tree: [{ path: "src/demo.rs", type: "blob", mode: "100644", sha: after, size: source.length }],
+    } });
+    return route.fulfill({ json: { size: source.length, encoding: "base64", content: Buffer.from(source).toString("base64") } });
+  });
+
+  const url = "/?repo=owner%2Fdemo&ref=main";
+  const ready = () => expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+  await page.goto(url);
+  await ready();
+  const canvas = page.locator("canvas");
+  const summary = page.locator("#progress-summary");
+  const polling = { timeout: 25_000, intervals: [250, 500, 1000] };
+  await canvas.focus();
+  await page.keyboard.press("KeyV", { delay: 150 });
+  const read = scope => page.evaluate(async scope => {
+    const { readProgress } = await import("/progress.mjs");
+    return readProgress(scope);
+  }, scope);
+  const scope = JSON.stringify(["owner/demo", after, before]);
+  const separate = JSON.stringify(["owner/other", after, before]);
+  const reviewed = JSON.stringify({ reviewed: "src/demo.rs" });
+  await expect.poll(() => read(scope), polling).toContain(reviewed);
+  await expect.poll(async () => {
+    await page.keyboard.down("KeyF");
+    await page.waitForTimeout(350);
+    await page.keyboard.up("KeyF");
+    return (await read(scope)).some(mark => JSON.parse(mark).reveal);
+  }, polling).toBe(true);
+  const marks = await read(scope);
+  await page.evaluate(async ({ separate, reviewed }) => {
+    const { writeProgress } = await import("/progress.mjs");
+    await writeProgress(separate, [[reviewed, true]]);
+  }, { separate, reviewed });
+
+  await page.reload();
+  await ready();
+  await expect(summary).toHaveText(/1 file reviewed · [1-9][0-9]* lines revealed/, polling);
+  // Toggling the file after reload removes the restored mark.
+  await canvas.focus();
+  await page.keyboard.press("KeyV", { delay: 150 });
+  await expect.poll(() => read(scope), polling).toEqual(marks.filter(mark => mark !== reviewed));
+  await page.keyboard.press("KeyV", { delay: 150 });
+  await expect.poll(() => read(scope), polling).toContain(reviewed);
+
+  await page.getByRole("button", { name: "Repo City" }).click();
+  await expect(summary).toHaveText(/1 file reviewed · [1-9][0-9]* lines revealed/);
+  const reset = page.getByRole("button", { name: "Reset progress" });
+  page.once("dialog", prompt => prompt.dismiss());
+  await reset.click();
+  await expect(await read(scope)).toContain(reviewed);
+  page.once("dialog", prompt => prompt.accept());
+  await reset.click();
+  await expect(page.getByRole("status")).toHaveText("Progress reset for this comparison.");
+  await expect(await read(scope)).toEqual([]);
+  await expect(summary).toHaveText("0 files reviewed · 0 lines revealed");
+  await expect(await read(separate)).toContain(reviewed);
+  await page.getByRole("button", { name: "Close repository picker" }).click();
+  await canvas.focus();
+  await page.keyboard.press("KeyV", { delay: 150 });
+  await expect.poll(() => read(scope), polling).toContain(reviewed);
+});

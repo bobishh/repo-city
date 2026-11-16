@@ -251,6 +251,7 @@ pub(super) fn navigate(
     mut navigation: ResMut<Navigation>,
     mut picker: ResMut<file_picker::FilePicker>,
     mut listing: ResMut<listing::Listing>,
+    mut saved_progress: ResMut<progress::Progress>,
     file_buttons: Query<&bevy::picking::hover::Hovered, With<file_picker::FileButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut camera: Query<&mut Transform, PlayerCamera>,
@@ -296,7 +297,12 @@ pub(super) fn navigate(
                     explorer.hunk = 0;
                     explorer.rebuild = true;
                     let selected = explorer.selected;
-                    explorer.reviewed.insert(selected);
+                    if explorer.reviewed.insert(selected) {
+                        saved_progress.mark(
+                            progress::Mark::Reviewed(repo.0.files[selected].path.clone()),
+                            true,
+                        );
+                    }
                 }
                 Arrival::Stop => {
                     if let Some(route) = &navigation.route
@@ -691,6 +697,7 @@ mod tests {
             .init_resource::<Navigation>()
             .init_resource::<file_picker::FilePicker>()
             .init_resource::<listing::Listing>()
+            .init_resource::<progress::Progress>()
             .add_systems(Update, navigate);
         app.world_mut().spawn((Window::default(), PrimaryWindow));
         let pose = Transform::from_xyz(0., 1.65, 7.);

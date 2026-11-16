@@ -10,6 +10,7 @@ mod file_facade;
 mod file_picker;
 mod listing;
 mod physics;
+mod progress;
 mod repository_picker;
 #[path = "../shapes.rs"]
 mod shapes;
@@ -403,6 +404,7 @@ fn main() {
     .init_resource::<Nearest>()
     .init_resource::<file_picker::FilePicker>()
     .init_resource::<listing::Listing>()
+    .init_resource::<progress::Progress>()
     .add_systems(Startup, setup)
     .add_systems(
         Update,
@@ -433,9 +435,20 @@ fn main() {
     );
     app.add_systems(
         Update,
-        (repository_picker::open_repository, spawn_city)
+        (
+            repository_picker::open_repository,
+            spawn_city,
+            progress::restore,
+        )
             .chain()
             .before(file_picker::update),
+    );
+    app.add_systems(
+        Update,
+        progress::sync
+            .after(listing::wash_stream)
+            .before(listing::draw)
+            .run_if(repository_picker::has_city),
     );
     app.add_systems(Startup, district::setup);
     app.add_systems(
@@ -1188,6 +1201,7 @@ fn interaction(
     mut camera: Query<&mut Transform, PlayerCamera>,
     navigation: Res<city_navigation::Navigation>,
     picker: Res<file_picker::FilePicker>,
+    mut progress: ResMut<progress::Progress>,
 ) {
     if picker.is_open() {
         return;
@@ -1317,10 +1331,20 @@ fn interaction(
     }
     if keys.just_pressed(KeyCode::KeyV) {
         let index = explorer.selected;
-        if !explorer.reviewed.insert(index) {
+        let checked = explorer.reviewed.insert(index);
+        if !checked {
             explorer.reviewed.remove(&index);
         }
-        explorer.notice = "Review marker changed (this session only).".into();
+        progress.mark(
+            progress::Mark::Reviewed(repo.0.files[index].path.clone()),
+            checked,
+        );
+        explorer.notice = if checked {
+            "File marked reviewed."
+        } else {
+            "File marked unreviewed."
+        }
+        .into();
     }
     #[cfg(not(target_arch = "wasm32"))]
     if keys.just_pressed(KeyCode::F6) && explorer.dirty {
@@ -1647,10 +1671,12 @@ fn hud(
                 )
             });
             format!(
-                "{}\n{:?} · {}\n{opened} / {total} lines revealed{metrics}\n{}",
+                "{}\n{:?} · {}\n{opened} / {total} lines revealed · {} / {} files reviewed{metrics}\n{}",
                 file.path,
                 file.change,
                 if explorer.before { "BEFORE" } else { "AFTER" },
+                explorer.reviewed.len(),
+                repo.0.files.len(),
                 explorer.notice
             )
         } else if status {
