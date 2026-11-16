@@ -113,7 +113,8 @@ jobs:
           node-version: 22
       - name: Check the Worker module in the deployment artifact
         working-directory: release
-        run: node --input-type=module -e 'const { default: worker } = await import("./worker.mjs"); if (typeof worker.fetch !== "function") process.exit(1);'
+        run: |
+          node --input-type=module -e 'const { default: worker } = await import("./worker.mjs"); if (typeof worker.fetch !== "function") process.exit(1);'
       - name: Deploy the tested build
         working-directory: release
         env:
