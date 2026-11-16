@@ -64,14 +64,20 @@ function pullState(pull) {
 
 export async function loadPullRequests(input, request = fetch) {
   const repository = parseRepository(input);
-  const entries = [];
-  for (let page = 1; page <= 4; page++) {
-    const response = await readGitHub(request, `/repos/${repository}/pulls?state=all&per_page=50&page=${page}`);
-    const batch = await response.json();
-    if (!Array.isArray(batch)) throw new Error("Pull requests are unavailable.");
-    entries.push(...batch.filter(pull => Number.isSafeInteger(pull.number) && ["open", "closed"].includes(pull.state)));
-    if (!response.headers.get("Link")?.includes('rel="next"')) break;
+  async function list(state) {
+    const pulls = [];
+    for (let page = 1; page <= 4; page++) {
+      const response = await readGitHub(request, `/repos/${repository}/pulls?state=${state}&per_page=50&page=${page}`);
+      const batch = await response.json();
+      if (!Array.isArray(batch)) throw new Error("Pull requests are unavailable.");
+      pulls.push(...batch.filter(pull => Number.isSafeInteger(pull.number) && pull.state === state));
+      if (!response.headers.get("Link")?.includes('rel="next"')) break;
+    }
+    return pulls;
   }
+  const groups = await Promise.allSettled([list("open"), list("closed")]);
+  if (groups.every(group => group.status === "rejected")) throw groups[0].reason;
+  const entries = groups.flatMap(group => group.status === "fulfilled" ? group.value : []);
   return entries.map(pull => ({
     value: `https://github.com/${repository}/pull/${pull.number}`,
     label: `#${pull.number} · ${{ open: "Open", closed: "Closed", merged: "Merged" }[pullState(pull)]} · ${pull.title} · @${pull.user?.login ?? "unknown"} · ${pull.head?.ref ?? "?"} → ${pull.base?.ref ?? "?"}`,

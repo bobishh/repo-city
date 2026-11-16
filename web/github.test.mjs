@@ -84,19 +84,28 @@ test("closed and merged PRs open the historical head and merge base", async () =
   }
 });
 
-test("the PR picker fetches and labels both active and historical pull requests", async () => {
+test("the PR picker keeps older open PRs independently of the history limit", async () => {
+  const seen = [];
   const entries = await loadPullRequests("owner/project", async url => {
-    assert.equal(new URL(url).searchParams.get("state"), "all");
-    return Response.json([
-      { number: 3, state: "open", title: "Current" },
-      { number: 2, state: "closed", merged_at: "2026-11-16T12:00:00Z", title: "Shipped" },
-      { number: 1, state: "closed", title: "Abandoned" },
-    ]);
+    const { searchParams } = new URL(url);
+    const state = searchParams.get("state");
+    const page = Number(searchParams.get("page"));
+    seen.push([state, page]);
+    if (state === "open") return Response.json([{ number: 1, state: "open", title: "Still open" }]);
+    assert.equal(state, "closed");
+    const closed = Array.from({ length: 50 }, (_, index) => ({
+      number: (5 - page) * 50 - index + 1, state: "closed", title: "History",
+    }));
+    if (page === 1) closed[0].merged_at = "2026-11-16T12:00:00Z";
+    return Response.json(closed, { headers: { Link: '<next>; rel="next"' } });
   });
-  assert.match(entries[0].label, /Open/);
+  assert.deepEqual(seen.filter(([state]) => state === "open"), [["open", 1]]);
+  assert.deepEqual(seen.filter(([state]) => state === "closed").map(([, page]) => page), [1, 2, 3, 4]);
+  assert.equal(entries.length, 201);
+  assert.match(entries[0].label, /Open · Still open/);
   assert.match(entries[1].label, /Merged/);
   assert.match(entries[2].label, /Closed/);
-  assert.equal(entries[2].value, "https://github.com/owner/project/pull/1");
+  assert.equal(entries[0].value, "https://github.com/owner/project/pull/1");
 });
 
 test("revision suggestions preserve qualified names and label commits with subjects", async () => {
