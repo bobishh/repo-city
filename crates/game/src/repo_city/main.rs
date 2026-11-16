@@ -1457,7 +1457,9 @@ fn interaction(
     if keys.just_pressed(KeyCode::KeyV) {
         let index = explorer.selected;
         let checked = explorer.reviewed.insert(index);
-        if !checked {
+        if checked {
+            progress.visit(index, &repo.0.files[index], false);
+        } else {
             explorer.reviewed.remove(&index);
         }
         progress.mark(
@@ -1686,6 +1688,7 @@ fn hud(
     nearest: Res<Nearest>,
     navigation: Res<city_navigation::Navigation>,
     listing: Res<listing::Listing>,
+    progress: Res<progress::Progress>,
     tour: Res<guide::Tour>,
     picker: Res<file_picker::FilePicker>,
     mut label: Query<(&mut Text, &mut TextColor, &mut Node), With<TargetLabel>>,
@@ -1812,12 +1815,13 @@ fn hud(
                 )
             });
             format!(
-                "{}\n{:?} · {}\n{opened} / {total} lines revealed · {} / {} files reviewed{metrics}\n{}",
+                "{}\n{:?} · {}\n{opened} / {total} lines revealed · {} / {} files reviewed\n{}{metrics}\n{}",
                 file.path,
                 file.change,
                 if explorer.before { "BEFORE" } else { "AFTER" },
                 explorer.reviewed.len(),
                 repo.0.files.len(),
+                progress.exploration_label(repo.0.files.len()),
                 explorer.notice
             )
         } else if status {
@@ -1828,7 +1832,7 @@ fn hud(
                 .map(|c| c.display_name.as_ref().unwrap_or(&c.name).as_str())
                 .unwrap_or("whole file");
             format!(
-                "{}\n{:?}  ·  {}{}\n{} functions · {} lines · page {}\n{}\n\n{}\n\n{} / {} files reviewed{}",
+                "{}\n{:?}  ·  {}{}\n{} functions · {} lines · page {}\n{}\n\n{}\n\n{} / {} files reviewed\n{}{}",
                 file.path,
                 file.change,
                 if explorer.before { "BEFORE" } else { "AFTER" },
@@ -1844,6 +1848,7 @@ fn hud(
                 explorer.notice,
                 explorer.reviewed.len(),
                 repo.0.files.len(),
+                progress.exploration_label(repo.0.files.len()),
                 format!(
                     "\n{} hunks · {}",
                     explorer.comparison.as_ref().map_or(0, |c| c.hunks.len()),

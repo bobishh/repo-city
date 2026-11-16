@@ -16,6 +16,25 @@ pub(super) struct Surface {
 }
 
 impl Aim {
+    pub(super) fn within_tool_reach(
+        self,
+        file: &repo_world::File,
+        size: Vec3,
+        eye: Vec3,
+        hit_distance: f32,
+    ) -> bool {
+        let Some(surface) = self.surface.filter(|surface| surface.normal.y == 0.) else {
+            return hit_distance <= listing::tool_range(size.x);
+        };
+        let [x, z] = file.position;
+        let normal = surface.normal;
+        let gap = (eye - Vec3::new(x, 0., z)).dot(normal)
+            - normal.abs().dot(size) / 2.
+            - listing::PANEL_OFFSET;
+        let width = if normal.x == 0. { size.x } else { size.z };
+        gap <= listing::tool_range(width)
+    }
+
     pub(super) fn on_side(self, face: listing::Face) -> Self {
         Self {
             surface: Some(Surface {
@@ -83,9 +102,10 @@ pub(super) fn approach(eye: &Transform, min: Vec3, max: Vec3) -> Option<f32> {
             let point = eye.translation + forward * distance;
             let tolerance = Vec3::splat(0.002);
             (point.cmpge(min - tolerance).all() && point.cmple(max + tolerance).all())
-                .then_some(distance)
+                .then_some((distance, gap))
         })
-        .min_by(f32::total_cmp)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, gap)| gap)
 }
 
 #[derive(Clone, Copy)]

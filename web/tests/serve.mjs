@@ -5,7 +5,7 @@ import { stat } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 
 const root = resolve("dist");
-const types = { ".html": "text/html", ".mjs": "text/javascript", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".webp": "image/webp", ".woff2": "font/woff2" };
+const types = { ".html": "text/html", ".mjs": "text/javascript", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".webp": "image/webp", ".woff2": "font/woff2", ".svg": "image/svg+xml", ".png": "image/png" };
 createServer(async (request, response) => {
   const { pathname } = new URL(request.url, "http://localhost");
   if (pathname.startsWith("/github/")) {

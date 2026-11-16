@@ -175,6 +175,8 @@ jobs:
           check_live /github-picker.mjs dist/github-picker.mjs
           check_live /pointer.mjs dist/pointer.mjs
           check_live /progress.mjs dist/progress.mjs
+          check_live /assets/robot-head.svg dist/assets/robot-head.svg
+          check_live /assets/apple-touch-icon.png dist/assets/apple-touch-icon.png
           check_live /game/repo_city_bg.wasm "$wasm"
           curl --fail --silent --show-error --max-time 20 "$base/github/session" |
             jq -e '.enabled | type == "boolean"'

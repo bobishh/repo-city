@@ -27,7 +27,8 @@ Use **Sign in with GitHub** below the search to find your repositories, stars,
 and forks from the repository field. Under your GitHub handle, use **Choose
 private repositories** to grant read access to selected repositories. Use
 **Default branch** or **Compare…** to find branches and tags or search commit messages
-on the default branch. Click the **Repo City** logo to reopen the picker. Use **?** to start the interactive controls tour again.
+on the default branch. Click the **Repo City** logo to reopen the picker.
+The first city visit offers a controls tour. Use **?** to take it again.
 
 ### On your Mac
 
@@ -67,6 +68,10 @@ Mac. The same repository and comparison restore those marks. Press **V** to
 toggle the selected file’s review mark. To start over on the open comparison,
 choose **Reset progress** in the browser’s repository dialog or the Mac
 **Files** menu.
+
+The city shows the percentage of files visited and changed files whose diff
+you opened. In the browser, a pull request or branch update keeps visits to
+unchanged file contents and diffs.
 
 ## Leave review notes
 

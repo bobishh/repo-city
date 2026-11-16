@@ -26,9 +26,8 @@ h1 { position: absolute; z-index: 2; inset-block-start: 14px; inset-inline-start
   color: #c2ffef;
 }
 #logo:hover { color: #fff4b3; }
-.android { display: block; width: 48px; height: 48px; }
-.android svg { width: 100%; height: 100%; filter: drop-shadow(0 0 5px #7fffe394); }
-[data-playing] .android svg { visibility: hidden; }
+.android { display: block; width: 48px; height: 48px; filter: drop-shadow(0 0 5px #7fffe394); }
+[data-playing] .android { visibility: hidden; }
 .wordmark {
   font: 700 3.1rem/1 Caveat, cursive;
   white-space: nowrap;
@@ -37,6 +36,12 @@ h1 { position: absolute; z-index: 2; inset-block-start: 14px; inset-inline-start
 :root:not([data-playing]) .wordmark { font-size: clamp(4rem, 7vw, 6.25rem); }
 #blame { position: absolute; z-index: 2; inset-inline-end: 60px; inset-block-start: 22px; color: #baffed; background: #071419d6; padding: 5px 8px; text-underline-offset: 0.2em; }
 #help { position: absolute; z-index: 2; inset: 16px 16px auto auto; width: 32px; height: 32px; }
+#progress-warning {
+  position: absolute; z-index: 2; top: 74px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: start; gap: 8px; width: min(30rem, calc(100% - 32px));
+  padding: 8px 10px; background: #151d27; border: 1px solid #a88143; color: #ffe6b7; font-size: .82rem;
+}
+#progress-warning button { border: 0; padding: 0 3px; color: inherit; background: none; font: inherit; cursor: pointer; }
 #help, .city-dialog button {
   color: #c2ffef; background: #0a171e; border: 1px solid #41616a; border-radius: 0;
   cursor: pointer; font: inherit;

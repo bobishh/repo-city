@@ -5,7 +5,7 @@ import { createSyntaxCache } from "./syntax.mjs";
 import { focusRepositoryPicker, githubAccount, githubReady, githubRequest, refreshPickerFooter, refreshRepositoryPicker } from "./github-picker.mjs";
 import { setupPointer } from "./pointer.mjs";
 import { createReview } from "./review.mjs";
-import { readProgress, writeProgress } from "./progress.mjs";
+import { readProgress, rememberExploration, writeProgress } from "./progress.mjs";
 
 const analytics = createAnalytics(browserKey);
 analytics.pageView();
@@ -18,6 +18,7 @@ const startScreen = document.querySelector("#start-screen");
 const startControls = document.querySelector("#start-controls");
 const dialog = document.querySelector("#repository-dialog");
 const guide = document.querySelector("#help-dialog");
+const help = document.querySelector("#help");
 const guideKey = "repo-city-guide-v1";
 let tourCommand = 0;
 let tourEntry = null;
@@ -27,6 +28,8 @@ const close = document.querySelector("#close");
 const reset = document.querySelector("#reset-progress");
 const progressPanel = document.querySelector("#comparison-progress");
 const progressSummary = document.querySelector("#progress-summary");
+const progressWarning = document.querySelector("#progress-warning");
+progressWarning.querySelector("button").addEventListener("click", () => { progressWarning.hidden = true; });
 const submit = document.querySelector("#open-city");
 const syntax = createSyntaxCache();
 const releasePointer = setupPointer(canvas, dialog);
@@ -49,7 +52,12 @@ function openGuide(entry) {
   releasePointer();
   if (!guide.open) guide.showModal();
 }
-document.querySelector("#help").addEventListener("click", () => openGuide("help"));
+help.addEventListener("click", () => { if (running) openGuide("help"); });
+function offerFirstTour() {
+  try { if (localStorage.getItem(guideKey)) return; }
+  catch { /* The tour remains available when storage is disabled. */ }
+  openGuide("first_run");
+}
 function dismissGuide() {
   try { localStorage.setItem(guideKey, "seen"); } catch { /* Storage may be disabled. */ }
   guide.close();
@@ -60,7 +68,6 @@ document.querySelector("#help-start").addEventListener("click", () => {
   analytics.tour("start", activeTourEntry);
   review.equipWater();
   dismissGuide();
-  if (!running) focusRepositoryPicker();
 });
 document.querySelector("#help-skip").addEventListener("click", () => {
   tourCommand = (tourCommand & ~1) + 2;
@@ -75,7 +82,6 @@ guide.addEventListener("cancel", event => {
 });
 guide.addEventListener("close", focusCanvas);
 for (const type of ["keydown", "keyup"]) guide.addEventListener(type, event => event.stopPropagation());
-try { if (!localStorage.getItem(guideKey)) openGuide("first_run"); } catch { openGuide("first_run"); }
 
 logo.addEventListener("click", () => {
   if (!running) {
@@ -98,13 +104,24 @@ dialog.addEventListener("keyup", event => event.stopPropagation());
 refreshRepositoryPicker();
 
 
-async function stageRepository(repository) {
+async function stageRepository(repository, ref, base) {
   await review.load(repository);
+  const { review: { repository: name, pull }, progressScope } = repository;
+  if (pull || !/^(?:[a-f\d]{40}|[a-f\d]{64})$/i.test(ref?.trim())) {
+    const account = githubAccount()?.login ?? null;
+    const track = JSON.stringify(["exploration", account, name.toLowerCase(),
+      pull ? ["pr", pull] : ["ref", ref?.trim() || null, base?.trim() || null]]);
+    await rememberExploration(track, progressScope, JSON.parse(repository.snapshot)).catch(error => {
+      console.warn("Could not carry exploration progress", error);
+    });
+  }
+  let progressError;
   const marks = await readProgress(repository.progressScope).catch(error => {
     console.warn("Could not load review progress", error);
+    progressError = error;
     return [];
   });
-  active = { repository, blobs: new Map(), blameFiles: new Map(), marks };
+  active = { repository, blobs: new Map(), blameFiles: new Map(), marks, progressError };
   progressPanel.hidden = false;
   refreshPickerFooter();
   repositoryVersion++;
@@ -129,16 +146,15 @@ async function openRepository(repo, ref, base) {
   form.setAttribute("aria-busy", "true");
   status.textContent = running ? "Loading repository…" : "Loading repository and browser engine…";
   try {
-    if (running) {
-      await stageRepository(await loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest));
-    } else {
+    const firstOpen = !running;
+    if (firstOpen) {
       const [repository, engine] = await Promise.all([
         loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest),
         import("./game/repo_city.js"),
       ]);
       const graphics = await navigator.gpu?.requestAdapter();
       if (!graphics) throw new Error("WebGPU is unavailable. Open Repo City in a browser with WebGPU and graphics acceleration.");
-      await stageRepository(repository);
+      await stageRepository(repository, ref, base);
       globalThis.repoCity = {
         tourCommand: () => tourCommand,
         tourCompleted() {
@@ -164,7 +180,8 @@ async function openRepository(repo, ref, base) {
         reportProgress(reviewed, revealed) {
           const files = reviewed === 1 ? "file" : "files";
           const lines = revealed === 1 ? "line" : "lines";
-          progressSummary.textContent = `${reviewed} ${files} reviewed · ${revealed} ${lines} revealed`;
+          progressSummary.textContent = active.progressError ? "Saved progress is unavailable." :
+            `${reviewed} ${files} reviewed · ${revealed} ${lines} revealed`;
         },
         writeProgress(scope, json) {
           writeProgress(scope, JSON.parse(json)).catch(error => {
@@ -210,10 +227,21 @@ async function openRepository(repo, ref, base) {
       document.documentElement.dataset.playing = "";
       startScreen.hidden = true;
       startControls.hidden = true;
+      help.hidden = false;
+    } else {
+      await stageRepository(await loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest), ref, base);
     }
     history.replaceState(null, "", `?${queryFor(repo, ref, base)}`);
     status.textContent = "";
     if (dialog.open) dialog.close();
+    if (active.progressError) {
+      progressWarning.querySelector("[role=status]").textContent =
+        active.progressError.message || "Saved progress is unavailable.";
+      progressWarning.hidden = false;
+    } else {
+      progressWarning.hidden = true;
+    }
+    if (firstOpen) offerFirstTour();
     focusCanvas();
     analytics.repositoryOpened(true, performance.now() - started, comparing);
   } catch (error) {

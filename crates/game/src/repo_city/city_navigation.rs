@@ -490,7 +490,8 @@ pub(super) fn navigate(
     } else if let Some(aim) = pilot.shot.then_some(nearest.file).flatten().filter(|aim| {
         let file = &repo.0.files[aim.index];
         let size = explorer.facade_size(file, aim.index);
-        nearest.file_distance > listing::tool_range(size.x)
+        nearest.near_source != Some(aim.index)
+            && !aim.within_tool_reach(file, size, camera.translation, nearest.file_distance)
     }) {
         Some((aim.index, Some(aim.on_side(listing::Face::Source))))
     } else if keys.just_pressed(KeyCode::KeyE) {
@@ -890,6 +891,14 @@ mod tests {
         assert!(!app.world().resource::<Navigation>().is_flying());
 
         app.world_mut().get_mut::<Pilot>(camera).unwrap().shot = true;
+        let close =
+            Transform::from_xyz(105., 20., 0.).looking_at(Vec3::new(97., aim.y, 0.), Vec3::Y);
+        let far = *app.world().get::<Transform>(camera).unwrap();
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() = close;
+        app.update();
+        assert!(!app.world().resource::<Navigation>().is_flying());
+
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() = far;
         app.update();
         assert_eq!(app.world().resource::<Explorer>().selected, 1);
         let travel = app.world().resource::<Navigation>().hop.as_ref().unwrap();

@@ -3,17 +3,36 @@ const reviewTable = "review";
 let open;
 
 function database() {
-  open ??= new Promise((resolve, reject) => {
-    const request = indexedDB.open("repo-city-progress", 2);
+  if (open) return open;
+  const request = indexedDB.open("repo-city-progress", 2);
+  open = new Promise((resolve, reject) => {
+    const wait = setTimeout(() => reject(new Error(
+      "The progress database is taking too long to open. If another Repo City tab is open, reload it, then reload this page.",
+    )), 3000);
     request.onupgradeneeded = event => {
       if (event.oldVersion === 0) request.result.createObjectStore(table);
       request.result.createObjectStore(reviewTable);
     };
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result);
-  }).catch(error => {
-    open = undefined;
-    throw error;
+    // Keep one pending upgrade. Starting another open here would queue behind it.
+    request.onblocked = () => {
+      clearTimeout(wait);
+      reject(new Error("Another Repo City tab is blocking the progress update. Reload the other Repo City tabs, then reload this page to restore saved progress."));
+    };
+    request.onerror = () => {
+      clearTimeout(wait);
+      open = undefined;
+      reject(request.error);
+    };
+    request.onsuccess = () => {
+      clearTimeout(wait);
+      const db = request.result;
+      const connection = Promise.resolve(db);
+      open = connection;
+      const forget = () => { if (open === connection) open = undefined; };
+      db.onversionchange = () => { db.close(); forget(); };
+      db.onclose = forget;
+      resolve(db);
+    };
   });
   return open;
 }
@@ -71,3 +90,32 @@ async function updateReview(scope, id, value) {
 }
 export const saveReview = (scope, id, value) => updateReview(scope, id, value);
 export const deleteReview = (scope, id) => updateReview(scope, id, null);
+
+export function carryVisits(marks, previous, current) {
+  const visits = [];
+  for (const mark of marks) {
+    let visited;
+    try { ({ visited } = JSON.parse(mark)); } catch { continue; }
+    if (!visited) continue;
+    const { path, diff } = visited;
+    const before = current.before[path]?.id;
+    const after = current.after[path]?.id;
+    const oldBefore = previous.before[path]?.id;
+    const oldAfter = previous.after[path]?.id;
+    const displayed = after ?? before;
+    if (!displayed || displayed !== (oldAfter ?? oldBefore)) continue;
+    const sameDiff = diff && before === oldBefore && after === oldAfter;
+    visits.push([JSON.stringify({ visited: { path, diff: Boolean(sameDiff) } }), true]);
+  }
+  return visits;
+}
+
+export async function rememberExploration(track, scope, snapshot) {
+  const [previous] = await readReview(track);
+  if (previous?.scope === scope) return;
+  if (previous) {
+    const visits = carryVisits(await readProgress(previous.scope), previous, snapshot);
+    if (visits.length) await writeProgress(scope, visits);
+  }
+  await saveReview(track, "latest", { scope, before: snapshot.before, after: snapshot.after });
+}

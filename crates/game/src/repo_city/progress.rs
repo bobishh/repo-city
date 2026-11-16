@@ -14,6 +14,10 @@ pub(super) enum Mark {
         rows: usize,
     },
     Reviewed(String),
+    Visited {
+        path: String,
+        diff: bool,
+    },
 }
 
 #[derive(Resource, Default)]
@@ -21,6 +25,9 @@ pub(super) struct Progress {
     scope: String,
     changes: Vec<(String, bool)>,
     reset: bool,
+    visited: HashSet<usize>,
+    visited_diffs: HashSet<usize>,
+    total_diffs: usize,
     #[cfg(not(target_arch = "wasm32"))]
     store: Option<std::sync::Mutex<sqlite::Store>>,
     #[cfg(target_arch = "wasm32")]
@@ -30,6 +37,30 @@ pub(super) struct Progress {
 }
 
 impl Progress {
+    pub(super) fn visit(&mut self, index: usize, file: &repo_world::File, diff: bool) {
+        let new_file = self.visited.insert(index);
+        let new_diff = diff && file.change != Change::Unchanged && self.visited_diffs.insert(index);
+        if new_diff || new_file {
+            self.mark(
+                Mark::Visited {
+                    path: file.path.clone(),
+                    diff: new_diff,
+                },
+                true,
+            );
+        }
+    }
+
+    pub(super) fn exploration_label(&self, files: usize) -> String {
+        let percentage = |count: usize, total: usize| count * 100 / total.max(1);
+        let city = percentage(self.visited.len(), files);
+        if self.total_diffs == 0 {
+            format!("City explored {city}%")
+        } else {
+            let diff = percentage(self.visited_diffs.len(), self.total_diffs);
+            format!("City explored {city}% · Diff explored {diff}%")
+        }
+    }
     pub(super) fn mark(&mut self, mark: Mark, checked: bool) {
         if let Ok(mark) = serde_json::to_string(&mark) {
             self.changes.push((mark, checked));
@@ -114,6 +145,14 @@ pub(super) fn restore(
     }
     progress.changes.clear();
     progress.reset = false;
+    progress.visited.clear();
+    progress.visited_diffs.clear();
+    progress.total_diffs = repo
+        .0
+        .files
+        .iter()
+        .filter(|file| file.change != Change::Unchanged)
+        .count();
     let paths: std::collections::HashMap<_, _> = repo
         .0
         .files
@@ -138,12 +177,22 @@ pub(super) fn restore(
                         file.after.is_some()
                     } {
                         listing.reveal(index, before, file, start..end, rows);
+                        progress.visited.insert(index);
                     }
                 }
             }
             Ok(Mark::Reviewed(path)) => {
                 if let Some(&index) = paths.get(path.as_str()) {
                     explorer.reviewed.insert(index);
+                    progress.visited.insert(index);
+                }
+            }
+            Ok(Mark::Visited { path, diff }) => {
+                if let Some(&index) = paths.get(path.as_str()) {
+                    progress.visited.insert(index);
+                    if diff && repo.0.files[index].change != Change::Unchanged {
+                        progress.visited_diffs.insert(index);
+                    }
                 }
             }
             Err(_) => {}
@@ -155,6 +204,10 @@ pub(super) fn sync(
     mut progress: ResMut<Progress>,
     mut explorer: ResMut<Explorer>,
     mut listing: ResMut<listing::Listing>,
+    repo: Res<Repo>,
+    navigation: Res<city_navigation::Navigation>,
+    review: Res<review_notes::Review>,
+    camera: Query<(&Transform, &Pilot), PlayerCamera>,
 ) {
     #[cfg(target_arch = "wasm32")]
     {
@@ -172,8 +225,23 @@ pub(super) fn sync(
         }
         progress.changes.clear();
         explorer.reviewed.clear();
+        progress.visited.clear();
+        progress.visited_diffs.clear();
         explorer.notice = "Review progress reset for this comparison.".into();
         listing.clear_progress();
+    } else if !review.blocked
+        && listing::Listing::visible(&explorer, &navigation)
+        && !listing.turning()
+        && let Ok((eye, pilot)) = camera.single()
+        && pilot.captured
+        && let Some(file) = repo.0.files.get(explorer.selected)
+    {
+        let size = explorer.facade_size(file, explorer.selected);
+        if let Some(face) =
+            listing::Face::at_camera(file, size, eye, listing::tool_range(size.x) * 1.4)
+        {
+            progress.visit(explorer.selected, file, face == listing::Face::Diff);
+        }
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -210,3 +278,34 @@ extern "C" {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod sqlite;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exploration_counts_unique_files_and_only_changed_diffs() {
+        let file = |path: &str, change| repo_world::File {
+            path: path.into(),
+            before: None,
+            after: None,
+            change,
+            position: [0., 0.],
+        };
+        let mut progress = Progress {
+            total_diffs: 2,
+            ..default()
+        };
+        let changed = file("changed.rs", Change::Modified);
+        let unchanged = file("same.rs", Change::Unchanged);
+        progress.visit(0, &changed, false);
+        progress.visit(0, &changed, true);
+        progress.visit(0, &changed, true);
+        progress.visit(1, &unchanged, true);
+        assert_eq!(
+            progress.exploration_label(4),
+            "City explored 50% · Diff explored 50%"
+        );
+        assert_eq!(progress.changes.len(), 3);
+    }
+}

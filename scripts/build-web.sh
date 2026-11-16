@@ -26,6 +26,7 @@ key = os.environ.get("TINSINK_BROWSER_KEY", "").strip()
 Path(sys.argv[1]).write_text(f"export const browserKey = {json.dumps(key)};\n")
 PYCODE
 cp web/assets/start-screen.webp web/assets/caveat-latin-wght.woff2 web/assets/OFL-Caveat.txt "$output/assets/"
+cp web/assets/robot-head.svg web/assets/apple-touch-icon.png "$output/assets/"
 wasm-bindgen --target web --remove-name-section --remove-producers-section \
   --out-dir "$output/game" --out-name repo_city \
   "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/web-release/repo-city.wasm"

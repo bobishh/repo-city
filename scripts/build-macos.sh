@@ -8,8 +8,9 @@ fi
 cargo build -p repo-city --bin repo-city "$@"
 target_dir="${CARGO_TARGET_DIR:-$project_dir/target}"
 bundle="$project_dir/dist/Repo City.app"
-mkdir -p "$bundle/Contents/MacOS"
+mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 cp "$target_dir/debug/repo-city" "$bundle/Contents/MacOS/repo-city"
+cp "$project_dir/assets/RepoCity.icns" "$bundle/Contents/Resources/RepoCity.icns"
 cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -18,6 +19,7 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
   <key>CFBundleDisplayName</key><string>Repo City</string>
   <key>CFBundleIdentifier</key><string>dev.meta-uber-engineer.repo-city</string>
   <key>CFBundleExecutable</key><string>repo-city</string>
+  <key>CFBundleIconFile</key><string>RepoCity.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>NSHighResolutionCapable</key><true/>

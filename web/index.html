@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Repo City</title>
+  <link rel="icon" type="image/svg+xml" href="./assets/robot-head.svg">
+  <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png">
   <link rel="stylesheet" href="./style.css">
   <script type="module" src="./app.mjs"></script>
 </head>
@@ -14,17 +16,14 @@
       <img src="./assets/start-screen.webp" alt="" fetchpriority="high">
     </div>
     <h1><button id="logo" type="button" aria-label="Repo City" aria-haspopup="dialog" aria-controls="repository-dialog" title="Open repository">
-      <span class="android" aria-hidden="true">
-        <svg viewBox="0 0 48 48" fill="none">
-          <path d="M13 45v-6l-5-4V17l5-6h21l6 6v20l-6 4H16" fill="#b09878" stroke="#2a1d33" stroke-width="2"/>
-          <path d="M13 12 9 3m6 33h19M12 21h25v11H12z" fill="#171221" stroke="#171221" stroke-width="2"/>
-          <path d="M16 25h7v3h-7zM28 26h6v2h-6zM7 2h4v4H7z" fill="#ffdf85"/>
-          <path d="M7 22h5v10H7z" fill="#70e9d6"/>
-        </svg>
-      </span>
+      <img class="android" src="./assets/robot-head.svg" alt="">
       <span class="wordmark">Repo City</span>
     </button></h1>
-    <button id="help" type="button" aria-label="How to use Repo City" aria-haspopup="dialog" aria-controls="help-dialog" title="How to use Repo City">?</button>
+    <button id="help" type="button" aria-label="How to use Repo City" aria-haspopup="dialog" aria-controls="help-dialog" title="How to use Repo City" hidden>?</button>
+    <aside id="progress-warning" hidden>
+      <span role="status"></span>
+      <button type="button" aria-label="Dismiss progress warning">×</button>
+    </aside>
     <a id="blame" target="_blank" rel="noopener noreferrer" aria-label="Blame on GitHub" hidden>Blame<span> on GitHub</span></a>
     <div id="start-controls">
       <form id="repository-form" aria-label="Open repository">
@@ -96,7 +95,8 @@
     <dialog id="repository-dialog" aria-label="Open repository"></dialog>
     <dialog id="help-dialog" class="city-dialog" aria-labelledby="help-title">
       <h2 id="help-title">Take a quick tour</h2>
-      <p>Open a repository or pull request. Then learn to look, fly to a file, and wash a line of code.</p>
+      <p>Learn to look around, fly to a file, and wash a line of code.</p>
+      <p>Click the Repo City logo to open the repository picker.</p>
       <div class="dialog-actions">
         <button id="help-skip" type="button">Skip</button>
         <button id="help-start" type="button" autofocus>Start tour</button>

@@ -757,9 +757,12 @@ impl WallSide {
     }
 
     fn wash_hit(&self, camera: &Transform, count: usize) -> Option<Vec3> {
-        // Arrival sits 0.84 widths away. Keep the jet inside that reading scale,
-        // and only on a line under the reticle, never on the roof or from behind.
-        let (point, _) = self.ray_hit(camera, 0.72, tool_range(self.width))?;
+        // Judge reach by stand-off from the wall so tilting along it keeps the tool usable.
+        let gap = (camera.translation - self.top).dot(self.normal());
+        if gap > tool_range(self.width) {
+            return None;
+        }
+        let (point, _) = self.ray_hit(camera, 0.12, f32::INFINITY)?;
         (count > 0 && point.y < self.wall.top).then_some(point)
     }
 
@@ -1380,6 +1383,12 @@ mod tests {
             let close = source.view(y);
             let hit = source.wash_hit(&close, count).expect("arrival is in range");
             assert_eq!(source.wall.row(hit.y, count), row);
+            let tilted = Transform::from_translation(close.translation + Vec3::Y * source.width)
+                .looking_at(hit, Vec3::Y);
+            let tilted_hit = source
+                .wash_hit(&tilted, count)
+                .expect("near wall at an angle");
+            assert_eq!(source.wall.row(tilted_hit.y, count), row);
             let far = close.with_translation(close.translation + Vec3::Z * source.width);
             assert!(source.wash_hit(&far, count).is_none());
             let from_side = WallSide::new(&file, count, Face::Diff, size).view(y);
