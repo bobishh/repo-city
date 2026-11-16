@@ -42,11 +42,9 @@ pub(super) fn water_stream(
 ) {
     let right = camera.right().as_vec3();
     let up = camera.up().as_vec3();
-    let direction = camera.forward().as_vec3();
     let length = camera.translation.distance(hit);
     let spread = (row_height * 2.4).min(length * 0.07);
-    let origin =
-        camera.translation + direction * (length * 0.22) + (right * 0.18 - up * 0.19) * length;
+    let origin = android::spray_origin(camera);
     let touch = hit + Vec3::Z * 0.025;
     for lane in 0..11 {
         let phase = (time * 9. + lane as f32 * 0.173).fract();

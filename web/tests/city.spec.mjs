@@ -391,6 +391,7 @@ test("restores review progress after reload and resets only the open comparison"
   await page.mouse.down();
   try {
     await expect.poll(async () => (await read(scope)).some(mark => JSON.parse(mark).reveal), polling).toBe(true);
+    await canvas.screenshot({ path: testInfo.outputPath("city-window-washer.png") });
   } finally {
     await page.mouse.up();
   }

@@ -191,7 +191,6 @@ pub(super) fn setup(
         TextureFormat::Rgba8Unorm,
         Some(TextureFormat::Rgba8UnormSrgb),
     ));
-    android::build(&mut commands, &mut meshes, &mut materials);
     commands.spawn((
         MirrorCamera,
         Camera3d::default(),
@@ -203,7 +202,7 @@ pub(super) fn setup(
         },
         RenderTarget::Image(robot.clone().into()),
         Tonemapping::None,
-        Transform::from_xyz(0., 0.12, 7.3).looking_at(Vec3::Y * 0.12, Vec3::Y),
+        Transform::from_xyz(0., -0.04, 8.).looking_at(Vec3::Y * -0.04, Vec3::Y),
         RenderLayers::layer(android::LAYER),
     ));
     #[cfg(target_arch = "wasm32")]
@@ -303,7 +302,7 @@ fn portrait(pane: &Transform, eye: &Transform) -> Option<(Vec3, f32, f32)> {
 }
 
 pub(super) fn reflect(
-    camera: Query<&Transform, PlayerCamera>,
+    camera: Query<(&Transform, &Pilot), PlayerCamera>,
     panes: Query<
         &Transform,
         (
@@ -330,8 +329,11 @@ pub(super) fn reflect(
     time: Res<Time>,
     mut motion: Local<MirrorMotion>,
 ) {
-    let (Ok(eye), Ok((mut pose, mut visibility, material)), Ok((mut view, mut mirror_pose))) =
-        (camera.single(), sprite.single_mut(), render.single_mut())
+    let (
+        Ok((eye, pilot)),
+        Ok((mut pose, mut visibility, material)),
+        Ok((mut view, mut mirror_pose)),
+    ) = (camera.single(), sprite.single_mut(), render.single_mut())
     else {
         return;
     };
@@ -352,7 +354,7 @@ pub(super) fn reflect(
         motion.drift = 0.;
         #[cfg(target_arch = "wasm32")]
         for (joint, mut local) in &mut joints {
-            android::animate(*joint, &mut local, time.elapsed_secs(), 0., 0.24);
+            android::animate(*joint, &mut local, time.elapsed_secs(), 0., 0.24, false);
         }
         return;
     };
@@ -363,10 +365,10 @@ pub(super) fn reflect(
     let offset = inverse * (eye.translation - pane.translation);
     let orbit = Vec3::new(
         (offset.x / offset.z.max(3.) * 2.1).clamp(-1.5, 1.5),
-        (offset.y / offset.z.max(3.) * 1.2).clamp(-0.7, 0.85) + 0.12,
-        7.3,
+        (offset.y / offset.z.max(3.) * 1.2).clamp(-0.7, 0.85) - 0.04,
+        8.,
     );
-    mirror_pose.set_if_neq(Transform::from_translation(orbit).looking_at(Vec3::Y * 0.12, Vec3::Y));
+    mirror_pose.set_if_neq(Transform::from_translation(orbit).looking_at(Vec3::Y * -0.04, Vec3::Y));
     let dt = time.delta_secs();
     let speed = motion
         .last_eye
@@ -377,7 +379,14 @@ pub(super) fn reflect(
         .lerp((speed / 10.).clamp(0., 1.), 1. - (-dt * 7.).exp());
     let yaw = (inverse * eye.forward().as_vec3()).x.clamp(-0.8, 0.8);
     for (joint, mut local) in &mut joints {
-        android::animate(*joint, &mut local, time.elapsed_secs(), motion.drift, yaw);
+        android::animate(
+            *joint,
+            &mut local,
+            time.elapsed_secs(),
+            motion.drift,
+            yaw,
+            pilot.firing,
+        );
     }
     visibility.set_if_neq(Visibility::Visible);
     pose.set_if_neq(

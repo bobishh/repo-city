@@ -442,6 +442,7 @@ fn main() {
             comparison_scene::controls.run_if(city_menu::gameplay_enabled),
             listing::controls.run_if(city_menu::gameplay_enabled),
             listing::wash_stream.run_if(city_menu::gameplay_enabled),
+            android::show_sprayer,
             physics::splashes,
             city_navigation::shoot_reviewed_platform,
             physics::fractures,
@@ -700,14 +701,17 @@ fn setup(
         plate: plate.clone(),
         unit: unit.clone(),
     });
-    commands.spawn((
-        Camera3d::default(),
-        bevy::ui::IsDefaultUiCamera,
-        Camera { ..default() },
-        Msaa::Sample4,
-        Transform::default(),
-        Pilot::default(),
-    ));
+    let pilot = commands
+        .spawn((
+            Camera3d::default(),
+            bevy::ui::IsDefaultUiCamera,
+            Camera { ..default() },
+            Msaa::Sample4,
+            Transform::default(),
+            Pilot::default(),
+        ))
+        .id();
+    android::build(&mut commands, &mut meshes, &mut materials, pilot);
     commands.spawn((
         DirectionalLight {
             illuminance: 10000.,
