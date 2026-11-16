@@ -484,6 +484,14 @@ fn main() {
             .chain()
             .run_if(repository_picker::has_city),
     );
+    #[cfg(target_arch = "wasm32")]
+    app.add_systems(
+        Update,
+        city_menu::apply_filter_shortcut
+            .after(file_facade::lower_unchanged)
+            .before(file_picker::update)
+            .run_if(repository_picker::has_city),
+    );
     app.add_systems(
         Update,
         (

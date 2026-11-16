@@ -67,6 +67,27 @@ extern "C" {
     fn browser_filter_requested() -> bool;
 }
 
+#[cfg(target_arch = "wasm32")]
+pub(super) fn apply_filter_shortcut(
+    mut focus: ResMut<file_facade::ChangesOnly>,
+    mut menu: ResMut<Menu>,
+    picker: Res<file_picker::FilePicker>,
+    search: Res<listing::find::Search>,
+    review: Res<review_notes::Review>,
+) {
+    if browser_filter_requested()
+        && focus.available
+        && !picker.is_open()
+        && !search.blocks_controls()
+        && !review.blocked
+    {
+        focus.toggle();
+        if menu.is_open() {
+            menu.close();
+        }
+    }
+}
+
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Action {
     Approach,
@@ -240,28 +261,12 @@ pub(super) fn update(
         (Without<Overlay>, Without<Panel>),
     >,
     mut labels: Query<&mut Text>,
-    #[cfg(target_arch = "wasm32")] mut browser_selection: Local<Option<Action>>,
+    #[cfg(target_arch = "wasm32")] mut browser_state: Local<(Option<Action>, bool)>,
 ) {
     menu.dismissed = false;
     let right_click = mouse.just_pressed(MouseButton::Right);
-    #[cfg(target_arch = "wasm32")]
-    let filter = browser_filter_requested();
-    #[cfg(not(target_arch = "wasm32"))]
-    let filter = false;
     if review.blocked || search.blocks_controls() || picker.is_open() {
         menu.close();
-    } else if filter && focus.available {
-        if menu.is_open() {
-            Action::ChangesOnly.choose(
-                &mut menu,
-                &mut picker,
-                &mut review,
-                &mut search,
-                &mut focus,
-            );
-        } else {
-            focus.toggle();
-        }
     } else if navigation.guides_camera() || listing.turning() {
         menu.close();
     } else if menu.is_open() && (keys.just_pressed(KeyCode::Escape) || right_click) {
@@ -316,17 +321,22 @@ pub(super) fn update(
         None
     };
     #[cfg(target_arch = "wasm32")]
-    if *browser_selection != selected
+    if *browser_state != (selected, focus.enabled)
         && let Some(canvas) = web_sys::window()
             .and_then(|window| window.document())
             .and_then(|document| document.get_element_by_id("repo-city"))
     {
+        if focus.enabled {
+            let _ = canvas.set_attribute("data-changes-only", "");
+        } else {
+            let _ = canvas.remove_attribute("data-changes-only");
+        }
         if let Some(action) = selected {
             let _ = canvas.set_attribute("data-action-menu", &action.label(focus.enabled));
         } else {
             let _ = canvas.remove_attribute("data-action-menu");
         }
-        *browser_selection = selected;
+        *browser_state = (selected, focus.enabled);
     }
     let (Some(anchor), Some((_, viewport))) = (menu.anchor, nearest.screen) else {
         return;

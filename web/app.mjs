@@ -49,9 +49,9 @@ function focusCanvas() {
 }
 
 document.addEventListener("keydown", event => {
+  const locked = document.pointerLockElement === canvas;
   if (event.code !== "KeyF" || event.repeat || event.metaKey || event.ctrlKey ||
-      event.altKey || (event.target !== canvas && document.pointerLockElement !== canvas) ||
-      canvas.hasAttribute("data-pointer-ui") ||
+      event.altKey || (!locked && (event.target !== canvas || canvas.hasAttribute("data-pointer-ui"))) ||
       document.querySelector("dialog[open]") || !active?.canFilterChanges) return;
   event.preventDefault();
   changesOnlyRequested = !changesOnlyRequested;

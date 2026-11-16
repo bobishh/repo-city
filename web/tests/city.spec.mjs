@@ -395,6 +395,7 @@ test("opens a merged pull request from the URL using its fork head and merge bas
   await canvas.evaluate(element => element.blur());
   await expect.poll(capture).toBe("repo-city");
   await page.keyboard.press("KeyF", { delay: 150 });
+  await expect(canvas).toHaveAttribute("data-changes-only", "");
   await expect.poll(capture).toBe("repo-city");
   await canvas.focus();
   await page.keyboard.press("KeyP", { delay: 150 });
@@ -413,6 +414,7 @@ test("opens a merged pull request from the URL using its fork head and merge bas
   await expect(canvas).toHaveAttribute("data-action-menu", /Show all files/);
   await page.mouse.click(center.x, center.y, { delay: 180 });
   await expect(canvas).not.toHaveAttribute("data-action-menu");
+  await expect(canvas).not.toHaveAttribute("data-changes-only", "");
   await expect.poll(capture).toBe("repo-city");
   await canvas.click({ position: center, button: "right", delay: 180 });
   await expect(canvas).toHaveAttribute("data-action-menu", /^(Fly to face|Find file)/);
