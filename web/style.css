@@ -52,42 +52,72 @@ h1 { position: absolute; z-index: 2; inset-block-start: 14px; inset-inline-start
 }
 #repository-dialog::backdrop { background: #030812aa; }
 form {
-  display: grid;
-  gap: 15px;
-  padding: clamp(14px, 3vw, 22px);
-  border: 1px solid #73f3d28f;
-  border-top: 3px solid #82fce0;
-  background: #0a1720f5;
-  box-shadow: 0 0 30px #07151bcc;
+  position: relative;
+  border: 1px solid #55707c;
+  background: #0a131a;
+  box-shadow: 0 12px 36px #070c11bf;
+  font: .875rem/1.4 system-ui, sans-serif;
 }
-.form-title { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-h2 { color: #a8f7e4; margin: 0; font-size: 1.04rem; }
-#close { padding: 2px 8px; font-size: 1.2rem; }
-label { display: grid; gap: 5px; min-width: 0; color: #cee3e8; font-size: .83rem; }
-input, button { min-width: 0; border: 1px solid #47717a; background: #132934; color: inherit; font: inherit; border-radius: 0; padding: .48rem .6rem; }
-input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid #91fbdf; outline-offset: 3px; }
-button { cursor: pointer; }
-button:disabled { cursor: wait; opacity: .65; }
-button:hover:not(:disabled, #logo) { background: #20515a; }
-#revisions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.form-action { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-#comparison-progress { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #a8c6cc; font-size: .83rem; }
-#reset-progress { flex: none; }
-#status { min-height: 2.4em; margin: 0; color: #e9b8c8; font-size: .76rem; }
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
+.picker-row { display: flex; align-items: center; min-height: 52px; padding: 0 12px; gap: 7px; }
+.picker-search { border-bottom: 1px solid #26343e; }
+.picker-search:focus-within { border-bottom-color: #76ebd6; }
+.picker-search label { flex: 1; min-width: 0; }
+.picker-search input {
+  width: 100%; padding: 10px 0; color: #e8f7f3; font: inherit;
+  background: transparent; border: 0; outline: 0; border-radius: 0;
+}
+.picker-search input::placeholder { color: #a4bac2; }
+.picker-selection { border-bottom: 1px solid #26343e; }
+#selected-repository { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 650; }
+.picker-toolbar { min-height: 50px; display: flex; align-items: center; gap: 8px; padding: 7px 12px; }
+#revisions { display: flex; gap: 8px; min-width: 0; overflow: hidden; }
+#revisions button { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#open-city {
+  flex: none; margin-left: auto; padding: 6px 10px;
+  color: #092824; background: #97ecd8; font-weight: 650;
+}
+#repository-dialog .picker-row { padding-inline-end: 42px; }
+#close { position: absolute; right: 6px; top: 10px; }
+.picker-icon { width: 28px; height: 28px; flex: none; font-size: 1.16rem; }
+#revision-editor { border-top: 1px solid #26343e; }
+#status { color: #e9b8c8; font-size: .78rem; padding: 8px 12px; margin: 0; }
+#status:empty { display: none; }
 form[aria-busy="true"] #status { color: #adfbe6; }
-button[type="submit"] { white-space: nowrap; border-color: #8ef6d9; color: #cafff2; }
+form button, form summary {
+  color: #a4c7ca; background: transparent; border: 0; border-radius: 0; font-family: inherit; cursor: pointer;
+}
+form button:hover, form summary:hover { color: #c5fff4; }
+form button:disabled { cursor: wait; opacity: .65; }
+form button:focus-visible, form summary:focus-visible, form a:focus-visible { outline: 2px solid #91fbdf; }
+#open-city:hover { color: #092824; background: #c5fff4; }
+#picker-footer {
+  display: flex; justify-content: flex-end; align-items: center; min-height: 35px;
+  border-top: 1px solid #26343e; padding: 0 12px; gap: 12px; font-size: .76rem;
+}
+#comparison-progress { margin-right: auto; }
+#github-account, #comparison-progress { position: relative; min-width: 0; }
+#github-user { max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-menu {
+  position: absolute; z-index: 4; inset-inline-end: 0; inset-block-end: 100%;
+  display: grid; width: max-content; gap: 5px; padding: 7px 10px;
+  border: 1px solid #55707c; background: #0a131a; color: #a8c6cc;
+}
+#comparison-progress .picker-menu { inset-inline: 0 auto; }
+.picker-menu a { color: #a8f7e4; }
+.picker-menu button { text-align: start; padding: 3px 0; }
+.suggestions { max-height: min(230px, 34dvh); overflow: auto; font-size: .82rem; }
+.suggestions ul { margin: 0; padding: 4px; list-style: none; }
+.suggestions ul:empty { display: none; }
+.suggestions li, .suggestions small { display: block; padding: 7px 9px; }
+.suggestions li { cursor: pointer; overflow-wrap: anywhere; }
+.suggestions li[aria-selected="true"], .suggestions li:hover { background: #153333; box-shadow: inset 2px 0 #76ebd6; }
+.suggestions small { color: #a8c6cc; padding-inline: 12px; }
 @media (max-width: 420px) { #blame span { display: none; } }
 @media (max-height: 530px) {
   #start-controls { inset-block-end: 10px; max-height: calc(100% - 79px); overflow: auto; }
   :root:not([data-playing]) .wordmark { font-size: 3rem; }
-  form { gap: 9px; }
 }
-
-
-#github-account { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: .77rem; }
-#github-account a { color: #a8f7e4; }
-#github-library, #revision-picker { display: grid; grid-template-columns: minmax(92px, 0.45fr) minmax(0, 1fr); gap: 5px 10px; }
-#revision-picker { grid-template-columns: minmax(0, 1fr) minmax(98px, .40fr); }
-#github-library small, #revision-picker small { grid-column: 1 / -1; color: #a8c6cc; }
-#github-library small:empty, #revision-picker small:empty { display: none; }
-select { min-width: 0; width: 100%; color: inherit; font: inherit; padding: .48rem .5rem; border: 1px solid #47717a; border-radius: 0; background: #132934; }

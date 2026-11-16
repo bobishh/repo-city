@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { loadGitHub, parseRepository } from "./github.mjs";
+import { loadGitHub, parseRepository, searchCommits } from "./github.mjs";
 
 test("GitHub URLs are normalized to owner and repository", () => {
   assert.equal(parseRepository("https://github.com/owner/project.git"), "owner/project");
@@ -84,4 +84,19 @@ test("revision suggestions preserve qualified names and label commits with subje
     { ref: "refs/tags/v2", label: "Tag · v2" },
     { ref: "a".repeat(40), label: "aaaaaaa · Move the city" },
   ]);
+});
+
+test("commit search uses literal keywords and returns matches from the requested repository", async () => {
+  const sha = "a".repeat(40);
+  const items = await searchCommits("Owner/Project", 'Tune the motor: "noise"', async url => {
+    const target = new URL(url);
+    assert.equal(target.pathname, "/search/commits");
+    assert.equal(target.searchParams.get("q"), 'repo:Owner/Project "Tune" "the" "motor" "noise"');
+    assert.equal(target.searchParams.get("per_page"), "8");
+    return Response.json({ items: [
+      { sha, commit: { message: "Tune the motor\nDetails" }, repository: { full_name: "owner/project" } },
+      { sha: "b".repeat(40), commit: { message: "Tune the motor" }, repository: { full_name: "other/project" } },
+    ] });
+  });
+  assert.deepEqual(items, [{ ref: sha, label: "aaaaaaa · Tune the motor" }]);
 });

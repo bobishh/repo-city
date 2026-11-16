@@ -34,11 +34,12 @@ test("opens a public repository and fetches source after the WASM city starts", 
   await page.goto("/");
   const cover = page.locator("#start-screen");
   await expect(page.getByRole("button", { name: "Repo City" })).toBeVisible();
-  await expect(page.getByRole("textbox", { name: "GitHub repository" })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "GitHub repository" })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("landing.png") });
   const syntax = page.waitForResponse(response => new URL(response.url()).pathname === "/syntax-worker.mjs");
   await expect.poll(() => cover.locator("img").evaluate(image => image.naturalWidth)).toBeGreaterThan(0);
-  await page.getByRole("textbox", { name: "GitHub repository" }).fill("owner/demo");
+  await page.getByRole("combobox", { name: "GitHub repository" }).fill("owner/demo");
+  await page.getByRole("button", { name: "Select repository" }).click();
   const blob = page.waitForResponse(response => response.url().includes("/git/blobs/"), { timeout: 75_000 }).catch(() => null);
   await page.getByRole("button", { name: "Open city" }).click();
   await expect(page.locator("#status")).toBeEmpty({ timeout: 70_000 });
@@ -108,12 +109,18 @@ test("opens a public repository and fetches source after the WASM city starts", 
   await expect(dialog).toBeVisible();
   await expect(canvas).toBeVisible();
   await page.route("https://api.github.com/repos/owner/missing", route => route.fulfill({ status: 404 }));
-  await dialog.getByRole("textbox", { name: "GitHub repository" }).fill("owner/missing");
+  await dialog.getByRole("button", { name: "Change repository" }).click();
+  await dialog.getByRole("combobox", { name: "GitHub repository" }).fill("owner/missing");
+  await page.getByRole("button", { name: "Select repository" }).click();
   await dialog.getByRole("button", { name: "Open city" }).click();
   await expect(dialog.getByRole("status")).toHaveText("Repository, revision, or file not found. Private repositories need GitHub access.");
   await expect(canvas).toBeVisible();
-  await dialog.getByRole("textbox", { name: "GitHub repository" }).fill("owner/demo");
-  await dialog.getByLabel("Branch, tag, or commit", { exact: true }).fill(next);
+  await dialog.getByRole("button", { name: "Change repository" }).click();
+  await dialog.getByRole("combobox", { name: "GitHub repository" }).fill("owner/demo");
+  await page.getByRole("button", { name: "Select repository" }).click();
+  await dialog.getByRole("button", { name: "Revision: Default branch" }).click();
+  await dialog.getByRole("combobox", { name: "Find a branch, tag, or commit" }).fill(next);
+  await dialog.getByRole("button", { name: "Use revision" }).click();
   const committed = page.waitForRequest(request => request.url().endsWith("/commits/" + next));
   const replacement = page.waitForResponse(response => response.url().endsWith("/git/blobs/" + next));
   await dialog.getByRole("button", { name: "Open city" }).click();
@@ -151,7 +158,8 @@ test("Tab captures and Escape releases the browser pointer", async ({ page }) =>
 test("reports missing repositories and keeps the form usable", async ({ page }) => {
   await page.route("https://api.github.com/**", route => route.fulfill({ status: 404 }));
   await page.goto("/");
-  await page.getByRole("textbox", { name: "GitHub repository" }).fill("owner/missing");
+  await page.getByRole("combobox", { name: "GitHub repository" }).fill("owner/missing");
+  await page.getByRole("button", { name: "Select repository" }).click();
   await page.getByRole("button", { name: "Open city" }).click();
   await expect(page.getByRole("status")).toHaveText("Repository, revision, or file not found. Private repositories need GitHub access.");
   await expect(page.getByRole("button", { name: "Open city" })).toBeEnabled();
@@ -235,12 +243,16 @@ test("opens a pull request from the URL using its fork head and merge base", asy
 });
 
 
-test("offers GitHub libraries and applies a commit suggestion to the comparison base", async ({ page }) => {
+test("finds account repositories and revisions in their own fields", async ({ page }, testInfo) => {
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: true, login: "owner" } }));
   await page.route("**/github/api/**", route => {
     const path = new URL(route.request().url()).pathname;
     const values = {
-      "/github/api/users/owner/repos": [{ full_name: "owner/fork", fork: true }],
+      "/github/api/users/owner/repos": [
+        { full_name: "owner/fork", fork: true },
+        ...Array.from({ length: 88 }, (_, index) => ({ full_name: `owner/demo-${index}` })),
+      ],
+      "/github/api/search/commits": { items: [{ sha: next, commit: { message: "Tune the old motor" }, repository: { full_name: "owner/secret" } }] },
       "/github/api/user/starred": [{ full_name: "other/star", fork: false }],
       "/github/api/user/installations": { installations: [{ id: 12 }] },
       "/github/api/user/installations/12/repositories": { repositories: [{ full_name: "owner/secret", private: true }] },
@@ -259,23 +271,45 @@ test("offers GitHub libraries and applies a commit suggestion to the comparison 
     return route.fulfill({ json: values[path] });
   });
   await page.goto("/");
-  const group = page.getByLabel("GitHub list");
-  const repos = page.getByLabel("Repository from GitHub");
-  await expect(repos.locator("option", { hasText: "owner/secret · Private" })).toHaveCount(1);
-  await group.selectOption("stars");
-  await expect(repos.locator("option", { hasText: "other/star" })).toHaveCount(1);
-  await group.selectOption("forks");
-  await expect(repos.locator("option", { hasText: "owner/fork" })).toHaveCount(1);
-  await group.selectOption("repositories");
-  await repos.selectOption("owner/secret");
-  await expect(page.getByRole("textbox", { name: "GitHub repository" })).toHaveValue("owner/secret");
-  const revisions = page.getByLabel("Revision suggestions");
-  await expect(revisions.locator("option", { hasText: "Paint the robot" })).toHaveCount(1);
-  await revisions.selectOption("refs/heads/feature/robot");
-  await expect(page.getByLabel("Branch, tag, or commit", { exact: true })).toHaveValue("refs/heads/feature/robot");
-  await page.getByLabel("Use as").selectOption("base");
-  await revisions.selectOption(before);
-  await expect(page.getByLabel("Compare with", { exact: true })).toHaveValue(before);
+  const repo = page.getByRole("combobox", { name: "GitHub repository" });
+  await expect(page.getByRole("button", { name: /^Revision:/ })).toBeHidden();
+  await repo.fill("missing");
+  await expect(page.getByText("No matches in your repositories, stars, or forks.")).toBeVisible();
+  await repo.fill("demo");
+  await expect(page.getByRole("option")).toHaveCount(8);
+  await expect(page.getByRole("button", { name: /^Revision:/ })).toBeHidden();
+  await page.screenshot({ path: testInfo.outputPath("repository-search.png") });
+  await repo.fill("demo-87");
+  await expect(page.getByRole("option", { name: "owner/demo-87", exact: false })).toHaveCount(1);
+  await repo.fill("other star");
+  await expect(page.getByRole("option", { name: "other/star · Star" })).toBeVisible();
+  await repo.fill("fork");
+  await expect(page.getByRole("option", { name: "owner/fork · Fork" })).toBeVisible();
+  await repo.fill("secret");
+  await expect(page.getByRole("option", { name: "owner/secret · Private" })).toBeVisible();
+  await repo.press("ArrowDown");
+  await repo.press("Enter");
+  await expect(page.getByText("owner/secret", { exact: true })).toBeVisible();
+  await expect(repo).toBeHidden();
+  const revision = page.getByRole("button", { name: /^Revision:/ });
+  await revision.click();
+  const revisionSearch = page.getByRole("combobox", { name: "Find a branch, tag, or commit" });
+  await revisionSearch.fill("feature");
+  await page.getByRole("option", { name: "Branch · feature/robot" }).click();
+  await expect(revision).toHaveAccessibleName("Revision: feature/robot");
+  const base = page.getByRole("button", { name: /^Compare with/ });
+  await base.click();
+  const search = page.waitForRequest(request => {
+    const url = new URL(request.url());
+    return url.pathname === "/github/api/search/commits" && url.searchParams.get("q").includes("motor");
+  });
+  await revisionSearch.fill("motor");
+  await search;
+  await page.getByRole("option", { name: /Tune the old motor/ }).click();
+  await expect(base).toHaveAccessibleName("Compare with: eeeeeee");
+  await expect(revision).toHaveAccessibleName("Revision: feature/robot");
+  await expect(revisionSearch).toBeHidden();
+  await page.screenshot({ path: testInfo.outputPath("repository-selected.png") });
   const blob = page.waitForResponse(response => response.url().endsWith("/github/api/repos/owner/secret/git/blobs/" + after));
   await page.getByRole("button", { name: "Open city" }).click();
   expect((await blob).ok()).toBe(true);
@@ -334,6 +368,7 @@ test("restores review progress after reload and resets only the open comparison"
 
   await page.getByRole("button", { name: "Repo City" }).click();
   await expect(summary).toHaveText(/1 file reviewed · [1-9][0-9]* lines revealed/);
+  await page.getByText("Progress", { exact: true }).click();
   const reset = page.getByRole("button", { name: "Reset progress" });
   page.once("dialog", prompt => prompt.dismiss());
   await reset.click();

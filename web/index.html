@@ -26,58 +26,60 @@
     </button></h1>
     <a id="blame" target="_blank" rel="noopener noreferrer" aria-label="Blame on GitHub" hidden>Blame<span> on GitHub</span></a>
     <div id="start-controls">
-      <form id="repository-form" aria-labelledby="repository-title">
-        <div class="form-title">
-          <h2 id="repository-title">Open repository</h2>
-          <button id="close" type="button" aria-label="Close repository picker" hidden>×</button>
+      <form id="repository-form" aria-label="Open repository">
+        <div id="repository-search">
+          <div class="picker-row picker-search">
+            <label>
+              <span class="visually-hidden">GitHub repository or pull request</span>
+              <input id="repository-query" name="repo" placeholder="Find a repository or paste a PR URL" autocomplete="off" spellcheck="false">
+            </label>
+            <button id="select-repository" class="picker-icon" type="button" aria-label="Select repository">→</button>
+          </div>
+          <div id="repository-results"></div>
         </div>
-        <div id="github-account" hidden>
-          <button id="github-login" type="button">Sign in with GitHub</button>
-          <span id="github-user"></span>
-          <a id="github-install" target="_blank" rel="noopener noreferrer" hidden>Choose private repositories</a>
-          <button id="github-logout" type="button" hidden>Sign out</button>
+        <div id="repository-selection" hidden>
+          <div class="picker-row picker-selection">
+            <span id="selected-repository"></span>
+            <button id="change-repository" class="picker-icon" type="button" aria-label="Change repository">×</button>
+          </div>
+          <div class="picker-toolbar">
+            <div id="revisions">
+              <button id="choose-revision" type="button">Default branch</button>
+              <button id="choose-base" type="button">Compare…</button>
+            </div>
+            <button id="open-city" type="submit">Open city</button>
+          </div>
+          <div id="revision-editor" hidden>
+            <div class="picker-row picker-search">
+              <label>
+                <span class="visually-hidden">Find a branch, tag, or commit</span>
+                <input id="revision-search" placeholder="Find a branch, tag, or commit" autocomplete="off" spellcheck="false">
+              </label>
+              <button id="use-revision" class="picker-icon" type="button" aria-label="Use revision">↵</button>
+            </div>
+            <div id="revision-results"></div>
+          </div>
         </div>
-        <div id="github-library" hidden>
-          <label><span id="repository-group-label">GitHub list</span>
-            <select id="repository-group" aria-labelledby="repository-group-label">
-              <option value="repositories">Repositories</option>
-              <option value="stars">Stars</option>
-              <option value="forks">Forks</option>
-            </select>
-          </label>
-          <label><span id="repository-choice-label">Repository from GitHub</span>
-            <select id="repository-choice" aria-labelledby="repository-choice-label"></select>
-          </label>
-          <small id="library-status"></small>
-        </div>
-        <label>GitHub repository or pull request
-          <input name="repo" placeholder="owner/repository or PR URL" autocomplete="off" spellcheck="false" required>
-        </label>
-        <div id="revisions">
-          <label>Branch, tag, or commit
-            <input name="ref" list="ref-choices" placeholder="Default branch" autocomplete="off" spellcheck="false">
-          </label>
-          <label>Compare with
-            <input name="base" list="ref-choices" placeholder="Parent commit" autocomplete="off" spellcheck="false">
-          </label>
-        </div>
-        <div id="revision-picker" hidden>
-          <label><span id="revision-choices-label">Revision suggestions</span>
-            <select id="revision-choices" aria-labelledby="revision-choices-label" disabled><option>Choose a branch, tag, or commit</option></select>
-          </label>
-          <label><span id="revision-target-label">Use as</span>
-            <select id="revision-target" aria-labelledby="revision-target-label"><option value="ref">Revision</option><option value="base">Compare with</option></select>
-          </label>
-          <small id="revision-hint" aria-live="polite"></small>
-        </div>
-        <datalist id="ref-choices"></datalist>
-        <div id="comparison-progress" hidden>
-          <small id="progress-summary"></small>
-          <button id="reset-progress" type="button">Reset progress</button>
-        </div>
-        <div class="form-action">
-          <p id="status" role="status"></p>
-          <button type="submit">Open city</button>
+        <input type="hidden" name="ref">
+        <input type="hidden" name="base">
+        <button id="close" class="picker-icon" type="button" aria-label="Close repository picker" hidden>×</button>
+        <p id="status" role="status"></p>
+        <div id="picker-footer" hidden>
+          <details id="comparison-progress" hidden>
+            <summary>Progress</summary>
+            <div class="picker-menu">
+              <small id="progress-summary"></small>
+              <button id="reset-progress" type="button">Reset progress</button>
+            </div>
+          </details>
+          <button id="github-login" type="button" hidden>Sign in with GitHub</button>
+          <details id="github-account" hidden>
+            <summary id="github-user"></summary>
+            <div class="picker-menu">
+              <a id="github-install" hidden>Choose private repositories</a>
+              <button id="github-logout" type="button">Sign out</button>
+            </div>
+          </details>
         </div>
       </form>
     </div>

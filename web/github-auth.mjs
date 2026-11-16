@@ -61,6 +61,12 @@ function returnPath(value, origin) {
 
 function endpoint(url) {
   const path = url.pathname.slice("/github/api".length);
+  if (path === "/search/commits") {
+    const q = url.searchParams.get("q");
+    // Only accept one repository qualifier followed by literal keyword terms.
+    if (!q || q.length > 220 || !/^repo:[\w.-]+\/[\w.-]+(?: "[\p{L}\p{N}_-]+"){1,8}$/u.test(q)) return null;
+    return new URL(path + "?" + new URLSearchParams({ q, per_page: "8" }), API);
+  }
   const repo = /^\/repos\/[\w.-]+\/[\w.-]+(?:\/(?:branches|tags|commits|commits\/[\w.%~-]+|compare\/[\w.%~:-]+|pulls\/[1-9]\d*|git\/(?:trees|blobs)\/[a-f\d]{40,64}))?$/i;
   const account = /^\/(?:user\/(?:starred|installations(?:\/\d+\/repositories)?)|users\/[\w-]+\/repos)$/;
   if (!repo.test(path) && !account.test(path)) return null;

@@ -46,6 +46,18 @@ test("OAuth uses PKCE, binds state to the browser, and keeps the token in its en
   });
   assert.match(allowed.headers.get("Cache-Control"), /no-store/);
   assert.equal((await allowed.json())[0].name, "private-branch");
+  const search = new URLSearchParams({ q: 'repo:owner/private "robot" "motor"', per_page: "100" });
+  const found = await handleGitHub(request("/github/api/search/commits?" + search, { headers }), env, async (url, options) => {
+    assert.equal(url.pathname, "/search/commits");
+    assert.equal(url.searchParams.get("q"), 'repo:owner/private "robot" "motor"');
+    assert.equal(url.searchParams.get("per_page"), "8");
+    assert.equal(options.headers.Authorization, "Bearer " + token);
+    return Response.json({ items: [] });
+  });
+  assert.equal(found.status, 200);
+  search.set("q", 'repo:owner/private repo:owner/another "robot"');
+  assert.equal((await handleGitHub(request("/github/api/search/commits?" + search, { headers }), env,
+    () => assert.fail("Search must stay in one repository"))).status, 404);
   const redirects = [];
   const renamed = await handleGitHub(request("/github/api/repos/owner/old-name", { headers }), env, async (url, options) => {
     assert.equal(options.redirect, "manual");

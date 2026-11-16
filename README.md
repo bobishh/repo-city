@@ -22,10 +22,11 @@ With no base specified, Repo City compares the revision with its first parent.
 A pull request opens its head tree and highlights changed lines in place. The
 diff wall also shows deleted lines.
 
-On deployments with GitHub sign-in enabled, **Sign in with GitHub** opens
-your repositories, stars, and forks in the picker. Use **Choose private
-repositories** to grant Repo City read access to selected private repositories.
-Click the **Repo City** logo to switch snapshots or repositories.
+Use **Sign in with GitHub** below the search to find your repositories, stars,
+and forks from the repository field. Under your GitHub handle, use **Choose
+private repositories** to grant read access to selected repositories. Use
+**Default branch** or **Compare…** to find branches and tags or search commit messages
+on the default branch. Click the **Repo City** logo to reopen the picker.
 
 ### On your Mac
 

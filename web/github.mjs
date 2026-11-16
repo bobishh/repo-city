@@ -29,6 +29,21 @@ async function readGitHub(request, path) {
   return response;
 }
 
+function commitSuggestion({ sha, commit }) {
+  return { ref: sha, label: `${sha.slice(0, 7)} · ${commit.message.split("\n")[0]}` };
+}
+
+export async function searchCommits(input, query, request = fetch) {
+  const repository = parseRepository(input);
+  const words = (query.slice(0, 80).match(/[\p{L}\p{N}_-]+/gu) ?? []).slice(0, 8);
+  if (words.join(" ").length < 3) return [];
+  const q = `repo:${repository} ${words.map(word => `"${word}"`).join(" ")}`;
+  const response = await readGitHub(request, "/search/commits?" + new URLSearchParams({ q, per_page: "8" }));
+  const { items } = await response.json();
+  return items.filter(item => item.repository?.full_name?.toLowerCase() === repository.toLowerCase())
+    .map(commitSuggestion);
+}
+
 export async function loadRevisions(input, request = fetch) {
   const path = "/repos/" + parseRepository(input);
   const groups = await Promise.allSettled(["branches?per_page=100", "tags?per_page=50", "commits?per_page=30"]
@@ -39,7 +54,7 @@ export async function loadRevisions(input, request = fetch) {
   return [
     ...branches.map(({ name }) => ({ ref: `refs/heads/${name}`, label: `Branch · ${name}` })),
     ...tags.map(({ name }) => ({ ref: `refs/tags/${name}`, label: `Tag · ${name}` })),
-    ...commits.map(({ sha, commit }) => ({ ref: sha, label: `${sha.slice(0, 7)} · ${commit.message.split("\n")[0]}` })),
+    ...commits.map(commitSuggestion),
   ];
 }
 

@@ -2,7 +2,7 @@ import { loadGitHub, parsePullRequest } from "./github.mjs";
 import { createAnalytics } from "./analytics.mjs";
 import { browserKey } from "./analytics-config.mjs";
 import { createSyntaxCache } from "./syntax.mjs";
-import { githubRequest, suggestRevisions } from "./github-picker.mjs";
+import { focusRepositoryPicker, githubRequest, refreshPickerFooter, refreshRepositoryPicker } from "./github-picker.mjs";
 import { setupPointer } from "./pointer.mjs";
 import { readProgress, writeProgress } from "./progress.mjs";
 
@@ -21,7 +21,7 @@ const close = document.querySelector("#close");
 const reset = document.querySelector("#reset-progress");
 const progressPanel = document.querySelector("#comparison-progress");
 const progressSummary = document.querySelector("#progress-summary");
-const submit = form.querySelector('button[type="submit"]');
+const submit = document.querySelector("#open-city");
 const syntax = createSyntaxCache();
 const releasePointer = setupPointer(canvas, dialog);
 let active;
@@ -33,26 +33,20 @@ const parameters = new URLSearchParams(location.search);
 for (const name of ["repo", "ref", "base"]) form.elements[name].value = parameters.get(name) ?? "";
 if (parameters.get("pr")) form.elements.repo.value = parameters.get("pr");
 
-function toggleRevisionInputs() {
-  const pull = Boolean(parsePullRequest(form.elements.repo.value));
-  for (const name of ["ref", "base"]) form.elements[name].disabled = pull;
-  suggestRevisions();
-}
-
 function focusCanvas() {
   if (running && !dialog.open) canvas.focus({ preventScroll: true });
 }
 
 logo.addEventListener("click", () => {
   if (!running) {
-    form.elements.repo.focus();
+    focusRepositoryPicker();
     return;
   }
   releasePointer();
   close.hidden = false;
   if (form.parentElement !== dialog) dialog.append(form);
   if (!dialog.open) dialog.showModal();
-  form.elements.repo.focus();
+  focusRepositoryPicker();
 });
 close.addEventListener("click", () => dialog.close());
 dialog.addEventListener("close", focusCanvas);
@@ -61,8 +55,7 @@ dialog.addEventListener("cancel", event => {
 });
 dialog.addEventListener("keydown", event => event.stopPropagation());
 dialog.addEventListener("keyup", event => event.stopPropagation());
-form.elements.repo.addEventListener("input", toggleRevisionInputs);
-toggleRevisionInputs();
+refreshRepositoryPicker();
 
 
 async function stageRepository(repository) {
@@ -72,6 +65,7 @@ async function stageRepository(repository) {
   });
   active = { repository, blobs: new Map(), marks };
   progressPanel.hidden = false;
+  refreshPickerFooter();
   repositoryVersion++;
   blame.hidden = true;
   blame.removeAttribute("href");
