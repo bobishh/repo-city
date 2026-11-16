@@ -401,9 +401,10 @@ test("opens a merged pull request from the URL using its fork head and merge bas
   await expect(canvas).toHaveAttribute("data-pointer-ui", "");
   await page.keyboard.press("Escape", { delay: 150 });
   await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
-  await canvas.click({ position: center, button: "right" });
+  await canvas.click({ position: { x: 800, y: 35 }, button: "right", delay: 180 });
   await expect(canvas).toHaveAttribute("data-pointer-ui", "");
-  await page.keyboard.press("KeyF", { delay: 150 });
+  // Over the sky, Show all files is the fourth row while a listing is loaded.
+  await canvas.click({ position: { x: 902, y: 164 }, delay: 180 });
   await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
   await page.keyboard.press("KeyP", { delay: 150 });
   await expect(canvas).toHaveAttribute("data-pointer-ui", "");
