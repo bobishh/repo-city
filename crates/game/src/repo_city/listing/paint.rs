@@ -196,7 +196,6 @@ pub(crate) fn draw(
         review
             .notes
             .iter()
-            .rev()
             .filter(|note| Review::on_snapshot(note, &repo.0) && note.anchor.includes(line))
             .max_by_key(|note| note.attention)
     });
