@@ -111,19 +111,63 @@ pub(super) fn approach(eye: &Transform, min: Vec3, max: Vec3) -> Option<f32> {
 #[derive(Clone, Copy)]
 pub(super) enum Part {
     Body,
+    Roof,
     Stripe(f32),
     Label,
     Beam,
     Mirror,
 }
 
-#[derive(Component)]
-pub(super) struct Attachment(pub usize, pub Part);
+pub(super) fn roof_rim() -> Mesh {
+    use bevy::{
+        asset::RenderAssetUsages,
+        mesh::{Indices, PrimitiveTopology},
+    };
+
+    let corners = [[-0.5, -0.5], [-0.5, 0.5], [0.5, 0.5], [0.5, -0.5]];
+    let positions: Vec<_> = corners
+        .into_iter()
+        .map(|[x, z]| [x, 0., z])
+        .chain(corners.into_iter().map(|[x, z]| [x * 0.96, 0., z * 0.96]))
+        .chain(corners.into_iter().map(|[x, z]| [x, -1., z]))
+        .collect();
+    let indices = (0..4)
+        .flat_map(|i| {
+            let next = (i + 1) % 4;
+            [
+                i,
+                next,
+                next + 4,
+                i,
+                next + 4,
+                i + 4,
+                i,
+                i + 8,
+                next + 8,
+                i,
+                next + 8,
+                next,
+            ]
+        })
+        .collect();
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0., 1., 0.]; 12])
+    .with_inserted_indices(Indices::U32(indices))
+}
 
 pub(super) fn transform(file: &repo_world::File, size: Vec3, part: Part) -> Transform {
     let [x, z] = file.position;
     match part {
         Part::Body => Transform::from_xyz(x, size.y / 2., z).with_scale(size),
+        Part::Roof => Transform::from_xyz(x, size.y + 0.003, z).with_scale(Vec3::new(
+            size.x + 2. * listing::PANEL_OFFSET,
+            (size.x * 0.013).clamp(0.035, 0.11),
+            size.z + 2. * listing::PANEL_OFFSET,
+        )),
         Part::Stripe(side) => {
             let width = size.x * 0.016;
             Transform::from_xyz(
@@ -149,28 +193,6 @@ pub(super) fn transform(file: &repo_world::File, size: Vec3, part: Part) -> Tran
     }
 }
 
-pub(super) fn sync(
-    repo: Res<Repo>,
-    explorer: Res<Explorer>,
-    mut last: Local<Option<(usize, Vec3)>>,
-    mut parts: Query<(&Attachment, &mut Transform)>,
-) {
-    let index = explorer.selected;
-    let Some(file) = repo.0.files.get(index) else {
-        return;
-    };
-    let size = explorer.facade_size(file, index);
-    if !repo.is_changed() && *last == Some((index, size)) {
-        return;
-    }
-    *last = Some((index, size));
-    for (attachment, mut pose) in &mut parts {
-        if attachment.0 == index {
-            pose.set_if_neq(transform(file, size, attachment.1));
-        }
-    }
-}
-
 #[derive(Component)]
 pub(super) struct FileBeam;
 
@@ -186,7 +208,7 @@ pub(super) fn reading_plane(
     camera: &Transform,
 ) -> Option<ReadingPlane> {
     let file = repo.files.get(explorer.selected)?;
-    let size = explorer.facade_size(file, explorer.selected);
+    let size = listing::block_size(file);
     let face = listing::Face::at_camera(file, size, camera, (size.x * 1.85).max(8.))?;
     let normal = face.normal();
     let [x, z] = file.position;
@@ -290,7 +312,7 @@ mod tests {
 
     #[test]
     fn mirror_covers_the_rear_face_from_ground_to_roof() {
-        let file = repo_world::File {
+        let mut file = repo_world::File {
             path: "demo.rs".into(),
             before: None,
             after: None,
@@ -298,7 +320,12 @@ mod tests {
             position: [70., 28.],
         };
         for count in [23, 724, 1614] {
-            let size = listing::block_size(&file, Some(count));
+            file.after = Some(repo_world::Blob {
+                id: String::new(),
+                size: count * 40,
+                mode: "100644".into(),
+            });
+            let size = listing::block_size(&file);
             let mirror = transform(&file, size, Part::Mirror);
             assert_eq!(mirror.scale.xy(), size.xy());
             assert_eq!(mirror.translation.y - mirror.scale.y / 2., 0.);

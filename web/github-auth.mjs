@@ -74,6 +74,11 @@ function endpoint(url) {
   const decoded = decodeURIComponent(path);
   if (decoded.includes("\x5c") || decoded.split("/").some(part => part === "." || part === "..")) return null;
   const target = new URL(path, API);
+  if (path.endsWith("/pulls") && url.searchParams.has("state")) {
+    const state = url.searchParams.get("state");
+    if (!["open", "closed", "all"].includes(state)) return null;
+    target.searchParams.set("state", state);
+  }
   for (const name of ["per_page", "page", "recursive", "sort"]) {
     if (!url.searchParams.has(name)) continue;
     const value = url.searchParams.get(name);

@@ -124,7 +124,7 @@ pub(crate) fn update(
         return;
     };
     let file = &repo.0.files[explorer.selected];
-    let size = explorer.facade_size(file, explorer.selected);
+    let size = super::block_size(file);
     let side = if Listing::visible(&explorer, &navigation) && !listing.turning() {
         Face::at_camera(file, size, &eye, (size.x * 1.85).max(5.)).and_then(|face| {
             let count = if face == Face::Diff {
@@ -316,7 +316,7 @@ pub(crate) fn mark(
     if count == 0 || row >= count {
         return;
     }
-    let side = WallSide::new(file, count, key.face, explorer.facade_size(file, key.file));
+    let side = WallSide::new(file, count, key.face, super::block_size(file));
     let cross = Vec3::Y.cross(side.normal());
     let start = side.top - cross * (side.width * 0.49) + side.normal() * 0.06;
     let line = start.with_y(side.wall.y(row as f32 + 0.5));

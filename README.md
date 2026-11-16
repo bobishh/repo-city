@@ -21,7 +21,9 @@ suggestions. Pick a comparison base to review a branch from its merge base.
 With no base specified, Repo City compares the revision with its first parent.
 A pull request opens its head tree and highlights changed lines in place. The
 diff wall also shows deleted lines. Paste a pull request URL or choose **Pull
-requests** after selecting its repository.
+requests** after selecting its repository. Closed and merged pull requests
+show their historical changes and comments. Publishing review notes requires
+an open pull request.
 
 Use **Sign in with GitHub** below the search to find your repositories, stars,
 and forks from the repository field. Under your GitHub handle, use **Choose

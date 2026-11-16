@@ -67,15 +67,11 @@ impl Hop {
         end: Transform,
         aim: Option<file_facade::Aim>,
         repo: &Repository,
-        explorer: &Explorer,
     ) -> Self {
         let mut hop = Self::new(start, end, Arrival::Facade(aim));
-        hop.roof = hop.roof.max(flight_roof(
-            start.translation,
-            end.translation,
-            repo,
-            explorer,
-        ));
+        hop.roof = hop
+            .roof
+            .max(flight_roof(start.translation, end.translation, repo));
         let climb = hop.roof - start.translation.y.min(end.translation.y);
         hop.duration = hop.duration.max((climb / 24. + 0.65).min(3.8));
         hop
@@ -383,13 +379,13 @@ pub(super) fn navigate(
             let end = listing.arrival_view(
                 &explorer,
                 file,
-                explorer.facade_size(file, explorer.selected),
+                listing::block_size(file),
                 aim,
                 hop.start.translation,
             );
             if hop.end != end {
-                // Source loading can resize the wall. Retarget from the current pose.
-                *hop = Hop::facade(*camera, end, aim, &repo.0, &explorer);
+                // Loaded rows can refine the arrival target on the wall.
+                *hop = Hop::facade(*camera, end, aim, &repo.0);
             }
         }
         hop.elapsed += time.delta_secs();
@@ -508,7 +504,7 @@ pub(super) fn navigate(
             .map(|index| (index, None))
     } else if let Some(aim) = pilot.shot.then_some(nearest.file).flatten().filter(|aim| {
         let file = &repo.0.files[aim.index];
-        let size = explorer.facade_size(file, aim.index);
+        let size = listing::block_size(file);
         nearest.near_source != Some(aim.index)
             && !aim.within_tool_reach(file, size, camera.translation, nearest.file_distance)
     }) {
@@ -535,7 +531,7 @@ pub(super) fn navigate(
         }
         explorer.rebuild = true;
         let file = &repo.0.files[index];
-        let size = explorer.facade_size(file, index);
+        let size = listing::block_size(file);
         explorer.frame_loaded_source = false;
         let end = listing.arrival_view(&explorer, file, size, aimed, camera.translation);
         if camera.translation.distance_squared(end.translation) < 0.04
@@ -543,7 +539,7 @@ pub(super) fn navigate(
         {
             return;
         }
-        let mut hop = Hop::facade(*camera, end, aimed, &repo.0, &explorer);
+        let mut hop = Hop::facade(*camera, end, aimed, &repo.0);
         if from_overview {
             hop.duration = hop.duration.min(1.65);
         }
@@ -561,7 +557,7 @@ pub(super) fn navigate(
     }
 }
 
-fn flight_roof(start: Vec3, end: Vec3, repo: &Repository, explorer: &Explorer) -> f32 {
+fn flight_roof(start: Vec3, end: Vec3, repo: &Repository) -> f32 {
     let origin = Vec3::new(start.x, 0., start.z);
     let offset = Vec3::new(end.x, 0., end.z) - origin;
     let distance = offset.length();
@@ -569,10 +565,9 @@ fn flight_roof(start: Vec3, end: Vec3, repo: &Repository, explorer: &Explorer) -
 
     repo.files
         .iter()
-        .enumerate()
-        .filter_map(|(index, file)| {
+        .filter_map(|file| {
             let [x, z] = file.position;
-            let size = explorer.facade_size(file, index);
+            let size = listing::block_size(file);
             let width = size.x / 2. + 1.;
             let depth = size.z / 2. + 1.;
             let hit = ray_box(
@@ -607,7 +602,7 @@ pub(super) fn draw(
         let index = aim.index;
         let file = &repo.0.files[index];
         let [x, z] = file.position;
-        let size = explorer.facade_size(file, index);
+        let size = listing::block_size(file);
         let height = size.y;
         let w = size.x / 2. + 0.08;
         let d = size.z / 2. + 0.08;

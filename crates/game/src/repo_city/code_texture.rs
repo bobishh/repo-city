@@ -1,4 +1,6 @@
 //! Tree-sitter syntax colors and independent diff backgrounds.
+use super::listing::Face;
+
 use bevy::{
     asset::RenderAssetUsages,
     image::{CompressedImageFormats, ImageSampler, ImageType},
@@ -187,6 +189,28 @@ pub(super) enum Coverage {
     Open,
 }
 
+pub(super) const FACADE_GLASS: [u8; 3] = [23, 29, 40];
+
+impl Coverage {
+    pub(super) const ALL: [Self; 3] = [Self::Closed, Self::Partial, Self::Open];
+
+    pub(super) fn accent(self) -> [u8; 3] {
+        match self {
+            Self::Closed => [130, 149, 184],
+            Self::Partial => [197, 160, 240],
+            Self::Open => [135, 237, 208],
+        }
+    }
+
+    pub(super) fn stroke(self) -> [u8; 3] {
+        match self {
+            Self::Closed => [85, 103, 129],
+            Self::Partial => [137, 121, 160],
+            Self::Open => [155, 196, 193],
+        }
+    }
+}
+
 pub(super) fn embedded_png(png: &[u8]) -> Image {
     Image::from_buffer(
         png,
@@ -209,18 +233,20 @@ pub(super) fn facade_overview(bands: impl ExactSizeIterator<Item = Coverage>) ->
     let count = bands.len();
     let bands: Vec<_> = bands.collect();
     let pixels = image.data.as_mut().expect("packed facade print");
+    let gutter = width * 91 / LISTING_WIDTH as usize;
     for (y, row) in pixels.chunks_exact_mut(width * 4).enumerate() {
-        let [r, g, b]: [u8; 3] = match bands[y * count / height] {
-            Coverage::Closed => [0, 0, 0],
-            Coverage::Partial => [17, 8, 0],
-            Coverage::Open => [0, 16, 12],
-        };
-        if r | g | b != 0 {
-            for pixel in row.chunks_exact_mut(4) {
-                pixel[0] = pixel[0].saturating_add(r);
-                pixel[1] = pixel[1].saturating_add(g);
-                pixel[2] = pixel[2].saturating_add(b);
-            }
+        let state = bands[y * count / height];
+        let accent = state.accent();
+        let stroke = state.stroke();
+        for (x, pixel) in row.chunks_exact_mut(4).enumerate() {
+            let rgb = if (gutter..gutter + 2).contains(&x) {
+                accent
+            } else if pixel[0] > 0 {
+                stroke
+            } else {
+                FACADE_GLASS
+            };
+            pixel[..3].copy_from_slice(&rgb);
         }
     }
     image
@@ -230,17 +256,29 @@ pub(super) fn listing_preview<'a>(
     count: usize,
     row: impl Fn(usize) -> (Option<&'a Line>, Mark),
     revealed: impl Fn(usize) -> bool,
+    face: Face,
 ) -> Image {
-    const WIDTH: usize = 128;
-    let height = (count * 2).clamp(64, 2048);
+    const WIDTH: usize = 256;
+    let height = (count * 4).clamp(64, 2048);
     let mut pixels = vec![0; WIDTH * height * 4];
     for (y, pixels) in pixels.chunks_exact_mut(WIDTH * 4).enumerate() {
         let index = y * count / height;
         let (line, mark) = row(index);
         let open = line.is_none_or(|line| revealed(line.number));
-        let background = listing_background(open, mark);
+        let coverage = if open {
+            Coverage::Open
+        } else {
+            Coverage::Closed
+        };
+        let background = listing_background(face, mark);
         for pixel in pixels.chunks_exact_mut(4) {
             pixel.copy_from_slice(&[background[0], background[1], background[2], 255]);
+        }
+        let gutter = WIDTH * 91 / LISTING_WIDTH as usize;
+        pixels[gutter * 4..gutter * 4 + 3].copy_from_slice(&coverage.accent());
+        if let Some(ink) = source_change_ink(face, mark) {
+            let change = WIDTH * 102 / LISTING_WIDTH as usize * 4;
+            pixels[change..change + 3].copy_from_slice(&ink);
         }
         if let Some(line) = line.filter(|line| !line.text.trim().is_empty()) {
             let start_y = (index * height).div_ceil(count);
@@ -248,20 +286,16 @@ pub(super) fn listing_preview<'a>(
             if y != (start_y + end_y - 1) / 2 {
                 continue;
             }
-            let mark = if open {
-                [113, 135, 146, 255]
-            } else {
-                [68, 91, 101, 255]
-            };
+            let stroke = coverage.stroke();
             let (start, end) = covered_span(&line.text);
             let start = start * WIDTH / LISTING_WIDTH as usize;
             let end = (end * WIDTH / LISTING_WIDTH as usize).max(start + 1);
             for x in start..end {
-                pixels[x * 4..x * 4 + 4].copy_from_slice(&mark);
+                pixels[x * 4..x * 4 + 3].copy_from_slice(&stroke);
             }
         }
     }
-    Image::new(
+    let mut image = Image::new(
         Extent3d {
             width: WIDTH as u32,
             height: height as u32,
@@ -271,17 +305,24 @@ pub(super) fn listing_preview<'a>(
         pixels,
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::default(),
-    )
+    );
+    image.sampler = ImageSampler::nearest();
+    image
 }
 
-fn listing_background(open: bool, mark: Mark) -> [u8; 3] {
-    match (open, mark) {
-        (false, Mark::Added) => [27, 56, 48],
-        (false, Mark::Removed) => [64, 40, 47],
-        (false, Mark::Context) => [28, 43, 50],
-        (true, Mark::Added) => [17, 56, 42],
-        (true, Mark::Removed) => [66, 27, 35],
-        _ => [9, 17, 23],
+fn listing_background(face: Face, mark: Mark) -> [u8; 3] {
+    match (face, mark) {
+        (Face::Diff, Mark::Added) => [17, 56, 42],
+        (Face::Diff, Mark::Removed) => [66, 27, 35],
+        _ => FACADE_GLASS,
+    }
+}
+
+pub(super) fn source_change_ink(face: Face, mark: Mark) -> Option<[u8; 3]> {
+    match (face, mark) {
+        (Face::Source, Mark::Added) => Some([74, 177, 129]),
+        (Face::Source, Mark::Removed) => Some([208, 107, 128]),
+        _ => None,
     }
 }
 
@@ -292,13 +333,13 @@ pub(super) fn covered_span(text: &str) -> (usize, usize) {
     (start, end)
 }
 
-pub fn listing(rows: &[(Option<Line>, Mark)], revealed: &impl Fn(usize) -> bool) -> Image {
-    listing_with_notes(rows, revealed, None)
+pub fn listing(rows: &[(Option<Line>, Mark)], face: Face) -> Image {
+    listing_with_notes(rows, face, None)
 }
 
 pub(super) fn listing_with_notes(
     rows: &[(Option<Line>, Mark)],
-    revealed: &impl Fn(usize) -> bool,
+    face: Face,
     notes: Option<&[String]>,
 ) -> Image {
     let width = LISTING_WIDTH;
@@ -311,19 +352,18 @@ pub(super) fn listing_with_notes(
     };
     for (index, (line, mark)) in rows.iter().enumerate() {
         let y = index as u32 * LISTING_ROW_PIXELS;
-        let open = line.as_ref().is_none_or(|line| revealed(line.number));
-        let background = listing_background(open, *mark);
-        canvas.band(y, y + LISTING_ROW_PIXELS, background);
-        if !open {
-            for py in y..y + LISTING_ROW_PIXELS {
-                for x in 91..96 {
+        canvas.band(y, y + LISTING_ROW_PIXELS, listing_background(face, *mark));
+        let accent = Coverage::Open.accent();
+        let change = source_change_ink(face, *mark);
+        for py in y..y + LISTING_ROW_PIXELS {
+            for x in 91..96 {
+                let pixel = ((py * width + x) * 4) as usize;
+                canvas.pixels[pixel..pixel + 3].copy_from_slice(&accent);
+            }
+            if let Some(ink) = change {
+                for x in 101..105 {
                     let pixel = ((py * width + x) * 4) as usize;
-                    let stripe = if (py + x) % 12 < 5 {
-                        [83, 148, 155, 255]
-                    } else {
-                        [35, 69, 77, 255]
-                    };
-                    canvas.pixels[pixel..pixel + 4].copy_from_slice(&stripe);
+                    canvas.pixels[pixel..pixel + 3].copy_from_slice(&ink);
                 }
             }
         }
@@ -350,23 +390,13 @@ pub(super) fn listing_with_notes(
         } else {
             106
         };
-        if open {
-            canvas.text(&line.text, text_start as f32, baseline, 20., |byte| {
-                ink(line
-                    .spans
-                    .iter()
-                    .find(|span| span.bytes.contains(&byte))
-                    .map_or(Kind::Plain, |span| span.kind))
-            });
-        } else if !line.text.trim().is_empty() {
-            let (start, end) = covered_span(&line.text);
-            for py in y + 12..y + 15 {
-                for px in (start + text_start - 106)..(end + text_start - 106).min(width as usize) {
-                    let pixel = ((py * width + px as u32) * 4) as usize;
-                    canvas.pixels[pixel..pixel + 4].copy_from_slice(&[68, 91, 101, 255]);
-                }
-            }
-        }
+        canvas.text(&line.text, text_start as f32, baseline, 20., |byte| {
+            ink(line
+                .spans
+                .iter()
+                .find(|span| span.bytes.contains(&byte))
+                .map_or(Kind::Plain, |span| span.kind))
+        });
     }
     Image::new(
         Extent3d {

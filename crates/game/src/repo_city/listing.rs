@@ -32,13 +32,17 @@ fn texture_row_height(width: f32) -> f32 {
     width * code_texture::LISTING_ROW_PIXELS as f32 / code_texture::LISTING_WIDTH as f32
 }
 
-pub(super) fn block_size(file: &repo_world::File, known_rows: Option<usize>) -> Vec3 {
+pub(super) fn block_size(file: &repo_world::File) -> Vec3 {
     let estimated = file
         .after
         .as_ref()
         .or(file.before.as_ref())
         .map_or(1, |blob| (blob.size as usize / 40).max(1));
-    let rows = known_rows.unwrap_or(estimated).max(1) as f32;
+    size_from_rows(estimated)
+}
+
+fn size_from_rows(rows: usize) -> Vec3 {
+    let rows = rows.max(1) as f32;
     let aspect = rows * texture_row_height(1.) + HEADING_RATIO;
     let height = (WIDTH * aspect).min(MAX_HEIGHT);
     let width = height / aspect;
@@ -46,7 +50,7 @@ pub(super) fn block_size(file: &repo_world::File, known_rows: Option<usize>) -> 
 }
 
 pub(super) fn view(file: &repo_world::File, count: usize) -> Transform {
-    view_from_size(file, count, block_size(file, (count > 0).then_some(count)))
+    view_from_size(file, count, block_size(file))
 }
 
 pub(super) fn view_from_size(file: &repo_world::File, count: usize, size: Vec3) -> Transform {
@@ -156,7 +160,8 @@ pub(super) fn draw_overview(
     repo: Res<Repo>,
     palette: Res<Palette>,
     mut listing: ResMut<Listing>,
-    mut facades: Query<(&Facade, &mut MeshMaterial3d<StandardMaterial>)>,
+    mut facades: Query<(&Facade, &mut MeshMaterial3d<StandardMaterial>), Without<FacadeRim>>,
+    mut rims: Query<(&FacadeRim, &mut MeshMaterial3d<StandardMaterial>), Without<Facade>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
@@ -174,6 +179,20 @@ pub(super) fn draw_overview(
         return;
     }
     let dirty = std::mem::take(&mut listing.overview_dirty);
+    let progress = |index| {
+        let file: &repo_world::File = &repo.0.files[index];
+        listing.reveal_progress.get(&(index, file.after.is_none()))
+    };
+    for (rim, mut material) in &mut rims {
+        if dirty.contains(&rim.0) {
+            let state = match progress(rim.0) {
+                None => code_texture::Coverage::Closed,
+                Some(progress) if progress.opened == progress.rows => code_texture::Coverage::Open,
+                Some(_) => code_texture::Coverage::Partial,
+            };
+            material.0 = palette.facade_rims[state as usize].clone();
+        }
+    }
     for (facade, mut material) in &mut facades {
         let index = facade.index;
         if !dirty.contains(&index) {
@@ -183,9 +202,7 @@ pub(super) fn draw_overview(
             material.0 = palette.facade_neutral.clone();
             continue;
         }
-        let before = repo.0.files[index].after.is_none();
-        let progress = listing.reveal_progress.get(&(index, before));
-        match progress {
+        match progress(index) {
             None => material.0 = palette.facade_closed.clone(),
             Some(progress) if progress.opened == progress.rows => {
                 material.0 = palette.facade_open.clone();
@@ -363,7 +380,7 @@ impl Listing {
 
     pub(super) fn diff_view(explorer: &Explorer, file: &repo_world::File, row: usize) -> Transform {
         let count = diff_rows(explorer);
-        let size = explorer.facade_size(file, explorer.selected);
+        let size = block_size(file);
         let side = WallSide::new(file, count, Face::Diff, size);
         let row = explorer.comparison.as_ref().map_or(0, |diff| {
             diff.rows
@@ -426,14 +443,9 @@ impl Listing {
         if count == 0 {
             return None;
         }
-        let row = WallSide::new(
-            file,
-            count,
-            Face::Source,
-            explorer.facade_size(file, explorer.selected),
-        )
-        .wall
-        .row(y, count);
+        let row = WallSide::new(file, count, Face::Source, block_size(file))
+            .wall
+            .row(y, count);
         let range = tile_rows(row, count);
         self.reveal(
             explorer.selected,
@@ -529,7 +541,7 @@ pub(super) fn controls(
         return;
     }
     let file = &repo.0.files[explorer.selected];
-    let size = explorer.facade_size(file, explorer.selected);
+    let size = block_size(file);
     let Ok(mut camera) = camera.single_mut() else {
         return;
     };
@@ -694,12 +706,7 @@ pub(super) fn wash_stream(
     }
     let count = explorer.highlighted.len();
     let file = &repo.0.files[explorer.selected];
-    let side = WallSide::new(
-        file,
-        count,
-        Face::Source,
-        explorer.facade_size(file, explorer.selected),
-    );
+    let side = WallSide::new(file, count, Face::Source, block_size(file));
     let Some(hit) = listing
         .readable_hit(&explorer, &side, camera, count)
         .filter(|_| {
@@ -1274,7 +1281,7 @@ pub(super) fn draw(
     }
 
     let file = &repo.0.files[explorer.selected];
-    let size = explorer.facade_size(file, explorer.selected);
+    let size = block_size(file);
     let source = WallSide::new(file, count, Face::Source, size);
     let diff_count = listing.diff_lines.len();
     let diff = WallSide::new(file, diff_count, Face::Diff, size);
@@ -1352,10 +1359,10 @@ pub(super) fn draw(
     let source_row = |index| (Some(&explorer.highlighted[index]), source_marks[index]);
     let diff_row = |index: usize| (diff_lines[index].0.as_ref(), diff_lines[index].1);
     render.preview(&source, source_tiles, count, || {
-        code_texture::listing_preview(count, source_row, is_revealed)
+        code_texture::listing_preview(count, source_row, is_revealed, Face::Source)
     });
     render.preview(&diff, diff_tiles, diff_count, || {
-        code_texture::listing_preview(diff_count, diff_row, |_| true)
+        code_texture::listing_preview(diff_count, diff_row, |_| true, Face::Diff)
     });
     if viewed != Some(Face::Source) {
         render.hide_side(source_tiles);
@@ -1430,7 +1437,7 @@ pub(super) fn draw(
             source_tiles,
             source.visible_height(camera),
             count,
-            |rows| code_texture::listing(&source_rows(rows), &|_| true),
+            |rows| code_texture::listing(&source_rows(rows), Face::Source),
             Some(TileDetails {
                 mask: &mask,
                 metadata: &metadata,
@@ -1442,7 +1449,7 @@ pub(super) fn draw(
             diff_tiles,
             diff.visible_height(camera),
             diff_count,
-            |rows| code_texture::listing(&diff_lines[rows], &|_| true),
+            |rows| code_texture::listing(&diff_lines[rows], Face::Diff),
             Some(TileDetails {
                 mask: &|_| u32::MAX,
                 metadata: &|rows, bits| cover::CoverRows::new(&diff_lines[rows], bits),
@@ -1455,7 +1462,11 @@ pub(super) fn draw(
             blame.visible_height(camera),
             count,
             |rows| {
-                code_texture::listing_with_notes(&source_rows(rows), &|_| true, attribution.notes())
+                code_texture::listing_with_notes(
+                    &source_rows(rows),
+                    Face::Blame,
+                    attribution.notes(),
+                )
             },
             None,
         ),
@@ -1471,12 +1482,7 @@ pub(super) fn smoke_side(explorer: &Explorer, file: &repo_world::File, blame: bo
     } else {
         diff_rows(explorer)
     };
-    let side = WallSide::new(
-        file,
-        count,
-        face,
-        explorer.facade_size(file, explorer.selected),
-    );
+    let side = WallSide::new(file, count, face, block_size(file));
     let focus = if count == 0 {
         side.wall.top * 0.5
     } else {
@@ -1507,6 +1513,19 @@ pub(super) fn smoke_blame_ready(listing: &Listing, count: usize) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn source_arrival_keeps_the_original_building_dimensions_when_rows_load() {
+        let mut file = fixture_file();
+        file.after = Some(repo_world::Blob {
+            id: String::new(),
+            size: 68_000,
+            mode: "100644".into(),
+        });
+        let unloaded = view(&file, 0);
+        let loaded = view(&file, 180);
+        assert_eq!(unloaded.translation.xz(), loaded.translation.xz());
+    }
+
     fn fixture_file() -> repo_world::File {
         repo_world::File {
             path: "test.rs".into(),
@@ -1517,11 +1536,21 @@ mod tests {
         }
     }
 
+    fn fixture_with_rows(rows: usize) -> repo_world::File {
+        let mut file = fixture_file();
+        file.before = Some(repo_world::Blob {
+            id: String::new(),
+            size: rows * 40,
+            mode: "100644".into(),
+        });
+        file
+    }
+
     #[test]
     fn readable_tiles_and_previews_keep_the_same_rows_on_distinct_depths() {
         let file = fixture_file();
         for face in [Face::Source, Face::Diff, Face::Blame] {
-            let side = WallSide::new(&file, 724, face, block_size(&file, Some(724)));
+            let side = WallSide::new(&file, 724, face, size_from_rows(724));
             let y = side.wall.y(381.5);
             let clear = Layer::Tile.pose(&side, y);
             let blurred = Layer::Preview.pose(&side, y);
@@ -1536,7 +1565,7 @@ mod tests {
     fn wash_can_only_reach_readable_source_under_the_reticle() {
         let file = fixture_file();
         for count in [1, 23, 329, 1394] {
-            let size = block_size(&file, Some(count));
+            let size = size_from_rows(count);
             let source = WallSide::new(&file, count, Face::Source, size);
             let row = 12.min(count - 1);
             let y = source.wall.y(row as f32 + 0.5);
@@ -1564,7 +1593,7 @@ mod tests {
     fn a_close_glancing_shot_cannot_reach_a_distant_row() {
         let file = fixture_file();
         let count = 700;
-        let size = block_size(&file, Some(count));
+        let size = size_from_rows(count);
         let source = WallSide::new(&file, count, Face::Source, size);
         let hit = source.top.with_y(4.);
         let eye = hit + Vec3::Y * 32. + Vec3::Z * (size.x * 0.84);
@@ -1578,7 +1607,7 @@ mod tests {
     fn visible_rows_keep_detail_when_the_reticle_slips_past_the_wall() {
         let file = fixture_file();
         let count = 300;
-        let size = block_size(&file, Some(count));
+        let size = size_from_rows(count);
         let source = WallSide::new(&file, count, Face::Source, size);
         let bottom = source.top.with_y(0.);
         let eye = bottom + Vec3::Z * (size.x * 0.8) + Vec3::Y * 6.;
@@ -1597,9 +1626,9 @@ mod tests {
     #[test]
     fn overview_marks_coverage_only_at_a_distance_and_keeps_progress() {
         use code_texture::Coverage;
-        let file = fixture_file();
         let count = 80;
-        let wall = WallSide::new(&file, count, Face::Source, block_size(&file, Some(count))).wall;
+        let file = fixture_with_rows(count);
+        let wall = WallSide::new(&file, count, Face::Source, size_from_rows(count)).wall;
         let mut repo = repository_picker::empty();
         repo.files.push(file.clone());
         let mut explorer = Explorer::new(0);
@@ -1608,6 +1637,7 @@ mod tests {
         let mut images = Assets::default();
         let mut materials = Assets::default();
         let neutral = materials.add(StandardMaterial::default());
+        let rims = Coverage::ALL.map(|_| materials.add(StandardMaterial::default()));
         let [closed, open] = [Coverage::Closed, Coverage::Open].map(|state| {
             materials.add(overview_material(
                 images.add(code_texture::facade_overview(std::iter::once(state))),
@@ -1620,6 +1650,7 @@ mod tests {
                 facade_closed: closed.clone(),
                 facade_open: open.clone(),
                 facade_neutral: neutral.clone(),
+                facade_rims: rims.clone(),
                 shell: default(),
                 edge: default(),
                 removed: default(),
@@ -1634,6 +1665,17 @@ mod tests {
             .world_mut()
             .spawn((Facade { index: 0 }, MeshMaterial3d(closed.clone())))
             .id();
+        let rim = app
+            .world_mut()
+            .spawn((FacadeRim(0), MeshMaterial3d(rims[0].clone())))
+            .id();
+        let rim_material = |app: &App| {
+            app.world()
+                .get::<MeshMaterial3d<StandardMaterial>>(rim)
+                .unwrap()
+                .0
+                .clone()
+        };
         app.world_mut().resource_mut::<Listing>().rendered = Some((0, true, count));
         let wash = |app: &mut App, row| {
             app.world_mut()
@@ -1651,6 +1693,7 @@ mod tests {
         wash(&mut app, 1.);
         app.update();
         assert_eq!(current(&app), neutral);
+        assert_eq!(rim_material(&app), rims[1]);
         assert_eq!(app.world().resource::<Assets<Image>>().len(), 2);
         let bands: Vec<_> = app.world().resource::<Listing>().reveal_progress[&(0, true)]
             .bands()
@@ -1664,6 +1707,35 @@ mod tests {
         let partial = current(&app);
         assert_ne!(partial, closed);
         assert_ne!(partial, open);
+        {
+            let materials = app.world().resource::<Assets<StandardMaterial>>();
+            let images = app.world().resource::<Assets<Image>>();
+            let rail = |material: &Handle<StandardMaterial>, band: usize| {
+                let texture = materials
+                    .get(material)
+                    .unwrap()
+                    .base_color_texture
+                    .as_ref()
+                    .unwrap();
+                let image = images.get(texture).unwrap();
+                let width = image.width() as usize;
+                let y = (2 * band + 1) * image.height() as usize / (2 * bands.len());
+                let start = (y * width + width * 91 / code_texture::LISTING_WIDTH as usize) * 4;
+                let pixels = image.data.as_ref().unwrap();
+                [pixels[start], pixels[start + 1], pixels[start + 2]]
+            };
+            let [r, g, b] = rail(&closed, 13);
+            assert!(b > 120 && b > r && b > g, "unread rail should read as blue");
+            let [r, g, b] = rail(&open, 0);
+            assert!(
+                g > 150 && g > r + 35 && b > r + 35,
+                "read rail should read as cyan"
+            );
+            assert_eq!(rail(&partial, 0), rail(&open, 0));
+            assert_eq!(rail(&partial, 13), rail(&closed, 13));
+            let [r, g, b] = rail(&partial, 12);
+            assert!(r > g && b > g, "a mixed band should read as violet");
+        }
         wash(&mut app, 17.);
         app.update();
         assert_eq!(current(&app), partial);
@@ -1673,6 +1745,7 @@ mod tests {
         }
         app.update();
         assert_eq!(current(&app), open);
+        assert_eq!(rim_material(&app), rims[2]);
         app.world_mut().resource_mut::<Listing>().rendered = Some((0, true, count));
         app.update();
         assert_eq!(current(&app), neutral);
@@ -1683,8 +1756,8 @@ mod tests {
 
     #[test]
     fn repeated_hits_keep_the_source_texture_and_update_its_mask() {
-        let file = fixture_file();
         let count = TILE_ROWS * 12;
+        let file = fixture_with_rows(count);
         let mut repo = repository_picker::empty();
         repo.files.push(file.clone());
         let mut explorer = Explorer::new(0);
@@ -1722,7 +1795,7 @@ mod tests {
             .unwrap()
             .translation
             .y;
-        let wall = WallSide::new(&file, count, Face::Source, block_size(&file, Some(count))).wall;
+        let wall = WallSide::new(&file, count, Face::Source, size_from_rows(count)).wall;
         assert!((first_y - next_y - TILE_ROWS as f32 * wall.row_height).abs() < 0.001);
         let y = wall.y(TILE_ROWS as f32 + 2.5);
         let preview = app
@@ -1784,10 +1857,10 @@ mod tests {
 
     #[test]
     fn opening_a_long_file_bounds_texture_work_per_frame() {
-        let file = fixture_file();
+        let count = 1614;
+        let file = fixture_with_rows(count);
         let mut repo = repository_picker::empty();
         repo.files.push(file.clone());
-        let count = 1614;
         let source = "let x = 1;\n".repeat(count);
         let mut explorer = Explorer::new(0);
         explorer.highlighted = syntax::highlight(&file.path, &source);
@@ -1811,7 +1884,7 @@ mod tests {
         app.update();
         assert!(app.world().resource::<Assets<Image>>().len() <= 7);
         let limit = 5 + TILES_PER_SIDE + RETIRING_TILES;
-        let source = WallSide::new(&file, count, Face::Source, block_size(&file, Some(count)));
+        let source = WallSide::new(&file, count, Face::Source, size_from_rows(count));
         for _ in 0..limit {
             app.update();
         }
@@ -1850,7 +1923,7 @@ mod tests {
                 assert_eq!(*app.world().get::<Transform>(entity).unwrap(), pose);
             }
         }
-        let diff = WallSide::new(&file, count + 1, Face::Diff, block_size(&file, Some(count)));
+        let diff = WallSide::new(&file, count + 1, Face::Diff, size_from_rows(count));
         // Walk around to the diff face without pressing G.
         *app.world_mut().get_mut::<Transform>(camera).unwrap() = diff.view(diff.wall.y(42.));
         app.update();
@@ -1863,12 +1936,12 @@ mod tests {
     #[test]
     fn source_and_block_share_both_edges_and_the_last_row() {
         let file = fixture_file();
-        let short = block_size(&file, Some(23));
-        let medium = block_size(&file, Some(329));
-        let tall = block_size(&file, Some(724));
+        let short = size_from_rows(23);
+        let medium = size_from_rows(329);
+        let tall = size_from_rows(724);
         assert!(short.y < 8. && tall.x < medium.x && tall.y <= MAX_HEIGHT);
         for rows in [1, 23, 329, 724, 1614] {
-            let size = block_size(&file, Some(rows));
+            let size = size_from_rows(rows);
             let side = WallSide::new(&file, rows, Face::Source, size);
             assert!((side.width - size.x).abs() < 0.001);
             assert!(side.wall.y(rows as f32).abs() < 0.001);
@@ -1880,7 +1953,7 @@ mod tests {
     #[test]
     fn long_diff_fills_its_wall_even_when_it_has_more_rows_than_source() {
         let file = fixture_file();
-        let size = block_size(&file, Some(1394));
+        let size = size_from_rows(1394);
         let side = WallSide::new(&file, 1620, Face::Diff, size);
         assert!((side.width - size.z).abs() < 0.001);
         assert!(side.wall.y(1620.).abs() < 0.001);
@@ -1896,9 +1969,9 @@ mod tests {
 
     #[test]
     fn scroll_stops_at_first_and_last_strip() {
-        let file = fixture_file();
         let count = 47;
-        let wall = WallSide::new(&file, count, Face::Source, block_size(&file, Some(count))).wall;
+        let file = fixture_with_rows(count);
+        let wall = WallSide::new(&file, count, Face::Source, size_from_rows(count)).wall;
         let first = view(&file, count).translation.y;
         let previous = wall.reading_height(first, count, -4.);
         assert!(previous < first);

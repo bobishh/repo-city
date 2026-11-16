@@ -6,7 +6,11 @@ use bevy::{
     shader::{Shader, ShaderRef},
 };
 
-use super::{Mark, TILE_ROWS, code_texture, syntax};
+use super::{
+    Face, Mark, TILE_ROWS,
+    code_texture::{self, Coverage},
+    syntax,
+};
 
 const SHADER: Handle<Shader> = uuid_handle!("8d39533e-ce71-4a9a-b51f-634d1cfe262d");
 pub(super) type Material = ExtendedMaterial<StandardMaterial, Cover>;
@@ -44,6 +48,10 @@ impl MaterialExtension for Cover {
 #[derive(Clone, Copy, Debug, PartialEq, Reflect, ShaderType)]
 pub(super) struct CoverRows {
     info: UVec4,
+    glass: Vec4,
+    source_changes: [Vec4; 3],
+    closed_accent: Vec4,
+    closed_stroke: Vec4,
     spans: [Vec4; TILE_ROWS],
     paint: [Vec4; TILE_ROWS],
 }
@@ -63,7 +71,15 @@ impl CoverRows {
             };
             *slot = Vec4::new(left as f32, right as f32, kind, 0.);
         }
+        let rgb = |[r, g, b]: [u8; 3]| Vec4::new(f32::from(r), f32::from(g), f32::from(b), 0.);
         Self {
+            glass: rgb(code_texture::FACADE_GLASS),
+            source_changes: [Mark::Context, Mark::Added, Mark::Removed].map(|mark| {
+                rgb(code_texture::source_change_ink(Face::Source, mark)
+                    .unwrap_or(code_texture::FACADE_GLASS))
+            }),
+            closed_accent: rgb(Coverage::Closed.accent()),
+            closed_stroke: rgb(Coverage::Closed.stroke()),
             info: UVec4::new(
                 mask,
                 rows.len() as u32,

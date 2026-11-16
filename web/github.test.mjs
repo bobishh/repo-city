@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { loadGitHub, parseRepository, searchCommits } from "./github.mjs";
+import { loadGitHub, loadPullRequests, parseRepository, searchCommits } from "./github.mjs";
 
 test("GitHub URLs are normalized to owner and repository", () => {
   assert.equal(parseRepository("https://github.com/owner/project.git"), "owner/project");
@@ -65,9 +65,38 @@ test("a fork pull request opens the full head, compares from its merge base and 
   ]);
 });
 
-test("a closed pull request reports the current support limit", async () => {
-  await assert.rejects(loadGitHub("https://github.com/owner/project/pull/17", "", "",
-    async () => Response.json({ state: "closed" })), /open pull requests/i);
+test("closed and merged PRs open the historical head and merge base", async () => {
+  for (const merged of [false, true]) {
+    const loaded = await loadGitHub("https://github.com/owner/project/pull/17", "", "", async url => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/pulls/17")) return Response.json({
+        state: "closed", merged, base: { sha: "before" }, head: { sha: "head", repo: null },
+      });
+      if (path.endsWith("/compare/before...head")) return Response.json({ merge_base_commit: { sha: "base" } });
+      return Response.json({ tree: [{
+        path: "src/lib.rs", type: "blob", mode: "100644", sha: path.split("/").at(-1), size: 3,
+      }] });
+    });
+    assert.equal(loaded.review.pullState, merged ? "merged" : "closed");
+    const snapshot = JSON.parse(loaded.snapshot);
+    assert.equal(snapshot.before["src/lib.rs"].id, "base");
+    assert.equal(snapshot.after["src/lib.rs"].id, "head");
+  }
+});
+
+test("the PR picker fetches and labels both active and historical pull requests", async () => {
+  const entries = await loadPullRequests("owner/project", async url => {
+    assert.equal(new URL(url).searchParams.get("state"), "all");
+    return Response.json([
+      { number: 3, state: "open", title: "Current" },
+      { number: 2, state: "closed", merged_at: "2026-11-16T12:00:00Z", title: "Shipped" },
+      { number: 1, state: "closed", title: "Abandoned" },
+    ]);
+  });
+  assert.match(entries[0].label, /Open/);
+  assert.match(entries[1].label, /Merged/);
+  assert.match(entries[2].label, /Closed/);
+  assert.equal(entries[2].value, "https://github.com/owner/project/pull/1");
 });
 
 test("revision suggestions preserve qualified names and label commits with subjects", async () => {
