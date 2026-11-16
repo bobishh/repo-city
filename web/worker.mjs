@@ -1,6 +1,9 @@
+import { handleGitHub } from "./github-auth.mjs";
+
 export default {
   async fetch(request, env) {
     const path = new URL(request.url);
+    if (path.pathname.startsWith("/github/")) return handleGitHub(request, env);
     if (path.pathname === "/game/repo_city_bg.wasm") {
       path.pathname += ".gz";
       const compressed = await env.ASSETS.fetch(new Request(path, request));

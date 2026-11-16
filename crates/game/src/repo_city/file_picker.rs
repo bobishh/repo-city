@@ -90,7 +90,7 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
                 left: px(if cfg!(target_arch = "wasm32") {
                     24.
                 } else {
-                    190.
+                    325.
                 }),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4.),

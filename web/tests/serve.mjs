@@ -1,3 +1,4 @@
+import { handleGitHub } from "../github-auth.mjs";
 import { createServer } from "node:http";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -7,6 +8,17 @@ const root = resolve("dist");
 const types = { ".html": "text/html", ".mjs": "text/javascript", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".webp": "image/webp", ".woff2": "font/woff2" };
 createServer(async (request, response) => {
   const { pathname } = new URL(request.url, "http://localhost");
+  if (pathname.startsWith("/github/")) {
+    const result = await handleGitHub(new Request(`http://${request.headers.host}${request.url}`, {
+      method: request.method, headers: request.headers,
+    }), process.env);
+    const headers = Object.fromEntries(result.headers);
+    const cookies = result.headers.getSetCookie();
+    if (cookies.length) headers["set-cookie"] = cookies;
+    response.writeHead(result.status, headers);
+    response.end(await result.text());
+    return;
+  }
   let path = resolve(root, pathname === "/" ? "index.html" : `.${pathname}`);
   if (!path.startsWith(root + sep)) {
     response.writeHead(404).end();

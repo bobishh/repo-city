@@ -31,17 +31,46 @@
           <h2 id="repository-title">Open repository</h2>
           <button id="close" type="button" aria-label="Close repository picker" hidden>×</button>
         </div>
-        <label>Public GitHub repository or pull request
+        <div id="github-account" hidden>
+          <button id="github-login" type="button">Sign in with GitHub</button>
+          <span id="github-user"></span>
+          <a id="github-install" target="_blank" rel="noopener noreferrer" hidden>Choose private repositories</a>
+          <button id="github-logout" type="button" hidden>Sign out</button>
+        </div>
+        <div id="github-library" hidden>
+          <label><span id="repository-group-label">GitHub list</span>
+            <select id="repository-group" aria-labelledby="repository-group-label">
+              <option value="repositories">Repositories</option>
+              <option value="stars">Stars</option>
+              <option value="forks">Forks</option>
+            </select>
+          </label>
+          <label><span id="repository-choice-label">Repository from GitHub</span>
+            <select id="repository-choice" aria-labelledby="repository-choice-label"></select>
+          </label>
+          <small id="library-status"></small>
+        </div>
+        <label>GitHub repository or pull request
           <input name="repo" placeholder="owner/repository or PR URL" autocomplete="off" spellcheck="false" required>
         </label>
         <div id="revisions">
           <label>Branch, tag, or commit
-            <input name="ref" placeholder="Default branch" autocomplete="off" spellcheck="false">
+            <input name="ref" list="ref-choices" placeholder="Default branch" autocomplete="off" spellcheck="false">
           </label>
           <label>Compare with
-            <input name="base" placeholder="Parent commit" autocomplete="off" spellcheck="false">
+            <input name="base" list="ref-choices" placeholder="Parent commit" autocomplete="off" spellcheck="false">
           </label>
         </div>
+        <div id="revision-picker" hidden>
+          <label><span id="revision-choices-label">Revision suggestions</span>
+            <select id="revision-choices" aria-labelledby="revision-choices-label" disabled><option>Choose a branch, tag, or commit</option></select>
+          </label>
+          <label><span id="revision-target-label">Use as</span>
+            <select id="revision-target" aria-labelledby="revision-target-label"><option value="ref">Revision</option><option value="base">Compare with</option></select>
+          </label>
+          <small id="revision-hint" aria-live="polite"></small>
+        </div>
+        <datalist id="ref-choices"></datalist>
         <div class="form-action">
           <p id="status" role="status"></p>
           <button type="submit">Open city</button>

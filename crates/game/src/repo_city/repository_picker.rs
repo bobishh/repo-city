@@ -10,8 +10,14 @@ use super::*;
 
 #[derive(Resource)]
 pub(super) struct RepositoryPicker {
-    requested: bool,
+    requested: Option<PickerAction>,
     status: String,
+}
+
+#[derive(Clone, Copy)]
+enum PickerAction {
+    Folder,
+    Revision,
 }
 
 #[derive(Component)]
@@ -20,7 +26,7 @@ pub(super) struct RepositoryStatus;
 impl RepositoryPicker {
     pub(super) fn new(status: String) -> Self {
         Self {
-            requested: false,
+            requested: None,
             status,
         }
     }
@@ -118,19 +124,70 @@ fn choose_folder(_: &Path) -> Result<Option<PathBuf>, String> {
     Err("Launch with --repo PATH to choose a repository on this platform.".into())
 }
 
+#[cfg(target_os = "macos")]
+fn choose_revision(repo: &Repository) -> Result<Option<String>, String> {
+    use objc2::{MainThreadMarker, MainThreadOnly};
+    use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSPopUpButton};
+    use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+
+    if repo.files.is_empty() {
+        return Err("Open a local repository first.".into());
+    }
+    let choices = repo_world::local_revisions(&repo.root)?;
+    let main = MainThreadMarker::new().ok_or("Revision picker needs the macOS main thread.")?;
+    let menu = NSPopUpButton::initWithFrame_pullsDown(
+        NSPopUpButton::alloc(main),
+        NSRect::new(NSPoint::ZERO, NSSize::new(510., 30.)),
+        false,
+    );
+    menu.removeAllItems();
+    for (_, label) in &choices {
+        menu.addItemWithTitle(&NSString::from_str(label));
+    }
+    if let Some(index) = choices
+        .iter()
+        .position(|(revision, _)| revision == &repo.revision)
+    {
+        menu.selectItemAtIndex(index as isize);
+    }
+    let alert = NSAlert::new(main);
+    alert.setMessageText(&NSString::from_str("Choose a revision"));
+    alert.addButtonWithTitle(&NSString::from_str("Open Revision"));
+    alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+    alert.setAccessoryView(Some(&menu));
+    if alert.runModal() != NSAlertFirstButtonReturn {
+        return Ok(None);
+    }
+    Ok(choices
+        .get(menu.indexOfSelectedItem() as usize)
+        .map(|(revision, _)| revision.clone()))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn choose_revision(_: &Repository) -> Result<Option<String>, String> {
+    Err("Launch with --rev REF to choose a revision on this platform.".into())
+}
+
 pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
     commands
         .spawn(Node {
             position_type: PositionType::Absolute,
             left: px(24.),
             top: px(77.),
+            column_gap: px(8.),
             ..default()
         })
         .with_children(|ui| {
             ui.spawn((
                 file_picker::button("Open Repository…", font, ink, AlignSelf::Auto),
                 observe(|_: On<Activate>, mut picker: ResMut<RepositoryPicker>| {
-                    picker.requested = true
+                    picker.requested = Some(PickerAction::Folder)
+                }),
+            ));
+            ui.spawn((
+                file_picker::button("Revisions…", font, ink, AlignSelf::Auto),
+                observe(|_: On<Activate>, mut picker: ResMut<RepositoryPicker>| {
+                    picker.requested = Some(PickerAction::Revision)
                 }),
             ));
         });
@@ -201,15 +258,26 @@ pub(super) fn open_repository(
     let shortcut = keys.just_pressed(KeyCode::KeyO)
         && keys.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight]);
     let mut opened = false;
-    if std::mem::take(&mut picker.requested) || (window.focused && shortcut) {
+    let action = picker
+        .requested
+        .take()
+        .or((window.focused && shortcut).then_some(PickerAction::Folder));
+    if let Some(action) = action {
         if let Ok(mut pilot) = pilot.single_mut() {
             pilot.captured = false;
         }
         cursor.grab_mode = CursorGrabMode::None;
         cursor.visible = true;
-        match choose_folder(&repo.0.root)
-            .and_then(|path| path.map(|path| load(&path, "HEAD", None)).transpose())
-        {
+        let next = match action {
+            PickerAction::Folder => choose_folder(&repo.0.root)
+                .and_then(|path| path.map(|path| load(&path, "HEAD", None)).transpose()),
+            PickerAction::Revision => choose_revision(&repo.0).and_then(|revision| {
+                revision
+                    .map(|revision| load(&repo.0.root, &revision, None))
+                    .transpose()
+            }),
+        };
+        match next {
             Ok(Some(next)) => {
                 window.title = window_title(&set, &next);
                 picker.status = remember(&next.root).err().unwrap_or_default();

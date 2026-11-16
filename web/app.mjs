@@ -2,6 +2,8 @@ import { loadGitHub, parsePullRequest } from "./github.mjs";
 import { createAnalytics } from "./analytics.mjs";
 import { browserKey } from "./analytics-config.mjs";
 import { createSyntaxCache } from "./syntax.mjs";
+import { githubRequest, suggestRevisions } from "./github-picker.mjs";
+import { setupPointer } from "./pointer.mjs";
 
 const analytics = createAnalytics(browserKey);
 analytics.pageView();
@@ -17,6 +19,7 @@ const logo = document.querySelector("#logo");
 const close = document.querySelector("#close");
 const submit = form.querySelector('button[type="submit"]');
 const syntax = createSyntaxCache();
+const releasePointer = setupPointer(canvas, dialog);
 let active;
 let running = false;
 let sourceVersion = 0;
@@ -28,6 +31,7 @@ if (parameters.get("pr")) form.elements.repo.value = parameters.get("pr");
 function toggleRevisionInputs() {
   const pull = Boolean(parsePullRequest(form.elements.repo.value));
   for (const name of ["ref", "base"]) form.elements[name].disabled = pull;
+  suggestRevisions();
 }
 
 function focusCanvas() {
@@ -39,7 +43,7 @@ logo.addEventListener("click", () => {
     form.elements.repo.focus();
     return;
   }
-  if (document.pointerLockElement === canvas) document.exitPointerLock();
+  releasePointer();
   close.hidden = false;
   if (form.parentElement !== dialog) dialog.append(form);
   if (!dialog.open) dialog.showModal();
@@ -52,17 +56,6 @@ dialog.addEventListener("keyup", event => event.stopPropagation());
 form.elements.repo.addEventListener("input", toggleRevisionInputs);
 toggleRevisionInputs();
 
-canvas.addEventListener("keydown", event => {
-  if (event.code === "Tab") {
-    event.preventDefault();
-    if (event.repeat) return;
-    if (document.pointerLockElement === canvas) document.exitPointerLock();
-    else canvas.requestPointerLock()?.catch(() => {});
-  }
-  if (event.code === "Escape" && document.pointerLockElement === canvas) {
-    document.exitPointerLock();
-  }
-});
 
 function stageRepository(repository) {
   active = { repository, blobs: new Map() };
@@ -89,10 +82,10 @@ async function openRepository(repo, ref, base) {
   status.textContent = running ? "Loading repository…" : "Loading repository and browser engine…";
   try {
     if (running) {
-      stageRepository(await loadGitHub(repo, pull ? null : ref, pull ? null : base));
+      stageRepository(await loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest));
     } else {
       const [repository, engine] = await Promise.all([
-        loadGitHub(repo, pull ? null : ref, pull ? null : base),
+        loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest),
         import("./game/repo_city.js"),
       ]);
       const graphics = await navigator.gpu?.requestAdapter();
@@ -153,4 +146,5 @@ form.addEventListener("submit", event => {
 });
 
 const initial = parameters.get("pr") || parameters.get("repo");
-if (initial) openRepository(initial, parameters.get("ref"), parameters.get("base"));
+if (parameters.has("github")) status.textContent = "GitHub sign-in did not complete.";
+if (initial && !parameters.has("picker")) openRepository(initial, parameters.get("ref"), parameters.get("base"));

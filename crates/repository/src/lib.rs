@@ -77,6 +77,62 @@ fn resolve_revision(root: &Path, rev: &str) -> Result<String, String> {
     }
     Ok(hash)
 }
+#[cfg(not(target_arch = "wasm32"))]
+pub fn local_revisions(root: &Path) -> Result<Vec<(String, String)>, String> {
+    let refs = git(
+        root,
+        &[
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--count=150",
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes",
+            "refs/tags",
+        ],
+    )?;
+    let commits = git(
+        root,
+        &[
+            "log",
+            "--all",
+            "-n",
+            "100",
+            "--format=%H%x09%s",
+            "HEAD",
+            "--",
+        ],
+    )?;
+    let mut choices = vec![("HEAD".into(), "HEAD · Current checkout".into())];
+    for reference in String::from_utf8_lossy(&refs).lines() {
+        if reference.starts_with("refs/remotes/") && reference.ends_with("/HEAD") {
+            continue;
+        }
+        if let Some((kind, name)) = reference
+            .strip_prefix("refs/")
+            .and_then(|path| path.split_once('/'))
+        {
+            let prefix = match kind {
+                "heads" => "Branch",
+                "remotes" => "Remote branch",
+                _ => "Tag",
+            };
+            choices.push((reference.into(), format!("{prefix} · {name}")));
+        }
+    }
+    for line in String::from_utf8_lossy(&commits).lines() {
+        if let Some((sha, message)) = line.split_once('\t')
+            && let Some(short) = sha.get(..10)
+        {
+            choices.push((
+                sha.into(),
+                format!("{short} · {}", message.chars().take(85).collect::<String>()),
+            ));
+        }
+    }
+    Ok(choices)
+}
+
 fn tree(root: &Path, rev: &str) -> Result<BTreeMap<String, Blob>, String> {
     let output = git(root, &["ls-tree", "-r", "-l", "-z", rev])?;
     let mut files = BTreeMap::new();
@@ -375,6 +431,30 @@ mod tests {
         assert_eq!(two.files[0].change, Change::Modified);
         assert_eq!(two.source(0, true).unwrap(), one.source(0, false).unwrap());
         assert_eq!(two.files[0].position, one.files[0].position);
+        git(&dir, &["branch", "review/old", &one.revision]).unwrap();
+        git(&dir, &["tag", "preview", &one.revision]).unwrap();
+        let choices = local_revisions(&dir).unwrap();
+        assert!(
+            choices
+                .iter()
+                .any(|(value, _)| value == "refs/heads/review/old")
+        );
+        assert!(
+            choices
+                .iter()
+                .any(|(value, _)| value == "refs/tags/preview")
+        );
+        let selected = choices
+            .iter()
+            .find(|(value, label)| value == &one.revision && label.ends_with(" · one"))
+            .unwrap();
+        assert_eq!(
+            Repository::open(&dir, &selected.0)
+                .unwrap()
+                .source(0, false)
+                .unwrap(),
+            "fn first() {}\n"
+        );
         let mut review = two.clone();
         let mut added = two.files[0].clone();
         added.path = "src/lib/sceneRuntime.ts".into();

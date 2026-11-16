@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 cargo build --locked -p repo-city --profile web-release --target wasm32-unknown-unknown
 output=web/dist
 mkdir -p "$output/game" "$output/assets"
-cp web/index.html web/style.css web/app.mjs web/github.mjs web/analytics.mjs web/syntax.mjs "$output/"
+cp web/index.html web/style.css web/app.mjs web/github.mjs web/analytics.mjs web/syntax.mjs web/github-picker.mjs web/pointer.mjs "$output/"
 # Keep the worker and each language out of the initial game download.
 rm -rf "$output/syntax-chunks"
 web/node_modules/.bin/esbuild web/syntax-worker.mjs --bundle --format=esm --splitting \

@@ -19,8 +19,8 @@ avian3d = { version = "0.8", default-features = false, features = ["3d", "parry-
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSString", "NSURL"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow", "NSAlert", "NSButton", "NSControl", "NSPopUpButton", "NSView"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSString", "NSURL", "NSGeometry", "objc2-core-foundation"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bevy = { version = "0.20", default-features = true }

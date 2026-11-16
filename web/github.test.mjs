@@ -69,3 +69,19 @@ test("a closed pull request reports the current support limit", async () => {
   await assert.rejects(loadGitHub("https://github.com/owner/project/pull/17", "", "",
     async () => Response.json({ state: "closed" })), /open pull requests/i);
 });
+
+test("revision suggestions preserve qualified names and label commits with subjects", async () => {
+  const { loadRevisions } = await import("./github.mjs");
+  const fixture = new Map([
+    ["branches", [{ name: "feature/flight" }]],
+    ["tags", [{ name: "v2" }]],
+    ["commits", [{ sha: "a".repeat(40), commit: { message: "Move the city\n\nDetails" } }]],
+  ]);
+  const items = await loadRevisions("owner/project", async url =>
+    Response.json(fixture.get(new URL(url).pathname.split("/").at(-1))));
+  assert.deepEqual(items, [
+    { ref: "refs/heads/feature/flight", label: "Branch · feature/flight" },
+    { ref: "refs/tags/v2", label: "Tag · v2" },
+    { ref: "a".repeat(40), label: "aaaaaaa · Move the city" },
+  ]);
+});

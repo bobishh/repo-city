@@ -17,20 +17,68 @@ export function parsePullRequest(input) {
   return { name: `${match[1]}/${match[2]}`, number: match[3] };
 }
 
+const headers = { Accept: "application/vnd.github+json" };
+
+async function readGitHub(request, path) {
+  const response = await request(API + path, { headers });
+  if (!response.ok) {
+    if (response.status === 403 || response.status === 429) throw new Error("GitHub request limit or access restriction. Try again later.");
+    if (response.status === 404) throw new Error("Repository, revision, or file not found. Private repositories need GitHub access.");
+    throw new Error(`GitHub returned HTTP ${response.status}.`);
+  }
+  return response;
+}
+
+export async function loadRevisions(input, request = fetch) {
+  const path = "/repos/" + parseRepository(input);
+  const groups = await Promise.allSettled(["branches?per_page=100", "tags?per_page=50", "commits?per_page=30"]
+    .map(async resource => (await readGitHub(request, `${path}/${resource}`)).json()));
+  if (groups.every(group => group.status === "rejected")) throw groups[0].reason;
+  const [branches, tags, commits] = groups.map(group =>
+    group.status === "fulfilled" && Array.isArray(group.value) ? group.value : []);
+  return [
+    ...branches.map(({ name }) => ({ ref: `refs/heads/${name}`, label: `Branch · ${name}` })),
+    ...tags.map(({ name }) => ({ ref: `refs/tags/${name}`, label: `Tag · ${name}` })),
+    ...commits.map(({ sha, commit }) => ({ ref: sha, label: `${sha.slice(0, 7)} · ${commit.message.split("\n")[0]}` })),
+  ];
+}
+
+export async function loadLibrary(login, request) {
+  async function pages(path, field) {
+    const items = [];
+    for (let page = 1; page <= 10; page++) {
+      const separator = path.includes("?") ? "&" : "?";
+      const response = await readGitHub(request, `${path}${separator}per_page=100&page=${page}`);
+      const data = await response.json();
+      items.push(...(field ? data[field] : data));
+      if (!response.headers.get("link")?.includes('rel="next"')) break;
+    }
+    return items;
+  }
+  const [mine, stars, installations] = await Promise.allSettled([
+    pages(`/users/${encodeURIComponent(login)}/repos?sort=pushed`),
+    pages("/user/starred"),
+    pages("/user/installations", "installations"),
+  ]);
+  const installed = await Promise.allSettled((installations.value ?? []).map(({ id }) =>
+    pages(`/user/installations/${id}/repositories`, "repositories")));
+  const grants = installed.flatMap(result => result.value ?? []);
+  const own = [...(mine.value ?? []), ...grants];
+  const byName = list => [...new Map(list.map(repo => [repo.full_name, repo])).values()]
+    .sort((a, b) => a.full_name.localeCompare(b.full_name));
+  return {
+    repositories: byName(own.filter(repo => !repo.fork)),
+    forks: byName(own.filter(repo => repo.fork)),
+    stars: byName(stars.value ?? []),
+    partial: [...[mine, stars, installations], ...installed].some(group => group.status === "rejected"),
+  };
+}
+
 export async function loadGitHub(input, ref, base, request = fetch) {
   const pull = parsePullRequest(input);
   const name = pull?.name ?? parseRepository(input);
-  async function read(path, repository = name) {
-    const response = await request(`${API}/repos/${repository}${path}`, {
-      headers: { Accept: "application/vnd.github+json" },
-    });
-    if (!response.ok) {
-      if (response.status === 403 || response.status === 429) throw new Error("GitHub request limit or access restriction. Try again later.");
-      if (response.status === 404) throw new Error("Public repository, revision, or file not found.");
-      throw new Error(`GitHub returned HTTP ${response.status}.`);
-    }
-    return response.json();
-  }
+  const read = async (path, repository = name) =>
+    (await readGitHub(request, `/repos/${repository}${path}`)).json();
 
   let head, baseline, headRepository = name;
   if (pull) {

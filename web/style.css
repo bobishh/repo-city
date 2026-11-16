@@ -65,7 +65,7 @@ h2 { color: #a8f7e4; margin: 0; font-size: 1.04rem; }
 #close { padding: 2px 8px; font-size: 1.2rem; }
 label { display: grid; gap: 5px; min-width: 0; color: #cee3e8; font-size: .83rem; }
 input, button { min-width: 0; border: 1px solid #47717a; background: #132934; color: inherit; font: inherit; border-radius: 0; padding: .48rem .6rem; }
-input:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid #91fbdf; outline-offset: 3px; }
+input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid #91fbdf; outline-offset: 3px; }
 button { cursor: pointer; }
 button:disabled { cursor: wait; opacity: .65; }
 button:hover:not(:disabled, #logo) { background: #20515a; }
@@ -80,3 +80,12 @@ button[type="submit"] { white-space: nowrap; border-color: #8ef6d9; color: #caff
   :root:not([data-playing]) .wordmark { font-size: 3rem; }
   form { gap: 9px; }
 }
+
+
+#github-account { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: .77rem; }
+#github-account a { color: #a8f7e4; }
+#github-library, #revision-picker { display: grid; grid-template-columns: minmax(92px, 0.45fr) minmax(0, 1fr); gap: 5px 10px; }
+#revision-picker { grid-template-columns: minmax(0, 1fr) minmax(98px, .40fr); }
+#github-library small, #revision-picker small { grid-column: 1 / -1; color: #a8c6cc; }
+#github-library small:empty, #revision-picker small:empty { display: none; }
+select { min-width: 0; width: 100%; color: inherit; font: inherit; padding: .48rem .5rem; border: 1px solid #47717a; border-radius: 0; background: #132934; }
