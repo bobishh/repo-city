@@ -780,12 +780,19 @@ test("publishes a painted preset in one action and still supports suggestions", 
   await expect(resolved).toBeVisible();
   await review.getByRole("button", { name: "Fly to next mention" }).click();
   await expect(review).toBeHidden();
+  await lock();
+  await page.keyboard.press("KeyJ", { delay: 120 });
+  await expect(review.getByRole("heading", { name: "Review · PR #8" })).toBeHidden();
   await expect.poll(async () => {
+    const title = await review.evaluate(dialog => dialog.open ? dialog.querySelector("h2").textContent : null);
+    if (title === "src/demo.rs:25") return true;
+    if (title !== null) {
+      await review.getByRole("button", { name: "Close", exact: true }).click();
+      return false;
+    }
     if (!await page.evaluate(() => Boolean(document.pointerLockElement))) await lock();
     await page.keyboard.press("KeyJ", { delay: 120 });
-    const aimed = await review.getByRole("heading", { name: "src/demo.rs:25" }).isVisible();
-    if (!aimed && await review.isVisible()) await review.getByRole("button", { name: "Close", exact: true }).click();
-    return aimed;
+    return false;
   }, { timeout: 20_000 }).toBe(true);
   await expect(review.getByText("Separate note")).toBeVisible();
   await expect(review.getByText("Got it, @Reviewer. Check the line above.")).toBeVisible();

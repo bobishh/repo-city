@@ -103,7 +103,7 @@ reading progress leaves notes and paints in place.
 On a signed-in review, unresolved inline comments that mention your GitHub
 handle are marked in gold until you view them. Open **Review notes** and
 choose **Fly to next mention**. Click the city to capture the cursor and
-press **J** at the marked lines.
+press **J** once the camera reaches the marked lines.
 **Mark viewed on GitHub 👀** adds the reaction from your account and restores
 the thread's usual color when you have marked its mentions viewed.
 

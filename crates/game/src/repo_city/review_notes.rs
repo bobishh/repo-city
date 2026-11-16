@@ -268,6 +268,7 @@ pub(super) fn update(
     mut review: ResMut<Review>,
     picker: Res<file_picker::FilePicker>,
     menu: Res<city_menu::Menu>,
+    navigation: Res<city_navigation::Navigation>,
     camera: Query<&Pilot, PlayerCamera>,
 ) {
     review.washing = false;
@@ -323,7 +324,7 @@ pub(super) fn update(
     } else if pilot.captured {
         if keys.just_pressed(KeyCode::KeyU) && review.can_paint {
             review.request = Some(Panel::Paints);
-        } else if keys.just_pressed(KeyCode::KeyJ) {
+        } else if keys.just_pressed(KeyCode::KeyJ) && !navigation.is_flying() {
             review.request = Some(Panel::Aimed);
         }
         if let Some(slot) = SLOTS.iter().position(|key| keys.just_pressed(*key)) {

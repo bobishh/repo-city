@@ -160,11 +160,11 @@ impl Navigation {
     }
 
     pub(super) fn guides_camera(&self) -> bool {
-        self.hop.is_some() || self.route.is_some()
+        self.is_flying() || self.route.is_some()
     }
 
     pub(super) fn is_flying(&self) -> bool {
-        self.hop.is_some()
+        self.hop.is_some() || self.review_line.is_some()
     }
 
     pub(super) fn route_status(&self) -> Option<String> {
