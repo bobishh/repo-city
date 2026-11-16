@@ -125,23 +125,27 @@ export async function handleGitHub(request, env, upstream = fetch) {
       failure.searchParams.set("github", "failed");
       const failed = () => redirect(failure.pathname + failure.search, [clear]);
       if (!flow || !code || url.searchParams.get("state") !== flow.state) return failed();
-      const exchange = await upstream("https://github.com/login/oauth/access_token", {
-        method: "POST",
-        headers: { Accept: "application/json" },
-        body: new URLSearchParams({
-          client_id: id, client_secret: secret, code, redirect_uri: callback, code_verifier: flow.verifier,
-        }),
-        redirect: "error",
-      });
-      if (!exchange.ok) return failed();
-      const { access_token: token, expires_in: expires } = await exchange.json();
-      if (typeof token !== "string" || !token.startsWith("ghu_")) return failed();
-      const profile = await upstream(API + "/user", { headers: github(token), redirect: "error" });
-      if (!profile.ok) return failed();
-      const { login } = await profile.json();
-      if (typeof login !== "string" || !/^[\w-]+$/.test(login)) return failed();
-      const age = Math.max(1, Math.min(28_800, Number(expires) || 28_800));
-      return redirect(flow.returnTo, [clear, await setCookie(SESSION, { token, login }, age, secret)]);
+      try {
+        const exchange = await upstream("https://github.com/login/oauth/access_token", {
+          method: "POST",
+          headers: { Accept: "application/json" },
+          body: new URLSearchParams({
+            client_id: id, client_secret: secret, code, redirect_uri: callback, code_verifier: flow.verifier,
+          }),
+          redirect: "manual",
+        });
+        if (!exchange.ok) return failed();
+        const { access_token: token, expires_in: expires } = await exchange.json();
+        if (typeof token !== "string" || !token.startsWith("ghu_")) return failed();
+        const profile = await upstream(API + "/user", { headers: github(token), redirect: "manual" });
+        if (!profile.ok) return failed();
+        const { login } = await profile.json();
+        if (typeof login !== "string" || !/^[\w-]+$/.test(login)) return failed();
+        const age = Math.max(1, Math.min(28_800, Number(expires) || 28_800));
+        return redirect(flow.returnTo, [clear, await setCookie(SESSION, { token, login }, age, secret)]);
+      } catch {
+        return failed();
+      }
     }
     const target = path.startsWith("/github/api/") && endpoint(url);
     if (!target) return json({ error: "Unknown GitHub route." }, 404);
@@ -156,7 +160,12 @@ export async function handleGitHub(request, env, upstream = fetch) {
         return json({ error: "GitHub redirected this request." }, 404);
       }
       await response.body?.cancel();
-      return relay(await upstream(next, { headers: github(session.token), redirect: "error" }));
+      const renamed = await upstream(next, { headers: github(session.token), redirect: "manual" });
+      if (renamed.status >= 300 && renamed.status < 400) {
+        await renamed.body?.cancel();
+        return json({ error: "GitHub redirected this request." }, 404);
+      }
+      return relay(renamed);
     }
     return relay(response);
   } catch {
