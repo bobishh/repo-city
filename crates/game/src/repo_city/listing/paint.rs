@@ -1,6 +1,25 @@
 //! Paint follows the line mapping shared with the source and diff walls.
 use super::*;
 
+pub(super) fn pigments(
+    rows: Range<usize>,
+    source_line: impl Fn(usize) -> Option<(bool, usize)>,
+    marks: &[(&review_notes::Anchor, Vec4)],
+) -> [Vec4; TILE_ROWS] {
+    let mut paint = [Vec4::ZERO; TILE_ROWS];
+    for (slot, index) in rows.enumerate() {
+        let Some((before, line)) = source_line(index) else {
+            continue;
+        };
+        if let Some((_, color)) = marks.iter().rev().find(|(anchor, _)| {
+            anchor.before == before && (anchor.start..=anchor.end).contains(&line)
+        }) {
+            paint[slot] = *color;
+        }
+    }
+    paint
+}
+
 // Paint uses the exact same ray, wall geometry, and line mapping as the reader.
 pub(crate) fn draw(
     mut gizmos: Gizmos,
@@ -71,7 +90,7 @@ pub(crate) fn draw(
             if nearest
                 .file
                 .is_none_or(|aim| aim.index == explorer.selected)
-                && let Some(hit) = side.wash_hit(camera, count)
+                && let Some(hit) = listing.readable_hit(&explorer, &side, camera, count)
             {
                 let row = side.wall.row(hit.y, count);
                 let point = match face {
@@ -209,8 +228,8 @@ pub(crate) fn draw(
                 match review.save_draft(&repo.0, anchor) {
                     Ok(note) => {
                         review.aim_note = Some(note.id);
-                        explorer.notice =
-                            "Draft saved. Aim at the mark and press J to open it.".into()
+                        review.request = Some(review_notes::Panel::Aimed);
+                        explorer.notice = "Draft saved. Press J to reopen an aimed note.".into();
                     }
                     Err(error) => explorer.notice = error,
                 }

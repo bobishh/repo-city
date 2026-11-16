@@ -44,6 +44,7 @@ struct Hop {
 enum Arrival {
     Facade(Option<file_facade::Aim>),
     Stop,
+    ReviewWall,
     Comparison,
     Overview,
 }
@@ -85,7 +86,11 @@ impl Hop {
         let eased = t * t * (3. - 2. * t);
         let lift = (self.start.translation.distance(self.end.translation) * 0.18).clamp(6., 34.);
         let mut translation = self.start.translation.lerp(self.end.translation, eased);
-        translation.y += lift * (std::f32::consts::PI * eased).sin().max(0.);
+        if !matches!(self.arrival, Arrival::Stop | Arrival::ReviewWall)
+            || self.start.translation.xz() != self.end.translation.xz()
+        {
+            translation.y += lift * (std::f32::consts::PI * eased).sin().max(0.);
+        }
         let mut rotation = self.start.rotation.slerp(self.end.rotation, eased);
         if matches!(self.arrival, Arrival::Facade(_)) {
             let smooth = |v: f32| {
@@ -179,17 +184,17 @@ impl Navigation {
     }
 
     pub(super) fn prompt(&self, explorer: &Explorer) -> String {
-        if self.hop.is_some() {
+        if self.hop.is_some() && self.route.is_none() {
             return "Flying to destination · Esc to cancel".into();
         }
         if let Some(route) = &self.route {
             let last = route.current + 1 == route.stops.len();
             let hint = match (route.kind, last) {
                 (RouteKind::Review, true) => {
-                    "W flies to the full diff · S goes back · Esc returns to the city"
+                    "W finishes review · S goes down · Q returns to the diff wall"
                 }
                 (RouteKind::Review, false) => {
-                    "W flies to the next change · S goes back · Esc returns to the city"
+                    "W goes up · S goes down · Q returns to the diff wall"
                 }
                 (RouteKind::Trace, true) => "End of stack trace · S to go back · Esc to leave",
                 (RouteKind::Trace, false) => "W to follow the stack · S to go back · Esc to leave",
@@ -253,11 +258,7 @@ fn stop_position(route: &Route, index: usize, repo: &Repository, selected: usize
     match route.stops[index] {
         Stop::Review { .. } => {
             let [x, z] = repo.files[selected].position;
-            Vec3::new(
-                x + index as f32 * 18.,
-                PLATFORM_HEIGHT,
-                z - index as f32 * 15.,
-            )
+            Vec3::new(x, PLATFORM_HEIGHT + index as f32 * 13., z)
         }
         Stop::Trace { file, .. } => {
             let [x, z] = repo.files[file].position;
@@ -346,6 +347,24 @@ pub(super) fn navigate(
         return;
     }
 
+    let reviewing = navigation
+        .route
+        .as_ref()
+        .is_some_and(|route| route.kind == RouteKind::Review);
+    if reviewing && keys.just_pressed(KeyCode::Escape) {
+        return;
+    }
+    if reviewing && keys.just_pressed(KeyCode::KeyQ) {
+        let route = navigation.route.take().expect("review route");
+        let Stop::Review { row, .. } = route.stops[route.current] else {
+            unreachable!()
+        };
+        let file = &repo.0.files[explorer.selected];
+        let end = listing::Listing::diff_view(&explorer, file, row);
+        navigation.hop = Some(Hop::new(*camera, end, Arrival::ReviewWall));
+        navigation.redraw = true;
+        return;
+    }
     if keys.just_pressed(KeyCode::Escape) {
         listing.reset_view();
         let leaving_view = navigation.guides_camera() || explorer.comparison_mode > 0;
@@ -410,7 +429,7 @@ pub(super) fn navigate(
                     }
                     navigation.redraw = true;
                 }
-                Arrival::Facade(_) | Arrival::Overview => {}
+                Arrival::Facade(_) | Arrival::Overview | Arrival::ReviewWall => {}
             }
         }
         return;
@@ -945,6 +964,40 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(rows, (0..80).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn review_platforms_stack_and_the_camera_does_not_overshoot() {
+        let mut repo = repository_picker::empty();
+        repo.files.push(repo_world::File {
+            path: "test.rs".into(),
+            before: None,
+            after: None,
+            change: Change::Modified,
+            position: [31., -19.],
+        });
+        let route = Route {
+            kind: RouteKind::Review,
+            stops: (0..2)
+                .map(|row| Stop::Review {
+                    hunk: 0,
+                    row,
+                    count: 1,
+                })
+                .collect(),
+            current: 0,
+        };
+        let lower = stop_position(&route, 0, &repo, 0);
+        let upper = stop_position(&route, 1, &repo, 0);
+        assert_eq!(lower.xz(), upper.xz());
+        assert!(lower.y < upper.y);
+        let hop = Hop::new(
+            Transform::from_translation(upper),
+            Transform::from_translation(lower),
+            Arrival::Stop,
+        );
+        assert!((lower.y..upper.y).contains(&hop.pose(0.2).translation.y));
+        assert!((lower.y..upper.y).contains(&hop.pose(0.8).translation.y));
     }
 
     #[test]

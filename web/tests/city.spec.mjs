@@ -23,6 +23,8 @@ test("shows the guide once and keeps it available from the help button", async (
     return route.fulfill({ json: { size: source.length, encoding: "base64", content: Buffer.from(source).toString("base64") } });
   });
   await page.goto("/");
+  await expect(page.getByRole("link", { name: "Source on GitHub" })).toHaveAttribute("href", "https://github.com/bobishh/repo-city");
+  await expect(page.getByRole("link", { name: "Build for Mac" })).toHaveAttribute("href", "https://github.com/bobishh/repo-city#on-your-mac");
   const guide = page.getByRole("dialog", { name: "Take a quick tour" });
   const help = page.getByRole("button", { name: "How to use Repo City" });
   await expect(guide).toBeHidden();
@@ -39,6 +41,7 @@ test("shows the guide once and keeps it available from the help button", async (
   }
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
   await expect(page.locator("canvas")).toBeVisible();
+  expect(await page.evaluate(() => globalThis.repoCity.reviewCanPaint())).toBe(false);
   await expect(guide).toBeVisible();
   await expect(guide.getByText("Click the Repo City logo to open the repository picker.")).toBeVisible();
   await guide.getByRole("button", { name: "Skip", exact: true }).click();
@@ -112,7 +115,7 @@ test("opens a public repository and fetches source after the WASM city starts", 
     scroll: window.scrollY,
   }))).toEqual({ top: 0, scroll: 0 });
   expect(await syntax).not.toBeNull();
-  await expect.poll(() => page.evaluate(() => globalThis.repoCity.syntaxVersion())).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => globalThis.repoCity.syntaxVersion()), { timeout: 30_000 }).toBeGreaterThan(0);
   const cdp = await page.context().newCDPSession(page);
   const { x, y, width, height } = await canvas.boundingBox();
   let png;
@@ -223,6 +226,15 @@ test("the first canvas click captures the pointer and Escape releases it", async
   await page.keyboard.press("Escape");
   await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id ?? null)).toBeNull();
   await expect(canvas).not.toHaveCSS("cursor", "none");
+  await canvas.evaluate(element => {
+    const request = element.requestPointerLock;
+    element.requestPointerLock = function () {
+      this.requestPointerLock = request;
+      // Simulate a browser request that disappears without an event or promise.
+    };
+  });
+  await canvas.click({ position: { x: 400, y: 300 } });
+  expect(await page.evaluate(() => document.pointerLockElement)).toBeNull();
   await canvas.evaluate(element => element.setAttribute("data-pointer-ui", ""));
   await canvas.click({ position: { x: 400, y: 300 } });
   expect(await page.evaluate(() => document.pointerLockElement)).toBeNull();
@@ -570,7 +582,7 @@ test("restores review progress after reload and resets only the open comparison"
   await expect.poll(() => read(JSON.stringify(["owner/demo", next, before])), polling).toEqual([visited]);
 });
 
-test("paints a PR range, previews an explicit GitHub comment, and restores the note after reload", async ({ page }) => {
+test("paints a PR range, publishes a GitHub suggestion explicitly, and restores the note after reload", async ({ page }) => {
   await emulatePointerLock(page);
   const installUrl = "https://github.com/apps/repo-city-viewer/installations/new";
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: true, login: "reviewer", installUrl } }));
@@ -620,6 +632,7 @@ test("paints a PR range, previews an explicit GitHub comment, and restores the n
   };
   const review = page.locator("#review-dialog");
   await lock();
+  expect(await page.evaluate(() => globalThis.repoCity.reviewCanPaint())).toBe(true);
   await page.mouse.down();
   await expect(page.locator("#progress-summary")).toHaveText(/[1-9]\d* lines revealed/, { timeout: 40_000 });
   await page.mouse.up();
@@ -642,8 +655,11 @@ test("paints a PR range, previews an explicit GitHub comment, and restores the n
   if (await draft.isVisible()) await draft.click();
   await expect(review.getByLabel("Comment")).toBeVisible();
   await review.getByLabel("Comment").fill("Check this specific behavior.");
-  await review.getByRole("button", { name: "Preview GitHub comment" }).click();
+  await review.getByRole("button", { name: "Suggest replacement" }).click();
+  await review.getByLabel("Replacement code").fill("    // proposed replacement");
+  await review.getByRole("button", { name: "Preview GitHub suggestion" }).click();
   await expect(review.getByText("Check this specific behavior.", { exact: false }).last()).toBeVisible();
+  await expect(review.getByText("    // proposed replacement", { exact: false })).toBeVisible();
   await expect(review.getByText("Publishing requires write access to pull requests.")).toBeVisible();
   await expect(review.getByRole("link", { name: "Manage repository access" })).toHaveAttribute("href", installUrl);
   expect(posts).toHaveLength(0);
@@ -651,7 +667,7 @@ test("paints a PR range, previews an explicit GitHub comment, and restores the n
   await expect(review.getByRole("status")).toContainText("Pull requests: write");
   await review.getByRole("button", { name: "Publish to GitHub" }).click();
   await expect(review.getByRole("link", { name: "Published on GitHub" })).toBeVisible();
-  expect(posts[0]).toMatchObject({ path: "src/demo.rs", revision: after, before: false, text: "Check this specific behavior." });
+  expect(posts[0]).toMatchObject({ path: "src/demo.rs", revision: after, before: false, text: "Check this specific behavior.", replacement: "    // proposed replacement" });
   await page.reload();
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
   await expect.poll(() => page.evaluate(() => JSON.parse(globalThis.repoCity.reviewRead()).notes.length), { timeout: 20_000 }).toBe(2);
@@ -660,6 +676,7 @@ test("paints a PR range, previews an explicit GitHub comment, and restores the n
   expect(restored.notes.find(note => !note.remote)).toMatchObject({
     published: "https://github.com/owner/demo/pull/8#discussion_r42",
     text: "Check this specific behavior.",
+    replacement: "    // proposed replacement",
   });
   await lock();
   await page.mouse.click(center.x, center.y, { button: "right" });

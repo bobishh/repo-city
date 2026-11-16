@@ -61,7 +61,7 @@ first argument.
 | Edit paints and notes | **U** opens paints; **⌘ + scroll** cycles tools on Mac. **J** opens the note you are aiming at or the review list. |
 | Find text on the current wall | **/** or **Find in file** in the actions menu. **Enter** keeps results; **N** and **Shift+N** visit matches. |
 | Turn to the diff or blame wall | **G** for diff, **B** for blame. Sign in with GitHub for line attribution in the browser. |
-| Follow a file’s changes | **C** starts the review. **W** and **S** move between change platforms. |
+| Follow a file’s changes | **C** starts the review. **W** climbs through the change platforms and **S** goes back down. **Q** returns to the diff wall. |
 
 Repo City saves revealed lines and reviewed files in your browser or on your
 Mac. The same repository and comparison restore those marks. Press **V** to
@@ -76,8 +76,9 @@ unchanged file contents and diffs.
 ## Leave review notes
 
 Wash the source or use the readable diff wall. Pick a paint with **U** and
-drag over lines to save a draft. To add details, aim at a marked line and
-press **J**. Each draft keeps its original file, revision, and line range.
+drag over lines to color them and open a draft. To reopen it, aim at the
+marked lines and press **J**. Each draft keeps its original file, revision,
+and line range.
 Change a paint's name, color, spray text, or reusable prompt in **Paints**.
 
 The Mac app saves notes and palettes in SQLite without a GitHub login.
@@ -90,8 +91,11 @@ the review list.
 
 **Preview GitHub comment** shows the text before you send it. Publication
 requires repository access and **Pull requests: write** for the Repo City
-GitHub App. If the PR moves or GitHub rejects the range, the draft stays
-local. Resetting reading progress leaves notes and paints in place.
+GitHub App. Select **Suggest replacement** in a draft on the current side
+of a pull request to preview and publish replacement code. GitHub accepts
+the suggestion on lines within one diff hunk. If the PR moves or GitHub
+rejects the range, the draft stays local. Resetting reading progress leaves
+notes and paints in place.
 
 For local stack traces, draft editing, builds, and deployment, see
 [Development](docs/development.md).

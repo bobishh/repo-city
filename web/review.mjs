@@ -1,5 +1,5 @@
 import { githubAccount, githubRequest, githubSignIn } from "./github-picker.mjs";
-import { commentText, readCommentText } from "./pr-review.mjs";
+import { readCommentText, replacementLimit } from "./pr-review.mjs";
 import { readProgress, writeProgress, readReview, saveReview, deleteReview } from "./progress.mjs";
 
 const make = (tag, text, attributes) => {
@@ -461,6 +461,10 @@ export function createReview({ canvas, release, onClose }) {
     if (note.published) dialog.append(link("Published on GitHub", note.published));
     if (!current(note, session.review)) dialog.append(make("p", "This draft belongs to an earlier revision."));
     const text = make("textarea", note.text, { rows: 5, maxlength: 6000, placeholder: "Add context for this range" });
+    const code = make("textarea", note.replacement ?? "", {
+      rows: 6, maxlength: replacementLimit, spellcheck: "false", placeholder: "Paste the code that should replace these lines",
+    });
+    let suggesting = typeof note.replacement === "string";
     const preset = make("select");
     const data = session;
     const palette = [note.preset, ...(data.palette.length ? data.palette : defaults).filter(p => p && p.id !== note.preset.id)];
@@ -468,11 +472,19 @@ export function createReview({ canvas, release, onClose }) {
     const prompt = make("p", note.preset.prompt, { class: "review-copy" });
     const chosen = () => palette.find(paint => paint.id === preset.value) ?? note.preset;
     preset.addEventListener("change", () => { prompt.textContent = chosen().prompt; });
-    dialog.append(field("Paint", preset), prompt, field("Comment", text));
+    const codeField = field("Replacement code", code);
+    const suggest = button("Suggest replacement", () => {
+      suggesting = !suggesting;
+      refreshSuggestion();
+      if (suggesting) code.focus();
+    });
+    const canSuggest = allowedDraft() && !note.anchor.before && current(note, session.review) && !note.published;
+    suggest.hidden = !canSuggest;
+    dialog.append(field("Paint", preset), prompt, field("Comment", text), suggest, codeField);
     const status = make("p", "", { role: "status", class: "review-status" });
     dialog.append(status);
     const persist = async () => {
-      const edited = { ...note, text: text.value, preset: chosen() };
+      const edited = { ...note, text: text.value, preset: chosen(), replacement: suggesting ? code.value : undefined };
       await saveReview(data.scope, note.id, edited);
       data.notes = data.notes.map(value => value.id === note.id ? edited : value);
       repaint();
@@ -482,9 +494,19 @@ export function createReview({ canvas, release, onClose }) {
       try { await persist(); notesPanel(); } catch { status.textContent = "Could not save this draft."; }
     });
     const prepare = button("Preview GitHub comment", async () => {
-      if (!text.value.trim()) { status.textContent = "Write the comment you want to publish."; text.focus(); return; }
+      if (suggesting ? !code.value.length : !text.value.trim()) {
+        status.textContent = suggesting ? "Enter the replacement code." : "Write the comment you want to publish.";
+        (suggesting ? code : text).focus();
+        return;
+      }
       try { publishPanel(await persist()); } catch { status.textContent = "Could not save this draft."; }
     });
+    function refreshSuggestion() {
+      codeField.hidden = !suggesting;
+      suggest.textContent = suggesting ? "Use plain comment" : "Suggest replacement";
+      prepare.textContent = suggesting ? "Preview GitHub suggestion" : "Preview GitHub comment";
+    }
+    refreshSuggestion();
     const remove = button("Delete draft", async () => {
       try {
         await deleteReview(data.scope, note.id);
@@ -494,7 +516,7 @@ export function createReview({ canvas, release, onClose }) {
       } catch { status.textContent = "Could not delete this draft."; }
     });
     if (note.published) {
-      text.readOnly = true;
+      text.readOnly = code.readOnly = true;
       preset.disabled = true;
       actions(button("Back", notesPanel), closeButton());
     } else {
@@ -505,10 +527,12 @@ export function createReview({ canvas, release, onClose }) {
 
   function publishPanel(note, fileLevel = false) {
     dialog.dataset.view = "publish";
-    view(fileLevel ? "Publish a file comment" : "Publish a review comment");
+    const suggestion = typeof note.replacement === "string";
+    view(suggestion ? "Publish a suggestion" : fileLevel ? "Publish a file comment" : "Publish a review comment");
     const data = session;
     dialog.append(make("p", `PR #${data.review.pull} · ${fileLevel ? note.anchor.path : pathLabel(note)}`));
-    dialog.append(make("pre", commentText(note.text, note.id, note.preset.id), { class: "review-copy" }));
+    if (note.text.trim()) dialog.append(make("pre", note.text.trim(), { class: "review-copy" }));
+    if (suggestion) dialog.append(make("pre", note.replacement, { class: "review-copy" }));
     const access = make("p", "Publishing requires write access to pull requests. ");
     const install = safeDiscussion(githubAccount()?.installUrl);
     if (install) access.append(link("Manage repository access", install));
@@ -522,7 +546,8 @@ export function createReview({ canvas, release, onClose }) {
       try {
         const response = await fetch(`/github/review/${data.review.repository}/${data.review.pull}`, {
           method: "POST", headers: { "Content-Type": "application/json" }, signal: AbortSignal.timeout(40_000),
-          body: JSON.stringify({ ...note.anchor, id: note.id, revision: note.revision, text: note.text, preset: note.preset.id, fileLevel }),
+          body: JSON.stringify({ ...note.anchor, id: note.id, revision: note.revision, text: note.text,
+            replacement: note.replacement, preset: note.preset.id, fileLevel }),
         });
         const result = await response.json();
         if (!response.ok) {
@@ -561,7 +586,7 @@ export function createReview({ canvas, release, onClose }) {
     show();
   }
   return {
-    load, version: () => version, snapshot, add, panel, id: uuid,
+    load, version: () => version, snapshot, add, panel, id: uuid, canPaint: allowedDraft,
     equipWater() { pendingSlot = 0; },
     takeSlot() { const value = pendingSlot; pendingSlot = -1; return value; },
     modal: () => Boolean(document.querySelector("dialog[open]")),

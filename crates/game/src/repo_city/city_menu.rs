@@ -72,7 +72,10 @@ impl Action {
         matches!(self, Self::Find | Self::Paints | Self::Notes)
     }
 
-    fn available(self, menu: &Menu, search: &listing::find::Search) -> bool {
+    fn available(self, menu: &Menu, search: &listing::find::Search, can_paint: bool) -> bool {
+        if matches!(self, Self::Paints) && !can_paint {
+            return false;
+        }
         if matches!(self, Self::FindText) {
             search.available
         } else {
@@ -87,7 +90,7 @@ impl Action {
         review: &mut review_notes::Review,
         search: &mut listing::find::Search,
     ) {
-        if !menu.is_open() || !self.available(menu, search) {
+        if !menu.is_open() || !self.available(menu, search, review.can_paint) {
             return;
         }
         match self {
@@ -222,7 +225,7 @@ pub(super) fn update(
     };
     let count = Action::ALL
         .iter()
-        .filter(|action| action.available(&menu, &search))
+        .filter(|action| action.available(&menu, &search, review.can_paint))
         .count() as f32;
     let height = ROW_HEIGHT * count + GAP * (count - 1.) + 2. * PADDING;
     let point = (anchor + Vec2::splat(12.)).clamp(
@@ -234,7 +237,7 @@ pub(super) fn update(
         panel.top = px(point.y);
     }
     for (action, hovered, mut row, mut background) in &mut rows {
-        let display = if action.available(&menu, &search) {
+        let display = if action.available(&menu, &search, review.can_paint) {
             Display::Flex
         } else {
             Display::None

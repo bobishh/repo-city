@@ -22,6 +22,7 @@ const HEADING_RATIO: f32 = 0.055;
 pub(super) const MAX_HEIGHT: f32 = 72.;
 pub(super) const PANEL_OFFSET: f32 = 0.06;
 const OVERVIEW_BANDS: usize = 64;
+const DETAIL_RAY_REACH: f32 = 24.;
 
 pub(super) fn tool_range(width: f32) -> f32 {
     (width * 0.96).max(0.2)
@@ -235,20 +236,17 @@ fn wall_pose(file: &repo_world::File, y: f32, angle: f32, distance: f32) -> Tran
     Transform::from_translation(center + direction * distance).looking_at(center, Vec3::Y)
 }
 
+fn diff_row_width(row: &repo_world::comparison::Row) -> usize {
+    usize::from(row.before.is_some() && (row.changed || row.after.is_none()))
+        + usize::from(row.after.is_some())
+}
+
 fn diff_rows(explorer: &Explorer) -> usize {
     explorer
         .comparison
         .as_ref()
         .filter(|diff| !diff.hunks.is_empty())
-        .map_or(0, |diff| {
-            diff.rows
-                .iter()
-                .map(|row| {
-                    usize::from(row.before.is_some() && (row.changed || row.after.is_none()))
-                        + usize::from(row.after.is_some())
-                })
-                .sum()
-        })
+        .map_or(0, |diff| diff.rows.iter().map(diff_row_width).sum())
 }
 
 fn projected_row(explorer: &Explorer, row: usize, to_diff: bool) -> usize {
@@ -260,7 +258,7 @@ fn projected_row(explorer: &Explorer, row: usize, to_diff: bool) -> usize {
     for pair in &diff.rows {
         let removed = pair.before.is_some() && (pair.changed || pair.after.is_none());
         let added = pair.after.is_some();
-        let count = usize::from(removed) + usize::from(added);
+        let count = diff_row_width(pair);
         let number = if explorer.before {
             pair.before
         } else {
@@ -361,6 +359,51 @@ impl Listing {
             side.wall.y(row as f32 + 0.5)
         };
         side.view(y)
+    }
+
+    pub(super) fn diff_view(explorer: &Explorer, file: &repo_world::File, row: usize) -> Transform {
+        let count = diff_rows(explorer);
+        let size = explorer.facade_size(file, explorer.selected);
+        let side = WallSide::new(file, count, Face::Diff, size);
+        let row = explorer.comparison.as_ref().map_or(0, |diff| {
+            diff.rows
+                .iter()
+                .take(row)
+                .map(diff_row_width)
+                .sum::<usize>()
+        });
+        side.view(side.wall.y(row.min(count.saturating_sub(1)) as f32 + 0.5))
+    }
+
+    fn readable_hit(
+        &self,
+        explorer: &Explorer,
+        side: &WallSide,
+        camera: &Transform,
+        count: usize,
+    ) -> Option<Vec3> {
+        if self.viewing != Some(side.face)
+            || self.rendered
+                != Some((
+                    explorer.selected,
+                    explorer.before,
+                    explorer.highlighted.len(),
+                ))
+        {
+            return None;
+        }
+        let hit = side.wash_hit(camera, count)?;
+        let tiles = match side.face {
+            Face::Source => &self.source_tiles,
+            Face::Diff => &self.diff_tiles,
+            Face::Blame => return None,
+        };
+        let tile = side.wall.row(hit.y, count) / TILE_ROWS;
+        tiles
+            .resident
+            .get(&tile)
+            .filter(|tile| tile.alpha >= 0.95)
+            .map(|_| hit)
     }
 
     pub(super) fn counts(&self, explorer: &Explorer) -> (usize, usize) {
@@ -491,7 +534,7 @@ pub(super) fn controls(
         return;
     };
     let source_count = explorer.highlighted.len();
-    let active = Face::at_camera(file, size, &camera, 24.)
+    let active = Face::at_camera(file, size, &camera, DETAIL_RAY_REACH)
         .or(listing.destination)
         .or(listing.viewing)
         .unwrap_or(Face::Source);
@@ -657,11 +700,14 @@ pub(super) fn wash_stream(
         Face::Source,
         explorer.facade_size(file, explorer.selected),
     );
-    let Some(hit) = side.wash_hit(camera, count).filter(|_| {
-        nearest
-            .near_source
-            .is_none_or(|index| index == explorer.selected)
-    }) else {
+    let Some(hit) = listing
+        .readable_hit(&explorer, &side, camera, count)
+        .filter(|_| {
+            nearest
+                .file
+                .is_none_or(|aim| aim.index == explorer.selected)
+        })
+    else {
         listing.wash_remaining = 0.;
         return;
     };
@@ -756,13 +802,52 @@ impl WallSide {
             .then_some((point, distance))
     }
 
+    fn detail_range(&self) -> f32 {
+        (self.width * 2.4).min(DETAIL_RAY_REACH)
+    }
+
+    fn keeps_detail(&self, camera: &Transform) -> bool {
+        let normal = self.normal();
+        let offset = camera.translation - self.top;
+        let across = Vec3::Y.cross(normal);
+        let along = offset.dot(across).clamp(-self.width / 2., self.width / 2.);
+        let nearest = self.top.with_y(
+            camera
+                .translation
+                .y
+                .clamp(0., self.top.y + self.heading_height),
+        ) + across * along;
+        offset.dot(normal) > 0.
+            && camera.forward().dot(normal) < -0.025
+            && camera.translation.distance_squared(nearest) <= (self.detail_range() * 1.15).powi(2)
+    }
+
+    fn visible_height(&self, camera: &Transform) -> f32 {
+        let half_fov = std::f32::consts::FRAC_PI_8;
+        let forward = camera.forward().as_vec3() * half_fov.cos();
+        let vertical = camera.up().as_vec3() * half_fov.sin();
+        let normal = self.normal();
+        let gap = (camera.translation - self.top).dot(normal);
+        let edge = |direction: Vec3| {
+            let facing = -direction.dot(normal);
+            if facing > 0.001 {
+                (camera.translation.y + direction.y * (gap / facing)).clamp(0., self.top.y)
+            } else if direction.y > 0. {
+                self.top.y
+            } else {
+                0.
+            }
+        };
+        (edge(forward + vertical) + edge(forward - vertical)) * 0.5
+    }
+
     fn wash_hit(&self, camera: &Transform, count: usize) -> Option<Vec3> {
         // Judge reach by stand-off from the wall so tilting along it keeps the tool usable.
         let gap = (camera.translation - self.top).dot(self.normal());
         if gap > tool_range(self.width) {
             return None;
         }
-        let (point, _) = self.ray_hit(camera, 0.12, f32::INFINITY)?;
+        let (point, _) = self.ray_hit(camera, 0.12, self.detail_range())?;
         (count > 0 && point.y < self.wall.top).then_some(point)
     }
 
@@ -841,6 +926,20 @@ struct WallRender<'a, 'w, 's> {
     covered: &'a mut Assets<cover::Material>,
     remaining: usize,
     dt: f32,
+}
+
+struct TileDetails<'a> {
+    mask: &'a dyn Fn(Range<usize>) -> u32,
+    metadata: &'a dyn Fn(Range<usize>, u32) -> cover::CoverRows,
+    paint: &'a dyn Fn(Range<usize>) -> [Vec4; TILE_ROWS],
+}
+
+impl TileDetails<'_> {
+    fn build(&self, rows: Range<usize>) -> cover::CoverRows {
+        let mut data = (self.metadata)(rows.clone(), (self.mask)(rows.clone()));
+        data.set_paint((self.paint)(rows));
+        data
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -979,10 +1078,7 @@ impl WallRender<'_, '_, '_> {
         read_y: f32,
         count: usize,
         texture: impl Fn(Range<usize>) -> Image,
-        source: Option<(
-            &dyn Fn(Range<usize>) -> u32,
-            &dyn Fn(Range<usize>, u32) -> cover::CoverRows,
-        )>,
+        details: Option<TileDetails<'_>>,
     ) {
         let focus = side.wall.row(read_y, count);
         let window = side.window(focus, count);
@@ -1021,15 +1117,18 @@ impl WallRender<'_, '_, '_> {
                         }
                     }
                 }
-                if let (Some((mask, _)), TileMaterial::Covered(handle)) = (source, &tile.material) {
-                    let current = mask(tile_rows(*index * TILE_ROWS, count));
-                    if self
-                        .covered
-                        .get(handle)
-                        .is_some_and(|m| m.extension.data.mask() != current)
-                        && let Some(mut material) = self.covered.get_mut(handle)
-                    {
-                        material.extension.data.set_mask(current);
+                if let (Some(details), TileMaterial::Covered(handle)) = (&details, &tile.material) {
+                    let rows = tile_rows(*index * TILE_ROWS, count);
+                    if let Some(material) = self.covered.get(handle) {
+                        let data = material.extension.data;
+                        let mut updated = data;
+                        updated.set_mask((details.mask)(rows.clone()));
+                        updated.set_paint((details.paint)(rows));
+                        if updated != data
+                            && let Some(mut material) = self.covered.get_mut(handle)
+                        {
+                            material.extension.data = updated;
+                        }
                     }
                 }
                 if wanted || alpha > 0. {
@@ -1054,11 +1153,10 @@ impl WallRender<'_, '_, '_> {
                 if !state.dirty.remove(&index) {
                     continue;
                 }
-                if let (Some((mask, metadata)), TileMaterial::Covered(handle)) =
-                    (source, &tile.material)
+                if let (Some(details), TileMaterial::Covered(handle)) = (&details, &tile.material)
                     && let Some(mut material) = self.covered.get_mut(handle)
                 {
-                    material.extension.data = metadata(rows.clone(), mask(rows.clone()));
+                    material.extension.data = details.build(rows.clone());
                 }
                 if let Some(mut image) = self.images.get_mut(&tile.image) {
                     *image = texture(rows);
@@ -1066,8 +1164,7 @@ impl WallRender<'_, '_, '_> {
             } else {
                 let height = rows.len() as f32 * side.wall.row_height;
                 let center = side.wall.y((rows.start + rows.end) as f32 / 2.);
-                let metadata =
-                    source.map(|(mask, metadata)| metadata(rows.clone(), mask(rows.clone())));
+                let metadata = details.as_ref().map(|details| details.build(rows.clone()));
                 let tile = self.plane(side, texture(rows), center, height, Layer::Tile, metadata);
                 state.resident.insert(index, tile);
             }
@@ -1090,6 +1187,7 @@ pub(super) fn draw(
     mut images: ResMut<Assets<Image>>,
     time: Option<Res<Time>>,
     mut covered: ResMut<Assets<cover::Material>>,
+    review: Option<Res<review_notes::Review>>,
 ) {
     let visible = Listing::visible(&explorer, &navigation);
     let count = explorer.highlighted.len();
@@ -1208,7 +1306,16 @@ pub(super) fn draw(
 
     let fallback = view(file, count);
     let camera = camera.single().unwrap_or(&fallback);
-    let viewed = Face::at_camera(file, size, camera, 24.);
+    let viewed = Face::at_camera(file, size, camera, DETAIL_RAY_REACH)
+        .filter(|face| {
+            let side = WallSide::new(file, 1, *face, size);
+            side.ray_hit(camera, 0.12, side.detail_range()).is_some()
+        })
+        .or_else(|| {
+            listing
+                .viewing
+                .filter(|face| WallSide::new(file, 1, *face, size).keeps_detail(camera))
+        });
     if listing.turn.is_none() {
         listing.viewing = viewed;
     }
@@ -1271,27 +1378,81 @@ pub(super) fn draw(
     };
     let mask = |rows| cover::mask(rows, &is_revealed);
     let metadata = |rows, bits| cover::CoverRows::new(&source_rows(rows), bits);
+    let tone = |[r, g, b]: [u8; 3], alpha| {
+        Vec4::new(r as f32 / 255., g as f32 / 255., b as f32 / 255., alpha)
+    };
+    let mut marks = Vec::new();
+    if let Some(review) = review.as_ref() {
+        marks.extend(
+            review
+                .notes
+                .iter()
+                .filter(|note| {
+                    note.anchor.path == file.path
+                        && review_notes::Review::on_snapshot(note, &repo.0)
+                })
+                .map(|note| {
+                    (
+                        &note.anchor,
+                        tone(
+                            note.preset.color,
+                            if note.resolved == Some(true) {
+                                0.38
+                            } else {
+                                1.
+                            },
+                        ),
+                    )
+                }),
+        );
+        if let (Some((_, anchor)), Some(preset)) = (&review.drag, review.paint())
+            && anchor.path == file.path
+        {
+            marks.push((anchor, tone(preset.color, 0.58)));
+        }
+    }
+    let source_paint =
+        |rows| paint::pigments(rows, |index| Some((explorer.before, index + 1)), &marks);
+    let diff_paint = |rows| {
+        paint::pigments(
+            rows,
+            |index| {
+                let (line, mark) = &diff_lines[index];
+                line.as_ref()
+                    .map(|line| (*mark == Mark::Removed, line.number))
+            },
+            &marks,
+        )
+    };
     match viewed {
         Some(Face::Source) => render.tiles(
             &source,
             source_tiles,
-            source.look_height(camera),
+            source.visible_height(camera),
             count,
             |rows| code_texture::listing(&source_rows(rows), &|_| true),
-            Some((&mask, &metadata)),
+            Some(TileDetails {
+                mask: &mask,
+                metadata: &metadata,
+                paint: &source_paint,
+            }),
         ),
         Some(Face::Diff) => render.tiles(
             &diff,
             diff_tiles,
-            diff.look_height(camera),
+            diff.visible_height(camera),
             diff_count,
             |rows| code_texture::listing(&diff_lines[rows], &|_| true),
-            None,
+            Some(TileDetails {
+                mask: &|_| u32::MAX,
+                metadata: &|rows, bits| cover::CoverRows::new(&diff_lines[rows], bits),
+                paint: &diff_paint,
+            }),
         ),
         Some(Face::Blame) => render.tiles(
             &blame,
             blame_tiles,
-            blame.look_height(camera),
+            blame.visible_height(camera),
             count,
             |rows| {
                 code_texture::listing_with_notes(&source_rows(rows), &|_| true, attribution.notes())
@@ -1397,6 +1558,40 @@ mod tests {
             assert!(source.wash_hit(&at_roof, count).is_none());
             assert!(source.wash_hit(&close, 0).is_none());
         }
+    }
+
+    #[test]
+    fn a_close_glancing_shot_cannot_reach_a_distant_row() {
+        let file = fixture_file();
+        let count = 700;
+        let size = block_size(&file, Some(count));
+        let source = WallSide::new(&file, count, Face::Source, size);
+        let hit = source.top.with_y(4.);
+        let eye = hit + Vec3::Y * 32. + Vec3::Z * (size.x * 0.84);
+        let camera = Transform::from_translation(eye).looking_at(hit, Vec3::Y);
+        assert!(source.ray_hit(&camera, 0.12, f32::INFINITY).is_some());
+        assert!(Face::at_camera(&file, size, &camera, DETAIL_RAY_REACH).is_none());
+        assert!(source.wash_hit(&camera, count).is_none());
+    }
+
+    #[test]
+    fn visible_rows_keep_detail_when_the_reticle_slips_past_the_wall() {
+        let file = fixture_file();
+        let count = 300;
+        let size = block_size(&file, Some(count));
+        let source = WallSide::new(&file, count, Face::Source, size);
+        let bottom = source.top.with_y(0.);
+        let eye = bottom + Vec3::Z * (size.x * 0.8) + Vec3::Y * 6.;
+        let camera = Transform::from_translation(eye).looking_at(bottom - Vec3::Y, Vec3::Y);
+        assert!(
+            source
+                .ray_hit(&camera, 0.12, source.detail_range())
+                .is_none()
+        );
+        assert!(source.keeps_detail(&camera));
+        assert!(source.visible_height(&camera) > 0.);
+        assert!(source.wash_hit(&camera, count).is_none());
+        assert!(!source.keeps_detail(&camera.with_translation(eye + Vec3::Z * 32.)));
     }
 
     #[test]
