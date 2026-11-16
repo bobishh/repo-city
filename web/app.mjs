@@ -48,13 +48,14 @@ function focusCanvas() {
   if (running && !document.querySelector("dialog[open]")) canvas.focus({ preventScroll: true });
 }
 
-canvas.addEventListener("keydown", event => {
+document.addEventListener("keydown", event => {
   if (event.code !== "KeyF" || event.repeat || event.metaKey || event.ctrlKey ||
-      event.altKey || canvas.hasAttribute("data-pointer-ui") ||
+      event.altKey || (event.target !== canvas && document.pointerLockElement !== canvas) ||
+      canvas.hasAttribute("data-pointer-ui") ||
       document.querySelector("dialog[open]") || !active?.canFilterChanges) return;
   event.preventDefault();
   changesOnlyRequested = !changesOnlyRequested;
-});
+}, true);
 
 function openGuide(entry) {
   tourEntry = entry;

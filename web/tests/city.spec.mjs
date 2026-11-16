@@ -392,8 +392,11 @@ test("opens a merged pull request from the URL using its fork head and merge bas
   await canvas.click({ position: center, delay: 150 });
   const capture = () => page.evaluate(() => document.pointerLockElement?.id);
   await expect.poll(capture).toBe("repo-city");
+  await canvas.evaluate(element => element.blur());
+  await expect.poll(capture).toBe("repo-city");
   await page.keyboard.press("KeyF", { delay: 150 });
   await expect.poll(capture).toBe("repo-city");
+  await canvas.focus();
   await page.keyboard.press("KeyP", { delay: 150 });
   await expect(canvas).toHaveAttribute("data-pointer-ui", "");
   await page.keyboard.type("LICENSE", { delay: 55 });
