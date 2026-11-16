@@ -509,6 +509,10 @@ export function createReview({ canvas, release, onClose }) {
     const data = session;
     dialog.append(make("p", `PR #${data.review.pull} · ${fileLevel ? note.anchor.path : pathLabel(note)}`));
     dialog.append(make("pre", commentText(note.text, note.id, note.preset.id), { class: "review-copy" }));
+    const access = make("p", "Publishing requires write access to pull requests. ");
+    const install = safeDiscussion(githubAccount()?.installUrl);
+    if (install) access.append(link("Manage repository access", install));
+    dialog.append(access);
     const status = make("p", "", { role: "status", class: "review-status" });
     dialog.append(status);
     const back = button("Back to draft", () => noteEditor(note));
@@ -525,8 +529,6 @@ export function createReview({ canvas, release, onClose }) {
           status.textContent = result.error || "GitHub did not publish the comment.";
           if (result.fileLevel) status.append(" ", button("Preview file comment", () => publishPanel(note, true)));
           if (response.status === 401) status.append(" ", signIn());
-          const install = githubAccount()?.installUrl;
-          if (response.status === 403 && safeDiscussion(install)) status.append(" ", link("Manage repository access", install));
           return;
         }
         const published = safeDiscussion(result.comment?.html_url);

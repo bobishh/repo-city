@@ -572,7 +572,8 @@ test("restores review progress after reload and resets only the open comparison"
 
 test("paints a PR range, previews an explicit GitHub comment, and restores the note after reload", async ({ page }) => {
   await emulatePointerLock(page);
-  await page.route("**/github/session", route => route.fulfill({ json: { enabled: true, login: "reviewer" } }));
+  const installUrl = "https://github.com/apps/repo-city-viewer/installations/new";
+  await page.route("**/github/session", route => route.fulfill({ json: { enabled: true, login: "reviewer", installUrl } }));
   await page.route(/\/github\/api\/|https:\/\/api.github.com\//, async route => {
     const path = new URL(route.request().url()).pathname.replace("/github/api", "");
     const source = Array.from({ length: 32 }, (_, i) => `// row ${i}${i === 3 && path.endsWith(before) ? " before" : ""}`).join("\n") + "\n";
@@ -643,6 +644,8 @@ test("paints a PR range, previews an explicit GitHub comment, and restores the n
   await review.getByLabel("Comment").fill("Check this specific behavior.");
   await review.getByRole("button", { name: "Preview GitHub comment" }).click();
   await expect(review.getByText("Check this specific behavior.", { exact: false }).last()).toBeVisible();
+  await expect(review.getByText("Publishing requires write access to pull requests.")).toBeVisible();
+  await expect(review.getByRole("link", { name: "Manage repository access" })).toHaveAttribute("href", installUrl);
   expect(posts).toHaveLength(0);
   await review.getByRole("button", { name: "Publish to GitHub" }).click();
   await expect(review.getByRole("status")).toContainText("Pull requests: write");
