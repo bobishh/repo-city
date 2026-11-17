@@ -8,6 +8,11 @@ bundle="$project_dir/dist/Vibe City.app"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 cp "$target_dir/debug/repo-city" "$bundle/Contents/MacOS/repo-city"
 cp "$project_dir/assets/RepoCity.icns" "$bundle/Contents/Resources/RepoCity.icns"
+licenses="$bundle/Contents/Resources/licenses"
+mkdir -p "$licenses"
+cp "$project_dir/LICENSE-MIT" "$project_dir/LICENSE-APACHE" "$project_dir/THIRD_PARTY.md" "$licenses/"
+cp "$project_dir/licenses/"*.txt "$licenses/"
+cp "$project_dir/assets/fonts/FiraMono-LICENSE" "$project_dir/assets/fonts/NotoEmoji-LICENSE" "$licenses/"
 cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

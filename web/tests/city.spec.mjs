@@ -61,7 +61,7 @@ test("shows the guide once and keeps it available from the help button", async (
   });
   await page.goto("/");
   await expect(page.getByRole("link", { name: "Source on GitHub" })).toHaveAttribute("href", "https://github.com/bobishh/repo-city");
-  await expect(page.getByRole("link", { name: "Build for Mac" })).toHaveAttribute("href", "https://github.com/bobishh/repo-city#on-your-mac");
+  await expect(page.getByRole("link", { name: "Build for Mac" })).toHaveCount(0);
   const guide = page.getByRole("dialog", { name: "Take a quick tour" });
   const help = page.getByRole("button", { name: "How to use Repo City" });
   await expect(guide).toBeHidden();

@@ -5,6 +5,9 @@ cd "$(dirname "$0")/.."
 cargo build --locked -p repo-city --profile web-release --target wasm32-unknown-unknown
 output=web/dist
 mkdir -p "$output/game" "$output/assets"
+mkdir -p "$output/licenses"
+cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY.md licenses/pulldown-cmark-MIT.txt "$output/licenses/"
+cp assets/fonts/FiraMono-LICENSE assets/fonts/NotoEmoji-LICENSE web/assets/OFL-Caveat.txt "$output/licenses/"
 cp web/index.html web/style.css web/app.mjs web/github.mjs web/analytics.mjs web/syntax.mjs web/github-picker.mjs web/pointer.mjs web/progress.mjs web/review.mjs web/pr-review.mjs "$output/"
 cp web/node_modules/github-markdown-css/github-markdown-dark.css "$output/github-markdown.css"
 cp web/node_modules/github-markdown-css/license "$output/github-markdown-LICENSE.txt"
