@@ -405,6 +405,44 @@ impl Listing {
         explorer.comparison_mode == 0 && !explorer.anchored && !navigation.guides_camera()
     }
 
+    pub(super) fn visible_face(&self) -> Option<Face> {
+        self.rendered.and(self.viewing)
+    }
+
+    /// Zero-based rows in the source wall's viewport, excluding hidden or distant walls.
+    pub(super) fn visible_source_rows(
+        &self,
+        file: &repo_world::File,
+        camera: &Transform,
+        explorer: &Explorer,
+        aspect: f32,
+    ) -> Option<Range<usize>> {
+        let count = explorer.highlighted.len();
+        if count == 0
+            || self.rendered != Some((explorer.selected, explorer.before, count))
+            || self.viewing != Some(Face::Source)
+            || explorer.comparison_mode != 0
+            || explorer.anchored
+        {
+            return None;
+        }
+        let side = WallSide::new(file, count, Face::Source, block_size(file));
+        side.detail_distance(camera, aspect, true)?;
+        let rows = side.visible_rows(camera, count, aspect);
+        (!rows.is_empty()).then_some(rows)
+    }
+
+    /// A visible row may still be covered; only revealed or actively washed rows can be read.
+    pub(super) fn source_row_is_readable(&self, explorer: &Explorer, row: usize) -> bool {
+        self.revealed
+            .contains(&(explorer.selected, explorer.before, row + 1))
+            || self.wash_preview.as_ref().is_some_and(|preview| {
+                preview.file == explorer.selected
+                    && preview.before == explorer.before
+                    && preview.rows.contains(&row)
+            })
+    }
+
     pub(super) fn arrival_view(
         &self,
         explorer: &Explorer,
@@ -1430,10 +1468,18 @@ pub(super) fn draw(
     mut images: ResMut<Assets<Image>>,
     time: Option<Res<Time>>,
     mut covered: ResMut<Assets<cover::Material>>,
-    review: Option<Res<review_notes::Review>>,
+    (review, focus): (
+        Option<Res<review_notes::Review>>,
+        Option<Res<file_facade::ChangesOnly>>,
+    ),
     #[cfg(not(target_arch = "wasm32"))] live: Option<Res<live_worktree::Live>>,
 ) {
-    let visible = Listing::visible(&explorer, &navigation);
+    let visible = Listing::visible(&explorer, &navigation)
+        && repo
+            .0
+            .files
+            .get(explorer.selected)
+            .is_some_and(|file| focus.as_ref().is_none_or(|focus| focus.includes(file)));
     #[cfg(not(target_arch = "wasm32"))]
     let visible = visible
         && !live
@@ -1844,6 +1890,96 @@ pub(super) fn smoke_blame_ready(listing: &Listing, count: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visible_source_context_excludes_hidden_faces_and_unwashed_rows() {
+        let file = fixture_with_rows(40);
+        let mut explorer = Explorer::new(0);
+        explorer.highlighted = syntax::highlight("test.rs", &"let x = 1;\n".repeat(40));
+        let camera = view(&file, 40);
+        let mut listing = Listing::default();
+        assert_eq!(
+            listing.visible_source_rows(&file, &camera, &explorer, 1.6),
+            None
+        );
+        listing.rendered = Some((0, false, 40));
+        listing.viewing = Some(Face::Source);
+        let rows = listing
+            .visible_source_rows(&file, &camera, &explorer, 1.6)
+            .unwrap();
+        assert!(!rows.is_empty() && rows.end <= 40);
+        assert!(!listing.source_row_is_readable(&explorer, rows.start));
+        listing.revealed.insert((0, false, rows.start + 1));
+        assert!(listing.source_row_is_readable(&explorer, rows.start));
+        listing.viewing = Some(Face::Diff);
+        assert_eq!(
+            listing.visible_source_rows(&file, &camera, &explorer, 1.6),
+            None
+        );
+        listing.viewing = Some(Face::Source);
+        listing.rendered = None;
+        assert_eq!(
+            listing.visible_source_rows(&file, &camera, &explorer, 1.6),
+            None
+        );
+    }
+
+    #[test]
+    fn filtering_out_the_last_file_removes_its_detailed_walls_and_textures() {
+        let mut file = fixture_with_rows(40);
+        file.change = Change::Unchanged;
+        let mut repo = repository_picker::empty();
+        repo.files.push(file);
+        let mut explorer = Explorer::new(0);
+        explorer.highlighted = syntax::highlight("test.rs", &"let x = 1;\n".repeat(40));
+        let mut app = App::new();
+        app.insert_resource(Repo(repo))
+            .insert_resource(explorer)
+            .insert_resource(WorldSet::load(None).unwrap())
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<cover::Material>>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<city_navigation::Navigation>()
+            .init_resource::<file_facade::ChangesOnly>()
+            .init_resource::<Listing>()
+            .add_systems(Update, draw);
+        app.update();
+        assert!(app.world().resource::<Listing>().rendered.is_some());
+        assert!(
+            app.world_mut()
+                .query::<&ListingSurface>()
+                .iter(app.world())
+                .next()
+                .is_some()
+        );
+        app.world_mut()
+            .resource_mut::<file_facade::ChangesOnly>()
+            .enabled = true;
+        app.update();
+        assert!(app.world().resource::<Listing>().rendered.is_none());
+        assert_eq!(
+            app.world_mut()
+                .query::<&ListingSurface>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+        assert!(
+            app.world()
+                .resource::<Listing>()
+                .source_tiles
+                .resident
+                .is_empty()
+        );
+        assert!(
+            app.world()
+                .resource::<Listing>()
+                .source_tiles
+                .preview
+                .is_none()
+        );
+    }
 
     #[test]
     fn source_arrival_keeps_the_original_building_dimensions_when_rows_load() {

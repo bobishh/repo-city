@@ -2,6 +2,8 @@
 #![allow(dead_code)]
 mod android;
 mod blame;
+#[cfg(not(target_arch = "wasm32"))]
+mod city_audio;
 mod city_menu;
 mod city_navigation;
 mod city_stream;
@@ -9,10 +11,16 @@ mod code_texture;
 mod comparison_scene;
 mod district;
 mod file_facade;
+#[cfg(not(target_arch = "wasm32"))]
+mod file_links;
 mod file_picker;
+#[cfg(not(target_arch = "wasm32"))]
+mod focus_context;
 #[cfg(not(target_arch = "wasm32"))]
 mod github_choices;
 mod guide;
+#[cfg(not(target_arch = "wasm32"))]
+mod image_preview;
 mod listing;
 #[cfg(not(target_arch = "wasm32"))]
 mod live_worktree;
@@ -573,10 +581,16 @@ fn main() {
     );
     #[cfg(not(target_arch = "wasm32"))]
     app.add_plugins(bevy::input_focus::tab_navigation::TabNavigationPlugin)
+        .add_plugins(city_audio::Plugin)
+        .add_plugins(focus_context::Plugin)
+        .init_resource::<file_links::Links>()
+        .add_systems(Update, file_links::update.before(review_tablet::update))
+        .add_systems(Update, file_links::draw.after(file_links::update))
         .init_resource::<review_notes::ReviewUi>()
         .init_resource::<review_tablet::Tablet>()
         .init_resource::<markdown_preview::Request>()
         .init_resource::<markdown_preview::ReadQueue>()
+        .init_resource::<image_preview::Request>()
         .init_resource::<live_worktree::Live>()
         .add_systems(
             Update,
@@ -890,18 +904,23 @@ fn setup(
         bevy::picking::Pickable::IGNORE,
     ));
     #[cfg(not(target_arch = "wasm32"))]
-    repository_picker::spawn(&mut commands, &ui_font(13.), color(set.ink));
+    repository_picker::spawn(&mut commands, &ui_font(13.), color(set.ink), &mut images);
     commands.spawn((
         Text::new("REPO CITY"),
         ui_font(18.),
         TextColor(color(set.ink)),
         Node {
             position_type: PositionType::Absolute,
-            left: px(24.),
+            left: px(if cfg!(target_arch = "wasm32") {
+                24.
+            } else {
+                222.
+            }),
+            max_width: percent(42.),
             top: px(if cfg!(target_arch = "wasm32") {
                 75.
             } else {
-                20.
+                28.
             }),
             ..default()
         },

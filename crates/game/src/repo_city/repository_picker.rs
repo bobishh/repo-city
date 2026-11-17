@@ -78,6 +78,8 @@ enum PickerAction {
     Folder,
     Revision,
     #[cfg(not(target_arch = "wasm32"))]
+    Menu,
+    #[cfg(not(target_arch = "wasm32"))]
     GitHub,
 }
 
@@ -313,6 +315,9 @@ pub(super) fn has_city(repo: Res<Repo>) -> bool {
 }
 
 pub(super) fn settings_file() -> Option<PathBuf> {
+    if let Some(directory) = std::env::var_os("VIBE_CITY_CONFIG_DIR") {
+        return Some(PathBuf::from(directory).join("last-repository.json"));
+    }
     let home = std::env::var_os("HOME")?;
     let mut directory = PathBuf::from(home);
     if cfg!(target_os = "macos") {
@@ -383,6 +388,9 @@ fn choose_folder(_: &Path) -> Result<FolderSelection, String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 enum RepositoryView {
+    Menu {
+        panel: Entity,
+    },
     GitHub {
         panel: Entity,
         input: Option<Entity>,
@@ -401,12 +409,15 @@ enum RepositoryView {
 impl RepositoryView {
     fn panel(&self) -> Entity {
         match self {
-            Self::GitHub { panel, .. } | Self::Revisions { panel, .. } => *panel,
+            Self::GitHub { panel, .. } | Self::Revisions { panel, .. } | Self::Menu { panel } => {
+                *panel
+            }
         }
     }
     fn input(&self) -> Option<Entity> {
         match self {
             Self::GitHub { input, .. } => *input,
+            Self::Menu { .. } => None,
             Self::Revisions { input, .. } => Some(*input),
         }
     }
@@ -416,6 +427,7 @@ impl RepositoryView {
 #[derive(Clone, Copy, Component)]
 enum PanelAction {
     Close,
+    Choose(PickerAction),
     Open,
     SignIn,
     CopyCode,
@@ -742,34 +754,60 @@ fn show_github(
     picker.view = Some(view);
 }
 
-pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
+pub(super) fn spawn(
+    commands: &mut Commands,
+    font: &TextFont,
+    ink: Color,
+    images: &mut Assets<Image>,
+) {
+    use bevy::{
+        asset::RenderAssetUsages,
+        image::{CompressedImageFormats, ImageSampler, ImageType},
+    };
+    let icon = Image::from_buffer(
+        include_bytes!("../../../../web/assets/apple-touch-icon.png"),
+        ImageType::Extension("png"),
+        CompressedImageFormats::NONE,
+        true,
+        ImageSampler::linear(),
+        RenderAssetUsages::default(),
+    )
+    .expect("project robot icon");
+    let icon = images.add(icon);
     commands
-        .spawn(Node {
-            position_type: PositionType::Absolute,
-            left: px(24.),
-            top: px(77.),
-            column_gap: px(8.),
-            ..default()
-        })
+        .spawn((
+            file_picker::FileButton,
+            bevy::ui_widgets::Button,
+            bevy::picking::hover::Hovered::default(),
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(24.),
+                top: px(16.),
+                column_gap: px(8.),
+                align_items: AlignItems::Center,
+                padding: UiRect::axes(px(8.), px(5.)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.02, 0.07, 0.09, 0.95)),
+            observe(|_: On<Activate>, mut picker: ResMut<RepositoryPicker>| {
+                picker.requested = Some(PickerAction::Menu)
+            }),
+        ))
         .with_children(|ui| {
             ui.spawn((
-                file_picker::button("Open Repository…", font, ink, AlignSelf::Auto),
-                observe(|_: On<Activate>, mut picker: ResMut<RepositoryPicker>| {
-                    picker.requested = Some(PickerAction::Folder)
-                }),
+                ImageNode::new(icon),
+                Node {
+                    width: px(30.),
+                    height: px(30.),
+                    ..default()
+                },
+                bevy::picking::Pickable::IGNORE,
             ));
             ui.spawn((
-                file_picker::button("Revisions…", font, ink, AlignSelf::Auto),
-                observe(|_: On<Activate>, mut picker: ResMut<RepositoryPicker>| {
-                    picker.requested = Some(PickerAction::Revision)
-                }),
-            ));
-            #[cfg(not(target_arch = "wasm32"))]
-            ui.spawn((
-                file_picker::button("GitHub…", font, ink, AlignSelf::Auto),
-                observe(|_: On<Activate>, mut picker: ResMut<RepositoryPicker>| {
-                    picker.requested = Some(PickerAction::GitHub)
-                }),
+                Text::new("Vibe City"),
+                TextFont::from_font_size(18.),
+                TextColor(ink),
+                bevy::picking::Pickable::IGNORE,
             ));
         });
     commands.spawn((
@@ -781,13 +819,55 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
         Node {
             position_type: PositionType::Absolute,
             left: px(24.),
-            top: px(118.),
+            top: px(66.),
             max_width: px(470.),
             display: Display::None,
             padding: UiRect::all(px(10.)),
             ..default()
         },
     ));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn draw_menu(commands: &mut Commands) -> RepositoryView {
+    let panel = native_panel::panel(commands, "Vibe City", 390.);
+    commands.entity(panel).with_children(|menu| {
+        for (label, action) in [
+            ("Open local repository…", PickerAction::Folder),
+            ("Revisions…", PickerAction::Revision),
+            ("GitHub…", PickerAction::GitHub),
+        ] {
+            native_panel::button::<_, RepositoryPicker>(
+                menu,
+                label,
+                native_panel::INK,
+                PanelAction::Choose(action),
+            );
+        }
+        menu.spawn((
+            file_picker::button(
+                "Find file  Cmd+P",
+                &native_panel::panel_font(),
+                native_panel::INK,
+                AlignSelf::Stretch,
+            ),
+            observe(
+                |_: On<Activate>,
+                 mut files: ResMut<file_picker::FilePicker>,
+                 mut picker: ResMut<RepositoryPicker>| {
+                    files.open();
+                    picker.action = Some(PanelAction::Close);
+                },
+            ),
+        ));
+        native_panel::button::<_, RepositoryPicker>(
+            menu,
+            "×",
+            native_panel::INK,
+            PanelAction::Close,
+        );
+    });
+    RepositoryView::Menu { panel }
 }
 
 pub(super) type CityEntities<'w, 's> = Query<
@@ -1036,7 +1116,9 @@ pub(super) fn open_repository(
                     .filter(|_| github)
                     .map_or(PanelAction::Close, PanelAction::EditGithub),
             )
-        } else if keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
+        } else if keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter])
+            && !matches!(picker.view, Some(RepositoryView::Menu { .. }))
+        {
             if searching {
                 picker
                     .choices
@@ -1140,6 +1222,10 @@ pub(super) fn open_repository(
                 }));
                 close_view(&mut commands, &mut picker, &mut focus, &parents);
             }
+            PanelAction::Choose(action) => {
+                close_view(&mut commands, &mut picker, &mut focus, &parents);
+                picker.requested = Some(action);
+            }
             PanelAction::Close => close_view(&mut commands, &mut picker, &mut focus, &parents),
             _ => {}
         }
@@ -1166,6 +1252,7 @@ pub(super) fn open_repository(
         cursor.visible = true;
         picker.status.clear();
         match action {
+            PickerAction::Menu => picker.view = Some(draw_menu(&mut commands)),
             PickerAction::Folder => match choose_folder(&repo.0.root) {
                 Ok(folder) => picker.folder = Some(folder),
                 Err(error) => picker.status = error,

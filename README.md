@@ -1,21 +1,59 @@
 # Vibe City
 
-Vibe City is the Mac application. Its public web counterpart is
-[Repo City](https://repo-city.meta-uber-engineer.dev/).
-This repository retains Repo City's history. The shared upstream is
-[bobishh/repo-city](https://github.com/bobishh/repo-city).
+Vibe City opens a local Git checkout as a 3D city. Directories become districts;
+files become buildings with source, diff, and blame walls. Review uncommitted
+changes without switching branches, mark lines with reusable review paints,
+and share local notes and your current code context with an MCP client.
 
-Repo City turns a Git repository into a 3D city you can fly through. Directories
-form districts. Each file has walls for its source, diff, and blame. Open a
-GitHub pull request to see what it changes in the context of the whole codebase.
+![Three robots wash and annotate the Vibe City code buildings](assets/vibe-city-splash.png)
 
-[Explore Repo City’s own code in your browser](https://repo-city.meta-uber-engineer.dev/?repo=bobishh%2Frepo-city&ref=4ad0303336c2acf0ea785c596dbc0b5d53d55bfe&base=a035f34156d434e22142a6104b812f3bb6f13b36).
-The demo opens at `crates/repository/src/syntax.rs`. Press **G** to see its
-diff, or press **P** to find another file.
-
-![The diff wall of syntax.rs, with syntax highlighting and neighboring file buildings visible](docs/repo-city-diff.webp)
+The browser version is [Repo City](https://repo-city.meta-uber-engineer.dev/).
+The repositories share history; [Repo City](https://github.com/bobishh/repo-city)
+is the upstream for shared code.
 
 ## Open a repository
+
+### On your Mac
+
+The desktop app is called **Vibe City**. Build it with Rust and open the resulting bundle.
+
+```sh
+git clone https://github.com/bobishh/vibe-city.git
+cd vibe-city
+./scripts/build-macos.sh
+open "dist/Vibe City.app"
+```
+
+Click the robot **Vibe City** logo and choose **Open local repository…**, or
+press **Cmd+O**. The same menu opens **Revisions…**, **GitHub…**, and file search.
+**Revisions…** lists branches, tags, and recent commits. You can view a commit
+without switching your working tree. For terminal use, `./scripts/run-native.sh`
+opens Repo City's checkout by default and accepts another checkout path as its
+first argument.
+
+Choose **Revisions… → Live worktree** to compare the working directory with
+`HEAD`. Saves update changed buildings, and new non-ignored files appear in
+the city. An update appears briefly above the city controls. Click it or press
+**L** to fly to the last changed file. Press **Tab** to open the changed files
+tablet and see earlier changes. Press **F** to show only changed buildings and
+**G** at a changed file to read its diff. From the command line,
+run `./scripts/run-native.sh /path/to/checkout --live`.
+The script runs the Rust development build. The watcher updates the city when
+the inspected checkout changes. Restart the program to load changes to Repo
+City's own Rust code. The desktop tablet uses watcher times or file modification
+times in a worktree and commit times for Git comparisons. The browser uses
+GitHub commit history where available.
+
+Choose **GitHub…** from the logo menu to find a repository or paste a GitHub repository or pull
+request URL. **Sign in with GitHub** opens the verification page. Click the
+device code to copy it, then paste it in the browser. Once signed in, the picker
+suggests your repositories, forks, and starred repositories as you type.
+Select a repository to choose a revision and comparison base or list its pull
+requests.
+The app uses Git to fetch snapshots and the GitHub API for review comments.
+
+In large repositories the city loads nearby buildings as you fly. File search
+still covers the entire comparison.
 
 ### In your browser
 
@@ -40,53 +78,12 @@ private repositories** to grant read access to selected repositories. Use
 on the default branch. Click the **Repo City** logo to reopen the picker.
 The first city visit offers a controls tour. Open **H** to take it again.
 
-### On your Mac
-
-The desktop app is called **Vibe City**. Build it with Rust and open the resulting bundle.
-
-```sh
-git clone https://github.com/bobishh/vibe-city.git
-cd vibe-city
-./scripts/build-macos.sh
-open "dist/Vibe City.app"
-```
-
-Click **Open Repository…** or press **⌘O** and pick a local Git checkout.
-**Revisions…** lists branches, tags, and recent commits. You can view a commit
-without switching your working tree. For terminal use, `./scripts/run-native.sh`
-opens Repo City's checkout by default and accepts another checkout path as its
-first argument.
-
-Choose **Revisions… → Live worktree** to compare the working directory with
-`HEAD`. Saves update changed buildings, and new non-ignored files appear in
-the city. An update appears briefly above the city controls. Click it or press
-**L** to fly to the last changed file. Press **Tab** to open the changed files
-tablet and see earlier changes. Press **F** to show only changed buildings and
-**G** at a changed file to read its diff. From the command line,
-run `./scripts/run-native.sh /path/to/checkout --live`.
-The script runs the Rust development build. The watcher updates the city when
-the inspected checkout changes. Restart the program to load changes to Repo
-City's own Rust code. The desktop tablet uses watcher times or file modification
-times in a worktree and commit times for Git comparisons. The browser uses
-GitHub commit history where available.
-
-Choose **GitHub…** to find a repository or paste a GitHub repository or pull
-request URL. **Sign in with GitHub** opens the verification page. Click the
-device code to copy it, then paste it in the browser. Once signed in, the picker
-suggests your repositories, forks, and starred repositories as you type.
-Select a repository to choose a revision and comparison base or list its pull
-requests.
-The app uses Git to fetch snapshots and the GitHub API for review comments.
-
-In large repositories the city loads nearby buildings as you fly. File search
-still covers the entire comparison.
-
 ## Controls
 
 | Action | Control |
 | --- | --- |
 | Find a file by name or path | **P** in the browser, **⌘P** on Mac |
-| Preview a Markdown file | Aim at its building and press **P** to open the formatted document in VibePad. |
+| Preview Markdown or an image | Aim at its building and press **P**. VibePad renders Markdown and PNG, JPEG, or WebP images. |
 | Fly | **WASD**, **Space** and **Ctrl** for altitude, **Shift** to boost |
 | Capture or release the cursor | Click the scene to capture. **Esc** releases. |
 | Use the actions menu | Right-click to open or close it. Scroll or use the arrow keys to highlight an action. Click or press **Enter** to select it. |
@@ -119,6 +116,29 @@ The city shows the percentage of files visited and changed files whose diff
 you opened. In the browser, a pull request or branch update keeps visits to
 unchanged file contents and diffs.
 
+## Follow file connections
+
+Open **Tab → Connections** while focused on a file. VibePad lists its imports
+and resolved local targets; select a target to fly to its definition line.
+When only the module is known, the target says **module start**. Roads connect
+resolved files in the visible city. Following a link restores hidden buildings
+if **Only changes** would hide the destination.
+
+The native resolver supports static JavaScript/TypeScript imports and Rust
+modules and qualified imports. External packages and ambiguous targets remain
+listed with an explanation. This is syntax-based navigation, not a compiler
+call graph. Parsing runs in a background worker and its in-memory cache uses
+language and content identity.
+
+## Sound and preferences
+
+The gear at the right of VibePad's navigation opens **Settings**. Set the water
+reading delay there, mute the city, adjust volume, or turn robot speech off.
+Wind, spray, construction, and occasional sirens are synthesized locally.
+On macOS the robot uses the installed system voice to quote short, readable
+fragments from the source wall. The estimated reading position is approximate;
+it does not track your eyes. Speech stops when the code context changes.
+
 ## Leave review notes
 
 Wash the source or use the readable diff wall. Pick a paint with **U** and
@@ -129,7 +149,10 @@ Change a paint's name, color, spray text, or reusable prompt in **Paints**.
 The Mac app saves notes and palettes in SQLite. Press **J** while aiming at a
 marked line to open its comment in VibePad. Away from a mark, **J** opens all
 comments on the current comparison. **All comments** returns to that list.
-Use **Edit** to add details or export a note.
+Use **Edit** on a note to add details, then **Save edits**. Worktree notes are
+saved locally and available through MCP immediately; **Publish** applies only
+to GitHub pull requests. **Copy** copies a note without exporting a file.
+An empty paint slot equips a plain note without a required prompt.
 Comment previews render Markdown in VibePad.
 When you open a GitHub pull request, **J** also lists its review comments.
 Choose **Fly to lines** to see an anchored comment on its building, or
@@ -171,6 +194,11 @@ For local stack traces, draft editing, builds, and deployment, see
 Run the native binary with `--notes-mcp --repo /absolute/path/to/checkout`
 as a stdio MCP server. `list_notes` reads local worktree notes for that
 checkout. `mark_note` sets a note to `unread`, `read`, or `addressed`.
+`get_focus` returns the current file, wall side, camera, and the source lines
+that are visible and readable. `list_notes` includes the same focus context.
+Context expires after six seconds; diff and blame currently report their side
+without a visible line range. Replace the MCP executable and restart the server
+after updating the app.
 An addressed note stays in the review list and its paint disappears from
 the city. Local note tools do not publish to GitHub.
 

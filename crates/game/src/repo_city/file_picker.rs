@@ -104,7 +104,7 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
                 left: px(if cfg!(target_arch = "wasm32") {
                     24.
                 } else {
-                    410.
+                    24.
                 }),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4.),
@@ -112,6 +112,7 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
             },
         ))
         .with_children(|ui| {
+            #[cfg(target_arch = "wasm32")]
             ui.spawn((
                 button(
                     &format!("Files  {SHORTCUT}"),
@@ -238,7 +239,10 @@ pub(super) fn update(
     mut labels: Query<(&mut Text, Has<PickerQuery>, Has<PickerHint>)>,
     #[cfg(not(target_arch = "wasm32"))] reset_button: Query<&Children, With<ResetProgressButton>>,
     (nearest, explorer): (Option<Res<Nearest>>, Option<Res<Explorer>>),
-    #[cfg(not(target_arch = "wasm32"))] mut markdown: Option<ResMut<markdown_preview::Request>>,
+    #[cfg(not(target_arch = "wasm32"))] (mut markdown, mut image): (
+        Option<ResMut<markdown_preview::Request>>,
+        Option<ResMut<image_preview::Request>>,
+    ),
 ) {
     picker.suppress_input = false;
     let modal = review.is_some_and(|review| review.blocked);
@@ -270,15 +274,21 @@ pub(super) fn update(
             .0
             .files
             .get(index)
-            .filter(|file| focus.includes(file) && markdown_preview::is_markdown(&file.path))
+            .filter(|file| focus.includes(file) && previewable(&file.path))
     {
         let before = file.after.is_none()
             || explorer
                 .as_ref()
                 .is_some_and(|explorer| explorer.selected == index && explorer.before);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(markdown) = markdown.as_deref_mut() {
-            markdown.0 = Some((index, before));
+        {
+            if image_preview::supported(&file.path) {
+                if let Some(image) = image.as_deref_mut() {
+                    image.0 = Some((index, before));
+                }
+            } else if let Some(markdown) = markdown.as_deref_mut() {
+                markdown.0 = Some((index, before));
+            }
         }
         #[cfg(target_arch = "wasm32")]
         markdown_preview::open_browser(&file.path, before);
@@ -436,6 +446,14 @@ pub(super) fn update(
             label.0 = file.path.clone();
         }
     }
+}
+
+fn previewable(path: &str) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    if image_preview::supported(path) {
+        return true;
+    }
+    markdown_preview::is_markdown(path)
 }
 
 #[cfg(test)]
