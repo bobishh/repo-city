@@ -411,6 +411,7 @@ pub(super) fn navigate(
     mut menu: ResMut<city_menu::Menu>,
     mut saved_progress: ResMut<progress::Progress>,
     search: Res<listing::find::Search>,
+    mut review: Option<ResMut<review_notes::Review>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut camera: Query<(&mut Transform, &Pilot), PlayerCamera>,
 ) {
@@ -424,7 +425,7 @@ pub(super) fn navigate(
         return;
     }
 
-    if let Some(destination) = review_notes::take_destination()
+    if let Some(destination) = review_notes::take_destination(review.as_deref_mut())
         && destination.revision == repo.0.revision
         && let Some(index) = repo
             .0

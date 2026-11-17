@@ -114,6 +114,10 @@ Change a paint's name, color, spray text, or reusable prompt in **Paints**.
 
 The Mac app saves notes and palettes in SQLite. Press **J** to preview the
 current comparison's notes. Use **Edit** to add details or export a note.
+When you open a GitHub pull request, **J** also lists its review comments.
+Choose **Fly to lines** to see an anchored comment on its building, or
+**Open on GitHub** to read the full thread. In the **M** overview, gold pins
+mark buildings with comments on the current comparison.
 In an open pull request, **Publish all** sends the current drafts to GitHub
 with write access. Turn on **Auto-publish** to send new marks as you make them.
 This setting turns off when you open another comparison. GitHub sign-in uses

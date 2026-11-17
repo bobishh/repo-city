@@ -116,6 +116,116 @@ struct Comment {
     body: String,
 }
 
+#[derive(Deserialize)]
+struct PullComment {
+    id: u64,
+    path: String,
+    #[serde(flatten)]
+    comment: Comment,
+    commit_id: String,
+    position: Option<usize>,
+    line: Option<usize>,
+    start_line: Option<usize>,
+    side: Option<String>,
+    start_side: Option<String>,
+    original_line: Option<usize>,
+    original_start_line: Option<usize>,
+    in_reply_to_id: Option<u64>,
+}
+
+impl PullComment {
+    fn into_note(self, revision: &str, baseline: &Option<String>) -> Option<Note> {
+        use crate::review_notes::{Anchor, Preset};
+        if self.in_reply_to_id.is_some() {
+            return None;
+        }
+        let side = self.side.as_deref();
+        let anchored = self.commit_id == revision
+            && self.position.is_some()
+            && self
+                .line
+                .is_some_and(|line| line > 0 && self.start_line.unwrap_or(line) <= line)
+            && matches!(side, Some("LEFT" | "RIGHT"))
+            && self.start_side.as_deref().or(side) == side;
+        let (start, end) = if anchored {
+            let end = self.line.unwrap_or_default();
+            (self.start_line.unwrap_or(end), end)
+        } else {
+            let end = self.original_line.unwrap_or_default();
+            (self.original_start_line.unwrap_or(end), end)
+        };
+        let text = self.comment.body;
+        let text = text
+            .rsplit_once("\n\n<!-- repo-city:")
+            .filter(|(_, marker)| marker.ends_with(" -->") && !marker.contains('\n'))
+            .map_or_else(|| text.clone(), |(body, _)| body.to_owned());
+        Some(Note {
+            id: format!("github-{}", self.id),
+            revision: if anchored {
+                revision.into()
+            } else {
+                String::new()
+            },
+            baseline: baseline.clone(),
+            anchor: Anchor {
+                path: self.path,
+                start,
+                end,
+                before: side == Some("LEFT"),
+            },
+            preset: Preset {
+                id: "comment".into(),
+                label: "GitHub".into(),
+                spray: String::new(),
+                prompt: String::new(),
+                color: [151, 199, 201],
+            },
+            text,
+            published: Some(self.comment.html_url),
+            remote: true,
+            resolved: None,
+            attention: false,
+        })
+    }
+}
+
+#[derive(bevy::prelude::Resource)]
+pub(super) enum PullComments {
+    Loading,
+    Loaded(Result<Vec<Note>, String>),
+}
+
+pub(super) fn pull_comments(
+    target: &Target,
+    repository: &Repository,
+    token: Option<String>,
+) -> Option<Job<Vec<Note>>> {
+    let endpoint = target.pull_endpoint()?;
+    let revision = repository.revision.clone();
+    let baseline = repository.baseline.clone();
+    Some(Job::spawn(move || {
+        let mut notes = Vec::new();
+        let mut page = 1;
+        loop {
+            let batch: Vec<PullComment> = api(
+                &format!("{endpoint}/comments?per_page=100&page={page}"),
+                token.as_deref(),
+                None,
+            )?;
+            let last = batch.len() < 100;
+            notes.extend(
+                batch
+                    .into_iter()
+                    .filter_map(|item| item.into_note(&revision, &baseline)),
+            );
+            if last {
+                return Ok(notes);
+            }
+            page += 1;
+        }
+    }))
+}
+
 #[derive(Deserialize, serde::Serialize)]
 pub(super) struct Session {
     token: String,
@@ -498,14 +608,25 @@ pub(super) fn request_sign_in() -> Job<DeviceCode> {
 }
 
 pub(super) fn browser_sign_in() -> Result<(), String> {
+    open_github_page(DEVICE_URL)
+}
+
+pub(super) fn open_discussion(url: &str) -> Result<(), String> {
+    if !url.starts_with("https://github.com/") {
+        return Err("This discussion has no GitHub link.".into());
+    }
+    open_github_page(url)
+}
+
+fn open_github_page(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     return Command::new("open")
-        .arg(DEVICE_URL)
+        .arg(url)
         .spawn()
         .map(|_| ())
         .map_err(|error| error.to_string());
     #[cfg(not(target_os = "macos"))]
-    Err(format!("Open {DEVICE_URL} in your browser."))
+    Err(format!("Open {url} in your browser."))
 }
 
 pub(super) fn finish_sign_in(code: DeviceCode) -> Job<Session> {
@@ -818,6 +939,39 @@ pub(super) fn publish(
 mod tests {
     use super::*;
     use crate::review_notes::{Anchor, Preset};
+
+    #[test]
+    fn merged_pull_comments_mark_current_lines_and_keep_outdated_discussions() {
+        let revision = "head";
+        let base = Some("base".to_string());
+        let stored = serde_json::json!({
+            "id": 1, "path": "src/lib.rs", "body": "Explain this.", "html_url": "https://github.com/a/b/pull/3#discussion_r1",
+            "line": 9, "start_line": 7, "side": "RIGHT", "start_side": "RIGHT",
+            "position": 3, "commit_id": revision, "original_line": 10
+        });
+        let current = serde_json::from_value::<PullComment>(stored.clone())
+            .unwrap()
+            .into_note(revision, &base)
+            .unwrap();
+        assert_eq!((current.anchor.start, current.anchor.end), (7, 9));
+        assert_eq!(current.revision, revision);
+        assert!(current.remote);
+        let mut outdated = stored;
+        outdated["position"] = Value::Null;
+        let original = serde_json::from_value::<PullComment>(outdated.clone())
+            .unwrap()
+            .into_note(revision, &base)
+            .unwrap();
+        assert_ne!(original.revision, revision);
+        assert_eq!(original.anchor.end, 10);
+        outdated["in_reply_to_id"] = json!(1);
+        assert!(
+            serde_json::from_value::<PullComment>(outdated)
+                .unwrap()
+                .into_note(revision, &base)
+                .is_none()
+        );
+    }
 
     #[test]
     fn oauth_keeps_the_error_code_from_an_http_400_response() {

@@ -27,6 +27,8 @@ pub(super) enum Action {
     EditNotes,
     Remove(usize),
     Export(usize),
+    Visit(usize),
+    OpenDiscussion(usize),
     Publish,
     AutoPublish,
     SignIn,
@@ -88,14 +90,15 @@ impl ReviewUi {
         changed
     }
 
-    fn select_view(&mut self, panel: Panel, review: &Review, repo: &Repository) {
+    fn select_view(&mut self, panel: Panel, review: &Review, repo: &Repository, github: bool) {
         self.view = match panel {
             Panel::Paints => Some(View::Palette(review.slot)),
             Panel::Notes | Panel::Aimed
-                if review
-                    .notes
-                    .iter()
-                    .any(|note| Review::on_snapshot(note, repo)) =>
+                if github
+                    || review
+                        .notes
+                        .iter()
+                        .any(|note| Review::on_snapshot(note, repo)) =>
             {
                 Some(View::Notes { editing: false })
             }
@@ -148,6 +151,7 @@ fn draw(
     review: &Review,
     repo: &Repository,
     picker: Option<&repository_picker::RepositoryPicker>,
+    comments: Option<&native_github::PullComments>,
 ) {
     ui.fields.clear();
     ui.draft_fields.clear();
@@ -277,11 +281,26 @@ fn draw(
                         RelativeCursorPosition::default(),
                     ))
                     .with_children(|list| {
+                        if let Some(comments) = comments {
+                            let status = match comments {
+                                native_github::PullComments::Loading => "Loading GitHub comments…",
+                                native_github::PullComments::Loaded(Err(error)) => error,
+                                native_github::PullComments::Loaded(Ok(notes))
+                                    if notes.is_empty() =>
+                                {
+                                    "No GitHub review comments."
+                                }
+                                _ => "",
+                            };
+                            if !status.is_empty() {
+                                native_panel::text(list, status, INK);
+                            }
+                        }
                         for (index, note) in review
                             .notes
                             .iter()
                             .enumerate()
-                            .filter(|(_, note)| Review::on_snapshot(note, repo))
+                            .filter(|(_, note)| note.remote || Review::on_snapshot(note, repo))
                         {
                             list.spawn((
                                 BackgroundColor(Color::srgb_u8(14, 35, 42)),
@@ -302,7 +321,9 @@ fn draw(
                                     ),
                                     INK,
                                 );
-                                let state = if note.published.is_some() || note.remote {
+                                let state = if note.remote && !Review::on_snapshot(note, repo) {
+                                    "Original discussion"
+                                } else if note.published.is_some() || note.remote {
                                     "Published"
                                 } else {
                                     "Draft"
@@ -338,7 +359,38 @@ fn draw(
                                         Color::srgb_u8(221, 235, 240),
                                     );
                                 }
-                                if editing {
+                                if note.published.is_some() && !editing {
+                                    card.spawn(Node {
+                                        column_gap: px(6.),
+                                        ..default()
+                                    })
+                                    .with_children(|tools| {
+                                        if note.anchor.start > 0
+                                            && Review::on_snapshot(note, repo)
+                                            && repo
+                                                .files
+                                                .iter()
+                                                .any(|file| file.path == note.anchor.path)
+                                        {
+                                            let visit = tab_button(
+                                                tools,
+                                                "Fly to lines",
+                                                INK,
+                                                Action::Visit(index),
+                                                index as i32 * 2,
+                                            );
+                                            ui.primary = ui.primary.or(Some(visit));
+                                        }
+                                        let discussion = tab_button(
+                                            tools,
+                                            "Open on GitHub",
+                                            INK,
+                                            Action::OpenDiscussion(index),
+                                            index as i32 * 2 + 1,
+                                        );
+                                        ui.primary = ui.primary.or(Some(discussion));
+                                    });
+                                } else if editing && !note.remote {
                                     card.spawn(Node {
                                         column_gap: px(6.),
                                         ..default()
@@ -415,6 +467,7 @@ fn draw(
                         ui.primary = ui.primary.or(Some(close));
                     });
                 if can_publish
+                    && draft_count != 0
                     && let Some(picker) = picker
                     && picker.publication().is_none()
                 {
@@ -522,16 +575,24 @@ pub(crate) fn update(
     mut feedback: Query<&mut Text, With<Feedback>>,
     repo: Option<Res<Repo>>,
     mut picker: Option<ResMut<repository_picker::RepositoryPicker>>,
-    (guide, mut clipboard, wheel, mut lists): (
+    (guide, mut clipboard, wheel, mut lists, comments): (
         Option<Res<guide::Guide>>,
         Option<ResMut<Clipboard>>,
         Option<Res<AccumulatedMouseScroll>>,
         Query<(&mut ScrollPosition, &RelativeCursorPosition), With<NoteRows>>,
+        Option<Res<native_github::PullComments>>,
     ),
 ) {
     let fallback = repository_picker::empty();
     let repo = repo.as_ref().map_or(&fallback, |repo| &repo.0);
     let mut redraw = false;
+    if comments
+        .as_ref()
+        .is_some_and(|comments| comments.is_changed())
+        && matches!(ui.view, Some(View::Notes { editing: false }))
+    {
+        redraw = true;
+    }
     let mut message = String::new();
     if let Ok((mut position, relative)) = lists.single_mut() {
         if relative.cursor_over()
@@ -603,7 +664,7 @@ pub(crate) fn update(
     }
     let was_open = ui.view.is_some();
     if let Some(panel) = review.request.take() {
-        ui.select_view(panel, &review, repo);
+        ui.select_view(panel, &review, repo, comments.is_some());
         if ui.view.is_none() {
             ui.empty_until = time.elapsed_secs() + 3.5;
         } else {
@@ -645,6 +706,28 @@ pub(crate) fn update(
                 }
                 Err(error) => message = error,
             },
+            Action::Visit(index) => {
+                if let Some(note) = review.notes.get(index)
+                    && Review::on_snapshot(note, repo)
+                {
+                    review.destination = Some(Destination {
+                        anchor: note.anchor.clone(),
+                        revision: note.revision.clone(),
+                    });
+                    ui.view = None;
+                    redraw = true;
+                }
+            }
+            Action::OpenDiscussion(index) => {
+                if let Some(url) = review
+                    .notes
+                    .get(index)
+                    .and_then(|note| note.published.as_deref())
+                    && let Err(error) = native_github::open_discussion(url)
+                {
+                    message = error;
+                }
+            }
             Action::Select(slot) => {
                 ui.view = Some(View::Palette(slot));
                 redraw = true;
@@ -827,7 +910,14 @@ pub(crate) fn update(
         if let Some(panel) = ui.panel.take() {
             native_panel::close(&mut commands, panel, &mut focus, &parents);
         }
-        draw(&mut commands, &mut ui, &review, repo, picker.as_deref());
+        draw(
+            &mut commands,
+            &mut ui,
+            &review,
+            repo,
+            picker.as_deref(),
+            comments.as_deref(),
+        );
         if !was_open
             && matches!(ui.view, Some(View::Notes { .. }))
             && let Some(panel) = ui.panel

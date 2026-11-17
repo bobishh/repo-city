@@ -177,11 +177,11 @@ pub(super) struct Destination {
     pub revision: String,
 }
 
-pub(super) fn take_destination() -> Option<Destination> {
+pub(super) fn take_destination(_review: Option<&mut Review>) -> Option<Destination> {
     #[cfg(target_arch = "wasm32")]
     return serde_json::from_str(&browser_destination()).ok();
     #[cfg(not(target_arch = "wasm32"))]
-    None
+    _review?.destination.take()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -239,6 +239,8 @@ pub(super) struct Review {
     pub nozzle: f32,
     pub washing: bool,
     pub tablet_open: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    destination: Option<Destination>,
     pub aim_note: Option<String>,
     pub phrase: Option<(f32, String)>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -275,6 +277,8 @@ impl Default for Review {
             nozzle: 0.,
             washing: false,
             tablet_open: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            destination: None,
             aim_note: None,
             phrase: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -417,6 +421,7 @@ pub(super) fn update(
     camera: Query<&Pilot, PlayerCamera>,
     listing: Option<Res<listing::Listing>>,
     #[cfg(not(target_arch = "wasm32"))] search: Option<Res<listing::find::Search>>,
+    #[cfg(not(target_arch = "wasm32"))] comments: Option<Res<native_github::PullComments>>,
 ) {
     review.washing = false;
     review.tablet_open = false;
@@ -469,6 +474,25 @@ pub(super) fn update(
             review.auto_publish = false;
             review.auto_drafts.clear();
             review.feedback = None;
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if repo.is_changed()
+        || comments
+            .as_ref()
+            .is_some_and(|comments| comments.is_changed())
+    {
+        review.notes.retain(|note| !note.remote);
+        if let Some(native_github::PullComments::Loaded(Ok(imported))) = comments.as_deref() {
+            for note in imported {
+                if !review
+                    .notes
+                    .iter()
+                    .any(|local| local.published == note.published)
+                {
+                    review.notes.push(note.clone());
+                }
+            }
         }
     }
 
