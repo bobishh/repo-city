@@ -28,7 +28,7 @@ base64 = "0.22"
 notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 ureq = { version = "2.12", features = ["json"] }
-bevy = { version = "0.20", default-features = true }
+bevy = { version = "0.20", default-features = true, features = ["system_clipboard"] }
 avian3d = { version = "0.8", default-features = false, features = ["parallel"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

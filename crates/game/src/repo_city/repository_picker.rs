@@ -1,6 +1,7 @@
 //! Pick a local checkout and replace the city only after successfully reading its snapshot.
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::{
+    clipboard::Clipboard,
     ecs::system::NonSendMarker,
     input_focus::{FocusCause, InputFocus},
     text::EditableText,
@@ -13,6 +14,8 @@ use std::sync::{Mutex, mpsc};
 use bevy::ui_widgets::{Activate, observe};
 
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
+use github_choices::Editor;
 
 #[derive(Resource)]
 pub(super) struct RepositoryPicker {
@@ -46,6 +49,10 @@ pub(super) struct RepositoryPicker {
     blocked: bool,
     #[cfg(not(target_arch = "wasm32"))]
     sign_in_code: Option<String>,
+    #[cfg(not(target_arch = "wasm32"))]
+    code_copied: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    choices: github_choices::Picker,
 }
 
 #[derive(Clone, Copy)]
@@ -92,12 +99,23 @@ impl RepositoryPicker {
             blocked: false,
             #[cfg(not(target_arch = "wasm32"))]
             sign_in_code: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            code_copied: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            choices: github_choices::Picker::default(),
         }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn blocks_controls(&self) -> bool {
         self.blocked
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn smoke_open(&mut self) {
+        self.requested = Some(PickerAction::GitHub);
+        self.choices.sample_library();
+        self.sign_in_code = Some("ABCD-1234".into());
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -109,18 +127,34 @@ impl RepositoryPicker {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn open_github(&mut self, input: &str, file: Option<String>) {
+    pub(super) fn open_github(
+        &mut self,
+        input: &str,
+        revision: &str,
+        base: &str,
+        file: Option<String>,
+    ) {
         match native_github::Target::parse(input) {
-            Ok(target) => {
-                self.status = format!("Opening {}…", target.label());
-                self.pending = Some(native_github::open(
-                    target,
-                    native_github::token(self.session.as_ref()),
-                ));
-                self.github_file = file;
-            }
+            Ok(target) => self.start_github(target, revision.into(), base.into(), file),
             Err(error) => self.status = error,
         }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_github(
+        &mut self,
+        target: native_github::Target,
+        revision: String,
+        base: String,
+        file: Option<String>,
+    ) {
+        self.status = format!("Opening {}…", target.label());
+        self.pending = Some(native_github::open(
+            target,
+            native_github::token(self.session.as_ref()),
+            revision,
+            base,
+        ));
+        self.github_file = file;
     }
 }
 
@@ -234,7 +268,10 @@ fn choose_folder(_: &Path) -> Result<FolderSelection, String> {
 enum RepositoryView {
     GitHub {
         panel: Entity,
-        input: Entity,
+        input: Option<Entity>,
+        results: Option<Entity>,
+        status: Entity,
+        auth: Entity,
     },
     Revisions {
         panel: Entity,
@@ -250,9 +287,10 @@ impl RepositoryView {
             Self::GitHub { panel, .. } | Self::Revisions { panel, .. } => *panel,
         }
     }
-    fn input(&self) -> Entity {
+    fn input(&self) -> Option<Entity> {
         match self {
-            Self::GitHub { input, .. } | Self::Revisions { input, .. } => *input,
+            Self::GitHub { input, .. } => *input,
+            Self::Revisions { input, .. } => Some(*input),
         }
     }
 }
@@ -263,7 +301,12 @@ enum PanelAction {
     Close,
     Open,
     SignIn,
-    Browser,
+    CopyCode,
+    SelectRepository,
+    ChangeRepository,
+    EditGithub(Editor),
+    UseRevision,
+    GitHubMatch(usize),
     Live,
     Revision(usize),
 }
@@ -277,98 +320,324 @@ impl native_panel::Actions<PanelAction> for RepositoryPicker {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Component)]
-pub(super) struct GitHubStatus;
-
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Component)]
 pub(super) struct RevisionList;
 
 #[cfg(not(target_arch = "wasm32"))]
-fn draw_panel(commands: &mut Commands, github: bool, default_value: &str) -> RepositoryView {
+fn draw_revisions(commands: &mut Commands) -> RepositoryView {
     use native_panel::{INK, button, input, panel};
-    let panel = panel(
-        commands,
-        if github {
-            "Open from GitHub"
-        } else {
-            "Revisions"
-        },
-        495.,
-    );
-    let mut field = None;
-    let mut choices = None;
+    let panel = panel(commands, "Revisions", 495.);
+    let mut fields = None;
     commands.entity(panel).with_children(|parent| {
-        if github {
-            field = Some(input(
+        let input = input(parent, "Branch, tag, or commit", "HEAD", 0, false);
+        let choices = parent
+            .spawn((
+                RevisionList,
+                RelativeCursorPosition::default(),
+                Node {
+                    height: px(225.),
+                    overflow: Overflow::scroll_y(),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(3.),
+                    ..default()
+                },
+            ))
+            .id();
+        fields = Some((input, choices));
+        parent.spawn(github_row()).with_children(|row| {
+            button::<_, RepositoryPicker>(row, "Open", INK, PanelAction::Open);
+            button::<_, RepositoryPicker>(row, "Live worktree", INK, PanelAction::Live);
+            button::<_, RepositoryPicker>(row, "Close", INK, PanelAction::Close);
+        });
+    });
+    let (input, choices) = fields.expect("revision fields");
+    RepositoryView::Revisions {
+        panel,
+        input,
+        choices,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn github_row() -> Node {
+    Node {
+        column_gap: px(6.),
+        row_gap: px(6.),
+        flex_wrap: FlexWrap::Wrap,
+        ..default()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn revision_label<'a>(value: &'a str, fallback: &'a str) -> &'a str {
+    if value.is_empty() {
+        fallback
+    } else if value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        &value[..7]
+    } else {
+        value
+            .trim_start_matches("refs/heads/")
+            .trim_start_matches("refs/tags/")
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn draw_github(commands: &mut Commands, choices: &github_choices::Picker) -> RepositoryView {
+    use native_panel::{INK, button, input, panel, text};
+    let panel = panel(commands, "Open from GitHub", 555.);
+    let mut fields = None;
+    commands.entity(panel).with_children(|parent| {
+        if let Some(target) = &choices.target {
+            parent.spawn(github_row()).with_children(|row| {
+                text(row, &target.label(), INK);
+                button::<_, RepositoryPicker>(row, "Change", INK, PanelAction::ChangeRepository);
+            });
+        }
+        let field = match choices.editor {
+            Some(Editor::PullRequests) => Some(input(
                 parent,
-                "Repository or pull request URL",
-                default_value,
+                "Find a pull request by number or title",
+                "",
                 0,
                 false,
-            ));
-            parent.spawn((
-                GitHubStatus,
+            )),
+            Some(Editor::Revision | Editor::Base) => {
+                Some(input(parent, "Find a branch, tag, or commit", "", 0, false))
+            }
+            None if choices.target.is_none() => Some(input(
+                parent,
+                "Find a repository or paste a PR URL",
+                "",
+                0,
+                false,
+            )),
+            None => None,
+        };
+        let results = field.map(|_| {
+            parent
+                .spawn((
+                    RevisionList,
+                    RelativeCursorPosition::default(),
+                    Node {
+                        height: px(160.),
+                        overflow: Overflow::scroll_y(),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: px(4.),
+                        ..default()
+                    },
+                ))
+                .id()
+        });
+        parent.spawn(github_row()).with_children(|row| {
+            if let Some(target) = &choices.target {
+                if !target.is_pull() {
+                    button::<_, RepositoryPicker>(
+                        row,
+                        revision_label(&choices.revision, "Default branch"),
+                        INK,
+                        PanelAction::EditGithub(Editor::Revision),
+                    );
+                    button::<_, RepositoryPicker>(
+                        row,
+                        revision_label(&choices.base, "Compare…"),
+                        INK,
+                        PanelAction::EditGithub(Editor::Base),
+                    );
+                    button::<_, RepositoryPicker>(
+                        row,
+                        "Pull requests",
+                        INK,
+                        PanelAction::EditGithub(Editor::PullRequests),
+                    );
+                    if matches!(choices.editor, Some(Editor::Revision | Editor::Base)) {
+                        button::<_, RepositoryPicker>(
+                            row,
+                            "Use revision",
+                            INK,
+                            PanelAction::UseRevision,
+                        );
+                    }
+                }
+                button::<_, RepositoryPicker>(row, "Open city", INK, PanelAction::Open);
+            } else {
+                button::<_, RepositoryPicker>(
+                    row,
+                    "Select repository",
+                    INK,
+                    PanelAction::SelectRepository,
+                );
+            }
+            button::<_, RepositoryPicker>(row, "Close", INK, PanelAction::Close);
+        });
+        let status = parent
+            .spawn((
                 Text::new(""),
                 TextFont::from_font_size(14.),
                 TextColor(INK),
-            ));
-        } else {
-            field = Some(input(
-                parent,
-                "Branch, tag, or commit",
-                default_value,
-                0,
-                false,
-            ));
-            choices = Some(
-                parent
-                    .spawn((
-                        RevisionList,
-                        RelativeCursorPosition::default(),
-                        Node {
-                            height: px(225.),
-                            overflow: Overflow::scroll_y(),
-                            flex_direction: FlexDirection::Column,
-                            row_gap: px(3.),
-                            ..default()
-                        },
-                    ))
-                    .id(),
-            );
-        }
-        parent
+                Node {
+                    min_height: px(32.),
+                    ..default()
+                },
+            ))
+            .id();
+        let auth = parent
             .spawn(Node {
-                column_gap: px(6.),
-                flex_wrap: FlexWrap::Wrap,
-                row_gap: px(6.),
-                ..default()
+                min_height: px(29.),
+                ..github_row()
             })
-            .with_children(|buttons| {
-                button::<_, RepositoryPicker>(buttons, "Open", INK, PanelAction::Open);
-                if github {
-                    button::<_, RepositoryPicker>(buttons, "Sign in", INK, PanelAction::SignIn);
-                    button::<_, RepositoryPicker>(
-                        buttons,
-                        "Enter code on GitHub",
-                        INK,
-                        PanelAction::Browser,
-                    );
-                } else {
-                    button::<_, RepositoryPicker>(buttons, "Live worktree", INK, PanelAction::Live);
-                }
-                button::<_, RepositoryPicker>(buttons, "Close", INK, PanelAction::Close);
-            });
+            .id();
+        fields = Some((field, results, status, auth));
     });
-    let input = field.expect("repository input");
-    if github {
-        RepositoryView::GitHub { panel, input }
-    } else {
-        RepositoryView::Revisions {
-            panel,
-            input,
-            choices: choices.expect("revision list"),
+    let (input, results, status, auth) = fields.expect("GitHub fields");
+    RepositoryView::GitHub {
+        panel,
+        input,
+        results,
+        status,
+        auth,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+pub(super) struct GitHubRender {
+    auth: Option<(Entity, String)>,
+    status: Option<(Entity, String)>,
+    results: Option<(Entity, Vec<github_choices::Choice>, Option<usize>, String)>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn sync_github(
+    commands: &mut Commands,
+    picker: &mut RepositoryPicker,
+    inputs: &Query<&EditableText>,
+    render: &mut GitHubRender,
+) {
+    use native_panel::{INK, button, text};
+    let Some(RepositoryView::GitHub {
+        input,
+        results,
+        status,
+        auth,
+        ..
+    }) = &picker.view
+    else {
+        return;
+    };
+    let (input, results, status, auth) = (*input, *results, *status, *auth);
+    let input = input
+        .and_then(|input| inputs.get(input).ok())
+        .map(|input| input.value().to_string())
+        .unwrap_or_default();
+    let (rows, hint) = picker
+        .choices
+        .results(&input, || native_github::token(picker.session.as_ref()));
+    if picker.choices.rows != rows {
+        picker.choices.active = None;
+        picker.choices.rows = rows;
+    }
+    if let Some(results) = results {
+        let key = (
+            results,
+            picker.choices.rows.clone(),
+            picker.choices.active,
+            hint,
+        );
+        if render.results.as_ref() != Some(&key) {
+            let mut list = commands.entity(results);
+            list.despawn_related::<Children>();
+            list.with_children(|children| {
+                for (index, option) in key.1.iter().enumerate() {
+                    if Some(index) == key.2 {
+                        button::<_, RepositoryPicker>(
+                            children,
+                            &format!("> {}", option.label),
+                            INK,
+                            PanelAction::GitHubMatch(index),
+                        );
+                    } else {
+                        button::<_, RepositoryPicker>(
+                            children,
+                            &option.label,
+                            INK,
+                            PanelAction::GitHubMatch(index),
+                        );
+                    }
+                }
+                if !key.3.is_empty() {
+                    text(children, &key.3, INK);
+                }
+            });
+            if let Some(index) = key.2 {
+                commands.entity(results).insert(ScrollPosition(Vec2::new(
+                    0.,
+                    index.saturating_sub(3) as f32 * 33.,
+                )));
+            } else if !key.1.is_empty() {
+                commands.entity(results).insert(ScrollPosition::default());
+            }
+            render.results = Some(key);
         }
     }
+    let account = picker
+        .session
+        .as_ref()
+        .map(|session| format!("@{}", session.login));
+    let caption = if let Some(code) = &picker.sign_in_code {
+        let feedback = if picker.code_copied {
+            "Copied"
+        } else {
+            "Click to copy"
+        };
+        format!("{code} | {feedback}")
+    } else if let Some(account) = account {
+        account
+    } else if picker.device.is_some() {
+        "Requesting a code…".into()
+    } else {
+        "Sign in with GitHub".into()
+    };
+    let message = if !picker.status.is_empty() {
+        picker.status.as_str()
+    } else if picker.sign_in_code.is_some() {
+        "Paste the code in the GitHub tab."
+    } else {
+        ""
+    };
+    let status_key = (status, message.to_owned());
+    if render.status.as_ref() != Some(&status_key) {
+        commands.entity(status).insert(Text::new(&status_key.1));
+        render.status = Some(status_key);
+    }
+    let key = (auth, caption);
+    if render.auth.as_ref() != Some(&key) {
+        let mut controls = commands.entity(auth);
+        controls.despawn_related::<Children>();
+        controls.with_children(|children| {
+            if picker.sign_in_code.is_some() {
+                button::<_, RepositoryPicker>(children, &key.1, INK, PanelAction::CopyCode);
+            } else if picker.session.is_some() || picker.device.is_some() {
+                text(children, &key.1, INK);
+            } else {
+                button::<_, RepositoryPicker>(children, &key.1, INK, PanelAction::SignIn);
+            }
+        });
+        render.auth = Some(key);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn show_github(
+    commands: &mut Commands,
+    picker: &mut RepositoryPicker,
+    focus: &mut InputFocus,
+    parents: &Query<&ChildOf>,
+) {
+    close_view(commands, picker, focus, parents);
+    let view = draw_github(commands, &picker.choices);
+    if let Some(input) = view.input() {
+        focus.set(input, FocusCause::Navigated);
+    }
+    picker.view = Some(view);
 }
 
 pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
@@ -501,7 +770,7 @@ pub(super) fn open_repository(
         Query<(&mut ScrollPosition, &RelativeCursorPosition), With<RevisionList>>,
         Res<AccumulatedMouseScroll>,
     ),
-    mut github_status: Query<&mut Text, (With<GitHubStatus>, Without<RepositoryStatus>)>,
+    (mut github_render, mut clipboard): (Local<GitHubRender>, ResMut<Clipboard>),
     review: Res<review_notes::Review>,
 ) {
     let Ok((mut window, mut cursor)) = windows.single_mut() else {
@@ -557,6 +826,9 @@ pub(super) fn open_repository(
                 window.title = format!("{} · {}", set.name, snapshot.target.label());
                 picker.github = Some(snapshot.target);
                 picker.status.clear();
+                if matches!(picker.view, Some(RepositoryView::GitHub { .. })) {
+                    close_view(&mut commands, &mut picker, &mut focus, &parents);
+                }
                 replace_selection(&mut commands, &old_city, next, explorer, None);
                 commands.insert_resource(listing::Listing::default());
                 opened = true;
@@ -595,6 +867,8 @@ pub(super) fn open_repository(
         match result {
             Ok(code) => {
                 picker.sign_in_code = Some(code.user_code.clone());
+                picker.code_copied = false;
+                picker.status = native_github::browser_sign_in().err().unwrap_or_default();
                 picker.login = Some(native_github::finish_sign_in(code));
             }
             Err(error) => picker.status = error,
@@ -605,47 +879,141 @@ pub(super) fn open_repository(
         picker.sign_in_code = None;
         match result {
             Ok(session) => {
+                if let Some(token) = native_github::token(Some(&session)) {
+                    picker.choices.load_library(&session.login, token);
+                }
                 picker.session = Some(session);
                 picker.status.clear();
             }
             Err(error) => picker.status = error,
         }
     }
+    let github = matches!(picker.view, Some(RepositoryView::GitHub { .. }));
+    let searching = github && (picker.choices.editor.is_some() || picker.choices.target.is_none());
+    if searching {
+        if keys.just_pressed(KeyCode::ArrowDown) {
+            picker.choices.step(true);
+        } else if keys.just_pressed(KeyCode::ArrowUp) {
+            picker.choices.step(false);
+        }
+    }
     let panel_action = picker.action.take().or_else(|| {
         if picker.view.is_none() {
             None
         } else if keys.just_pressed(KeyCode::Escape) {
-            Some(PanelAction::Close)
+            Some(
+                picker
+                    .choices
+                    .editor
+                    .filter(|_| github)
+                    .map_or(PanelAction::Close, PanelAction::EditGithub),
+            )
         } else if keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
-            Some(PanelAction::Open)
+            if searching {
+                picker
+                    .choices
+                    .active
+                    .map(PanelAction::GitHubMatch)
+                    .or_else(|| match picker.choices.editor {
+                        Some(Editor::PullRequests) => None,
+                        Some(Editor::Revision | Editor::Base) => Some(PanelAction::UseRevision),
+                        None => Some(PanelAction::SelectRepository),
+                    })
+            } else {
+                Some(PanelAction::Open)
+            }
         } else {
             None
         }
     });
     if let Some(action) = panel_action
+        && (picker.pending.is_none()
+            || matches!(action, PanelAction::Close | PanelAction::CopyCode))
         && let Some(view) = picker.view.as_ref()
     {
-        let github = matches!(view, RepositoryView::GitHub { .. });
-        let input = inputs
-            .get(view.input())
+        let input = view
+            .input()
+            .and_then(|input| inputs.get(input).ok())
             .map(|input| input.value().to_string())
             .unwrap_or_default();
         match action {
-            PanelAction::SignIn if github && picker.device.is_none() && picker.login.is_none() => {
-                picker.status = "Requesting a GitHub sign-in code…".into();
+            PanelAction::SignIn
+                if github
+                    && picker.session.is_none()
+                    && picker.device.is_none()
+                    && picker.login.is_none() =>
+            {
+                picker.status.clear();
                 picker.device = Some(native_github::request_sign_in());
             }
-            PanelAction::Browser if github => {
-                if picker.sign_in_code.is_some()
-                    && let Err(error) = native_github::browser_sign_in()
-                {
-                    picker.status = error;
+            PanelAction::CopyCode if github => {
+                if let Some(code) = &picker.sign_in_code {
+                    match clipboard.set_text(code.as_str()) {
+                        Ok(()) => picker.code_copied = true,
+                        Err(_) => {
+                            picker.status =
+                                "Couldn't copy the code. Type it in the GitHub tab.".into()
+                        }
+                    }
                 }
             }
+            PanelAction::UseRevision
+            | PanelAction::SelectRepository
+            | PanelAction::GitHubMatch(_)
+                if github =>
+            {
+                let chosen = match action {
+                    PanelAction::GitHubMatch(index) => {
+                        picker.choices.rows.get(index).map(|row| row.value.clone())
+                    }
+                    _ => Some(input.trim().to_owned()),
+                };
+                if let Some(chosen) = chosen {
+                    match picker.choices.editor {
+                        Some(Editor::Revision) => picker.choices.revision = chosen,
+                        Some(Editor::Base) => picker.choices.base = chosen,
+                        Some(Editor::PullRequests) | None => {
+                            match native_github::Target::parse(&chosen) {
+                                Ok(target) => picker.choices.set_target(Some(target)),
+                                Err(error) => {
+                                    picker.status = error;
+                                    sync_github(
+                                        &mut commands,
+                                        &mut picker,
+                                        &inputs,
+                                        &mut github_render,
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    picker.status.clear();
+                    picker.choices.editor = None;
+                    picker.choices.reset_rows();
+                    show_github(&mut commands, &mut picker, &mut focus, &parents);
+                }
+            }
+            PanelAction::ChangeRepository if github => {
+                picker.status.clear();
+                picker.choices.set_target(None);
+                show_github(&mut commands, &mut picker, &mut focus, &parents);
+            }
+            PanelAction::EditGithub(editor) if github => {
+                if picker.choices.editor == Some(editor) {
+                    picker.choices.editor = None;
+                    picker.choices.reset_rows();
+                } else {
+                    let token = native_github::token(picker.session.as_ref());
+                    picker.choices.edit(editor, token);
+                }
+                show_github(&mut commands, &mut picker, &mut focus, &parents);
+            }
             PanelAction::Open if github => {
-                picker.open_github(&input, None);
-                if picker.pending.is_some() {
-                    close_view(&mut commands, &mut picker, &mut focus, &parents);
+                if let Some(target) = picker.choices.target.clone() {
+                    let revision = picker.choices.revision.clone();
+                    let base = picker.choices.base.clone();
+                    picker.start_github(target, revision, base, None);
                 }
             }
             PanelAction::Open | PanelAction::Live | PanelAction::Revision(_) if !github => {
@@ -695,42 +1063,34 @@ pub(super) fn open_repository(
             PickerAction::Revision if repo.0.files.is_empty() || picker.github.is_some() => {
                 picker.status = "Open a local repository to choose a local revision.".into();
             }
-            PickerAction::GitHub | PickerAction::Revision => {
-                let github = matches!(action, PickerAction::GitHub);
-                let current = if github {
-                    picker
-                        .github
-                        .as_ref()
-                        .map_or_else(String::new, native_github::Target::url)
+            PickerAction::GitHub => {
+                let target = picker.github.clone();
+                if picker.choices.target != target {
+                    picker.choices.set_target(target);
                 } else {
-                    "HEAD".into()
-                };
-                let view = draw_panel(&mut commands, github, &current);
-                focus.set(view.input(), FocusCause::Navigated);
-                picker.view = Some(view);
-                if !github {
-                    let path = repo.0.root.clone();
-                    picker.revision_job = Some(native_github::Job::spawn(move || {
-                        repo_world::local_revisions(&path)
-                    }));
+                    picker.choices.editor = None;
+                    picker.choices.reset_rows();
                 }
+                if let Some(session) = &picker.session
+                    && let Some(token) = native_github::token(Some(session))
+                {
+                    let login = session.login.clone();
+                    picker.choices.load_library(&login, token);
+                }
+                show_github(&mut commands, &mut picker, &mut focus, &parents);
+            }
+            PickerAction::Revision => {
+                let view = draw_revisions(&mut commands);
+                focus.set(view.input().expect("revision input"), FocusCause::Navigated);
+                picker.view = Some(view);
+                let path = repo.0.root.clone();
+                picker.revision_job = Some(native_github::Job::spawn(move || {
+                    repo_world::local_revisions(&path)
+                }));
             }
         }
     }
-    if let Ok(mut text) = github_status.single_mut() {
-        let message = if let Some(code) = &picker.sign_in_code {
-            format!("Enter this code on GitHub: {code}")
-        } else if !picker.status.is_empty() {
-            picker.status.clone()
-        } else if let Some(session) = &picker.session {
-            format!("Signed in as @{}", session.login)
-        } else if native_github::development_token().is_some() {
-            "Using the token from your local development environment.".into()
-        } else {
-            "Sign in for private repositories and review comments.".into()
-        };
-        text.set_if_neq(Text::new(message));
-    }
+    sync_github(&mut commands, &mut picker, &inputs, &mut github_render);
     picker.blocked = was_blocked || picker.view.is_some() || picker.folder.is_some();
     let has_city = !repo.0.files.is_empty() || opened;
     for mut node in &mut file_controls {
@@ -774,6 +1134,56 @@ pub(super) fn open_repository(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn github_picker_updates_matches_as_you_type_and_enter_selects_the_highlighted_repository() {
+        let mut app = App::new();
+        let mut picker = RepositoryPicker::new(String::new());
+        picker.smoke_open();
+        app.insert_resource(picker)
+            .insert_resource(Repo(empty()))
+            .insert_resource(WorldSet::load(None).unwrap())
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<InputFocus>()
+            .init_resource::<AccumulatedMouseScroll>()
+            .init_resource::<Clipboard>()
+            .init_resource::<review_notes::Review>()
+            .init_resource::<live_worktree::Live>()
+            .add_systems(Update, open_repository);
+        app.world_mut()
+            .spawn((Window::default(), CursorOptions::default(), PrimaryWindow));
+        app.update();
+        app.update();
+        let picker = app.world().resource::<RepositoryPicker>();
+        assert_eq!(picker.choices.rows.len(), 2);
+        let field = picker.view.as_ref().unwrap().input().unwrap();
+        app.world_mut()
+            .get_mut::<EditableText>(field)
+            .unwrap()
+            .editor_mut()
+            .set_text("demo star");
+        app.update();
+        let picker = app.world().resource::<RepositoryPicker>();
+        assert_eq!(picker.choices.rows.len(), 1);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::ArrowDown);
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Enter);
+        app.update();
+        let picker = app.world().resource::<RepositoryPicker>();
+        assert_eq!(
+            picker.choices.target.as_ref().unwrap().label(),
+            "example/demo"
+        );
+        assert!(picker.pending.is_none());
+    }
 
     #[test]
     fn absent_folder_is_rejected_with_its_path() {

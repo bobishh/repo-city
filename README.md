@@ -61,11 +61,13 @@ The script runs the Rust development build. The watcher updates the city when
 the inspected checkout changes. Restart the program to load changes to Repo
 City's own Rust code.
 
-Choose **GitHub…** to open a GitHub repository or pull request by URL. Use
-**Sign in** to request a device code, then **Enter code on GitHub** to
-authorize the app in your browser. Public repositories can open before you
-sign in. The app uses Git to fetch snapshots and the GitHub API for review
-comments.
+Choose **GitHub…** to find a repository or paste a GitHub repository or pull
+request URL. **Sign in with GitHub** opens the verification page. Click the
+device code to copy it, then paste it in the browser. Once signed in, the picker
+suggests your repositories, forks, and starred repositories as you type.
+Select a repository to choose a revision and comparison base or list its pull
+requests.
+The app uses Git to fetch snapshots and the GitHub API for review comments.
 
 In large repositories the city loads nearby buildings as you fly. File search
 still covers the entire comparison.

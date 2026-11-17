@@ -10,6 +10,8 @@ mod comparison_scene;
 mod district;
 mod file_facade;
 mod file_picker;
+#[cfg(not(target_arch = "wasm32"))]
+mod github_choices;
 mod guide;
 mod listing;
 #[cfg(not(target_arch = "wasm32"))]
@@ -307,7 +309,7 @@ fn main() {
     };
     if args.iter().any(|a| a == "--help") {
         println!(
-            "repo-city [--repo PATH [--rev HEAD | --live] [--base REF] | --github URL] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · E flies to the aimed face · Space/Ctrl altitude · Shift boost · Click captures the cursor · Esc releases it\nHold left mouse close to wash source · Home frames the file · G diff · B blame\nC reviews changes · T follows a supplied stack · W/S or scroll fly between review stops · Q returns to the diff wall\nG ghost/pair · [ ] hunks · Enter source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
+            "repo-city [--repo PATH [--rev HEAD | --live] [--base REF] | --github URL [--rev REF] [--base REF]] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · E flies to the aimed face · Space/Ctrl altitude · Shift boost · Click captures the cursor · Esc releases it\nHold left mouse close to wash source · Home frames the file · G diff · B blame\nC reviews changes · T follows a supplied stack · W/S or scroll fly between review stops · Q returns to the diff wall\nG ghost/pair · [ ] hunks · Enter source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
         );
         return;
     }
@@ -421,7 +423,12 @@ fn main() {
     let picker = {
         let mut picker = picker;
         if let Some(input) = remote {
-            picker.open_github(input, arg("--file").map(str::to_owned));
+            picker.open_github(
+                input,
+                arg("--rev").unwrap_or_default(),
+                arg("--base").unwrap_or_default(),
+                arg("--file").map(str::to_owned),
+            );
         }
         picker
     };
@@ -585,10 +592,13 @@ fn main() {
                         "--smoke-walls" => Some(7),
                         "--smoke-blame" => Some(8),
                         "--smoke-source" => Some(9),
+                        "--smoke-github-picker" => Some(10),
                         _ => None,
                     })
                     .unwrap_or(0),
-                stop: if std::env::args().any(|arg| arg == "--smoke-source") {
+                stop: if std::env::args().any(|arg| arg == "--smoke-github-picker") {
+                    11
+                } else if std::env::args().any(|arg| arg == "--smoke-source") {
                     10
                 } else {
                     9
@@ -2076,6 +2086,7 @@ fn smoke(
     fragments: Query<Entity, With<physics::Fragment>>,
     debris: Query<Entity, With<physics::Lifetime>>,
     mut listing: ResMut<listing::Listing>,
+    mut picker: ResMut<repository_picker::RepositoryPicker>,
 ) {
     if check.pending || repo.0.files.is_empty() {
         return;
@@ -2086,7 +2097,9 @@ fn smoke(
             explorer.reload(&repo.0);
             assert_eq!(explorer.source, expected);
         }
-        let report = if check.stop == 10 {
+        let report = if check.stop == 11 {
+            "Rendered the GitHub picker."
+        } else if check.stop == 10 {
             "Rendered the revealed source wall."
         } else {
             "Rendered pair, ghost, syntax wall, city overview, district mirror, diff and blame walls. The draft action detached the exact declaration, spawned physical fragments, and restore recovered the immutable source and cleared debris."
@@ -2097,6 +2110,9 @@ fn smoke(
         return;
     }
     if !check.prepared {
+        if check.stage == 10 {
+            picker.smoke_open();
+        }
         if let Ok(mut camera) = camera.single_mut() {
             let [x, z] = repo.0.files[explorer.selected].position;
             match check.stage {
@@ -2196,13 +2212,14 @@ fn smoke(
                     }
                     *camera = listing::view(file, count);
                 }
-                _ => {
+                7 | 8 => {
                     *camera = listing::smoke_side(
                         &explorer,
                         &repo.0.files[explorer.selected],
                         check.stage == 8,
                     );
                 }
+                _ => {}
             }
         }
         explorer.rebuild = true;

@@ -9,7 +9,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{PathBuf, Repository, repository_picker, review_notes::Note};
+use super::{PathBuf, Repository, github_choices::Choice, repository_picker, review_notes::Note};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Target {
@@ -21,6 +21,7 @@ pub(super) struct Target {
 impl Target {
     pub fn parse(input: &str) -> Result<Self, String> {
         let input = input.trim();
+        let input = input.split(['?', '#']).next().unwrap_or(input);
         let path = input.strip_prefix("https://github.com/").unwrap_or(input);
         let parts = path.trim_end_matches('/').split('/').collect::<Vec<_>>();
         let component = |value: &str| {
@@ -34,7 +35,8 @@ impl Target {
         let invalid = || "Enter owner/repository or a GitHub pull request URL.".to_owned();
         let (owner, name, pull) = match parts.as_slice() {
             [owner, name] => (*owner, *name, None),
-            [owner, name, "pull", number] => (
+            [owner, name, "pull", number]
+            | [owner, name, "pull", number, "files" | "commits" | "checks"] => (
                 *owner,
                 *name,
                 Some(
@@ -160,6 +162,15 @@ fn api<T: serde::de::DeserializeOwned>(
     token: Option<&str>,
     body: Option<&Value>,
 ) -> Result<T, String> {
+    api_query(endpoint, token, body, &[])
+}
+
+fn api_query<T: serde::de::DeserializeOwned>(
+    endpoint: &str,
+    token: Option<&str>,
+    body: Option<&Value>,
+    query: &[(&str, &str)],
+) -> Result<T, String> {
     let client = agent();
     let url = format!("https://api.github.com/{endpoint}");
     let request = client
@@ -170,9 +181,236 @@ fn api<T: serde::de::DeserializeOwned>(
         Some(token) => request.set("Authorization", &format!("Bearer {token}")),
         None => request,
     };
+    let request = query
+        .iter()
+        .fold(request, |request, (key, value)| request.query(key, value));
     json_response(match body {
         Some(body) => request.send_json(body),
         None => request.call(),
+    })
+}
+
+fn commit_choice(commit: &Value) -> Option<Choice> {
+    let value = sha(commit["sha"].as_str()?).ok()?;
+    let title = commit["commit"]["message"].as_str()?.lines().next()?;
+    Some(Choice {
+        value: value.into(),
+        label: format!("{} | {title}", &value[..7]),
+    })
+}
+
+pub(super) fn revisions(target: Target, token: Option<String>) -> Job<Vec<Choice>> {
+    Job::spawn(move || {
+        let path = format!("repos/{}", target.slug());
+        let endpoints = [
+            "branches?per_page=100",
+            "tags?per_page=50",
+            "commits?per_page=30",
+        ];
+        let [branches, tags, commits] = std::thread::scope(|scope| {
+            endpoints
+                .map(|endpoint| {
+                    let endpoint = format!("{path}/{endpoint}");
+                    let token = token.as_deref();
+                    scope.spawn(move || api::<Vec<Value>>(&endpoint, token, None))
+                })
+                .map(|job| job.join().unwrap())
+        });
+        if branches.is_err() && tags.is_err() && commits.is_err() {
+            return Err("GitHub revisions unavailable.".into());
+        }
+        let mut choices = Vec::new();
+        for (items, kind, prefix) in [(branches, "Branch", "heads"), (tags, "Tag", "tags")] {
+            choices.extend(items.unwrap_or_default().iter().filter_map(|item| {
+                let name = item["name"].as_str()?;
+                Some(Choice {
+                    value: format!("refs/{prefix}/{name}"),
+                    label: format!("{kind} | {name}"),
+                })
+            }));
+        }
+        choices.extend(commits.unwrap_or_default().iter().filter_map(commit_choice));
+        Ok(choices)
+    })
+}
+
+pub(super) fn search_commits(
+    target: Target,
+    query: String,
+    token: Option<String>,
+) -> Job<Vec<Choice>> {
+    Job::spawn(move || {
+        let slug = target.slug();
+        let words = query.chars().take(80).collect::<String>();
+        let words = words
+            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+            .filter(|word| !word.is_empty())
+            .take(8)
+            .map(|word| format!("\"{word}\""))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if words.len() < 5 {
+            return Ok(vec![]);
+        }
+        let value: Value = api_query(
+            "search/commits",
+            token.as_deref(),
+            None,
+            &[("q", &format!("repo:{slug} {words}")), ("per_page", "8")],
+        )?;
+        let items = value["items"]
+            .as_array()
+            .ok_or("GitHub commit search unavailable.")?;
+        Ok(items
+            .iter()
+            .filter(|item| {
+                item["repository"]["full_name"]
+                    .as_str()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(&slug))
+            })
+            .filter_map(commit_choice)
+            .collect())
+    })
+}
+
+fn pages(
+    path: &str,
+    token: Option<&str>,
+    field: Option<&str>,
+    max_pages: usize,
+) -> Result<Vec<Value>, String> {
+    let mut items = Vec::new();
+    let separator = if path.contains('?') { '&' } else { '?' };
+    for page in 1..=max_pages {
+        let result: Value = api(
+            &format!("{path}{separator}per_page=100&page={page}"),
+            token,
+            None,
+        )?;
+        let batch = field
+            .map_or(&result, |field| &result[field])
+            .as_array()
+            .ok_or("GitHub returned an invalid list.")?;
+        items.extend(batch.iter().cloned());
+        if batch.len() < 100 {
+            break;
+        }
+    }
+    Ok(items)
+}
+
+pub(super) fn library(login: String, token: String) -> Job<Vec<Choice>> {
+    Job::spawn(move || {
+        let (own, stars, installations) = std::thread::scope(|scope| {
+            let own = scope.spawn(|| {
+                pages(
+                    &format!("users/{login}/repos?sort=pushed"),
+                    Some(&token),
+                    None,
+                    10,
+                )
+            });
+            let stars = scope.spawn(|| pages("user/starred", Some(&token), None, 10));
+            let installations = pages(
+                "user/installations",
+                Some(&token),
+                Some("installations"),
+                10,
+            );
+            (own.join().unwrap(), stars.join().unwrap(), installations)
+        });
+        let mut repos = own.as_ref().cloned().unwrap_or_default();
+        for installation in installations.as_deref().unwrap_or_default() {
+            if let Some(id) = installation["id"].as_u64()
+                && let Ok(granted) = pages(
+                    &format!("user/installations/{id}/repositories"),
+                    Some(&token),
+                    Some("repositories"),
+                    10,
+                )
+            {
+                repos.extend(granted);
+            }
+        }
+        if repos.is_empty() && stars.is_err() && (own.is_err() || installations.is_err()) {
+            return Err("GitHub repositories unavailable.".into());
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut entries = Vec::new();
+        repos.sort_by_key(|repo| {
+            (
+                repo["fork"].as_bool().unwrap_or(false),
+                repo["full_name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase(),
+            )
+        });
+        let mut stars = stars.unwrap_or_default();
+        stars.sort_by_key(|repo| {
+            repo["full_name"]
+                .as_str()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+        });
+        for (repo, starred) in repos
+            .into_iter()
+            .map(|repo| (repo, false))
+            .chain(stars.into_iter().map(|repo| (repo, true)))
+        {
+            let Some(value) = repo["full_name"].as_str() else {
+                continue;
+            };
+            if !seen.insert(value.to_ascii_lowercase()) {
+                continue;
+            }
+            let private = if repo["private"].as_bool() == Some(true) {
+                " | Private"
+            } else {
+                ""
+            };
+            let category = if starred {
+                " | Star"
+            } else if repo["fork"].as_bool() == Some(true) {
+                " | Fork"
+            } else {
+                ""
+            };
+            entries.push(Choice {
+                value: value.into(),
+                label: format!("{value}{private}{category}"),
+            });
+        }
+        Ok(entries)
+    })
+}
+
+pub(super) fn pull_requests(target: Target, token: Option<String>) -> Job<Vec<Choice>> {
+    Job::spawn(move || {
+        let items = pages(
+            &format!("repos/{}/pulls?state=all", target.slug()),
+            token.as_deref(),
+            None,
+            2,
+        )?;
+        Ok(items
+            .iter()
+            .filter_map(|pull| {
+                let number = pull["number"].as_u64()?;
+                let title = pull["title"].as_str()?;
+                let state = match pull["state"].as_str()? {
+                    "open" => "Open",
+                    "closed" if pull["merged_at"].is_null() => "Closed",
+                    "closed" => "Merged",
+                    _ => return None,
+                };
+                let author = pull["user"]["login"].as_str().unwrap_or("unknown");
+                Some(Choice {
+                    value: format!("https://github.com/{}/pull/{number}", target.slug()),
+                    label: format!("#{number} | {state} | {title} | @{author}"),
+                })
+            })
+            .collect())
     })
 }
 
@@ -317,7 +555,12 @@ pub(super) struct Snapshot {
 }
 
 impl Snapshot {
-    fn load(target: Target, token: Option<&str>) -> Result<Self, String> {
+    fn load(
+        target: Target,
+        token: Option<&str>,
+        revision: &str,
+        base: &str,
+    ) -> Result<Self, String> {
         let root = target.cache()?;
         std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
         if !root.join("HEAD").exists() {
@@ -337,21 +580,61 @@ impl Snapshot {
             let merge_base = git(&root, &["merge-base", base, head], None)?;
             repository_picker::load(&root, head, Some(sha(&merge_base)?))?
         } else {
-            git(
+            let head = fetch_revision(
                 &root,
-                &[
-                    "fetch",
-                    "--quiet",
-                    "--no-tags",
-                    &origin,
-                    "+HEAD:refs/repo-city/head",
-                ],
+                &origin,
+                &target,
                 token,
+                if revision.is_empty() {
+                    "HEAD"
+                } else {
+                    revision
+                },
             )?;
-            repository_picker::load(&root, "refs/repo-city/head", None)?
+            let merge_base = if base.is_empty() {
+                None
+            } else {
+                let base = fetch_revision(&root, &origin, &target, token, base)?;
+                Some(git(&root, &["merge-base", &base, &head], None)?)
+            };
+            repository_picker::load(&root, &head, merge_base.as_deref())?
         };
         Ok(Self { target, repository })
     }
+}
+
+fn fetch_revision(
+    root: &Path,
+    origin: &str,
+    target: &Target,
+    token: Option<&str>,
+    revision: &str,
+) -> Result<String, String> {
+    let commits: Vec<Commit> = api_query(
+        &format!("repos/{}/commits", target.slug()),
+        token,
+        None,
+        &[("sha", revision), ("per_page", "1")],
+    )?;
+    let commit = commits
+        .first()
+        .ok_or("GitHub returned no commit for this revision.")?;
+    let head = sha(&commit.sha)?;
+    let reference = format!("{head}:refs/repo-city/snapshots/{head}");
+    git(
+        root,
+        &[
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--",
+            origin,
+            &reference,
+        ],
+        token,
+    )?;
+    Ok(head.to_owned())
 }
 
 pub(super) struct Job<T>(Mutex<mpsc::Receiver<Result<T, String>>>);
@@ -376,8 +659,13 @@ impl<T: Send + 'static> Job<T> {
     }
 }
 
-pub(super) fn open(target: Target, token: Option<String>) -> Job<Snapshot> {
-    Job::spawn(move || Snapshot::load(target, token.as_deref()))
+pub(super) fn open(
+    target: Target,
+    token: Option<String>,
+    revision: String,
+    base: String,
+) -> Job<Snapshot> {
+    Job::spawn(move || Snapshot::load(target, token.as_deref(), &revision, &base))
 }
 
 fn review_comment(note: &Note, body: String) -> Value {
