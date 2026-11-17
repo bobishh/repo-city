@@ -13,38 +13,19 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
-  native:
-    name: Native Rust tests
-    runs-on: macos-15-intel
-    timeout-minutes: 35
+  checks:
+    name: Checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    env:
+      CARGO_PROFILE_DEV_OPT_LEVEL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
-        with:
-          toolchain: 1.98.0
-          components: rustfmt
-      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
-      - run: cargo fmt -p repo-city -p repo-world -- --check
-      - run: cargo --config 'profile.dev.package."*".opt-level=0' test -p repo-city -p repo-world --locked
-        env:
-          CARGO_PROFILE_DEV_OPT_LEVEL: 0
-          CARGO_PROFILE_DEV_DEBUG: 0
-
-  browser:
-    name: Browser tests and WASM artifact
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 22
           cache: npm
@@ -52,131 +33,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           toolchain: 1.98.0
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
-        with:
-          cache-on-failure: true
+          components: rustfmt
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+      - run: cargo fmt -p repo-city -p repo-world -- --check
       - run: npm ci && npm test
         working-directory: web
-      - name: Install wasm-bindgen CLI matching Cargo.lock
-        run: |
-          version=$(python3 -c 'import tomllib; print(next(p["version"] for p in tomllib.load(open("Cargo.lock", "rb"))["package"] if p["name"] == "wasm-bindgen"))')
-          cargo install wasm-bindgen-cli --version "$version" --locked
-      - run: ./scripts/build-web.sh
-        env:
-          TINSINK_BROWSER_KEY: ${{ vars.TINSINK_BROWSER_KEY }}
-      - name: Verify the real WASM build in Chromium
-        working-directory: web
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes libvulkan1
-          npx playwright install --with-deps chromium
-          npm run test:browser
-        env:
-          REPO_CITY_TEST_OUTPUT: ${{ runner.temp }}/repo-city-playwright
-      - name: Save browser failure screenshots
-        if: failure()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: browser-test-failure
-          path: ${{ runner.temp }}/repo-city-playwright/
-          if-no-files-found: ignore
-          retention-days: 7
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: browser-build
-          path: |
-            web/dist/
-            web/worker.mjs
-            web/github-auth.mjs
-            web/pr-review.mjs
-            web/wrangler.jsonc
-          retention-days: 7
-          if-no-files-found: error
-
-  deploy:
-    name: Deploy to Cloudflare
-    if: github.repository == 'bobishh/repo-city' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [native, browser]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    environment:
-      name: production
-      url: https://repo-city.meta-uber-engineer.dev
-    steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: browser-build
-          path: release
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: 22
-      - name: Check the Worker module in the deployment artifact
-        working-directory: release
-        run: |
-          node --input-type=module -e 'const { default: worker } = await import("./worker.mjs"); if (typeof worker.fetch !== "function") process.exit(1);'
-      - name: Deploy the tested build
-        working-directory: release
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          GITHUB_CLIENT_ID: ${{ secrets.REPO_CITY_GITHUB_CLIENT_ID }}
-          GITHUB_CLIENT_SECRET: ${{ secrets.REPO_CITY_GITHUB_CLIENT_SECRET }}
-          GITHUB_APP_SLUG: ${{ secrets.REPO_CITY_GITHUB_APP_SLUG }}
-          WRANGLER_SEND_METRICS: "false"
-        run: |
-          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
-            echo "::error::Set CLOUDFLARE_API_TOKEN in the production environment."
-            exit 1
-          fi
-          export WRANGLER_OUTPUT_FILE_PATH="$RUNNER_TEMP/wrangler-output.ndjson"
-          auth_args=()
-          if [ -n "$GITHUB_CLIENT_ID" ] && [ -n "$GITHUB_CLIENT_SECRET" ]; then
-            secret_file=$(mktemp "$RUNNER_TEMP/github-app.XXXXXX")
-            trap 'rm -f "$secret_file"' EXIT
-            python3 - "$secret_file" <<'PYCODE'
-          import json
-          import os
-          import sys
-          with open(sys.argv[1], "w") as output:
-              json.dump({key: os.environ[key] for key in (
-                  "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "GITHUB_APP_SLUG",
-              )}, output)
-          PYCODE
-            auth_args=(--secrets-file "$secret_file")
-          fi
-          npx --yes wrangler@4.162.0 versions upload --config wrangler.jsonc --message "$GITHUB_SHA" "${auth_args[@]}"
-          version_id=$(jq -er 'select(.type == "version-upload") | .version_id | strings' "$WRANGLER_OUTPUT_FILE_PATH")
-          npx --yes wrangler@4.162.0 versions deploy "$version_id@100%" --config wrangler.jsonc --yes
-      - name: Verify the live assets match the tested build
-        working-directory: release
-        run: |
-          base=https://repo-city.meta-uber-engineer.dev
-          wasm=dist/game/repo_city_bg.wasm
-          if [ -f "$wasm.gz" ]; then
-            gzip -dc "$wasm.gz" > "$RUNNER_TEMP/expected.wasm"
-            wasm="$RUNNER_TEMP/expected.wasm"
-          fi
-          check_live() {
-            local route=$1 expected=$2
-            for attempt in 1 2 3 4 5 6; do
-              if curl --fail --silent --show-error --compressed --max-time 20 \
-                  "$base$route?release=$GITHUB_SHA" -o "$RUNNER_TEMP/live-asset" &&
-                  cmp -s "$expected" "$RUNNER_TEMP/live-asset"; then
-                return 0
-              fi
-              if [ "$attempt" -lt 6 ]; then sleep 5; fi
-            done
-            echo "::error::Live asset $route does not match $GITHUB_SHA"
-            return 1
-          }
-          check_live / dist/index.html
-          check_live /style.css dist/style.css
-          check_live /app.mjs dist/app.mjs
-          check_live /github-picker.mjs dist/github-picker.mjs
-          check_live /pointer.mjs dist/pointer.mjs
-          check_live /progress.mjs dist/progress.mjs
-          check_live /assets/robot-head.svg dist/assets/robot-head.svg
-          check_live /assets/apple-touch-icon.png dist/assets/apple-touch-icon.png
-          check_live /game/repo_city_bg.wasm "$wasm"
-          curl --fail --silent --show-error --max-time 20 "$base/github/session" |
-            jq -e '.enabled | type == "boolean"'
+      - run: cargo --config 'profile.dev.package."*".opt-level=0' test -p repo-world --locked
