@@ -19,3 +19,9 @@ Copyright 2014 The Caveat Project Authors. See `web/assets/OFL-Caveat.txt`.
 
 Markdown parsing uses pulldown-cmark 0.13.6 under the MIT license.
 Copyright 2015 Google Inc. See `licenses/pulldown-cmark-MIT.txt`.
+
+## Project artwork
+
+The repository cover (`web/assets/start-screen.webp`) and facade texture
+(`assets/city/facade-print.png`) are original artwork created for this project.
+They are distributed under the project's MIT or Apache-2.0 license.
