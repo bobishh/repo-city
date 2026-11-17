@@ -152,14 +152,79 @@ pub(super) struct Navigation {
     hop: Option<Hop>,
     redraw: bool,
     broken: HashSet<usize>,
-    overview_return: Option<Transform>,
+    overview: Option<(Overview, Transform)>,
+    history: History,
     review_line: Option<(usize, f32)>,
     pub overview_requested: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Overview {
+    District,
+    Project,
+}
+
+#[derive(Default)]
+struct History {
+    scope: Option<(PathBuf, String, Option<String>)>,
+    paths: Vec<String>,
+    current: usize,
+}
+
+impl History {
+    fn record(&mut self, path: &str) {
+        if self
+            .paths
+            .get(self.current)
+            .is_some_and(|saved| saved == path)
+        {
+            return;
+        }
+        self.paths.truncate(self.current + 1);
+        self.paths.push(path.to_owned());
+        self.current = self.paths.len() - 1;
+    }
+
+    fn step(&mut self, offset: isize) -> Option<&str> {
+        let index = self.current.checked_add_signed(offset)?;
+        let path = self.paths.get(index)?;
+        self.current = index;
+        Some(path)
+    }
+}
+
+pub(super) fn history_direction(keys: &ButtonInput<KeyCode>) -> Option<isize> {
+    if !keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])
+        || keys.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight])
+    {
+        return None;
+    }
+    if keys.just_pressed(KeyCode::KeyO) {
+        Some(-1)
+    } else if keys.just_pressed(KeyCode::KeyI) {
+        Some(1)
+    } else {
+        None
+    }
+}
+
 impl Navigation {
     pub(super) fn overview(&self) -> bool {
-        self.overview_return.is_some()
+        self.overview.is_some()
+    }
+
+    pub(super) fn overview_level(&self) -> Option<Overview> {
+        self.overview.map(|(level, _)| level)
+    }
+
+    fn cycle_overview(&mut self, camera: Transform) -> (Option<Overview>, Transform) {
+        let (level, origin) = match self.overview.take() {
+            None => (Some(Overview::District), camera),
+            Some((Overview::District, origin)) => (Some(Overview::Project), origin),
+            Some((Overview::Project, origin)) => (None, origin),
+        };
+        self.overview = level.map(|level| (level, origin));
+        (level, origin)
     }
 
     fn overview_hop(&mut self, start: Transform, end: Transform) {
@@ -295,15 +360,41 @@ fn fly_to_stop(navigation: &mut Navigation, camera: Transform, repo: &Repository
 }
 
 fn district_view(district: &repo_world::District, aspect: f32) -> Transform {
-    let [x, z] = district.position;
-    let [width, depth] = district.size;
-    let center = Vec3::new(x + width / 2., 0., z + depth / 2.);
-    let diameter = (width / aspect.max(0.5)).max(depth) + 28.;
+    let min = Vec2::from_array(district.position);
+    overview_view(min, min + Vec2::from_array(district.size), aspect)
+}
+
+fn project_view(repo: &Repository, aspect: f32) -> Transform {
+    let (min, max) = repo.districts.iter().fold(
+        (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY)),
+        |(min, max), district| {
+            let position = Vec2::from_array(district.position);
+            (
+                min.min(position),
+                max.max(position + Vec2::from_array(district.size)),
+            )
+        },
+    );
+    overview_view(min, max, aspect)
+}
+
+fn overview_view(min: Vec2, max: Vec2, aspect: f32) -> Transform {
+    let [x, z] = ((min + max) * 0.5).to_array();
+    let [width, depth] = (max - min).to_array();
+    let center = Vec3::new(x, 0., z);
+    let diameter = (width / aspect.max(0.1)).max(depth) + 28.;
     let half_fov = std::f32::consts::FRAC_PI_8;
     let height = listing::MAX_HEIGHT + diameter * 0.5 / half_fov.tan();
     let offset = Vec3::new(0., height, height / MAX_LOOK_PITCH.tan());
     Transform::from_translation(center + offset)
         .with_rotation(Quat::from_rotation_x(-MAX_LOOK_PITCH))
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = takeFileDestination)]
+    fn browser_file_destination() -> String;
 }
 
 pub(super) fn navigate(
@@ -343,7 +434,7 @@ pub(super) fn navigate(
     {
         navigation.route = None;
         navigation.hop = None;
-        navigation.overview_return = None;
+        navigation.overview = None;
         navigation.redraw = true;
         explorer.anchored = false;
         explorer.comparison_mode = 0;
@@ -382,39 +473,90 @@ pub(super) fn navigate(
         return;
     }
 
+    if repo.is_changed() {
+        let scope = (&repo.0.root, &repo.0.revision, &repo.0.baseline);
+        if !navigation
+            .history
+            .scope
+            .as_ref()
+            .is_some_and(|(root, revision, baseline)| (root, revision, baseline) == scope)
+        {
+            navigation.history = History {
+                scope: Some((scope.0.clone(), scope.1.clone(), scope.2.clone())),
+                ..default()
+            };
+        }
+    }
+    if navigation.history.paths.is_empty()
+        || (listing::Listing::visible(&explorer, &navigation)
+            && saved_progress.has_visited(explorer.selected))
+    {
+        navigation
+            .history
+            .record(&repo.0.files[explorer.selected].path);
+    }
+
     let overview =
         keys.just_pressed(KeyCode::KeyM) || std::mem::take(&mut navigation.overview_requested);
-    if overview {
+    if overview && !repo.0.districts.is_empty() {
         listing.reset_view();
-        if let Some(origin) = navigation.overview_return.take() {
-            navigation.overview_hop(*camera, origin);
-        } else {
-            let file = &repo.0.files[explorer.selected];
-            let name = file
-                .path
-                .rsplit_once('/')
-                .map_or("/", |(directory, _)| directory);
-            let target = nearest
-                .district
-                .and_then(|index| repo.0.districts.get(index))
-                .or_else(|| {
-                    repo.0
-                        .districts
-                        .iter()
-                        .find(|district| district.name == name)
-                });
-            if let Some(district) = target {
-                navigation.route = None;
-                navigation.redraw = true;
-                explorer.anchored = false;
-                explorer.comparison_mode = 0;
-                explorer.rebuild = true;
-                navigation.overview_return = Some(*camera);
-                let end = district_view(district, window.width() / window.height().max(1.));
-                navigation.overview_hop(*camera, end);
+        navigation.route = None;
+        navigation.redraw = true;
+        explorer.anchored = false;
+        explorer.comparison_mode = 0;
+        explorer.rebuild = true;
+        let aspect = window.width() / window.height().max(1.);
+        let (level, origin) = navigation.cycle_overview(*camera);
+        let end = match level {
+            Some(Overview::District) => {
+                let path = &repo.0.files[explorer.selected].path;
+                let name = path
+                    .rsplit_once('/')
+                    .map_or("/", |(directory, _)| directory);
+                let district = nearest
+                    .district
+                    .and_then(|index| repo.0.districts.get(index))
+                    .or_else(|| {
+                        repo.0
+                            .districts
+                            .iter()
+                            .find(|district| district.name == name)
+                    })
+                    .unwrap_or(&repo.0.districts[0]);
+                district_view(district, aspect)
+            }
+            Some(Overview::Project) => project_view(&repo.0, aspect),
+            None => origin,
+        };
+        navigation.overview_hop(*camera, end);
+        return;
+    }
+
+    let history_destination = history_direction(&keys).and_then(|direction| {
+        while let Some(path) = navigation.history.step(direction) {
+            if let Some(index) = repo
+                .0
+                .files
+                .iter()
+                .position(|file| file.path == path && focus.includes(file))
+            {
+                return Some(index);
             }
         }
-        return;
+        None
+    });
+    let requested_file = picker.destination.take().or(history_destination);
+    #[cfg(target_arch = "wasm32")]
+    let requested_file = requested_file.or_else(|| {
+        let path = browser_file_destination();
+        (!path.is_empty())
+            .then(|| repo.0.files.iter().position(|file| file.path == path))
+            .flatten()
+    });
+    if requested_file.is_some() {
+        navigation.hop = None;
+        navigation.route = None;
+        navigation.redraw = true;
     }
 
     let reviewing = navigation
@@ -563,7 +705,7 @@ pub(super) fn navigate(
     });
     let target = if let Some(aim) = menu.destination.take() {
         Some((aim.index, Some(aim)))
-    } else if let Some(file) = picker.destination.take() {
+    } else if let Some(file) = requested_file {
         Some((file, None))
     } else if navigation.overview() && (distant_shot.is_some() || keys.just_pressed(KeyCode::KeyE))
     {
@@ -589,7 +731,7 @@ pub(super) fn navigate(
     };
     if let Some((index, aimed)) = target.filter(|(index, _)| focus.includes(&repo.0.files[*index]))
     {
-        let from_overview = navigation.overview_return.take().is_some();
+        let from_overview = navigation.overview.take().is_some();
         listing.reset_view();
         explorer.anchored = false;
         explorer.comparison_mode = 0;
@@ -598,6 +740,7 @@ pub(super) fn navigate(
         }
         explorer.rebuild = true;
         let file = &repo.0.files[index];
+        navigation.history.record(&file.path);
         let size = listing::block_size(file);
         let end = listing.arrival_view(&explorer, file, size, aimed, camera.translation);
         if camera.translation.distance_squared(end.translation) < 0.04
@@ -862,6 +1005,40 @@ pub(super) fn shoot_reviewed_platform(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overview_cycles_through_district_and_project_and_preserves_origin() {
+        let origin = Transform::from_xyz(10., 20., 30.);
+        let moved = Transform::from_xyz(40., 50., 60.);
+        let mut navigation = Navigation::default();
+        assert_eq!(
+            navigation.cycle_overview(origin),
+            (Some(Overview::District), origin)
+        );
+        assert_eq!(
+            navigation.cycle_overview(moved),
+            (Some(Overview::Project), origin)
+        );
+        assert_eq!(navigation.cycle_overview(moved), (None, origin));
+        assert!(!navigation.overview());
+    }
+
+    #[test]
+    fn jump_history_goes_back_and_forward_and_replaces_forward_branch() {
+        let mut history = History::default();
+        for file in ["a.rs", "b.rs", "c.rs"] {
+            history.record(file);
+        }
+        assert_eq!(history.step(-1), Some("b.rs"));
+        history.record("b.rs");
+        assert_eq!(history.step(-1), Some("a.rs"));
+        assert_eq!(history.step(-1), None);
+        assert_eq!(history.step(1), Some("b.rs"));
+        history.record("d.rs");
+        assert_eq!(history.step(1), None);
+        assert_eq!(history.step(-1), Some("b.rs"));
+        assert_eq!(history.step(1), Some("d.rs"));
+    }
 
     #[test]
     fn overview_frames_all_roofs_in_wide_and_narrow_windows() {

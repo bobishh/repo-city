@@ -2,9 +2,6 @@
 set -euo pipefail
 project_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$project_dir"
-if [[ -z "${CARGO_TARGET_DIR:-}" && ! -d "$project_dir/target" && -d "$project_dir/../paket/target" ]]; then
-  export CARGO_TARGET_DIR="$project_dir/../paket/target"
-fi
 cargo build -p repo-city --bin repo-city "$@"
 target_dir="${CARGO_TARGET_DIR:-$project_dir/target}"
 bundle="$project_dir/dist/Repo City.app"

@@ -16,6 +16,7 @@ use super::*;
 
 const BATCH: Duration = Duration::from_millis(160);
 const GROWTH: f64 = 0.42;
+const HIGHLIGHT: f64 = 30.;
 
 #[derive(Resource, Default)]
 pub(super) struct Live {
@@ -24,7 +25,53 @@ pub(super) struct Live {
     pub(super) growing_until: f64,
     pub(super) keep_camera: bool,
     pub(super) refreshed_files: Option<HashSet<usize>>,
+    touched: HashMap<String, f64>,
+    last_touched: Option<(String, f64)>,
+    focus_requested: bool,
     status: String,
+}
+
+impl Live {
+    pub(super) fn touched_at(&self, path: &str) -> Option<f64> {
+        self.touched.get(path).copied()
+    }
+
+    pub(super) fn last_touched(&self, now: f64) -> Option<(&str, u64)> {
+        let (path, time) = self.last_touched.as_ref()?;
+        Some((path, (now - time).max(0.) as u64))
+    }
+}
+
+pub(super) fn focus_latest(
+    keys: Res<ButtonInput<KeyCode>>,
+    repo: Res<Repo>,
+    review: Res<review_notes::Review>,
+    menu: Res<city_menu::Menu>,
+    search: Res<listing::find::Search>,
+    visibility: Res<file_facade::ChangesOnly>,
+    mut picker: ResMut<file_picker::FilePicker>,
+    mut live: ResMut<Live>,
+) {
+    let requested = std::mem::take(&mut live.focus_requested) || keys.just_pressed(KeyCode::KeyL);
+    if requested
+        && repo.0.is_worktree()
+        && !picker.is_open()
+        && !review.blocked
+        && !menu.is_open()
+        && !search.blocks_controls()
+        && let Some((path, _)) = live.last_touched.as_ref()
+        && let Some(index) = repo
+            .0
+            .files
+            .iter()
+            .position(|file| &file.path == path && visibility.includes(file))
+    {
+        picker.destination = Some(index);
+    }
+}
+
+pub(super) fn request_focus(_: On<bevy::ui_widgets::Activate>, mut live: ResMut<Live>) {
+    live.focus_requested = true;
 }
 
 struct Session {
@@ -196,6 +243,28 @@ pub(super) fn update(
         .map(|file| (file.path.as_str(), file))
         .collect::<HashMap<_, _>>();
     keep_layout(&repo.0, &mut next);
+    let now = time.elapsed_secs_f64();
+    if !live.touched.is_empty() {
+        let current: HashSet<_> = next.files.iter().map(|file| file.path.as_str()).collect();
+        live.touched
+            .retain(|path, _| current.contains(path.as_str()));
+    }
+    for file in &next.files {
+        if previous
+            .get(file.path.as_str())
+            .is_none_or(|old| changed(old, file))
+        {
+            live.touched.insert(file.path.clone(), now);
+            live.last_touched = Some((file.path.clone(), now));
+        }
+    }
+    if live
+        .last_touched
+        .as_ref()
+        .is_some_and(|(path, _)| !next.files.iter().any(|file| file.path == *path))
+    {
+        live.last_touched = None;
+    }
     live.growth = next
         .files
         .iter()
@@ -242,6 +311,48 @@ pub(super) fn update(
     commands.insert_resource(listing.live_reset());
     live.refreshed_files = refreshed_files;
     live.keep_camera = true;
+}
+
+pub(super) fn highlight(
+    mut gizmos: Gizmos,
+    live: Res<Live>,
+    time: Res<Time>,
+    repo: Res<Repo>,
+    focus: Res<file_facade::ChangesOnly>,
+    buildings: Query<(&Facade, &Transform)>,
+) {
+    if live.touched.is_empty() || !repo.0.is_worktree() {
+        return;
+    }
+    let now = time.elapsed_secs_f64();
+    if live
+        .last_touched
+        .as_ref()
+        .is_none_or(|(_, time)| now - time >= HIGHLIGHT)
+    {
+        return;
+    }
+    for (facade, pose) in &buildings {
+        let file = &repo.0.files[facade.index];
+        if !focus.includes(file) {
+            continue;
+        }
+        let Some(touched) = live.touched.get(&file.path) else {
+            continue;
+        };
+        let age = (now - touched) / HIGHLIGHT;
+        if age >= 1. {
+            continue;
+        }
+        let ink = Color::srgb_u8(89, 235, 220).with_alpha((1. - age) as f32);
+        gizmos.cube(
+            Transform::from_translation(pose.translation)
+                .with_scale(pose.scale + Vec3::splat(0.12)),
+            ink,
+        );
+        let roof = pose.translation + Vec3::Y * (pose.scale.y / 2. + 0.3);
+        gizmos.line(roof, roof + Vec3::Y * 8., ink);
+    }
 }
 
 #[derive(Component)]
@@ -377,6 +488,10 @@ mod tests {
         assert_eq!(stable_after, stable_before);
         assert_eq!(changed_after.len(), changed_before.len());
         assert!(changed_after.is_disjoint(&changed_before));
+        let expected = &app.world().resource::<Repo>().0.files[57].path;
+        let live = app.world().resource::<Live>();
+        assert_eq!(live.last_touched(0.), Some((expected.as_str(), 0)));
+        assert_eq!(live.touched.len(), 1);
         assert_eq!(
             app.world().resource::<Repo>().0.files[57]
                 .after

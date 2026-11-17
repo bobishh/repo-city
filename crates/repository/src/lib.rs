@@ -64,6 +64,59 @@ fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     }
     Ok(output.stdout)
 }
+/// Unix commit times for paths touched in the comparison's history.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn changed_path_times(
+    root: &Path,
+    baseline: Option<&str>,
+    revision: &str,
+) -> Result<std::collections::HashMap<String, u64>, String> {
+    let range = baseline.map_or_else(|| revision.to_owned(), |base| format!("{base}..{revision}"));
+    let log = git(
+        root,
+        &[
+            "log",
+            "--format=%x00%ct",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            "--diff-merges=first-parent",
+            &range,
+            "--",
+        ],
+    )?;
+    Ok(path_times(&log))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn path_times(log: &[u8]) -> std::collections::HashMap<String, u64> {
+    let mut times = std::collections::HashMap::new();
+    let mut fields = log.split(|&byte| byte == 0);
+    let mut commit = None;
+    let mut first_path = false;
+    while let Some(field) = fields.next() {
+        if field.is_empty() {
+            commit = fields
+                .next()
+                .and_then(|time| std::str::from_utf8(time).ok()?.parse::<u64>().ok());
+            first_path = true;
+        } else if let Some(time) = commit {
+            let path = if std::mem::take(&mut first_path) {
+                field.strip_prefix(b"\n").unwrap_or(field)
+            } else {
+                field
+            };
+            if let Ok(path) = std::str::from_utf8(path) {
+                times
+                    .entry(path.to_owned())
+                    .and_modify(|latest: &mut u64| *latest = (*latest).max(time))
+                    .or_insert(time);
+            }
+        }
+    }
+    times
+}
+
 fn resolve_revision(root: &Path, rev: &str) -> Result<String, String> {
     let data = git(
         root,
@@ -406,6 +459,17 @@ pub fn cut_lines(source: &str, start: u32, end: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_changes_keep_the_latest_commit_and_exact_paths() {
+        let times = path_times(
+            b"\x0060\0\nnew.rs\0with space.rs\0\x0019\0\nold.rs\0new.rs\0\x0078\0\n\nline.rs\0",
+        );
+        assert_eq!(times["new.rs"], 60);
+        assert_eq!(times["with space.rs"], 60);
+        assert_eq!(times["old.rs"], 19);
+        assert_eq!(times["\nline.rs"], 78);
+    }
 
     #[test]
     fn comparison_keeps_all_paths_above_the_city_residency_limit() {

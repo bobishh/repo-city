@@ -45,7 +45,9 @@ in the city.
 The active presentation is configured in
 [`world_sets/code-city.json`](../world_sets/code-city.json). Source revisions
 and hashes for reused code are recorded in
-[`source-provenance.json`](source-provenance.json).
+[`source-provenance.json`](source-provenance.json). The city uses the copied
+`rounded_box` mesh for buildings and the Android tool model. The mesh module
+contains only that shared geometry.
 
 ## Build and test
 

@@ -1,6 +1,10 @@
+use std::collections::HashMap;
+
 use bevy::{
-    input_focus::{FocusCause, InputFocus},
+    clipboard::Clipboard,
+    input_focus::{FocusCause, InputFocus, tab_navigation::TabIndex},
     text::EditableText,
+    ui::RelativeCursorPosition,
 };
 
 use super::{native, *};
@@ -10,8 +14,7 @@ use crate::native_panel::{self, Actions, INK};
 enum View {
     Palette(usize),
     EditPaint(usize),
-    Notes,
-    Note(String),
+    Notes { editing: bool },
 }
 
 #[derive(Component, Clone, Copy)]
@@ -21,11 +24,13 @@ pub(super) enum Action {
     Equip(usize),
     Edit(usize),
     Save(usize),
-    Notes,
-    Open(usize),
-    Delete,
-    Export,
+    EditNotes,
+    Remove(usize),
+    Export(usize),
     Publish,
+    AutoPublish,
+    SignIn,
+    CopyCode,
 }
 
 #[derive(Resource, Default)]
@@ -34,8 +39,17 @@ pub(crate) struct ReviewUi {
     panel: Option<Entity>,
     fields: Vec<Entity>,
     action: Option<Action>,
-    publication: Option<(String, native_github::Job<Note>)>,
+    publication: Option<(String, native_github::Job<Vec<Result<Note, String>>>)>,
+    draft_fields: Vec<(usize, Entity)>,
+    primary: Option<Entity>,
+    auto_revision: Option<(String, Option<String>)>,
+    message: String,
+    auth: Option<repository_picker::AuthPrompt>,
+    scroll: f32,
     empty_until: f32,
+    status_scope: String,
+    status_job: Option<native_github::Job<HashMap<String, native::LocalState>>>,
+    status_due: f32,
 }
 
 impl Actions<Action> for ReviewUi {
@@ -45,18 +59,46 @@ impl Actions<Action> for ReviewUi {
 }
 
 impl ReviewUi {
-    fn select_view(&mut self, panel: Panel, review: &Review) {
+    pub(crate) fn smoke_edit_paint(&mut self) {
+        self.action = Some(Action::Edit(1));
+    }
+
+    fn refresh_local_states(&mut self, review: &mut Review, now: f32) -> bool {
+        if review.scope != self.status_scope {
+            self.status_scope.clone_from(&review.scope);
+            review.local_states.clear();
+            self.status_job = None;
+            self.status_due = 0.;
+        }
+        let mut changed = false;
+        if let Some(result) = self.status_job.as_ref().and_then(native_github::Job::take) {
+            self.status_job = None;
+            if let Ok(states) = result
+                && states != review.local_states
+            {
+                review.local_states = states;
+                changed = true;
+            }
+        }
+        if self.status_job.is_none() && now >= self.status_due {
+            let scope = review.scope.clone();
+            self.status_job = Some(native_github::Job::spawn(move || native::states(&scope)));
+            self.status_due = now + 1.;
+        }
+        changed
+    }
+
+    fn select_view(&mut self, panel: Panel, review: &Review, repo: &Repository) {
         self.view = match panel {
             Panel::Paints => Some(View::Palette(review.slot)),
-            Panel::Aimed
+            Panel::Notes | Panel::Aimed
                 if review
-                    .aim_note
-                    .as_ref()
-                    .is_some_and(|id| review.notes.iter().any(|note| note.id == *id)) =>
+                    .notes
+                    .iter()
+                    .any(|note| Review::on_snapshot(note, repo)) =>
             {
-                review.aim_note.clone().map(View::Note)
+                Some(View::Notes { editing: false })
             }
-            Panel::Notes | Panel::Aimed if !review.notes.is_empty() => Some(View::Notes),
             _ => None,
         };
     }
@@ -65,6 +107,25 @@ impl ReviewUi {
 fn button(parent: &mut ChildSpawnerCommands, label: &str, ink: Color, action: Action) {
     native_panel::button::<_, ReviewUi>(parent, label, ink, action);
 }
+
+fn tab_button(
+    parent: &mut ChildSpawnerCommands,
+    label: &str,
+    ink: Color,
+    action: Action,
+    index: i32,
+) -> Entity {
+    let entity = native_panel::button::<_, ReviewUi>(parent, label, ink, action);
+    parent.commands().entity(entity).insert(TabIndex(index));
+    entity
+}
+
+fn is_draft(note: &Note, repo: &Repository) -> bool {
+    !note.remote && note.published.is_none() && Review::on_snapshot(note, repo)
+}
+
+#[derive(Component)]
+pub(crate) struct NoteRows;
 
 fn paint_color(preset: &Preset) -> Color {
     let [r, g, b] = preset.color;
@@ -88,18 +149,20 @@ fn draw(
     repo: &Repository,
     picker: Option<&repository_picker::RepositoryPicker>,
 ) {
+    ui.fields.clear();
+    ui.draft_fields.clear();
+    ui.primary = None;
     let Some(view) = &ui.view else {
         return;
     };
     let title = match view {
         View::Palette(_) => "Paints",
         View::EditPaint(_) => "Edit paint",
-        View::Notes => "Review notes",
-        View::Note(_) => "Review note",
+        View::Notes { .. } => "Review comments",
     };
-    let panel = native_panel::panel(commands, title, 490.);
+    let notes_view = matches!(view, View::Notes { .. });
+    let panel = native_panel::panel(commands, title, if notes_view { 650. } else { 490. });
     ui.panel = Some(panel);
-    ui.fields.clear();
     commands.entity(panel).with_children(|parent| {
         match view {
             View::Palette(selected) => {
@@ -169,91 +232,206 @@ fn draw(
                     native_panel::input(parent, "Reusable comment", &paint.prompt, 2, true),
                     native_panel::input(
                         parent,
-                        "Color",
+                        "HEX",
                         &format!("#{r:02x}{g:02x}{b:02x}"),
                         3,
                         false,
                     ),
                 ];
+                color_picker::spawn(parent, ui.fields[3], paint.color);
                 parent
                     .spawn(Node {
                         column_gap: px(8.),
                         ..default()
                     })
                     .with_children(|actions| {
-                        button(actions, "Save paint", INK, Action::Save(*slot));
-                        button(actions, "Back", INK, Action::Select(*slot));
-                        button(actions, "Close", INK, Action::Close);
+                        tab_button(actions, "Save paint", INK, Action::Save(*slot), 4);
+                        tab_button(actions, "Back", INK, Action::Select(*slot), 5);
+                        tab_button(actions, "Close", INK, Action::Close, 6);
                     });
             }
-            View::Notes => {
+            View::Notes { editing } => {
+                let editing = *editing;
+                let can_publish = picker.is_some_and(|picker| picker.can_publish());
+                let draft_count = review
+                    .notes
+                    .iter()
+                    .filter(|note| is_draft(note, repo))
+                    .count();
                 parent
                     .spawn((
+                        NoteRows,
                         Node {
                             flex_direction: FlexDirection::Column,
-                            row_gap: px(4.),
-                            max_height: px(320.),
+                            row_gap: px(8.),
+                            max_height: px(365.),
                             overflow: Overflow::scroll_y(),
                             ..default()
                         },
-                        ScrollPosition::default(),
+                        ScrollPosition(Vec2::new(0., ui.scroll)),
+                        RelativeCursorPosition::default(),
                     ))
                     .with_children(|list| {
-                        for (index, note) in review.notes.iter().enumerate().rev() {
-                            let label = format!(
-                                "{}:{} · {}",
-                                note.anchor.path, note.anchor.start, note.preset.label
-                            );
-                            button(list, &label, paint_color(&note.preset), Action::Open(index));
+                        for (index, note) in review
+                            .notes
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, note)| Review::on_snapshot(note, repo))
+                        {
+                            list.spawn((
+                                BackgroundColor(Color::srgb_u8(14, 35, 42)),
+                                Node {
+                                    padding: UiRect::all(px(10.)),
+                                    row_gap: px(5.),
+                                    flex_direction: FlexDirection::Column,
+                                    flex_shrink: 0.,
+                                    ..default()
+                                },
+                            ))
+                            .with_children(|card| {
+                                native_panel::text(
+                                    card,
+                                    &format!(
+                                        "{}:{}–{}",
+                                        note.anchor.path, note.anchor.start, note.anchor.end
+                                    ),
+                                    INK,
+                                );
+                                let state = if note.published.is_some() || note.remote {
+                                    "Published"
+                                } else {
+                                    "Draft"
+                                };
+                                let label = review
+                                    .local_states
+                                    .get(&note.id)
+                                    .filter(|state| **state != native::LocalState::Unread)
+                                    .map_or_else(
+                                        || format!("{} · {state}", note.preset.label),
+                                        |local| {
+                                            format!(
+                                                "{} · {state} · {}",
+                                                note.preset.label,
+                                                local.label()
+                                            )
+                                        },
+                                    );
+                                native_panel::text(card, &label, paint_color(&note.preset));
+                                if editing && is_draft(note, repo) {
+                                    let field = native_panel::input(
+                                        card,
+                                        "",
+                                        note.comment(),
+                                        ui.draft_fields.len() as i32,
+                                        true,
+                                    );
+                                    ui.draft_fields.push((index, field));
+                                } else {
+                                    native_panel::text(
+                                        card,
+                                        note.comment(),
+                                        Color::srgb_u8(221, 235, 240),
+                                    );
+                                }
+                                if editing {
+                                    card.spawn(Node {
+                                        column_gap: px(6.),
+                                        ..default()
+                                    })
+                                    .with_children(|tools| {
+                                        tab_button(
+                                            tools,
+                                            "Export",
+                                            INK,
+                                            Action::Export(index),
+                                            10_100 + index as i32 * 2,
+                                        );
+                                        if is_draft(note, repo) {
+                                            tab_button(
+                                                tools,
+                                                "Delete",
+                                                Color::srgb_u8(244, 166, 177),
+                                                Action::Remove(index),
+                                                10_101 + index as i32 * 2,
+                                            );
+                                        }
+                                    });
+                                }
+                            });
                         }
                     });
-                button(parent, "Close", INK, Action::Close);
-            }
-            View::Note(id) => {
-                if let Some(note) = review.notes.iter().find(|note| &note.id == id) {
-                    native_panel::text(
-                        parent,
-                        &format!(
-                            "{}:{}–{}",
-                            note.anchor.path, note.anchor.start, note.anchor.end
-                        ),
-                        INK,
-                    );
-                    native_panel::text(parent, &note.preset.label, paint_color(&note.preset));
-                    let comment = if note.text.trim().is_empty() {
-                        &note.preset.prompt
-                    } else {
-                        &note.text
-                    };
-                    native_panel::text(parent, comment, Color::srgb_u8(221, 235, 240));
-                    if note.published.is_some() {
-                        native_panel::text(parent, "Published on GitHub", INK);
-                    } else if picker
-                        .and_then(|picker| picker.github.as_ref())
-                        .is_some_and(native_github::Target::is_pull)
-                        && Review::on_snapshot(note, repo)
-                    {
-                        button(parent, "Publish to GitHub", INK, Action::Publish);
+                let busy = ui.publication.is_some();
+                parent
+                    .spawn(Node {
+                        column_gap: px(8.),
+                        flex_wrap: FlexWrap::Wrap,
+                        row_gap: px(6.),
+                        ..default()
+                    })
+                    .with_children(|actions| {
+                        if can_publish && draft_count != 0 && !busy {
+                            let entity = tab_button(
+                                actions,
+                                &format!("Publish all ({draft_count})"),
+                                Color::srgb_u8(197, 255, 231),
+                                Action::Publish,
+                                10_000,
+                            );
+                            ui.primary = Some(entity);
+                            actions
+                                .commands()
+                                .entity(entity)
+                                .insert(BackgroundColor(Color::srgb_u8(27, 71, 67)));
+                        }
+                        if draft_count != 0 && !busy {
+                            let edit = tab_button(
+                                actions,
+                                if editing { "Save edits" } else { "Edit" },
+                                INK,
+                                Action::EditNotes,
+                                10_001,
+                            );
+                            ui.primary = ui.primary.or(Some(edit));
+                        }
+                        if can_publish && picker.and_then(|picker| picker.publication()).is_some() {
+                            tab_button(
+                                actions,
+                                if review.auto_publish {
+                                    "Auto-publish on"
+                                } else {
+                                    "Auto-publish off"
+                                },
+                                INK,
+                                Action::AutoPublish,
+                                10_002,
+                            );
+                        }
+                        let close = tab_button(actions, "Close", INK, Action::Close, 10_004);
+                        ui.primary = ui.primary.or(Some(close));
+                    });
+                if can_publish
+                    && let Some(picker) = picker
+                    && picker.publication().is_none()
+                {
+                    use repository_picker::AuthPrompt;
+                    match picker.auth_prompt() {
+                        AuthPrompt::SignIn => {
+                            tab_button(parent, "Sign in with GitHub", INK, Action::SignIn, 10_003);
+                        }
+                        AuthPrompt::Copy(caption) => {
+                            tab_button(parent, &caption, INK, Action::CopyCode, 10_003);
+                        }
+                        AuthPrompt::Message(message) => native_panel::text(parent, &message, INK),
                     }
-                    parent
-                        .spawn(Node {
-                            column_gap: px(8.),
-                            ..default()
-                        })
-                        .with_children(|actions| {
-                            if note.published.is_none() {
-                                button(actions, "Delete draft", INK, Action::Delete);
-                            }
-                            button(actions, "Export", INK, Action::Export);
-                            button(actions, "Back", INK, Action::Notes);
-                            button(actions, "Close", INK, Action::Close);
-                        });
+                    if !picker.auth_message().is_empty() {
+                        native_panel::text(parent, picker.auth_message(), INK);
+                    }
                 }
             }
         }
         parent.spawn((
             Feedback,
-            Text::new(""),
+            Text::new(ui.message.clone()),
             TextFont::from_font_size(13.),
             TextColor(INK),
             Node {
@@ -275,17 +453,13 @@ fn save_paint(review: &mut Review, slot: usize, values: &[String]) -> Result<(),
     if name.is_empty() {
         return Err("Give the paint a name.".into());
     }
-    let color = color.trim().trim_start_matches('#');
-    let rgb = (color.len() == 6 && color.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .then(|| u32::from_str_radix(color, 16).expect("validated color"))
-        .ok_or("Enter a color as #RRGGBB.")?;
+    let rgb = color_picker::parse_hex(color).ok_or("Enter a color as #RRGGBB.")?;
     let mut palette = review.palette.clone();
     let mut paint = palette[slot - 1].take().unwrap_or_else(empty_preset);
     paint.label = name.into();
     paint.spray = spray.clone();
     paint.prompt = prompt.clone();
-    let [_, red, green, blue] = rgb.to_be_bytes();
-    paint.color = [red, green, blue];
+    paint.color = rgb;
     palette[slot - 1] = Some(paint);
     native::save(&review.scope, "palette", &palette)?;
     review.palette = palette;
@@ -293,11 +467,45 @@ fn save_paint(review: &mut Review, slot: usize, values: &[String]) -> Result<(),
     Ok(())
 }
 
+fn save_edits(
+    review: &mut Review,
+    ui: &ReviewUi,
+    fields: &Query<&EditableText>,
+) -> Result<(), String> {
+    let updates = ui
+        .draft_fields
+        .iter()
+        .filter_map(|&(index, entity)| {
+            let note = review.notes.get(index)?;
+            let value = fields.get(entity).ok()?.value().to_string();
+            if value == note.comment() {
+                return None;
+            }
+            let mut updated = note.clone();
+            updated.text = value;
+            Some((index, updated))
+        })
+        .collect::<Vec<_>>();
+    if !updates.is_empty() {
+        native::save_notes(
+            &review.scope,
+            &updates
+                .iter()
+                .map(|(_, note)| note.clone())
+                .collect::<Vec<_>>(),
+        )?;
+        for (index, note) in updates {
+            review.notes[index] = note;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn update(
     mut commands: Commands,
     mut review: ResMut<Review>,
     mut ui: ResMut<ReviewUi>,
-    mut explorer: ResMut<Explorer>,
+    _explorer: Res<Explorer>,
     mut camera: Query<&mut Pilot, PlayerCamera>,
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     time: Res<Time>,
@@ -308,38 +516,95 @@ pub(crate) fn update(
     mut hint: Query<&mut Visibility, With<EmptyNotesHint>>,
     mut feedback: Query<&mut Text, With<Feedback>>,
     repo: Option<Res<Repo>>,
-    picker: Option<Res<repository_picker::RepositoryPicker>>,
-    _main_thread: bevy::ecs::system::NonSendMarker,
+    mut picker: Option<ResMut<repository_picker::RepositoryPicker>>,
+    (guide, mut clipboard, wheel, mut lists): (
+        Option<Res<guide::Guide>>,
+        Option<ResMut<Clipboard>>,
+        Option<Res<AccumulatedMouseScroll>>,
+        Query<(&mut ScrollPosition, &RelativeCursorPosition), With<NoteRows>>,
+    ),
 ) {
     let fallback = repository_picker::empty();
     let repo = repo.as_ref().map_or(&fallback, |repo| &repo.0);
     let mut redraw = false;
     let mut message = String::new();
+    if let Ok((mut position, relative)) = lists.single_mut() {
+        if relative.cursor_over()
+            && let Some(wheel) = wheel.as_ref()
+        {
+            let delta = match wheel.unit {
+                bevy::input::mouse::MouseScrollUnit::Line => wheel.delta.y * 34.,
+                bevy::input::mouse::MouseScrollUnit::Pixel => wheel.delta.y,
+            };
+            if delta != 0. {
+                position.y = (position.y - delta).max(0.);
+            }
+        }
+        ui.scroll = position.y;
+    }
     if let Some(result) = ui.publication.as_ref().and_then(|(_, job)| job.take()) {
         let (scope, _) = ui.publication.take().expect("pending publication");
-        match result.and_then(|note| {
-            native::save(&scope, &note.id, &note)?;
-            Ok(note)
-        }) {
-            Ok(note) => {
-                if scope == review.scope
-                    && let Some(saved) = review.notes.iter_mut().find(|saved| saved.id == note.id)
-                {
-                    *saved = note;
-                    redraw = ui.panel.is_some();
+        let mut published = 0;
+        let mut errors = Vec::new();
+        match result {
+            Ok(results) => {
+                for result in results {
+                    match result.and_then(|note| {
+                        native::save(&scope, &note.id, &note)?;
+                        Ok(note)
+                    }) {
+                        Ok(note) => {
+                            if scope == review.scope
+                                && let Some(saved) =
+                                    review.notes.iter_mut().find(|saved| saved.id == note.id)
+                            {
+                                *saved = note;
+                            }
+                            published += 1;
+                        }
+                        Err(error) => errors.push(error),
+                    }
                 }
-                explorer.notice = "Published on GitHub.".into();
             }
-            Err(error) => message = error,
+            Err(error) => errors.push(error),
+        }
+        if let Some(error) = errors.first() {
+            review.auto_publish = false;
+            review.auto_drafts.clear();
+            if errors.iter().any(|error| error.starts_with("GitHub 401:"))
+                && let Some(picker) = picker.as_deref_mut()
+            {
+                picker.invalidate_session();
+            }
+            message = if published == 0 {
+                format!("Drafts kept. {error}")
+            } else {
+                format!(
+                    "Published {published}. {} kept as drafts. {error}",
+                    errors.len()
+                )
+            };
+        } else {
+            message = format!("Published {published} on GitHub.");
+        }
+        redraw = ui.panel.is_some();
+    }
+    let auth = picker.as_ref().map(|picker| picker.auth_prompt());
+    if ui.auth != auth {
+        ui.auth = auth;
+        if matches!(ui.view, Some(View::Notes { editing: false })) {
+            redraw = true;
         }
     }
     let was_open = ui.view.is_some();
     if let Some(panel) = review.request.take() {
-        ui.select_view(panel, &review);
+        ui.select_view(panel, &review, repo);
         if ui.view.is_none() {
             ui.empty_until = time.elapsed_secs() + 3.5;
         } else {
             ui.empty_until = 0.;
+            ui.message.clear();
+            ui.scroll = 0.;
             redraw = true;
             review.drag = None;
             if let Ok(mut pilot) = camera.single_mut() {
@@ -368,10 +633,13 @@ pub(crate) fn update(
         .or_else(|| (was_open && keys.just_pressed(KeyCode::Escape)).then_some(Action::Close));
     if let Some(action) = action {
         match action {
-            Action::Close => {
-                ui.view = None;
-                redraw = true;
-            }
+            Action::Close => match save_edits(&mut review, &ui, &fields) {
+                Ok(()) => {
+                    ui.view = None;
+                    redraw = true;
+                }
+                Err(error) => message = error,
+            },
             Action::Select(slot) => {
                 ui.view = Some(View::Palette(slot));
                 redraw = true;
@@ -400,63 +668,154 @@ pub(crate) fn update(
                     Err(error) => message = error,
                 }
             }
-            Action::Notes => {
-                ui.view = Some(View::Notes);
-                redraw = true;
-            }
-            Action::Open(index) => {
-                if let Some(note) = review.notes.get(index) {
-                    ui.view = Some(View::Note(note.id.clone()));
-                    redraw = true;
-                }
-            }
-            Action::Delete | Action::Export | Action::Publish => {
-                if let Some(View::Note(id)) = &ui.view
-                    && let Some(note) = review.notes.iter().find(|note| note.id == *id).cloned()
+            Action::EditNotes
+            | Action::Remove(_)
+            | Action::Export(_)
+            | Action::Publish
+            | Action::AutoPublish => {
+                if let Some(View::Notes { editing }) = ui.view
+                    && ui.publication.is_none()
                 {
-                    match action {
-                        Action::Delete if note.published.is_none() && ui.publication.is_none() => {
-                            match native::remove(&review.scope, &note.id) {
-                                Ok(()) => {
-                                    review.notes.retain(|other| other.id != note.id);
-                                    ui.view = if review.notes.is_empty() {
-                                        None
+                    match save_edits(&mut review, &ui, &fields) {
+                        Err(error) => message = error,
+                        Ok(()) => match action {
+                            Action::EditNotes => {
+                                ui.view = Some(View::Notes { editing: !editing });
+                                redraw = true;
+                            }
+                            Action::Remove(index) => {
+                                if let Some(note) =
+                                    review.notes.get(index).filter(|note| is_draft(note, repo))
+                                {
+                                    match native::remove(&review.scope, &note.id) {
+                                        Ok(()) => {
+                                            review.notes.remove(index);
+                                            redraw = true;
+                                        }
+                                        Err(error) => message = error,
+                                    }
+                                }
+                            }
+                            Action::Export(index) => {
+                                if let Some(note) = review.notes.get(index).cloned()
+                                    && let Err(error) = native::export(review.scope.clone(), note)
+                                {
+                                    message = error;
+                                }
+                            }
+                            Action::AutoPublish => {
+                                if picker
+                                    .as_ref()
+                                    .and_then(|picker| picker.publication())
+                                    .is_some()
+                                {
+                                    review.auto_publish = !review.auto_publish;
+                                    ui.auto_revision = review
+                                        .auto_publish
+                                        .then(|| (repo.revision.clone(), repo.baseline.clone()));
+                                    review.auto_drafts.clear();
+                                    message = if review.auto_publish {
+                                        "New marks will publish to this PR."
                                     } else {
-                                        Some(View::Notes)
-                                    };
+                                        "New marks will save as local drafts."
+                                    }
+                                    .into();
                                     redraw = true;
                                 }
-                                Err(error) => message = error,
                             }
-                        }
-                        Action::Export => {
-                            if let Err(error) = native::export(review.scope.clone(), note) {
-                                message = error;
-                            }
-                        }
-                        Action::Publish
-                            if note.published.is_none()
-                                && ui.publication.is_none()
-                                && Review::on_snapshot(&note, repo) =>
-                        {
-                            match picker.as_ref().and_then(|picker| picker.publication()) {
-                                Some((target, token)) => {
-                                    ui.publication = Some((
-                                        review.scope.clone(),
-                                        native_github::publish(target, note, token),
-                                    ));
-                                    message = "Publishing…".into();
+                            Action::Publish => {
+                                let drafts = review
+                                    .notes
+                                    .iter()
+                                    .filter(|note| is_draft(note, repo))
+                                    .cloned()
+                                    .collect::<Vec<_>>();
+                                if let Some((target, token)) =
+                                    picker.as_ref().and_then(|picker| picker.publication())
+                                {
+                                    if !drafts.is_empty() {
+                                        message = format!("Publishing {} to GitHub…", drafts.len());
+                                        ui.publication = Some((
+                                            review.scope.clone(),
+                                            native_github::publish(target, drafts, token),
+                                        ));
+                                        review.auto_drafts.clear();
+                                        ui.view = Some(View::Notes { editing: false });
+                                        redraw = true;
+                                    }
+                                } else if let Some(picker) = picker.as_deref_mut() {
+                                    picker.request_sign_in();
+                                    ui.view = Some(View::Notes { editing: false });
+                                    redraw = true;
                                 }
-                                None => {
-                                    message =
-                                        "Sign in from the GitHub menu to publish this draft.".into()
-                                }
                             }
-                        }
-                        _ => {}
+                            _ => {}
+                        },
                     }
                 }
             }
+            Action::CopyCode => {
+                if let (Some(picker), Some(clipboard)) =
+                    (picker.as_deref_mut(), clipboard.as_deref_mut())
+                {
+                    picker.copy_code(clipboard);
+                    redraw = true;
+                }
+            }
+            Action::SignIn => {
+                if let Some(picker) = picker.as_deref_mut() {
+                    picker.request_sign_in();
+                    redraw = true;
+                }
+            }
+        }
+    }
+    if review.auto_publish
+        && ui
+            .auto_revision
+            .as_ref()
+            .is_none_or(|(revision, base)| revision != &repo.revision || base != &repo.baseline)
+    {
+        review.auto_publish = false;
+        review.auto_drafts.clear();
+    }
+    if review.auto_publish
+        && ui.publication.is_none()
+        && !review.auto_drafts.is_empty()
+        && !matches!(ui.view, Some(View::Notes { editing: true }))
+    {
+        let ids = std::mem::take(&mut review.auto_drafts);
+        let drafts = review
+            .notes
+            .iter()
+            .filter(|note| ids.contains(&note.id) && is_draft(note, repo))
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some((target, token)) = picker.as_ref().and_then(|picker| picker.publication()) {
+            if !drafts.is_empty() {
+                message = format!("Publishing {} to GitHub…", drafts.len());
+                ui.publication = Some((
+                    review.scope.clone(),
+                    native_github::publish(target, drafts, token),
+                ));
+                redraw = ui.panel.is_some();
+            }
+        } else {
+            review.auto_publish = false;
+            message = "Auto-publish off. Drafts saved locally.".into();
+        }
+    }
+    if repo.is_worktree()
+        && !review.notes.is_empty()
+        && ui.refresh_local_states(&mut review, time.elapsed_secs())
+    {
+        redraw |= matches!(ui.view, Some(View::Notes { editing: false }));
+    }
+    if !message.is_empty() {
+        ui.message.clone_from(&message);
+        review.notify(time.elapsed_secs(), message);
+        if !redraw && let Ok(mut feedback) = feedback.single_mut() {
+            feedback.0.clone_from(&ui.message);
         }
     }
     if redraw {
@@ -464,18 +823,30 @@ pub(crate) fn update(
             native_panel::close(&mut commands, panel, &mut focus, &parents);
         }
         draw(&mut commands, &mut ui, &review, repo, picker.as_deref());
-        if let Some(field) = ui.fields.first().filter(|_| ui.panel.is_some()) {
-            focus.set(*field, FocusCause::Navigated);
+        if !was_open
+            && matches!(ui.view, Some(View::Notes { .. }))
+            && let Some(panel) = ui.panel
+        {
+            commands
+                .entity(panel)
+                .insert(native_panel::TabletEntrance::default());
+        }
+        if let Some(field) = ui
+            .fields
+            .first()
+            .copied()
+            .or_else(|| ui.draft_fields.first().map(|(_, field)| *field))
+            .or(ui.primary)
+        {
+            focus.set(field, FocusCause::Navigated);
         }
     }
-    if !message.is_empty() {
-        if let Ok(mut feedback) = feedback.single_mut() {
-            feedback.0.clone_from(&message);
-        }
-        explorer.notice = message;
-    }
-    review.blocked =
-        was_open || ui.view.is_some() || picker.is_some_and(|picker| picker.blocks_controls());
+    review.blocked = was_open
+        || ui.view.is_some()
+        || guide.as_ref().is_some_and(|guide| guide.is_open())
+        || picker
+            .as_ref()
+            .is_some_and(|picker| picker.blocks_controls());
 }
 
 #[cfg(test)]

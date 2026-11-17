@@ -31,7 +31,7 @@ const uuid = () => crypto.randomUUID();
 
 export function createReview({ canvas, release, onClose }) {
   const dialog = document.querySelector("#review-dialog");
-  let session, version = 0, selected = 0, pendingSlot = -1, busy = false, destination;
+  let session, version = 0, selected = 0, pendingSlot = -1, busy = false, destination, fileDestination;
   const repaint = () => { version++; };
   let defaults = [];
 
@@ -67,7 +67,7 @@ export function createReview({ canvas, release, onClose }) {
     const scope = JSON.stringify(["notes", account, project, review.pull]);
     const projectScope = JSON.stringify(["project", account, project]);
     const data = { review, scope, projectScope, progressScope, snapshot, account, notes: [], threads: [], palette: [],
-      threadPaints: new Map(), showResolved: false, pending: Boolean(review.pull), status: "", prior: null };
+      loadChangeDates: repository.loadChangeDates, threadPaints: new Map(), showResolved: false, pending: Boolean(review.pull), status: "", prior: null };
     const [notes, prefs] = await Promise.all([readReview(scope), readReview(projectScope)]).catch(() => {
       data.status = "Local review storage is unavailable.";
       return [[], []];
@@ -229,9 +229,11 @@ export function createReview({ canvas, release, onClose }) {
     }
     const data = session;
     const draft = JSON.parse(json);
-    const note = { ...draft, text: draft.text || draft.preset.prompt };
-    if (!current(note, data.review)) return "The revision changed. Mark the lines again.";
-    data.notes.push(note);
+    if (!current(draft, data.review)) return "The revision changed. Mark the lines again.";
+    const index = data.notes.findIndex(existing => existing.id === draft.id);
+    const note = { ...data.notes[index], ...draft, text: draft.text || draft.preset.prompt };
+    if (index >= 0) data.notes[index] = note;
+    else data.notes.push(note);
     repaint();
     void saveReview(data.scope, note.id, note).catch(() => {
       data.status = "Could not save the draft to this browser; it remains open in this session.";
@@ -315,6 +317,66 @@ export function createReview({ canvas, release, onClose }) {
     dialog.append(field("Name", name), field("Spray text", spray), field("Reusable prompt", prompt),
       field("Color", pigment), field("Slot", slot), preview, status);
     actions(button("Cancel", paintsPanel), save);
+  }
+
+  function changedFiles() {
+    if (!session) return;
+    const data = session;
+    const { before, after } = data.snapshot;
+    const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter(
+      path => before[path]?.id !== after[path]?.id || before[path]?.mode !== after[path]?.mode
+    );
+    dialog.dataset.view = "changed-files";
+    view("Changed files");
+    const bar = make("div", undefined, { class: "dialog-actions" });
+    const status = make("p", "Loading file dates…", { class: "review-status", role: "status" });
+    const list = make("div", undefined, { class: "review-changed-files" });
+    let viewedOnly = false;
+    let viewed = new Set();
+    let dates = {};
+    const all = button("All changes", () => { viewedOnly = false; render(); });
+    const seen = button("Viewed", () => { viewedOnly = true; render(); });
+    bar.append(all, seen);
+    dialog.append(bar, status, list);
+    actions(closeButton());
+    show();
+
+    const visible = () => session === data && dialog.open && dialog.dataset.view === "changed-files";
+    function render() {
+      all.setAttribute("aria-pressed", String(!viewedOnly));
+      seen.setAttribute("aria-pressed", String(viewedOnly));
+      const paths = changed.filter(path => !viewedOnly || viewed.has(path)).sort(
+        (a, b) => (dates[b] ?? 0) - (dates[a] ?? 0) || a.localeCompare(b)
+      );
+      const fragment = document.createDocumentFragment();
+      for (const path of paths) {
+        const row = button(path, () => {
+          fileDestination = path;
+          close();
+        });
+        if (dates[path]) row.append(make("time", new Date(dates[path]).toISOString().slice(0, 10)));
+        fragment.append(row);
+      }
+      if (!paths.length) fragment.append(make("p", viewedOnly ? "No changed files viewed." : "No changed files."));
+      list.replaceChildren(fragment);
+    }
+    render();
+    void readProgress(data.progressScope).then(values => {
+      viewed = new Set(values.map(value => {
+        const mark = JSON.parse(value);
+        return mark.visited?.path ?? mark.reveal?.path ?? mark.reviewed;
+      }).filter(Boolean));
+      if (visible() && viewedOnly) render();
+    }).catch(() => {});
+    void data.loadChangeDates(changed).then(value => {
+      dates = value;
+      if (visible()) {
+        status.textContent = Object.keys(dates).length ? "" : "Commit dates unavailable.";
+        render();
+      }
+    }).catch(() => {
+      if (visible()) status.textContent = "Commit dates unavailable.";
+    });
   }
 
   function notesPanel() {
@@ -689,7 +751,12 @@ export function createReview({ canvas, release, onClose }) {
     show();
   }
   return {
-    load, version: () => version, snapshot, add, panel, id: uuid, canPaint: allowedDraft,
+    load, version: () => version, snapshot, add, panel, changedFiles, id: uuid, canPaint: allowedDraft,
+    takeFileDestination() {
+      const value = fileDestination;
+      fileDestination = undefined;
+      return value ?? "";
+    },
     equipWater() { pendingSlot = 0; },
     takeSlot() { const value = pendingSlot; pendingSlot = -1; return value; },
     takeDestination() {

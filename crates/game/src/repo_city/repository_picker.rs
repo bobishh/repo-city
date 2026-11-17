@@ -26,6 +26,8 @@ pub(super) struct RepositoryPicker {
     #[cfg(not(target_arch = "wasm32"))]
     pub github: Option<native_github::Target>,
     #[cfg(not(target_arch = "wasm32"))]
+    pull_open: bool,
+    #[cfg(not(target_arch = "wasm32"))]
     github_file: Option<String>,
     #[cfg(not(target_arch = "wasm32"))]
     folder: Option<FolderSelection>,
@@ -37,6 +39,12 @@ pub(super) struct RepositoryPicker {
     revision_job: Option<native_github::Job<Vec<(String, String)>>>,
     #[cfg(not(target_arch = "wasm32"))]
     session: Option<native_github::Session>,
+    #[cfg(not(target_arch = "wasm32"))]
+    restoring: Option<native_github::Job<Option<native_github::Session>>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    queued_github: Option<(native_github::Target, String, String, Option<String>)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    auth_error: String,
     #[cfg(not(target_arch = "wasm32"))]
     device: Option<native_github::Job<native_github::DeviceCode>>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -53,6 +61,14 @@ pub(super) struct RepositoryPicker {
     code_copied: bool,
     #[cfg(not(target_arch = "wasm32"))]
     choices: github_choices::Picker,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(PartialEq, Eq)]
+pub(super) enum AuthPrompt {
+    SignIn,
+    Copy(String),
+    Message(String),
 }
 
 #[derive(Clone, Copy)]
@@ -76,6 +92,8 @@ impl RepositoryPicker {
             #[cfg(not(target_arch = "wasm32"))]
             github: None,
             #[cfg(not(target_arch = "wasm32"))]
+            pull_open: false,
+            #[cfg(not(target_arch = "wasm32"))]
             github_file: None,
             #[cfg(not(target_arch = "wasm32"))]
             folder: None,
@@ -87,6 +105,12 @@ impl RepositoryPicker {
             revision_job: None,
             #[cfg(not(target_arch = "wasm32"))]
             session: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            restoring: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            queued_github: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            auth_error: String::new(),
             #[cfg(not(target_arch = "wasm32"))]
             device: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -119,7 +143,87 @@ impl RepositoryPicker {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn smoke_review(&mut self) {
+        self.github =
+            native_github::Target::parse("https://github.com/example/repo-city/pull/1").ok();
+        self.pull_open = true;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn restore_session(&mut self) {
+        self.restoring = Some(native_github::restore_session());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn request_sign_in(&mut self) {
+        if native_github::token(self.session.as_ref()).is_none()
+            && self.device.is_none()
+            && self.login.is_none()
+            && self.restoring.is_none()
+        {
+            self.auth_error.clear();
+            self.device = Some(native_github::request_sign_in());
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn copy_code(&mut self, clipboard: &mut Clipboard) {
+        if let Some(code) = &self.sign_in_code {
+            match clipboard.set_text(code.as_str()) {
+                Ok(()) => self.code_copied = true,
+                Err(_) => {
+                    self.auth_error = "Couldn't copy the code. Type it in the GitHub tab.".into()
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn auth_prompt(&self) -> AuthPrompt {
+        if let Some(code) = &self.sign_in_code {
+            let feedback = if self.code_copied {
+                "Copied"
+            } else {
+                "Click to copy"
+            };
+            AuthPrompt::Copy(format!("{code} | {feedback}"))
+        } else if let Some(session) = self.session.as_ref().filter(|session| session.valid()) {
+            AuthPrompt::Message(format!("@{}", session.login))
+        } else if self.restoring.is_some() {
+            AuthPrompt::Message("Restoring GitHub session…".into())
+        } else if self.device.is_some() {
+            AuthPrompt::Message("Requesting a code…".into())
+        } else {
+            AuthPrompt::SignIn
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn auth_message(&self) -> &str {
+        if !self.auth_error.is_empty() {
+            &self.auth_error
+        } else if self.sign_in_code.is_some() {
+            "Paste the code in the GitHub tab."
+        } else {
+            ""
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn invalidate_session(&mut self) {
+        self.session = None;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn can_publish(&self) -> bool {
+        self.pull_open && self.github.is_some()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn publication(&self) -> Option<(native_github::Target, String)> {
+        if !self.can_publish() {
+            return None;
+        }
         Some((
             self.github.as_ref()?.clone(),
             native_github::token(self.session.as_ref())?,
@@ -148,6 +252,10 @@ impl RepositoryPicker {
         file: Option<String>,
     ) {
         self.status = format!("Opening {}…", target.label());
+        if self.restoring.is_some() {
+            self.queued_github = Some((target, revision, base, file));
+            return;
+        }
         self.pending = Some(native_github::open(
             target,
             native_github::token(self.session.as_ref()),
@@ -578,30 +686,15 @@ fn sync_github(
             render.results = Some(key);
         }
     }
-    let account = picker
-        .session
-        .as_ref()
-        .map(|session| format!("@{}", session.login));
-    let caption = if let Some(code) = &picker.sign_in_code {
-        let feedback = if picker.code_copied {
-            "Copied"
-        } else {
-            "Click to copy"
-        };
-        format!("{code} | {feedback}")
-    } else if let Some(account) = account {
-        account
-    } else if picker.device.is_some() {
-        "Requesting a code…".into()
-    } else {
-        "Sign in with GitHub".into()
+    let auth_prompt = picker.auth_prompt();
+    let caption = match &auth_prompt {
+        AuthPrompt::SignIn => "Sign in with GitHub".to_owned(),
+        AuthPrompt::Copy(caption) | AuthPrompt::Message(caption) => caption.clone(),
     };
     let message = if !picker.status.is_empty() {
         picker.status.as_str()
-    } else if picker.sign_in_code.is_some() {
-        "Paste the code in the GitHub tab."
     } else {
-        ""
+        picker.auth_message()
     };
     let status_key = (status, message.to_owned());
     if render.status.as_ref() != Some(&status_key) {
@@ -612,12 +705,12 @@ fn sync_github(
     if render.auth.as_ref() != Some(&key) {
         let mut controls = commands.entity(auth);
         controls.despawn_related::<Children>();
-        controls.with_children(|children| {
-            if picker.sign_in_code.is_some() {
+        controls.with_children(|children| match auth_prompt {
+            AuthPrompt::Copy(_) => {
                 button::<_, RepositoryPicker>(children, &key.1, INK, PanelAction::CopyCode);
-            } else if picker.session.is_some() || picker.device.is_some() {
-                text(children, &key.1, INK);
-            } else {
+            }
+            AuthPrompt::Message(_) => text(children, &key.1, INK),
+            AuthPrompt::SignIn => {
                 button::<_, RepositoryPicker>(children, &key.1, INK, PanelAction::SignIn);
             }
         });
@@ -780,6 +873,14 @@ pub(super) fn open_repository(
         && keys.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight]);
     let was_blocked = picker.view.is_some() || picker.folder.is_some();
     let mut opened = false;
+    if let Some(result) = picker.restoring.as_ref().and_then(native_github::Job::take) {
+        picker.restoring = None;
+        picker.session = result.ok().flatten();
+        if let Some((target, revision, base, file)) = picker.queued_github.take() {
+            picker.start_github(target, revision, base, file);
+        }
+    }
+
     if let Ok((mut position, hover)) = revision_lists.single_mut()
         && hover.cursor_over()
         && scroll.delta.y != 0.
@@ -825,6 +926,7 @@ pub(super) fn open_repository(
                 explorer.open(&next, selected);
                 window.title = format!("{} · {}", set.name, snapshot.target.label());
                 picker.github = Some(snapshot.target);
+                picker.pull_open = snapshot.pull_open;
                 picker.status.clear();
                 if matches!(picker.view, Some(RepositoryView::GitHub { .. })) {
                     close_view(&mut commands, &mut picker, &mut focus, &parents);
@@ -841,6 +943,7 @@ pub(super) fn open_repository(
         match result {
             Ok(next) => {
                 picker.github = None;
+                picker.pull_open = false;
                 window.title = window_title(&set, &next);
                 picker.status = remember(&next.root).err().unwrap_or_default();
                 replace_city(&mut commands, &old_city, next);
@@ -868,10 +971,10 @@ pub(super) fn open_repository(
             Ok(code) => {
                 picker.sign_in_code = Some(code.user_code.clone());
                 picker.code_copied = false;
-                picker.status = native_github::browser_sign_in().err().unwrap_or_default();
+                picker.auth_error = native_github::browser_sign_in().err().unwrap_or_default();
                 picker.login = Some(native_github::finish_sign_in(code));
             }
-            Err(error) => picker.status = error,
+            Err(error) => picker.auth_error = error,
         }
     }
     if let Some(result) = picker.login.as_ref().and_then(native_github::Job::take) {
@@ -883,9 +986,9 @@ pub(super) fn open_repository(
                     picker.choices.load_library(&session.login, token);
                 }
                 picker.session = Some(session);
-                picker.status.clear();
+                picker.auth_error.clear();
             }
-            Err(error) => picker.status = error,
+            Err(error) => picker.auth_error = error,
         }
     }
     let github = matches!(picker.view, Some(RepositoryView::GitHub { .. }));
@@ -937,26 +1040,8 @@ pub(super) fn open_repository(
             .map(|input| input.value().to_string())
             .unwrap_or_default();
         match action {
-            PanelAction::SignIn
-                if github
-                    && picker.session.is_none()
-                    && picker.device.is_none()
-                    && picker.login.is_none() =>
-            {
-                picker.status.clear();
-                picker.device = Some(native_github::request_sign_in());
-            }
-            PanelAction::CopyCode if github => {
-                if let Some(code) = &picker.sign_in_code {
-                    match clipboard.set_text(code.as_str()) {
-                        Ok(()) => picker.code_copied = true,
-                        Err(_) => {
-                            picker.status =
-                                "Couldn't copy the code. Type it in the GitHub tab.".into()
-                        }
-                    }
-                }
-            }
+            PanelAction::SignIn if github => picker.request_sign_in(),
+            PanelAction::CopyCode if github => picker.copy_code(&mut clipboard),
             PanelAction::UseRevision
             | PanelAction::SelectRepository
             | PanelAction::GitHubMatch(_)
@@ -1162,7 +1247,7 @@ mod tests {
             .get_mut::<EditableText>(field)
             .unwrap()
             .editor_mut()
-            .set_text("demo star");
+            .set_text("demo привет");
         app.update();
         let picker = app.world().resource::<RepositoryPicker>();
         assert_eq!(picker.choices.rows.len(), 1);

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use super::*;
 
 const CELL: f32 = 160.;
-const RADIUS: f32 = 640.;
+pub(super) const RADIUS: f32 = 640.;
 const EAGER_FILES: usize = 160;
 const FILE_LIMIT: usize = 5000;
 const DISTRICT_LIMIT: usize = 256;
@@ -188,4 +188,111 @@ mod tests {
         assert_eq!(arrived[0], Item::File(5999));
         assert_eq!(repo.files.len(), 6000);
     }
+}
+
+/// A single inexpensive mesh fills the overview beyond the detailed city stream.
+#[derive(Component)]
+pub(super) struct ProjectMap;
+
+pub(super) fn draw_project_map(
+    mut commands: Commands,
+    repo: Res<Repo>,
+    navigation: Res<city_navigation::Navigation>,
+    focus: Res<file_facade::ChangesOnly>,
+    set: Res<WorldSet>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    maps: Query<Entity, With<ProjectMap>>,
+    mut previous_filter: Local<Option<bool>>,
+) {
+    let enabled = repo.0.files.len() > EAGER_FILES
+        && navigation.overview_level() == Some(city_navigation::Overview::Project);
+    if enabled && !repo.is_changed() && *previous_filter == Some(focus.enabled) && !maps.is_empty()
+    {
+        return;
+    }
+    if !enabled && maps.is_empty() {
+        return;
+    }
+    for entity in &maps {
+        commands.entity(entity).despawn();
+    }
+    if enabled {
+        *previous_filter = Some(focus.enabled);
+        commands.spawn((
+            ProjectMap,
+            Mesh3d(meshes.add(project_map(&repo.0, &focus, &set))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                unlit: true,
+                cull_mode: None,
+                ..default()
+            })),
+        ));
+    }
+}
+
+fn project_map(repo: &Repository, focus: &file_facade::ChangesOnly, set: &WorldSet) -> Mesh {
+    use bevy::{
+        asset::RenderAssetUsages,
+        mesh::{Indices, PrimitiveTopology},
+    };
+
+    let mut positions = Vec::new();
+    let mut colors = Vec::new();
+    let mut indices = Vec::new();
+    let mut roof = |center: Vec2, size: Vec2, height: f32, ink| {
+        let first = positions.len() as u32;
+        for corner in [
+            Vec2::new(-1., -1.),
+            Vec2::new(-1., 1.),
+            Vec2::new(1., 1.),
+            Vec2::new(1., -1.),
+        ] {
+            let corner = center + corner * size * 0.5;
+            positions.push([corner.x, height, corner.y]);
+            colors.push(ink);
+        }
+        indices.extend([first, first + 1, first + 2, first, first + 2, first + 3]);
+    };
+    let ink = |rgb: [f32; 3]| {
+        let linear = color(rgb).to_linear();
+        [linear.red, linear.green, linear.blue, 1.]
+    };
+    for district in &repo.districts {
+        let size = Vec2::from_array(district.size);
+        let min = Vec2::from_array(district.position);
+        roof(
+            min + size * 0.5,
+            size - Vec2::splat(0.5),
+            -0.15,
+            ink(set.ground),
+        );
+    }
+    for file in repo
+        .files
+        .iter()
+        .filter(|file| focus.includes(file))
+        .take(FILE_LIMIT)
+    {
+        let size = listing::block_size(file);
+        let tint = match file.change {
+            Change::Unchanged => file_facade::INK[file_facade::kind(&file.path)],
+            Change::Added => set.added,
+            Change::Removed => set.removed,
+            Change::Modified => set.accent,
+        };
+        roof(
+            file.position.into(),
+            size.xz() * 0.96,
+            (size.y - 0.05).max(0.05),
+            ink(tint),
+        );
+    }
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
+    .with_inserted_indices(Indices::U32(indices))
 }

@@ -50,6 +50,15 @@ function focusCanvas() {
 
 document.addEventListener("keydown", event => {
   const locked = document.pointerLockElement === canvas;
+  if (event.code === "Tab" && !event.shiftKey && !event.metaKey && !event.ctrlKey &&
+      !event.altKey && running && (locked || event.target === canvas) &&
+      !canvas.hasAttribute("data-pointer-ui") && !canvas.hasAttribute("data-action-menu") &&
+      !document.querySelector("dialog[open]")) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!event.repeat) review.changedFiles();
+    return;
+  }
   if (event.code !== "KeyF" || event.repeat || event.metaKey || event.ctrlKey ||
       event.altKey || (!locked && (event.target !== canvas || canvas.hasAttribute("data-pointer-ui"))) ||
       document.querySelector("dialog[open]") || !active?.canFilterChanges) return;
@@ -182,6 +191,7 @@ async function openRepository(repo, ref, base) {
         reviewPanel: review.panel,
         reviewSlot: review.takeSlot,
         reviewDestination: review.takeDestination,
+        takeFileDestination: review.takeFileDestination,
         canFilterChanges: () => active.canFilterChanges,
         takeChangesOnlyRequest() {
           const requested = changesOnlyRequested;

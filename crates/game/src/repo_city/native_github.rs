@@ -116,13 +116,71 @@ struct Comment {
     body: String,
 }
 
+#[derive(Deserialize, serde::Serialize)]
 pub(super) struct Session {
     token: String,
     pub login: String,
+    expires_at: Option<u64>,
 }
 
 const CLIENT_ID: &str = "Iv23liflIsPOavfEGn6b";
 const DEVICE_URL: &str = "https://github.com/login/device";
+#[cfg(target_os = "macos")]
+const KEYCHAIN_SERVICE: &str = "dev.meta-uber-engineer.repo-city.github";
+
+fn epoch_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+impl Session {
+    pub fn valid(&self) -> bool {
+        self.expires_at.is_none_or(|end| end > epoch_seconds())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn remember(&self) {
+        if let Ok(data) = serde_json::to_vec(self)
+            && security_framework::passwords::set_generic_password(
+                KEYCHAIN_SERVICE,
+                CLIENT_ID,
+                &data,
+            )
+            .is_err()
+        {
+            bevy::log::warn!("Could not save the GitHub session in Keychain.");
+        }
+    }
+}
+
+pub(super) fn restore_session() -> Job<Option<Session>> {
+    Job::spawn(|| {
+        #[cfg(target_os = "macos")]
+        {
+            use security_framework::item::{ItemClass, ItemSearchOptions, SearchResult};
+            let result = ItemSearchOptions::new()
+                .class(ItemClass::generic_password())
+                .service(KEYCHAIN_SERVICE)
+                .account(CLIENT_ID)
+                .load_data(true)
+                .skip_authenticated_items(true)
+                .search();
+            if let Ok(items) = result {
+                for item in items {
+                    if let SearchResult::Data(data) = item
+                        && let Ok(session) = serde_json::from_slice::<Session>(&data)
+                        && session.valid()
+                    {
+                        return Ok(Some(session));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    })
+}
 
 fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
@@ -472,10 +530,16 @@ pub(super) fn finish_sign_in(code: DeviceCode) -> Job<Session> {
                 let login = user["login"]
                     .as_str()
                     .ok_or("GitHub returned no account name.")?;
-                return Ok(Session {
+                let session = Session {
                     token: token.into(),
                     login: login.into(),
-                });
+                    expires_at: result["expires_in"]
+                        .as_u64()
+                        .map(|seconds| epoch_seconds().saturating_add(seconds)),
+                };
+                #[cfg(target_os = "macos")]
+                session.remember();
+                return Ok(session);
             }
             match result["error"].as_str() {
                 Some("authorization_pending") => {}
@@ -537,6 +601,7 @@ pub(super) fn development_token() -> Option<String> {
 
 pub(super) fn token(session: Option<&Session>) -> Option<String> {
     session
+        .filter(|session| session.valid())
         .map(|session| session.token.clone())
         .or_else(development_token)
 }
@@ -551,6 +616,7 @@ fn sha(value: &str) -> Result<&str, String> {
 
 pub(super) struct Snapshot {
     pub target: Target,
+    pub pull_open: bool,
     pub repository: Repository,
 }
 
@@ -567,8 +633,10 @@ impl Snapshot {
             git(&root, &["init", "--bare", "--quiet"], None)?;
         }
         let origin = format!("https://github.com/{}.git", target.slug());
+        let mut pull_open = false;
         let repository = if let Some(endpoint) = target.pull_endpoint() {
             let pull: Pull = api(&endpoint, token, None)?;
+            pull_open = pull.state == "open";
             let head = sha(&pull.head.sha)?;
             let base = sha(&pull.base.sha)?;
             let reference = format!("refs/pull/{}/head", target.pull.unwrap());
@@ -599,7 +667,11 @@ impl Snapshot {
             };
             repository_picker::load(&root, &head, merge_base.as_deref())?
         };
-        Ok(Self { target, repository })
+        Ok(Self {
+            target,
+            pull_open,
+            repository,
+        })
     }
 }
 
@@ -682,21 +754,24 @@ fn review_comment(note: &Note, body: String) -> Value {
     payload
 }
 
-pub(super) fn publish(target: Target, mut note: Note, token: String) -> Job<Note> {
+pub(super) fn publish(
+    target: Target,
+    notes: Vec<Note>,
+    token: String,
+) -> Job<Vec<Result<Note, String>>> {
     Job::spawn(move || {
         let endpoint = target
             .pull_endpoint()
             .ok_or("Open a GitHub pull request first.")?;
         let pull: Pull = api(&endpoint, Some(&token), None)?;
         if pull.state != "open" {
-            return Err("This pull request is closed. Your draft is saved.".into());
+            return Err("This pull request is closed. Drafts are saved locally.".into());
         }
-        if pull.head.sha != note.revision {
+        if notes.iter().any(|note| pull.head.sha != note.revision) {
             return Err("The pull request changed. Reopen it and select the current lines.".into());
         }
         let comments = format!("{endpoint}/comments");
-        let marker = format!("<!-- repo-city:native:{} -->", note.id);
-        let mut existing = None;
+        let mut existing = Vec::<Comment>::new();
         for page in 1..=12 {
             let batch: Vec<Comment> = api(
                 &format!("{comments}?per_page=100&page={page}"),
@@ -704,32 +779,38 @@ pub(super) fn publish(target: Target, mut note: Note, token: String) -> Job<Note
                 None,
             )?;
             let last = batch.len() < 100;
-            existing = batch
-                .into_iter()
-                .find(|comment| comment.body.ends_with(&marker));
-            if existing.is_some() || last {
+            existing.extend(batch);
+            if last {
                 break;
             }
             if page == 12 {
-                return Err("Check for the note on GitHub before retrying. There are too many comments to check safely.".into());
+                return Err("Check for the notes on GitHub before retrying. There are too many comments to check safely.".into());
             }
         }
-        let comment: Comment = if let Some(existing) = existing {
-            existing
-        } else {
-            let text = if note.text.trim().is_empty() {
-                &note.preset.prompt
-            } else {
-                &note.text
-            };
-            if text.trim().is_empty() {
-                return Err("Write a comment or set a prompt in the paint preset.".into());
-            }
-            let payload = review_comment(&note, format!("{}\n\n{marker}", text.trim()));
-            api(&comments, Some(&token), Some(&payload))?
-        };
-        note.published = Some(comment.html_url);
-        Ok(note)
+        Ok(notes
+            .into_iter()
+            .map(|mut note| {
+                let marker = format!("<!-- repo-city:native:{} -->", note.id);
+                note.published = if let Some(comment) = existing
+                    .iter()
+                    .find(|comment| comment.body.ends_with(&marker))
+                {
+                    Some(comment.html_url.clone())
+                } else {
+                    let text = note.comment().trim();
+                    if text.is_empty() {
+                        return Err(format!(
+                            "{}:{} has no comment text.",
+                            note.anchor.path, note.anchor.start
+                        ));
+                    }
+                    let payload = review_comment(&note, format!("{text}\n\n{marker}"));
+                    let comment: Comment = api(&comments, Some(&token), Some(&payload))?;
+                    Some(comment.html_url)
+                };
+                Ok(note)
+            })
+            .collect())
     })
 }
 

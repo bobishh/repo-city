@@ -49,11 +49,11 @@ impl Load {
 }
 
 fn matching(items: &[Choice], input: &str) -> Vec<Choice> {
-    let input = input.to_ascii_lowercase();
+    let input = input.to_lowercase();
     items
         .iter()
         .filter(|item| {
-            let label = item.label.to_ascii_lowercase();
+            let label = item.label.to_lowercase();
             input.split_whitespace().all(|term| label.contains(term))
         })
         .take(8)
@@ -93,7 +93,7 @@ impl Picker {
             },
             Choice {
                 value: "example/demo".into(),
-                label: "example/demo | Star".into(),
+                label: "example/demo | Star | Привет, Ёж!".into(),
             },
         ]);
     }

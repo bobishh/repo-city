@@ -1,13 +1,22 @@
 //! Review annotations are anchored to a snapshot, independent of the wall that displays them.
+#[cfg(not(target_arch = "wasm32"))]
+use std::collections::HashMap;
+
 use bevy::input::mouse::MouseScrollUnit;
 use serde::{Deserialize, Serialize};
 
 use super::*;
 
 #[cfg(not(target_arch = "wasm32"))]
+mod color_picker;
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) mod mcp;
+#[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
 mod ui;
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) use color_picker::update as update_color_picker;
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) use ui::{ReviewUi, update as panels};
 
@@ -87,6 +96,13 @@ impl Anchor {
             && (self.start..=self.end).contains(&other.start)
     }
 
+    fn touches(&self, other: &Self) -> bool {
+        self.path == other.path
+            && self.before == other.before
+            && self.start <= other.end.saturating_add(1)
+            && other.start <= self.end.saturating_add(1)
+    }
+
     pub fn extend(&self, other: &Self) -> Option<Self> {
         (self.path == other.path && self.before == other.before).then(|| Self {
             start: self.start.min(other.start),
@@ -116,6 +132,27 @@ pub(super) struct Note {
 }
 
 impl Note {
+    pub(super) fn comment(&self) -> &str {
+        if self.text.trim().is_empty() {
+            &self.preset.prompt
+        } else {
+            &self.text
+        }
+    }
+
+    fn duplicate_key(&self) -> (&str, Option<&str>, &str, bool, usize, usize, &str, &str) {
+        (
+            &self.revision,
+            self.baseline.as_deref(),
+            &self.anchor.path,
+            self.anchor.before,
+            self.anchor.start,
+            self.anchor.end,
+            &self.preset.id,
+            self.comment(),
+        )
+    }
+
     pub(super) fn ink(&self) -> [u8; 3] {
         if self.attention {
             [255, 202, 104]
@@ -123,6 +160,15 @@ impl Note {
             self.preset.color
         }
     }
+}
+
+fn duplicate_drafts(notes: &[Note]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    notes
+        .iter()
+        .filter(|note| !note.remote && note.published.is_none())
+        .filter_map(|note| (!seen.insert(note.duplicate_key())).then(|| note.id.clone()))
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -194,6 +240,14 @@ pub(super) struct Review {
     pub washing: bool,
     pub aim_note: Option<String>,
     pub phrase: Option<(f32, String)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub auto_publish: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) auto_drafts: Vec<String>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub feedback: Option<(f32, String)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    local_states: HashMap<String, native::LocalState>,
     scroll: f32,
     version: u32,
     scope: String,
@@ -221,6 +275,14 @@ impl Default for Review {
             washing: false,
             aim_note: None,
             phrase: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            auto_publish: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            auto_drafts: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            feedback: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            local_states: HashMap::new(),
             scroll: 0.,
             version: 0,
             scope: String::new(),
@@ -229,6 +291,11 @@ impl Default for Review {
 }
 
 impl Review {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn notify(&mut self, now: f32, text: impl Into<String>) {
+        self.feedback = Some((now + 5., text.into()));
+    }
+
     pub fn paint(&self) -> Option<&Preset> {
         self.slot
             .checked_sub(1)
@@ -245,16 +312,42 @@ impl Review {
         }
     }
 
+    fn matching_paint(&self, repo: &Repository, anchor: &Anchor, preset: &str) -> Option<usize> {
+        self.notes.iter().position(|note| {
+            !note.remote
+                && Self::on_snapshot(note, repo)
+                && note.preset.id == preset
+                && note.anchor.touches(anchor)
+                && (note.published.is_none()
+                    || (note.anchor.start <= anchor.start && note.anchor.end >= anchor.end))
+        })
+    }
+
     pub fn save_draft(&mut self, repo: &Repository, anchor: Anchor) -> Result<Note, String> {
         let Some(preset) = self.paint().cloned() else {
             return Err("Select a paint first.".into());
         };
+        if let Some(index) = self.matching_paint(repo, &anchor, &preset.id) {
+            let mut note = self.notes[index].clone();
+            let range = note.anchor.extend(&anchor).expect("same source side");
+            if range != note.anchor {
+                note.anchor = range;
+                self.write_note(&note)?;
+                self.notes[index] = note.clone();
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if self.local_states.get(&note.id) == Some(&native::LocalState::Addressed) {
+                native::mark_worktree_note(&self.scope, &note.id, native::LocalState::Unread)?;
+                self.local_states.remove(&note.id);
+            }
+            return Ok(note);
+        }
         let note = Note {
             id: new_id(),
             revision: repo.revision.clone(),
             baseline: repo.baseline.clone(),
             anchor,
-            text: preset.prompt.clone(),
+            text: String::new(),
             preset,
             published: None,
             remote: false,
@@ -262,8 +355,20 @@ impl Review {
             attention: false,
         };
         self.write_note(&note)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.auto_publish {
+            self.auto_drafts.push(note.id.clone());
+        }
         self.notes.push(note.clone());
         Ok(note)
+    }
+
+    pub fn shows_paint(&self, note: &Note, repo: &Repository) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.local_states.get(&note.id) == Some(&native::LocalState::Addressed) {
+            return false;
+        }
+        Self::on_snapshot(note, repo)
     }
 
     pub fn on_snapshot(note: &Note, repo: &Repository) -> bool {
@@ -308,6 +413,7 @@ pub(super) fn update(
     menu: Res<city_menu::Menu>,
     navigation: Res<city_navigation::Navigation>,
     camera: Query<&Pilot, PlayerCamera>,
+    #[cfg(not(target_arch = "wasm32"))] search: Option<Res<listing::find::Search>>,
 ) {
     review.washing = false;
     #[cfg(target_arch = "wasm32")]
@@ -339,6 +445,7 @@ pub(super) fn update(
     #[cfg(not(target_arch = "wasm32"))]
     if repo.is_changed() && review.scope != repo.0.root.to_string_lossy() {
         review.scope = repo.0.root.to_string_lossy().into_owned();
+        review.local_states.clear();
         match native::load(&review.scope) {
             Ok(payload) => {
                 review.palette = payload.palette;
@@ -352,18 +459,35 @@ pub(super) fn update(
         }
         review.slot = 0;
         review.drag = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            review.auto_publish = false;
+            review.auto_drafts.clear();
+            review.feedback = None;
+        }
     }
 
     let Ok(pilot) = camera.single() else {
         return;
     };
-    if review.blocked || picker.is_open() || menu.is_open() || keys.just_pressed(KeyCode::Escape) {
+    let blocked =
+        review.blocked || picker.is_open() || menu.is_open() || keys.just_pressed(KeyCode::Escape);
+    #[cfg(not(target_arch = "wasm32"))]
+    let blocked = blocked || search.is_some_and(|search| search.blocks_controls());
+    if blocked {
         review.drag = None;
+    } else if keys.just_pressed(KeyCode::KeyJ)
+        && !navigation.is_flying()
+        && (pilot.captured || cfg!(not(target_arch = "wasm32")))
+    {
+        review.request = Some(if cfg!(target_arch = "wasm32") {
+            Panel::Aimed
+        } else {
+            Panel::Notes
+        });
     } else if pilot.captured {
         if keys.just_pressed(KeyCode::KeyU) && review.can_paint {
             review.request = Some(Panel::Paints);
-        } else if keys.just_pressed(KeyCode::KeyJ) && !navigation.is_flying() {
-            review.request = Some(Panel::Aimed);
         }
         if let Some(slot) = SLOTS.iter().position(|key| keys.just_pressed(*key)) {
             review.select(slot);
@@ -470,6 +594,58 @@ fn new_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repaint_extends_the_same_note_and_keeps_edited_text() {
+        let repo = repository_picker::empty();
+        let anchor = Anchor {
+            path: "src/main.rs".into(),
+            before: false,
+            start: 3,
+            end: 5,
+        };
+        let mut review = Review::default();
+        let preset = review.palette[0].as_ref().unwrap().clone();
+        let note = Note {
+            id: "existing".into(),
+            revision: repo.revision.clone(),
+            baseline: repo.baseline.clone(),
+            anchor: anchor.clone(),
+            preset,
+            text: "Keep this explanation.".into(),
+            published: None,
+            remote: false,
+            resolved: None,
+            attention: false,
+        };
+        review.notes.push(note.clone());
+        let repeat = review.matching_paint(&repo, &anchor, &note.preset.id);
+        assert_eq!(repeat, Some(0));
+        let added = Anchor {
+            start: 6,
+            end: 7,
+            ..anchor.clone()
+        };
+        assert_eq!(
+            review.matching_paint(&repo, &added, &note.preset.id),
+            Some(0)
+        );
+        assert_eq!(note.anchor.extend(&added).unwrap().end, 7);
+        assert_eq!(review.notes[0].comment(), "Keep this explanation.");
+        let old_duplicate = Note {
+            id: "repeat".into(),
+            ..note.clone()
+        };
+        let different_text = Note {
+            id: "custom".into(),
+            text: "Other context.".into(),
+            ..note.clone()
+        };
+        assert_eq!(
+            duplicate_drafts(&[note, old_duplicate, different_text]),
+            ["repeat"]
+        );
+    }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]

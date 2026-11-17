@@ -69,7 +69,9 @@ pub(super) fn input(
     index: i32,
     multiline: bool,
 ) -> Entity {
-    text(parent, label, Color::srgb_u8(157, 193, 196));
+    if !label.is_empty() {
+        text(parent, label, Color::srgb_u8(157, 193, 196));
+    }
     let mut editable = EditableText {
         allow_newlines: multiline,
         max_characters: Some(if multiline { 6000 } else { 500 }),
@@ -106,23 +108,25 @@ pub(super) fn button<
     label: &str,
     color: Color,
     action: A,
-) {
-    parent.spawn((
-        file_picker::button(
-            label,
-            &TextFont::from_font_size(15.),
-            color,
-            AlignSelf::Auto,
-        ),
-        action,
-        observe(
-            |click: On<Activate>, actions: Query<&A>, mut state: ResMut<S>| {
-                if let Ok(action) = actions.get(click.entity) {
-                    state.activate(*action);
-                }
-            },
-        ),
-    ));
+) -> Entity {
+    parent
+        .spawn((
+            file_picker::button(
+                label,
+                &TextFont::from_font_size(15.),
+                color,
+                AlignSelf::Auto,
+            ),
+            action,
+            observe(
+                |click: On<Activate>, actions: Query<&A>, mut state: ResMut<S>| {
+                    if let Ok(action) = actions.get(click.entity) {
+                        state.activate(*action);
+                    }
+                },
+            ),
+        ))
+        .id()
 }
 
 pub(super) trait Actions<A> {
@@ -142,3 +146,23 @@ pub(super) fn close(
 }
 
 pub(super) const INK: Color = Color::srgb_u8(157, 231, 214);
+
+#[derive(Component, Default)]
+pub(super) struct TabletEntrance(f32);
+
+pub(super) fn raise_tablet(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut panels: Query<(Entity, &mut TabletEntrance, &mut UiTransform)>,
+) {
+    for (entity, mut entrance, mut transform) in &mut panels {
+        entrance.0 += time.delta_secs();
+        let progress = (entrance.0 / 0.20).min(1.);
+        let remaining = (1. - progress).powi(3);
+        transform.translation = Val2::px(0., remaining * 220.);
+        transform.scale = Vec2::splat(1. - remaining * 0.1);
+        if progress == 1. {
+            commands.entity(entity).remove::<TabletEntrance>();
+        }
+    }
+}

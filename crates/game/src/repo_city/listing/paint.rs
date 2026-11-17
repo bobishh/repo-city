@@ -35,7 +35,7 @@ pub(crate) fn draw(
     mut files_by_path: Local<HashMap<String, usize>>,
     mut hud: Query<(&mut Text, &mut TextColor), With<review_notes::ToolHud>>,
 ) {
-    use review_notes::{Anchor, Review};
+    use review_notes::Anchor;
     let Ok((camera, pilot)) = camera.single() else {
         return;
     };
@@ -65,7 +65,7 @@ pub(crate) fn draw(
     let other_notes = review.notes.iter().filter(|note| !note.attention);
     for note in outstanding
         .chain(other_notes)
-        .filter(|note| Review::on_snapshot(note, &repo.0))
+        .filter(|note| review.shows_paint(note, &repo.0))
     {
         let Some(&index) = files_by_path.get(&note.anchor.path) else {
             continue;
@@ -80,6 +80,27 @@ pub(crate) fn draw(
         let [x, z] = file.position;
         let bound = super::block_size(file);
         let roof = Vec3::new(x, bound.y + 0.6, z);
+        if navigation.overview() {
+            if roof.xz().distance_squared(camera.translation.xz()) <= 640. * 640. {
+                let gold = Color::srgb_u8(255, 199, 79);
+                let pin = roof + Vec3::Y * 12.;
+                let radius = (bound.x * 0.35).clamp(3.5, 6.);
+                gizmos.line(roof, pin, gold);
+                gizmos.linestrip(
+                    [
+                        pin + Vec3::X * radius,
+                        pin + Vec3::Z * radius,
+                        pin - Vec3::X * radius,
+                        pin - Vec3::Z * radius,
+                        pin + Vec3::X * radius,
+                    ],
+                    gold,
+                );
+                gizmos.linestrip([pin + Vec3::X * radius, pin, pin - Vec3::X * radius], gold);
+                gizmos.linestrip([pin + Vec3::Z * radius, pin, pin - Vec3::Z * radius], gold);
+            }
+            continue;
+        }
         if roof.distance_squared(camera.translation) > 140. * 140. {
             continue;
         }
@@ -177,7 +198,7 @@ pub(crate) fn draw(
             for note in review
                 .notes
                 .iter()
-                .filter(|note| note.anchor.path == file.path && Review::on_snapshot(note, &repo.0))
+                .filter(|note| note.anchor.path == file.path && review.shows_paint(note, &repo.0))
             {
                 let [r, g, b] = note.ink();
                 let tint = Color::srgb_u8(r, g, b).with_alpha(if note.resolved == Some(true) {
@@ -200,13 +221,18 @@ pub(crate) fn draw(
         review
             .notes
             .iter()
-            .filter(|note| Review::on_snapshot(note, &repo.0) && note.anchor.includes(line))
+            .filter(|note| review.shows_paint(note, &repo.0) && note.anchor.includes(line))
             .max_by_key(|note| note.attention)
     });
     let aimed = note.map(|note| (note.id.clone(), note.preset.label.clone()));
     review.aim_note = aimed.as_ref().map(|(id, _)| id.clone());
 
-    let mut hint = aimed.map_or_else(String::new, |(_, label)| format!("{label} · J opens note"));
+    let mut hint = listing
+        .wash_time_remaining()
+        .map(|seconds| format!("Hold to keep revealed · {seconds:.1}s"))
+        .unwrap_or_else(|| {
+            aimed.map_or_else(String::new, |(_, label)| format!("{label} · J opens note"))
+        });
     let mut tint = Color::srgb_u8(143, 217, 207);
     if let Some(preset) = review.paint().cloned() {
         let [r, g, b] = preset.color;
@@ -253,7 +279,18 @@ pub(crate) fn draw(
                 match review.save_draft(&repo.0, anchor) {
                     Ok(note) => {
                         review.aim_note = Some(note.id);
-                        explorer.notice = "Draft saved. Press J to reopen an aimed note.".into();
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            explorer.notice =
+                                "Draft saved. Press J to reopen an aimed note.".into();
+                        }
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if !review.auto_publish {
+                            review.notify(
+                                time.elapsed_secs(),
+                                "Draft saved locally · J opens review",
+                            );
+                        }
                     }
                     Err(error) => explorer.notice = error,
                 }

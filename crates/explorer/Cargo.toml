@@ -22,6 +22,7 @@ block2 = "0.6"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow", "block2"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSString", "NSURL", "NSGeometry", "objc2-core-foundation"] }
+security-framework = "3.7"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 base64 = "0.22"

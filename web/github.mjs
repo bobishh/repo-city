@@ -114,21 +114,26 @@ export async function loadGitHub(input, ref, base, request = fetch) {
   const read = async (path, repository = name) =>
     (await readGitHub(request, `/repos/${repository}${path}`)).json();
 
-  let head, baseline, status = null, headRepository = name;
+  let head, baseline, comparison, comparePath, status = null, headRepository = name;
+  async function compare(base, revision) {
+    comparePath = `/compare/${encodeURIComponent(base)}...${encodeURIComponent(revision)}`;
+    comparison = await read(comparePath);
+    return comparison.merge_base_commit;
+  }
   if (pull) {
     const details = await read(`/pulls/${pull.number}`);
     status = pullState(details);
     head = details.head;
     if (!head?.sha || !details.base?.sha) throw new Error("Pull request revisions unavailable.");
     if (head.repo?.full_name) headRepository = parseRepository(head.repo.full_name);
-    baseline = (await read(`/compare/${encodeURIComponent(details.base.sha)}...${encodeURIComponent(head.sha)}`)).merge_base_commit;
+    baseline = await compare(details.base.sha, head.sha);
     if (!baseline?.sha) throw new Error("Pull request merge base unavailable.");
   } else {
     const revision = ref?.trim() || (await read("")).default_branch;
     if (!revision) throw new Error("This repository has no default branch.");
     head = await read(`/commits/${encodeURIComponent(revision)}`);
     baseline = base?.trim()
-      ? (await read(`/compare/${encodeURIComponent(base.trim())}...${head.sha}`)).merge_base_commit
+      ? await compare(base.trim(), head.sha)
       : head.parents[0];
   }
 
@@ -175,9 +180,66 @@ export async function loadGitHub(input, ref, base, request = fetch) {
       sha: useBase ? baseline.sha : head.sha,
     };
   }
+  let fileDates;
+  function loadChangeDates(paths) {
+    if (!fileDates) fileDates = (async () => {
+      const remaining = new Set(paths);
+      const dates = Object.create(null);
+      if (!remaining.size) return dates;
+      let commits = comparison?.commits ?? (comparePath ? [] : [head]);
+      if (comparePath && comparison?.total_commits > commits.length) {
+        commits = [];
+        for (let page = 1; commits.length < comparison.total_commits; page++) {
+          const batch = (await read(`${comparePath}?per_page=100&page=${page}`)).commits;
+          if (!batch?.length) break;
+          commits.push(...batch);
+        }
+      }
+      const date = info => Date.parse(info.commit?.committer?.date);
+      commits = commits.filter(info => Number.isFinite(date(info))).sort((a, b) => date(b) - date(a));
+      for (let offset = 0; remaining.size && offset < commits.length; offset += 4) {
+        const batch = await Promise.allSettled(commits.slice(offset, offset + 4).map(async info => {
+          if (Array.isArray(info.files) && info.files.length < 300) return info;
+          const files = [];
+          for (let page = 1;; page++) {
+            const query = `/commits/${info.sha}?per_page=100&page=${page}`;
+            let details;
+            try { details = await read(query, headRepository); }
+            catch (error) {
+              if (headRepository === name) throw error;
+              details = await read(query);
+            }
+            const entries = details.files ?? [];
+            files.push(...entries);
+            if (entries.length < 100) break;
+          }
+          return { ...info, files };
+        }));
+        let partial = false;
+        for (const item of batch) {
+          if (item.status === "rejected") {
+            partial = true;
+            continue;
+          }
+          const { files } = item.value;
+          const time = date(item.value);
+          for (const { filename, previous_filename } of files) {
+            for (const path of [filename, previous_filename]) {
+              if (remaining.delete(path)) dates[path] = time;
+            }
+          }
+        }
+        if (partial) break;
+      }
+      return dates;
+    })();
+    return fileDates;
+  }
+
   return {
     review: { repository: name, pull: pull?.number ?? null, pullState: status, revision: head.sha, baseline: baseline?.sha ?? null },
     progressScope: JSON.stringify([name.toLowerCase(), head.sha, baseline?.sha ?? null]),
+    loadChangeDates,
     snapshot: JSON.stringify({ name: pull ? `${name}#${pull.number}` : name, revision: head.sha, baseline: baseline?.sha ?? null, before, after }),
     blameURL(path, useBase, line) {
       const target = blameTarget(path, useBase);

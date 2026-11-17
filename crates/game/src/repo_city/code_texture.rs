@@ -274,6 +274,7 @@ pub(super) fn listing_preview<'a>(
     revealed: impl Fn(usize) -> bool,
     face: Face,
     glyph_scale: Vec2,
+    paint_at: impl Fn(usize) -> Option<Vec4>,
 ) -> Image {
     const WIDTH: usize = 256;
     let height = (count * 4).clamp(64, 2048);
@@ -287,12 +288,26 @@ pub(super) fn listing_preview<'a>(
         } else {
             Coverage::Closed
         };
-        let background = listing_background(face, mark);
+        let mut background = listing_background(face, mark);
+        let paint = paint_at(index);
+        if let Some(paint) = paint {
+            let alpha = paint.w * 0.36;
+            for (value, ink) in background.iter_mut().zip(paint.to_array()) {
+                *value = (*value as f32 * (1. - alpha) + ink * 255. * alpha) as u8;
+            }
+        }
         for pixel in pixels.chunks_exact_mut(4) {
             pixel.copy_from_slice(&[background[0], background[1], background[2], 255]);
         }
         let gutter = WIDTH * 91 / LISTING_WIDTH as usize;
-        pixels[gutter * 4..gutter * 4 + 3].copy_from_slice(&coverage.accent());
+        if let Some(paint) = paint {
+            let color = [paint.x, paint.y, paint.z].map(|value| (value * 255.) as u8);
+            for x in gutter.saturating_sub(3)..gutter + 2 {
+                pixels[x * 4..x * 4 + 3].copy_from_slice(&color);
+            }
+        } else {
+            pixels[gutter * 4..gutter * 4 + 3].copy_from_slice(&coverage.accent());
+        }
         if let Some(ink) = source_change_ink(face, mark) {
             let change = WIDTH * 102 / LISTING_WIDTH as usize * 4;
             pixels[change..change + 3].copy_from_slice(&ink);
@@ -449,6 +464,33 @@ pub(super) fn listing_with_notes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn distant_comments_color_their_row_and_widen_the_gutter_mark() {
+        let plain = listing_preview(
+            2,
+            |_| (None, Mark::Context),
+            |_| true,
+            Face::Source,
+            Vec2::ONE,
+            |_| None,
+        );
+        let marked = listing_preview(
+            2,
+            |_| (None, Mark::Context),
+            |_| true,
+            Face::Source,
+            Vec2::ONE,
+            |row| (row == 1).then_some(Vec4::new(1., 0.65, 0.15, 1.)),
+        );
+        let plain = plain.data.unwrap();
+        let marked = marked.data.unwrap();
+        let row_bytes = 256 * 4;
+        assert_eq!(&plain[..32 * row_bytes], &marked[..32 * row_bytes]);
+        let edge = 32 * row_bytes + 14 * 4;
+        assert_eq!(&marked[edge..edge + 3], &[255, 165, 38]);
+        assert_ne!(plain[34 * row_bytes], marked[34 * row_bytes]);
+    }
 
     #[test]
     fn compressed_wall_glyphs_keep_enough_texels_and_the_same_normalized_gutter() {

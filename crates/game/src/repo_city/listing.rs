@@ -129,7 +129,7 @@ pub(super) struct Listing {
     listing_facade: Option<usize>,
     viewing: Option<Face>,
     destination: Option<Face>,
-    wash_remaining: f32,
+    wash_preview: Option<WashPreview>,
     blame: super::blame::Blame,
     turn: Option<(f32, Transform, Transform)>,
     scroll_remaining: f32,
@@ -142,6 +142,44 @@ pub(super) struct Listing {
     blame_header: Option<Tile>,
     diff_lines: Vec<(Option<syntax::Line>, Mark)>,
     source_marks: Vec<Mark>,
+    preview_marks: Vec<(review_notes::Anchor, Vec4)>,
+}
+
+#[derive(Clone, Debug)]
+struct WashPreview {
+    file: usize,
+    before: bool,
+    rows: Range<usize>,
+    elapsed: f32,
+}
+
+impl WashPreview {
+    fn time_needed(&self) -> f32 {
+        5. + self.rows.len().saturating_sub(1) as f32 * 0.075
+    }
+
+    fn advance(
+        active: &mut Option<Self>,
+        file: usize,
+        before: bool,
+        rows: Range<usize>,
+        delta: f32,
+    ) -> bool {
+        if active
+            .as_ref()
+            .is_none_or(|p| p.file != file || p.before != before || p.rows != rows)
+        {
+            *active = Some(Self {
+                file,
+                before,
+                rows,
+                elapsed: 0.,
+            });
+        }
+        let preview = active.as_mut().expect("the current tile is previewed");
+        preview.elapsed += delta;
+        preview.elapsed >= preview.time_needed()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -349,7 +387,7 @@ impl Listing {
     pub(super) fn reset_view(&mut self) {
         self.viewing = None;
         self.destination = None;
-        self.wash_remaining = 0.;
+        self.wash_preview = None;
         self.turn = None;
         self.scroll_remaining = 0.;
     }
@@ -484,6 +522,12 @@ impl Listing {
         (visible, total)
     }
 
+    fn wash_time_remaining(&self) -> Option<f32> {
+        self.wash_preview
+            .as_ref()
+            .map(|preview| (preview.time_needed() - preview.elapsed).max(0.))
+    }
+
     fn wash(
         &mut self,
         explorer: &Explorer,
@@ -560,6 +604,7 @@ impl Listing {
     }
 
     pub(super) fn clear_progress(&mut self) {
+        self.wash_preview = None;
         self.overview_dirty
             .extend(self.reveal_progress.keys().map(|&(index, _)| index));
         self.revealed.clear();
@@ -741,18 +786,24 @@ pub(super) fn wash_stream(
     picker: Res<file_picker::FilePicker>,
     mut progress: ResMut<progress::Progress>,
     mut review: ResMut<review_notes::Review>,
+    menu: Res<city_menu::Menu>,
+    search: Res<find::Search>,
 ) {
     let Ok((camera, pilot)) = camera.single() else {
+        listing.wash_preview = None;
         return;
     };
     if !pilot.firing
+        || !pilot.captured
+        || menu.is_open()
+        || search.blocks_controls()
         || review.slot != 0
         || review.blocked
         || picker.is_open()
         || listing.turning()
         || !Listing::visible(&explorer, &navigation)
     {
-        listing.wash_remaining = 0.;
+        listing.wash_preview = None;
         return;
     }
     let count = explorer.highlighted.len();
@@ -766,16 +817,30 @@ pub(super) fn wash_stream(
                 .is_none_or(|aim| aim.index == explorer.selected)
         })
     else {
-        listing.wash_remaining = 0.;
+        listing.wash_preview = None;
         return;
     };
     review.washing = true;
-    listing.wash_remaining -= time.delta_secs();
-    if listing.wash_remaining <= 0. {
+    let row = side.wall.row(hit.y, count);
+    let rows = tile_rows(row, count);
+    let file_index = explorer.selected;
+    let before = explorer.before;
+    if rows
+        .clone()
+        .all(|row| listing.revealed.contains(&(file_index, before, row + 1)))
+    {
+        listing.wash_preview = None;
+    } else if WashPreview::advance(
+        &mut listing.wash_preview,
+        file_index,
+        before,
+        rows,
+        time.delta_secs(),
+    ) {
         if let Some(mark) = listing.wash(&explorer, file, hit.y) {
             progress.mark(mark, true);
         }
-        listing.wash_remaining = 0.12;
+        listing.wash_preview = None;
     }
     if review.nozzle >= 0.85 {
         physics::spray_stream(
@@ -1490,30 +1555,14 @@ pub(super) fn draw(
         diff_lines,
         source_marks,
         revealed,
+        wash_preview,
+        preview_marks,
         blame: attribution,
         ..
     } = &mut *listing;
     let is_revealed = |line| revealed.contains(&(explorer.selected, explorer.before, line));
     let source_row = |index| (Some(&explorer.highlighted[index]), source_marks[index]);
     let diff_row = |index: usize| (diff_lines[index].0.as_ref(), diff_lines[index].1);
-    render.preview(&source, source_tiles, count, || {
-        code_texture::listing_preview(
-            count,
-            source_row,
-            is_revealed,
-            Face::Source,
-            source.glyph_scale(),
-        )
-    });
-    render.preview(&diff, diff_tiles, diff_count, || {
-        code_texture::listing_preview(
-            diff_count,
-            diff_row,
-            |_| true,
-            Face::Diff,
-            diff.glyph_scale(),
-        )
-    });
     let retain = |face, tiles: &Tiles| {
         viewed == Some(face) || (!tiles.resident.is_empty() && near(face, true).is_some())
     };
@@ -1539,7 +1588,15 @@ pub(super) fn draw(
         })
         .collect::<Vec<_>>()
     };
-    let mask = |rows| cover::mask(rows, &is_revealed);
+    let active_wash = wash_preview
+        .as_ref()
+        .filter(|preview| preview.file == explorer.selected && preview.before == explorer.before);
+    let mask = |rows| {
+        cover::mask(rows, &|line| {
+            is_revealed(line)
+                || active_wash.is_some_and(|preview| preview.rows.contains(&(line - 1)))
+        })
+    };
     let metadata =
         |rows, bits| cover::CoverRows::new(&source_rows(rows), bits, source.glyph_scale());
     let tone = |[r, g, b]: [u8; 3], alpha| {
@@ -1551,10 +1608,7 @@ pub(super) fn draw(
             review
                 .notes
                 .iter()
-                .filter(|note| {
-                    note.anchor.path == file.path
-                        && review_notes::Review::on_snapshot(note, &repo.0)
-                })
+                .filter(|note| note.anchor.path == file.path && review.shows_paint(note, &repo.0))
                 .map(|note| {
                     (
                         &note.anchor,
@@ -1569,6 +1623,54 @@ pub(super) fn draw(
                     )
                 }),
         );
+    }
+    if preview_marks.len() != marks.len()
+        || preview_marks
+            .iter()
+            .zip(&marks)
+            .any(|((old, color), (anchor, next))| old != *anchor || color != next)
+    {
+        *preview_marks = marks
+            .iter()
+            .map(|(anchor, color)| ((*anchor).clone(), *color))
+            .collect();
+        source_tiles.preview_dirty = true;
+        diff_tiles.preview_dirty = true;
+    }
+    let line_paint = |before, line| {
+        preview_marks
+            .iter()
+            .rev()
+            .find(|(anchor, _)| {
+                anchor.before == before && (anchor.start..=anchor.end).contains(&line)
+            })
+            .map(|(_, paint)| *paint)
+    };
+    render.preview(&source, source_tiles, count, || {
+        code_texture::listing_preview(
+            count,
+            source_row,
+            is_revealed,
+            Face::Source,
+            source.glyph_scale(),
+            |index| line_paint(explorer.before, index + 1),
+        )
+    });
+    render.preview(&diff, diff_tiles, diff_count, || {
+        code_texture::listing_preview(
+            diff_count,
+            diff_row,
+            |_| true,
+            Face::Diff,
+            diff.glyph_scale(),
+            |index| {
+                let (line, mark) = &diff_lines[index];
+                line.as_ref()
+                    .and_then(|line| line_paint(*mark == Mark::Removed, line.number))
+            },
+        )
+    });
+    if let Some(review) = review.as_ref() {
         if let (Some((_, anchor)), Some(preset)) = (&review.drag, review.paint())
             && anchor.path == file.path
         {
@@ -1799,6 +1901,19 @@ mod tests {
             assert_eq!(clear.rotation, blurred.rotation);
             assert!(separation >= 0.0029 && separation < PANEL_OFFSET);
         }
+    }
+
+    #[test]
+    fn washing_only_saves_a_tile_after_continuous_focus() {
+        let mut preview = None;
+        assert!(!WashPreview::advance(&mut preview, 0, false, 0..16, 4.));
+        assert!(!WashPreview::advance(&mut preview, 0, false, 16..17, 2.));
+        assert!(!WashPreview::advance(&mut preview, 0, false, 0..16, 3.));
+        assert!(!WashPreview::advance(&mut preview, 0, false, 0..16, 3.));
+        assert!(WashPreview::advance(&mut preview, 0, false, 0..16, 0.2));
+        preview = None;
+        assert!(!WashPreview::advance(&mut preview, 0, false, 16..17, 4.9));
+        assert!(WashPreview::advance(&mut preview, 0, false, 16..17, 0.2));
     }
 
     #[test]
