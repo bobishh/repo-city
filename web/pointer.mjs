@@ -8,6 +8,7 @@ export function setupPointer(canvas, menu) {
 
   function capture() {
     if (canvas.hidden || modalOpen() || canvas.hasAttribute("data-pointer-ui") ||
+        canvas.hasAttribute("data-action-menu") ||
         document.pointerLockElement || !canvas.requestPointerLock) return;
     canvas.focus({ preventScroll: true });
     try {
@@ -23,14 +24,6 @@ export function setupPointer(canvas, menu) {
   document.addEventListener("keydown", event => {
     if (event.code === "Escape") release();
   }, true);
-  canvas.addEventListener("keydown", event => {
-    if (event.code !== "Tab" || event.shiftKey || canvas.hasAttribute("data-pointer-ui")) return;
-    event.preventDefault();
-    if (!event.repeat) {
-      if (locked()) release();
-      else capture();
-    }
-  });
   canvas.addEventListener("pointerdown", event => {
     if (event.button === 0) capture();
   });

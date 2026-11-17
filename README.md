@@ -24,6 +24,9 @@ diff wall also shows deleted lines. Paste a pull request URL or choose **Pull
 requests** after selecting its repository. Closed and merged pull requests
 show their historical changes and comments. Publishing review notes requires
 an open pull request.
+Press **F** or choose **Only changes** from the right-click menu to lower
+untouched buildings below the street and filter the file picker. Press **F**
+again or choose **Show all files** to restore the full city.
 
 Use **Sign in with GitHub** below the search to find your repositories, stars,
 and forks from the repository field. Under your GitHub handle, use **Choose
@@ -49,6 +52,30 @@ without switching your working tree. For terminal use, `./scripts/run-native.sh`
 opens Repo City's checkout by default and accepts another checkout path as its
 first argument.
 
+Choose **Revisions… → Live worktree** to compare the working directory with
+`HEAD`. Saves update changed buildings, and new non-ignored files appear in
+the city. An update appears briefly above the city controls. Click it or press
+**L** to fly to the last changed file. Press **Tab** to open the changed files
+tablet and see earlier changes. Press **F** to show only changed buildings and
+**G** at a changed file to read its diff. From the command line,
+run `./scripts/run-native.sh /path/to/checkout --live`.
+The script runs the Rust development build. The watcher updates the city when
+the inspected checkout changes. Restart the program to load changes to Repo
+City's own Rust code. The desktop tablet uses watcher times or file modification
+times in a worktree and commit times for Git comparisons. The browser uses
+GitHub commit history where available.
+
+Choose **GitHub…** to find a repository or paste a GitHub repository or pull
+request URL. **Sign in with GitHub** opens the verification page. Click the
+device code to copy it, then paste it in the browser. Once signed in, the picker
+suggests your repositories, forks, and starred repositories as you type.
+Select a repository to choose a revision and comparison base or list its pull
+requests.
+The app uses Git to fetch snapshots and the GitHub API for review comments.
+
+In large repositories the city loads nearby buildings as you fly. File search
+still covers the entire comparison.
+
 ## Controls
 
 | Action | Control |
@@ -56,14 +83,17 @@ first argument.
 | Find a file by name or path | **P** in the browser, **⌘P** on Mac |
 | Fly | **WASD**, **Space** and **Ctrl** for altitude, **Shift** to boost |
 | Capture or release the cursor | Click the scene to capture. **Esc** releases. |
-| Open the actions menu | Right-click to open scene actions, file search, paints, or review notes. |
-| See the district from above | **M** toggles district view. Hover for a file name, then click or press **E** to fly there. |
+| Use the actions menu | Right-click to open or close it. Scroll or use the arrow keys to highlight an action. Click or press **Enter** to select it. |
+| See the city from above | Press **M** to cycle through the district, the project, and your original view. Fly freely after each move. |
+| Return to a building | **Ctrl+O** goes back in jump history and **Ctrl+I** goes forward. |
+| Browse changes | **Tab** opens the changed files tablet. **Viewed** limits the list to changes you visited. Select a file to fly there. With a form open, **Tab** moves focus. |
 | Approach a wall | Far away, left-click a building to fly to its nearest covered lines or the top of its source wall. Press **E** to fly to the aimed face. Scroll to move along the wall. |
-| Wash or paint lines | **0** equips water. Hold left click close to a source wall to reveal lines. **1–9** equip paints; drag from one readable line to another on the same side of the file. |
+| Wash or paint lines | **0** equips water. Hold left click close to a source wall to see the lines. Keep washing the same block for about 5–6 seconds to save the reveal. **1–9** equip paints; drag from one readable line to another on the same side of the file. |
 | Edit paints and notes | **U** opens paints; **⌘ + scroll** cycles tools on Mac. **J** opens the note you are aiming at or the review list. |
 | Find text on the current wall | **/** or **Find in file** in the actions menu. **Enter** keeps results; **N** and **Shift+N** visit matches. |
 | Turn to the diff or blame wall | **G** for diff, **B** for blame. Sign in with GitHub for line attribution in the browser. |
-| Follow a file’s changes | **C** starts the review. **W** climbs through the change platforms and **S** goes back down. **Q** returns to the diff wall. |
+| Follow a file’s changes | **C** starts the review. Scroll up or press **W** for the next stop. Scroll down or press **S** for the previous stop. **Q** returns to the diff wall. |
+| Open controls on Mac | **H** opens or closes the controls panel. |
 
 Repo City saves revealed lines and reviewed files in your browser or on your
 Mac. The same repository and comparison restore those marks. Press **V** to
@@ -78,29 +108,50 @@ unchanged file contents and diffs.
 ## Leave review notes
 
 Wash the source or use the readable diff wall. Pick a paint with **U** and
-drag over lines to color them and open a draft. To reopen it, aim at the
-marked lines and press **J**. Each draft keeps its original file, revision,
-and line range.
+drag over lines to color them and save a draft with that paint's reusable
+prompt. Each draft keeps its original file, revision, and line range.
 Change a paint's name, color, spray text, or reusable prompt in **Paints**.
 
-The Mac app saves notes and palettes in SQLite without a GitHub login.
-Choose **Review notes** from the right-click menu to reopen or export them.
+The Mac app saves notes and palettes in SQLite. Press **J** to preview the
+current comparison's notes. Use **Edit** to add details or export a note.
+In an open pull request, **Publish all** sends the current drafts to GitHub
+with write access. Turn on **Auto-publish** to send new marks as you make them.
+This setting turns off when you open another comparison. GitHub sign-in uses
+the macOS Keychain to restore the session.
+
 In the browser, sign in with GitHub to save drafts for a pull request in
-IndexedDB. Existing public review threads are readable without signing in.
+IndexedDB. Press **J** while aiming at a note to open it. Existing public
+review threads are readable without signing in.
 Choose a local paint for a GitHub thread from its detail panel. GitHub still
 shows the original comment. Signed-in reviewers can show resolved threads from
 the review list.
 
-**Preview GitHub comment** shows the text before you send it. Publication
-requires repository access and **Pull requests: write** for the Repo City
-GitHub App. Select **Suggest replacement** in a draft on the current side
-of a pull request to preview and publish replacement code. GitHub accepts
-the suggestion on lines within one diff hunk. If the PR moves or GitHub
-rejects the range, the draft stays local. Resetting reading progress leaves
-notes and paints in place.
+The draft starts with the paint's reusable prompt. **Publish to GitHub**
+sends that comment in one action. Use **Edit comment** to adapt it or
+**Write a comment** to start blank. Publication requires repository access
+and **Pull requests: write** for the Repo City GitHub App. Select **Suggest
+replacement** on the current side of a pull request to preview and publish
+replacement code. GitHub accepts suggestions within one diff hunk. If the
+PR moves or GitHub rejects the range, the draft stays local. Resetting
+reading progress leaves notes and paints in place.
+
+On a signed-in review, unresolved inline comments that mention your GitHub
+handle are marked in gold until you view them. Open **Review notes** and
+choose **Fly to next mention**. Click the city to capture the cursor and
+press **J** once the camera reaches the marked lines.
+**Mark viewed on GitHub 👀** adds the reaction from your account and restores
+the thread's usual color when you have marked its mentions viewed.
 
 For local stack traces, draft editing, builds, and deployment, see
 [Development](docs/development.md).
+
+### Share local review notes with an MCP client
+
+Run the native binary with `--notes-mcp --repo /absolute/path/to/checkout`
+as a stdio MCP server. `list_notes` reads local worktree notes for that
+checkout. `mark_note` sets a note to `unread`, `read`, or `addressed`.
+An addressed note stays in the review list and its paint disappears from
+the city. Local note tools do not publish to GitHub.
 
 ## License
 

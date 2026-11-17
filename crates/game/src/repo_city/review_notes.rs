@@ -1,11 +1,24 @@
 //! Review annotations are anchored to a snapshot, independent of the wall that displays them.
+#[cfg(not(target_arch = "wasm32"))]
+use std::collections::HashMap;
+
 use bevy::input::mouse::MouseScrollUnit;
 use serde::{Deserialize, Serialize};
 
 use super::*;
 
 #[cfg(not(target_arch = "wasm32"))]
+mod color_picker;
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) mod mcp;
+#[cfg(not(target_arch = "wasm32"))]
 mod native;
+#[cfg(not(target_arch = "wasm32"))]
+mod ui;
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) use color_picker::update as update_color_picker;
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) use ui::{ReviewUi, update as panels};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(super) struct Preset {
@@ -83,6 +96,13 @@ impl Anchor {
             && (self.start..=self.end).contains(&other.start)
     }
 
+    fn touches(&self, other: &Self) -> bool {
+        self.path == other.path
+            && self.before == other.before
+            && self.start <= other.end.saturating_add(1)
+            && other.start <= self.end.saturating_add(1)
+    }
+
     pub fn extend(&self, other: &Self) -> Option<Self> {
         (self.path == other.path && self.before == other.before).then(|| Self {
             start: self.start.min(other.start),
@@ -107,6 +127,61 @@ pub(super) struct Note {
     pub remote: bool,
     #[serde(default)]
     pub resolved: Option<bool>,
+    #[serde(default)]
+    pub attention: bool,
+}
+
+impl Note {
+    pub(super) fn comment(&self) -> &str {
+        if self.text.trim().is_empty() {
+            &self.preset.prompt
+        } else {
+            &self.text
+        }
+    }
+
+    fn duplicate_key(&self) -> (&str, Option<&str>, &str, bool, usize, usize, &str, &str) {
+        (
+            &self.revision,
+            self.baseline.as_deref(),
+            &self.anchor.path,
+            self.anchor.before,
+            self.anchor.start,
+            self.anchor.end,
+            &self.preset.id,
+            self.comment(),
+        )
+    }
+
+    pub(super) fn ink(&self) -> [u8; 3] {
+        if self.attention {
+            [255, 202, 104]
+        } else {
+            self.preset.color
+        }
+    }
+}
+
+fn duplicate_drafts(notes: &[Note]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    notes
+        .iter()
+        .filter(|note| !note.remote && note.published.is_none())
+        .filter_map(|note| (!seen.insert(note.duplicate_key())).then(|| note.id.clone()))
+        .collect()
+}
+
+#[derive(Deserialize)]
+pub(super) struct Destination {
+    pub anchor: Anchor,
+    pub revision: String,
+}
+
+pub(super) fn take_destination() -> Option<Destination> {
+    #[cfg(target_arch = "wasm32")]
+    return serde_json::from_str(&browser_destination()).ok();
+    #[cfg(not(target_arch = "wasm32"))]
+    None
 }
 
 #[derive(Serialize, Deserialize)]
@@ -117,6 +192,40 @@ struct Payload {
 
 #[derive(Component)]
 pub(super) struct ToolHud;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Component)]
+pub(super) struct EmptyNotesHint;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn spawn_empty_hint(commands: &mut Commands, font: TextFont, ink: Color) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: percent(50.),
+                width: percent(100.),
+                padding: UiRect::top(px(54.)),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            EmptyNotesHint,
+            Visibility::Hidden,
+            bevy::picking::Pickable::IGNORE,
+        ))
+        .with_child((
+            Text::new("No review notes yet. Choose a paint and spray the lines you want to mark."),
+            font,
+            TextColor(ink),
+            BackgroundColor(Color::srgba(0.024, 0.066, 0.08, 0.95)),
+            Node {
+                max_width: percent(80.),
+                padding: UiRect::axes(px(12.), px(8.)),
+                ..default()
+            },
+            bevy::picking::Pickable::IGNORE,
+        ));
+}
 
 #[derive(Resource)]
 pub(super) struct Review {
@@ -131,6 +240,14 @@ pub(super) struct Review {
     pub washing: bool,
     pub aim_note: Option<String>,
     pub phrase: Option<(f32, String)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub auto_publish: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) auto_drafts: Vec<String>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub feedback: Option<(f32, String)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    local_states: HashMap<String, native::LocalState>,
     scroll: f32,
     version: u32,
     scope: String,
@@ -158,6 +275,14 @@ impl Default for Review {
             washing: false,
             aim_note: None,
             phrase: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            auto_publish: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            auto_drafts: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            feedback: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            local_states: HashMap::new(),
             scroll: 0.,
             version: 0,
             scope: String::new(),
@@ -166,6 +291,11 @@ impl Default for Review {
 }
 
 impl Review {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn notify(&mut self, now: f32, text: impl Into<String>) {
+        self.feedback = Some((now + 5., text.into()));
+    }
+
     pub fn paint(&self) -> Option<&Preset> {
         self.slot
             .checked_sub(1)
@@ -182,24 +312,63 @@ impl Review {
         }
     }
 
+    fn matching_paint(&self, repo: &Repository, anchor: &Anchor, preset: &str) -> Option<usize> {
+        self.notes.iter().position(|note| {
+            !note.remote
+                && Self::on_snapshot(note, repo)
+                && note.preset.id == preset
+                && note.anchor.touches(anchor)
+                && (note.published.is_none()
+                    || (note.anchor.start <= anchor.start && note.anchor.end >= anchor.end))
+        })
+    }
+
     pub fn save_draft(&mut self, repo: &Repository, anchor: Anchor) -> Result<Note, String> {
         let Some(preset) = self.paint().cloned() else {
             return Err("Select a paint first.".into());
         };
+        if let Some(index) = self.matching_paint(repo, &anchor, &preset.id) {
+            let mut note = self.notes[index].clone();
+            let range = note.anchor.extend(&anchor).expect("same source side");
+            if range != note.anchor {
+                note.anchor = range;
+                self.write_note(&note)?;
+                self.notes[index] = note.clone();
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if self.local_states.get(&note.id) == Some(&native::LocalState::Addressed) {
+                native::mark_worktree_note(&self.scope, &note.id, native::LocalState::Unread)?;
+                self.local_states.remove(&note.id);
+            }
+            return Ok(note);
+        }
         let note = Note {
             id: new_id(),
             revision: repo.revision.clone(),
             baseline: repo.baseline.clone(),
             anchor,
-            preset,
             text: String::new(),
+            preset,
             published: None,
             remote: false,
             resolved: None,
+            attention: false,
         };
         self.write_note(&note)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.auto_publish {
+            self.auto_drafts.push(note.id.clone());
+        }
         self.notes.push(note.clone());
         Ok(note)
+    }
+
+    pub fn shows_paint(&self, note: &Note, repo: &Repository) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.local_states.get(&note.id) == Some(&native::LocalState::Addressed) {
+            return false;
+        }
+        Self::on_snapshot(note, repo)
     }
 
     pub fn on_snapshot(note: &Note, repo: &Repository) -> bool {
@@ -242,7 +411,9 @@ pub(super) fn update(
     mut review: ResMut<Review>,
     picker: Res<file_picker::FilePicker>,
     menu: Res<city_menu::Menu>,
+    navigation: Res<city_navigation::Navigation>,
     camera: Query<&Pilot, PlayerCamera>,
+    #[cfg(not(target_arch = "wasm32"))] search: Option<Res<listing::find::Search>>,
 ) {
     review.washing = false;
     #[cfg(target_arch = "wasm32")]
@@ -272,8 +443,9 @@ pub(super) fn update(
         }
     }
     #[cfg(not(target_arch = "wasm32"))]
-    if repo.is_changed() {
+    if repo.is_changed() && review.scope != repo.0.root.to_string_lossy() {
         review.scope = repo.0.root.to_string_lossy().into_owned();
+        review.local_states.clear();
         match native::load(&review.scope) {
             Ok(payload) => {
                 review.palette = payload.palette;
@@ -287,18 +459,35 @@ pub(super) fn update(
         }
         review.slot = 0;
         review.drag = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            review.auto_publish = false;
+            review.auto_drafts.clear();
+            review.feedback = None;
+        }
     }
 
     let Ok(pilot) = camera.single() else {
         return;
     };
-    if review.blocked || picker.is_open() || menu.is_open() || keys.just_pressed(KeyCode::Escape) {
+    let blocked =
+        review.blocked || picker.is_open() || menu.is_open() || keys.just_pressed(KeyCode::Escape);
+    #[cfg(not(target_arch = "wasm32"))]
+    let blocked = blocked || search.is_some_and(|search| search.blocks_controls());
+    if blocked {
         review.drag = None;
+    } else if keys.just_pressed(KeyCode::KeyJ)
+        && !navigation.is_flying()
+        && (pilot.captured || cfg!(not(target_arch = "wasm32")))
+    {
+        review.request = Some(if cfg!(target_arch = "wasm32") {
+            Panel::Aimed
+        } else {
+            Panel::Notes
+        });
     } else if pilot.captured {
         if keys.just_pressed(KeyCode::KeyU) && review.can_paint {
             review.request = Some(Panel::Paints);
-        } else if keys.just_pressed(KeyCode::KeyJ) {
-            review.request = Some(Panel::Aimed);
         }
         if let Some(slot) = SLOTS.iter().position(|key| keys.just_pressed(*key)) {
             review.select(slot);
@@ -330,18 +519,17 @@ pub(super) fn update(
             review.scroll = 0.;
         }
     }
+    if navigation.guides_camera() {
+        review.nozzle = 0.;
+        return;
+    }
     let raised = pilot.firing && !review.blocked && !picker.is_open() && !menu.is_open();
     let direction = if raised { 1. } else { -1. };
     review.nozzle = (review.nozzle + direction * time.delta_secs() / 0.11).clamp(0., 1.);
 }
 
-pub(super) fn panels(
-    mut review: ResMut<Review>,
-    mut explorer: ResMut<Explorer>,
-    mut camera: Query<&mut Pilot, PlayerCamera>,
-    #[cfg(not(target_arch = "wasm32"))] mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
-    #[cfg(not(target_arch = "wasm32"))] _main_thread: bevy::ecs::system::NonSendMarker,
-) {
+#[cfg(target_arch = "wasm32")]
+pub(super) fn panels(mut review: ResMut<Review>, mut camera: Query<&mut Pilot, PlayerCamera>) {
     let Some(panel) = review.request.take() else {
         return;
     };
@@ -352,26 +540,12 @@ pub(super) fn panels(
         pilot.fire_ready = false;
     }
     review.drag = None;
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = &mut explorer;
-        browser_panel(
-            &serde_json::to_string(&panel).unwrap_or_default(),
-            &serde_json::to_string(&review.palette).unwrap_or_default(),
-            review.slot,
-            review.aim_note.as_deref().unwrap_or(""),
-        );
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        if let Ok(mut cursor) = cursor.single_mut() {
-            cursor.grab_mode = CursorGrabMode::None;
-            cursor.visible = true;
-        }
-        if let Err(error) = native::panel(&mut review, panel) {
-            explorer.notice = error;
-        }
-    }
+    browser_panel(
+        &serde_json::to_string(&panel).unwrap_or_default(),
+        &serde_json::to_string(&review.palette).unwrap_or_default(),
+        review.slot,
+        review.aim_note.as_deref().unwrap_or(""),
+    );
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -389,6 +563,8 @@ extern "C" {
     fn browser_panel(panel: &str, palette: &str, slot: usize, note: &str);
     #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = reviewSlot)]
     fn browser_slot() -> i32;
+    #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = reviewDestination)]
+    fn browser_destination() -> String;
     #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = reviewModal)]
     fn browser_modal() -> bool;
     #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = reviewCanPaint)]
@@ -418,6 +594,103 @@ fn new_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repaint_extends_the_same_note_and_keeps_edited_text() {
+        let repo = repository_picker::empty();
+        let anchor = Anchor {
+            path: "src/main.rs".into(),
+            before: false,
+            start: 3,
+            end: 5,
+        };
+        let mut review = Review::default();
+        let preset = review.palette[0].as_ref().unwrap().clone();
+        let note = Note {
+            id: "existing".into(),
+            revision: repo.revision.clone(),
+            baseline: repo.baseline.clone(),
+            anchor: anchor.clone(),
+            preset,
+            text: "Keep this explanation.".into(),
+            published: None,
+            remote: false,
+            resolved: None,
+            attention: false,
+        };
+        review.notes.push(note.clone());
+        let repeat = review.matching_paint(&repo, &anchor, &note.preset.id);
+        assert_eq!(repeat, Some(0));
+        let added = Anchor {
+            start: 6,
+            end: 7,
+            ..anchor.clone()
+        };
+        assert_eq!(
+            review.matching_paint(&repo, &added, &note.preset.id),
+            Some(0)
+        );
+        assert_eq!(note.anchor.extend(&added).unwrap().end, 7);
+        assert_eq!(review.notes[0].comment(), "Keep this explanation.");
+        let old_duplicate = Note {
+            id: "repeat".into(),
+            ..note.clone()
+        };
+        let different_text = Note {
+            id: "custom".into(),
+            text: "Other context.".into(),
+            ..note.clone()
+        };
+        assert_eq!(
+            duplicate_drafts(&[note, old_duplicate, different_text]),
+            ["repeat"]
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn opening_empty_notes_keeps_capture_and_the_hint_expires() {
+        let mut app = App::new();
+        app.init_resource::<ReviewUi>()
+            .init_resource::<bevy::input_focus::InputFocus>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .insert_resource(Time::<()>::default())
+            .insert_resource(Explorer::new(0))
+            .insert_resource(Review {
+                request: Some(Panel::Notes),
+                ..default()
+            })
+            .add_systems(Update, panels);
+        let hint = app
+            .world_mut()
+            .spawn((EmptyNotesHint, Visibility::Hidden))
+            .id();
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Pilot {
+                    captured: true,
+                    ..default()
+                },
+            ))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(hint),
+            Some(&Visibility::Inherited)
+        );
+        assert!(app.world().get::<Pilot>(camera).unwrap().captured);
+        assert!(app.world().resource::<Review>().request.is_none());
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs(4));
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(hint),
+            Some(&Visibility::Hidden)
+        );
+    }
 
     #[test]
     fn a_drag_extends_only_within_one_file_and_side_and_can_move_back() {

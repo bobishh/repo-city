@@ -37,6 +37,18 @@ pub(super) struct Progress {
 }
 
 impl Progress {
+    pub(super) fn visited_counts(&self) -> (usize, usize, usize) {
+        (
+            self.visited.len(),
+            self.visited_diffs.len(),
+            self.total_diffs,
+        )
+    }
+
+    pub(super) fn has_visited(&self, index: usize) -> bool {
+        self.visited.contains(&index)
+    }
+
     pub(super) fn visit(&mut self, index: usize, file: &repo_world::File, diff: bool) {
         let new_file = self.visited.insert(index);
         let new_diff = diff && file.change != Change::Unchanged && self.visited_diffs.insert(index);

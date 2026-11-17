@@ -3,6 +3,108 @@ use super::*;
 
 pub(super) const BEAM_HEIGHT: f32 = 14.;
 
+#[derive(Resource, Default)]
+pub(super) struct ChangesOnly {
+    pub(super) available: bool,
+    pub(super) enabled: bool,
+    lowered: f32,
+}
+
+impl ChangesOnly {
+    pub(super) fn toggle(&mut self) {
+        if self.available {
+            self.enabled = !self.enabled;
+        }
+    }
+    pub(super) fn includes(&self, file: &repo_world::File) -> bool {
+        !self.enabled || file.change != Change::Unchanged
+    }
+}
+
+#[derive(Component)]
+pub(super) struct SinkPart {
+    street_y: f32,
+    depth: f32,
+}
+
+impl SinkPart {
+    pub(super) fn new(file: &repo_world::File, size: Vec3, part: Part) -> Self {
+        Self {
+            street_y: transform(file, size, part).translation.y,
+            depth: size.y + BEAM_HEIGHT + 1.,
+        }
+    }
+
+    fn height(&self, lowered: f32) -> f32 {
+        self.street_y - self.depth * lowered
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = canFilterChanges)]
+    fn browser_can_filter_changes() -> bool;
+}
+
+pub(super) fn lower_unchanged(
+    time: Res<Time>,
+    repo: Res<Repo>,
+    mut focus: ResMut<ChangesOnly>,
+    mut explorer: ResMut<Explorer>,
+    mut listing: ResMut<listing::Listing>,
+    mut navigation: ResMut<city_navigation::Navigation>,
+    mut comparison: Local<Option<(PathBuf, String, Option<String>)>>,
+    mut parts: ParamSet<(
+        Query<(&SinkPart, &mut Transform)>,
+        Query<(&SinkPart, &mut Transform), Added<SinkPart>>,
+    )>,
+) {
+    #[cfg(target_arch = "wasm32")]
+    let available = browser_can_filter_changes();
+    #[cfg(not(target_arch = "wasm32"))]
+    let available = repo.0.baseline.is_some();
+    focus.available = available;
+    if repo.is_changed() {
+        let identity = (
+            repo.0.root.clone(),
+            repo.0.revision.clone(),
+            repo.0.baseline.clone(),
+        );
+        if comparison.as_ref() != Some(&identity) {
+            *comparison = Some(identity);
+            focus.enabled = false;
+        }
+    }
+    if !available {
+        focus.enabled = false;
+    }
+    if !focus.includes(&repo.0.files[explorer.selected])
+        && let Some(index) = repo.0.files.iter().position(|file| focus.includes(file))
+    {
+        explorer.open(&repo.0, index);
+        explorer.anchored = false;
+        explorer.comparison_mode = 0;
+        listing.reset_view();
+        *navigation = city_navigation::Navigation::default();
+    }
+    let target = f32::from(focus.enabled);
+    if focus.lowered == target {
+        if target > 0. {
+            for (part, mut pose) in &mut parts.p1() {
+                pose.translation.y = part.height(target);
+            }
+        }
+        return;
+    }
+    let step = time.delta_secs() / 0.65;
+    focus.lowered += (target - focus.lowered).clamp(-step, step);
+    let eased = focus.lowered * focus.lowered * (3. - 2. * focus.lowered);
+    for (part, mut pose) in &mut parts.p0() {
+        pose.translation.y = part.height(eased);
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct Aim {
     pub index: usize,
@@ -294,6 +396,88 @@ pub(super) const INK: [[f32; 3]; 5] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_changes_filter_lowers_every_part_and_restores_its_street_position() {
+        let mut file = repo_world::File {
+            path: "unchanged.rs".into(),
+            before: None,
+            after: None,
+            change: Change::Unchanged,
+            position: [70., 28.],
+        };
+        let focus = ChangesOnly {
+            enabled: true,
+            ..default()
+        };
+        assert!(!focus.includes(&file));
+        for size in [Vec3::new(4., 1., 4.), Vec3::new(16., 130., 12.)] {
+            for part in [
+                Part::Body,
+                Part::Roof,
+                Part::Stripe(1.),
+                Part::Label,
+                Part::Beam,
+                Part::Mirror,
+            ] {
+                let pose = transform(&file, size, part);
+                let sink = SinkPart::new(&file, size, part);
+                assert_eq!(sink.height(0.), pose.translation.y);
+                assert!(sink.height(1.) + pose.scale.y / 2. <= -1.);
+            }
+        }
+        for change in [Change::Added, Change::Modified, Change::Removed] {
+            file.change = change;
+            assert!(focus.includes(&file));
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_building_streamed_after_the_filter_settles_starts_below_the_street() {
+        let mut repo = repository_picker::empty();
+        repo.baseline = Some("base".into());
+        repo.files.push(repo_world::File {
+            path: "changed.rs".into(),
+            before: None,
+            after: None,
+            change: Change::Added,
+            position: [0., 0.],
+        });
+        let mut app = App::new();
+        app.insert_resource(Repo(repo))
+            .insert_resource(Explorer::new(0))
+            .insert_resource(Time::<()>::default())
+            .init_resource::<ChangesOnly>()
+            .init_resource::<listing::Listing>()
+            .init_resource::<city_navigation::Navigation>()
+            .add_systems(Update, lower_unchanged);
+        app.update();
+        {
+            let mut filter = app.world_mut().resource_mut::<ChangesOnly>();
+            filter.toggle();
+            filter.lowered = 1.;
+        }
+        let building = app
+            .world_mut()
+            .spawn((
+                SinkPart {
+                    street_y: 5.,
+                    depth: 30.,
+                },
+                Transform::from_xyz(4., 5., 6.),
+            ))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<Transform>(building)
+                .unwrap()
+                .translation
+                .y,
+            -25.
+        );
+    }
 
     #[test]
     fn the_beacon_is_cleared_from_the_camera_and_reading_wall() {

@@ -22,6 +22,7 @@ const help = document.querySelector("#help");
 const guideKey = "repo-city-guide-v1";
 let tourCommand = 0;
 let tourEntry = null;
+let changesOnlyRequested = false;
 let activeTourEntry = null;
 const logo = document.querySelector("#logo");
 const close = document.querySelector("#close");
@@ -46,6 +47,24 @@ if (parameters.get("pr")) form.elements.repo.value = parameters.get("pr");
 function focusCanvas() {
   if (running && !document.querySelector("dialog[open]")) canvas.focus({ preventScroll: true });
 }
+
+document.addEventListener("keydown", event => {
+  const locked = document.pointerLockElement === canvas;
+  if (event.code === "Tab" && !event.shiftKey && !event.metaKey && !event.ctrlKey &&
+      !event.altKey && running && (locked || event.target === canvas) &&
+      !canvas.hasAttribute("data-pointer-ui") && !canvas.hasAttribute("data-action-menu") &&
+      !document.querySelector("dialog[open]")) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!event.repeat) review.changedFiles();
+    return;
+  }
+  if (event.code !== "KeyF" || event.repeat || event.metaKey || event.ctrlKey ||
+      event.altKey || (!locked && (event.target !== canvas || canvas.hasAttribute("data-pointer-ui"))) ||
+      document.querySelector("dialog[open]") || !active?.canFilterChanges) return;
+  event.preventDefault();
+  changesOnlyRequested = !changesOnlyRequested;
+}, true);
 
 function openGuide(entry) {
   tourEntry = entry;
@@ -107,11 +126,12 @@ refreshRepositoryPicker();
 async function stageRepository(repository, ref, base) {
   await review.load(repository);
   const { review: { repository: name, pull }, progressScope } = repository;
+  const snapshot = JSON.parse(repository.snapshot);
   if (pull || !/^(?:[a-f\d]{40}|[a-f\d]{64})$/i.test(ref?.trim())) {
     const account = githubAccount()?.login ?? null;
     const track = JSON.stringify(["exploration", account, name.toLowerCase(),
       pull ? ["pr", pull] : ["ref", ref?.trim() || null, base?.trim() || null]]);
-    await rememberExploration(track, progressScope, JSON.parse(repository.snapshot)).catch(error => {
+    await rememberExploration(track, progressScope, snapshot).catch(error => {
       console.warn("Could not carry exploration progress", error);
     });
   }
@@ -121,7 +141,11 @@ async function stageRepository(repository, ref, base) {
     progressError = error;
     return [];
   });
-  active = { repository, blobs: new Map(), blameFiles: new Map(), marks, progressError };
+  const { before, after } = snapshot;
+  const canFilterChanges = Boolean(pull) && (Object.keys(before).length !== Object.keys(after).length ||
+    Object.entries(before).some(([path, blob]) => after[path]?.id !== blob.id || after[path]?.mode !== blob.mode));
+  active = { repository, blobs: new Map(), blameFiles: new Map(), marks, progressError, canFilterChanges };
+  changesOnlyRequested = false;
   progressPanel.hidden = false;
   repositoryVersion++;
   blame.hidden = true;
@@ -166,6 +190,14 @@ async function openRepository(repo, ref, base) {
         reviewSave: review.add,
         reviewPanel: review.panel,
         reviewSlot: review.takeSlot,
+        reviewDestination: review.takeDestination,
+        takeFileDestination: review.takeFileDestination,
+        canFilterChanges: () => active.canFilterChanges,
+        takeChangesOnlyRequest() {
+          const requested = changesOnlyRequested;
+          changesOnlyRequested = false;
+          return requested;
+        },
         reviewModal: review.modal,
         reviewCanPaint: review.canPaint,
         reviewId: review.id,

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use rusqlite::{Connection, params};
 
 use super::*;
@@ -9,13 +11,131 @@ fn open() -> Result<Connection, String> {
     std::fs::create_dir_all(path.parent().expect("settings directory"))
         .map_err(|e| e.to_string())?;
     let db = Connection::open(path).map_err(|e| e.to_string())?;
-    db.execute_batch(
-        "CREATE TABLE IF NOT EXISTS review (
-        scope TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(scope, id)
-    ) WITHOUT ROWID;",
-    )
-    .map_err(|e| e.to_string())?;
+    initialize(&db)?;
     Ok(db)
+}
+
+pub(super) fn initialize(db: &Connection) -> Result<(), String> {
+    db.execute_batch(
+        "PRAGMA foreign_keys = ON;
+         CREATE TABLE IF NOT EXISTS review (
+            scope TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(scope, id)
+         ) WITHOUT ROWID;
+         CREATE TABLE IF NOT EXISTS note_states (
+            scope TEXT NOT NULL, id TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(scope, id),
+            FOREIGN KEY(scope, id) REFERENCES review(scope, id) ON DELETE CASCADE
+         ) WITHOUT ROWID;",
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum LocalState {
+    Unread,
+    Read,
+    Addressed,
+}
+
+impl LocalState {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Unread => "Unread",
+            Self::Read => "Read",
+            Self::Addressed => "Addressed",
+        }
+    }
+
+    fn storage(self) -> &'static str {
+        match self {
+            Self::Unread => "unread",
+            Self::Read => "read",
+            Self::Addressed => "addressed",
+        }
+    }
+}
+
+pub(super) fn states(scope: &str) -> Result<HashMap<String, LocalState>, String> {
+    states_in(&open()?, scope)
+}
+
+fn states_in(db: &Connection, scope: &str) -> Result<HashMap<String, LocalState>, String> {
+    let mut query = db
+        .prepare("SELECT id, state FROM note_states WHERE scope = ?1")
+        .map_err(|error| error.to_string())?;
+    let entries = query
+        .query_map([scope], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| error.to_string())?;
+    let mut result = HashMap::new();
+    for entry in entries {
+        let (id, value) = entry.map_err(|error| error.to_string())?;
+        let state = match value.as_str() {
+            "read" => LocalState::Read,
+            "addressed" => LocalState::Addressed,
+            _ => LocalState::Unread,
+        };
+        result.insert(id, state);
+    }
+    Ok(result)
+}
+
+pub(super) fn mark_worktree_note(scope: &str, id: &str, state: LocalState) -> Result<(), String> {
+    mark_in(&open()?, scope, id, state)
+}
+
+fn mark_in(db: &Connection, scope: &str, id: &str, state: LocalState) -> Result<(), String> {
+    let payload = db
+        .query_row(
+            "SELECT payload FROM review WHERE scope = ?1 AND id = ?2",
+            params![scope, id],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let note = serde_json::from_str::<Note>(&payload).map_err(|error| error.to_string())?;
+    if !is_worktree_note(&note) {
+        return Err("The note must belong to this local worktree.".into());
+    }
+    db.execute(
+        "INSERT INTO note_states VALUES (?1, ?2, ?3)
+         ON CONFLICT(scope, id) DO UPDATE SET state = excluded.state",
+        params![scope, id, state.storage()],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn is_worktree_note(note: &Note) -> bool {
+    note.revision.starts_with("worktree:") && !note.remote && note.published.is_none()
+}
+
+pub(super) fn worktree_notes(scope: &str) -> Result<Vec<(Note, LocalState)>, String> {
+    let db = open()?;
+    let states = states_in(&db, scope)?;
+    let mut query = db
+        .prepare("SELECT payload FROM review WHERE scope = ?1 AND id != 'palette' ORDER BY id")
+        .map_err(|error| error.to_string())?;
+    let payloads = query
+        .query_map([scope], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?;
+    let mut notes = Vec::new();
+    let mut seen = HashSet::new();
+    for payload in payloads {
+        let payload = payload.map_err(|error| error.to_string())?;
+        if let Ok(note) = serde_json::from_str::<Note>(&payload)
+            && is_worktree_note(&note)
+        {
+            let key =
+                serde_json::to_string(&note.duplicate_key()).map_err(|error| error.to_string())?;
+            if seen.insert(key) {
+                let state = states.get(&note.id).copied().unwrap_or(LocalState::Unread);
+                notes.push((note, state));
+            }
+        }
+    }
+    notes.reverse();
+    Ok(notes)
 }
 
 pub(super) fn load(scope: &str) -> Result<Payload, String> {
@@ -44,13 +164,30 @@ pub(super) fn load(scope: &str) -> Result<Payload, String> {
             result.notes.push(note);
         }
     }
+    let duplicates = duplicate_drafts(&result.notes);
+    if !duplicates.is_empty() {
+        let transaction = db
+            .unchecked_transaction()
+            .map_err(|error| error.to_string())?;
+        for id in &duplicates {
+            transaction
+                .execute(
+                    "DELETE FROM review WHERE scope = ?1 AND id = ?2",
+                    params![scope, id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        transaction.commit().map_err(|error| error.to_string())?;
+        result.notes.retain(|note| !duplicates.contains(&note.id));
+    }
     Ok(result)
 }
 
 pub(super) fn save(scope: &str, id: &str, value: &impl Serialize) -> Result<(), String> {
     open()?
         .execute(
-            "INSERT OR REPLACE INTO review VALUES (?1, ?2, ?3)",
+            "INSERT INTO review VALUES (?1, ?2, ?3)
+             ON CONFLICT(scope, id) DO UPDATE SET payload = excluded.payload",
             params![
                 scope,
                 id,
@@ -61,265 +198,120 @@ pub(super) fn save(scope: &str, id: &str, value: &impl Serialize) -> Result<(), 
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-pub(super) fn panel(review: &mut Review, panel: Panel) -> Result<(), String> {
-    use objc2::{MainThreadMarker, MainThreadOnly};
-    use objc2_app_kit::{
-        NSAlert, NSAlertFirstButtonReturn, NSAlertThirdButtonReturn, NSPopUpButton, NSTextField,
-        NSView,
-    };
-    use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
-    let main = MainThreadMarker::new().ok_or("Review editor needs the macOS main thread.")?;
-    let rect = |x, y, w, h| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
-    let string = |value: &str| NSString::from_str(value);
-    let alert = NSAlert::new(main);
-    match panel {
-        Panel::Paints => {
-            let choices = NSPopUpButton::initWithFrame_pullsDown(
-                NSPopUpButton::alloc(main),
-                rect(0., 0., 440., 30.),
-                false,
-            );
-            choices.addItemWithTitle(&string("0 · Water"));
-            for (index, preset) in review.palette.iter().enumerate() {
-                choices.addItemWithTitle(&string(&format!(
-                    "{} · {}",
-                    index + 1,
-                    preset.as_ref().map_or("Empty", |p| p.label.as_str())
-                )));
-            }
-            choices.selectItemAtIndex(review.slot as isize);
-            alert.setMessageText(&string("Paints"));
-            alert.setAccessoryView(Some(&choices));
-            alert.addButtonWithTitle(&string("Equip"));
-            alert.addButtonWithTitle(&string("Cancel"));
-            alert.addButtonWithTitle(&string("Edit paint…"));
-            let result = alert.runModal();
-            let selected = choices.indexOfSelectedItem() as usize;
-            if result == NSAlertFirstButtonReturn {
-                review.select(selected);
-            } else if result == NSAlertThirdButtonReturn && (1..=9).contains(&selected) {
-                let current = review.palette[selected - 1]
-                    .clone()
-                    .unwrap_or_else(|| Preset {
-                        id: new_id(),
-                        label: String::new(),
-                        spray: String::new(),
-                        prompt: String::new(),
-                        color: [255, 126, 141],
-                    });
-                let editor = NSAlert::new(main);
-                editor.setMessageText(&string("Edit paint"));
-                editor.addButtonWithTitle(&string("Save"));
-                editor.addButtonWithTitle(&string("Cancel"));
-                let view = NSView::initWithFrame(NSView::alloc(main), rect(0., 0., 440., 186.));
-                let [r, g, b] = current.color;
-                let values = [
-                    current.label.clone(),
-                    current.spray.clone(),
-                    current.prompt.clone(),
-                    format!("#{r:02x}{g:02x}{b:02x}"),
-                    selected.to_string(),
-                ];
-                let labels = [
-                    "Name",
-                    "Spray text",
-                    "Reusable prompt",
-                    "Color (#RRGGBB)",
-                    "Slot (1–9)",
-                ];
-                let fields: Vec<_> = labels
-                    .into_iter()
-                    .zip(&values)
-                    .enumerate()
-                    .map(|(i, (name, value))| {
-                        let y = 149. - i as f64 * 35.;
-                        let label = NSTextField::labelWithString(&string(name), main);
-                        label.setFrame(rect(0., y, 135., 26.));
-                        view.addSubview(&label);
-                        let field = NSTextField::textFieldWithString(&string(value), main);
-                        field.setFrame(rect(140., y, 300., 26.));
-                        view.addSubview(&field);
-                        field
-                    })
-                    .collect();
-                editor.setAccessoryView(Some(&view));
-                if editor.runModal() != NSAlertFirstButtonReturn {
-                    return Ok(());
-                }
-                let value = |index: usize| fields[index].stringValue().to_string();
-                let hex = value(3);
-                let hex = hex
-                    .strip_prefix('#')
-                    .filter(|s| s.len() == 6 && s.is_ascii())
-                    .ok_or("Enter a color as #RRGGBB.")?;
-                let byte = |start| {
-                    u8::from_str_radix(&hex[start..start + 2], 16)
-                        .map_err(|_| "Enter a color as #RRGGBB.")
-                };
-                let slot = value(4)
-                    .parse::<usize>()
-                    .ok()
-                    .filter(|n| (1..=9).contains(n))
-                    .ok_or("Choose slot 1 through 9.")?;
-                let label = value(0).trim().to_owned();
-                if label.is_empty() {
-                    return Err("Give the paint a name.".into());
-                }
-                let mut palette = review.palette.clone();
-                if slot != selected {
-                    palette.swap(slot - 1, selected - 1);
-                }
-                palette[slot - 1] = Some(Preset {
-                    label,
-                    spray: value(1),
-                    prompt: value(2),
-                    color: [byte(0)?, byte(2)?, byte(4)?],
-                    ..current
-                });
-                save(&review.scope, "palette", &palette)?;
-                review.palette = palette;
-                review.select(slot);
-            }
-        }
-        Panel::Notes | Panel::Aimed => {
-            let id = if matches!(panel, Panel::Aimed) {
-                review.aim_note.as_deref()
-            } else {
-                None
-            };
-            let index = if let Some(id) = id {
-                review.notes.iter().position(|note| note.id == id)
-            } else if review.notes.is_empty() {
-                alert.setMessageText(&string("No review notes"));
-                alert.setInformativeText(&string(
-                    "Wash the code, choose a paint, then drag across the lines to make a note.",
-                ));
-                alert.addButtonWithTitle(&string("Close"));
-                alert.runModal();
-                return Ok(());
-            } else {
-                let choices = NSPopUpButton::initWithFrame_pullsDown(
-                    NSPopUpButton::alloc(main),
-                    rect(0., 0., 500., 30.),
-                    false,
-                );
-                for note in &review.notes {
-                    choices.addItemWithTitle(&string(&format!(
-                        "{} · {}:{}–{} · {}",
-                        note.preset.label,
-                        note.anchor.path,
-                        note.anchor.start,
-                        note.anchor.end,
-                        &note.revision[..note.revision.len().min(7)]
-                    )));
-                }
-                alert.setMessageText(&string("Review notes"));
-                alert.setAccessoryView(Some(&choices));
-                alert.addButtonWithTitle(&string("Open note"));
-                alert.addButtonWithTitle(&string("Close"));
-                alert.addButtonWithTitle(&string("Export selected note…"));
-                match alert.runModal() {
-                    value if value == NSAlertFirstButtonReturn => {
-                        Some(choices.indexOfSelectedItem() as usize)
-                    }
-                    value if value == NSAlertThirdButtonReturn => {
-                        use objc2_app_kit::{NSModalResponseOK, NSSavePanel};
-                        let save_panel = NSSavePanel::savePanel(main);
-                        save_panel.setNameFieldStringValue(&string("repo-city-review.json"));
-                        if save_panel.runModal() == NSModalResponseOK
-                            && let Some(path) = save_panel.URL().and_then(|url| url.to_file_path())
-                        {
-                            let parent = path.parent().and_then(|dir| dir.canonicalize().ok());
-                            if parent.is_some_and(|dir| dir.starts_with(&review.scope)) {
-                                return Err(
-                                    "Choose a location outside the inspected repository.".into()
-                                );
-                            }
-                            let selected = review
-                                .notes
-                                .get(choices.indexOfSelectedItem() as usize)
-                                .ok_or("Select a note to export.")?;
-                            let bytes = serde_json::to_vec_pretty(&serde_json::json!({
-                                "version": 1, "repository": review.scope,
-                                "revision": selected.revision, "baseline": selected.baseline, "notes": [selected],
-                            }))
-                            .map_err(|e| e.to_string())?;
-                            std::fs::write(path, bytes).map_err(|e| e.to_string())?;
-                        }
-                        None
-                    }
-                    _ => None,
-                }
-            };
-            if let Some(index) = index
-                && let Some(note) = review.notes.get(index)
-            {
-                let editor = NSAlert::new(main);
-                editor.setMessageText(&string(&format!(
-                    "{}:{}–{}",
-                    note.anchor.path, note.anchor.start, note.anchor.end
-                )));
-                editor.setInformativeText(&string(&format!(
-                    "{} · {}\n{}",
-                    note.preset.label,
-                    &note.revision[..note.revision.len().min(7)],
-                    note.preset.prompt
-                )));
-                editor.addButtonWithTitle(&string("Save note"));
-                editor.addButtonWithTitle(&string("Cancel"));
-                editor.addButtonWithTitle(&string("Delete draft"));
-                let field = NSTextField::textFieldWithString(&string(&note.text), main);
-                field.setFrame(rect(0., 0., 490., 30.));
-                let view = NSView::initWithFrame(NSView::alloc(main), rect(0., 0., 490., 65.));
-                view.addSubview(&field);
-                let choices = NSPopUpButton::initWithFrame_pullsDown(
-                    NSPopUpButton::alloc(main),
-                    rect(0., 34., 490., 30.),
-                    false,
-                );
-                let paints: Vec<_> = std::iter::once(&note.preset)
-                    .chain(
-                        review
-                            .palette
-                            .iter()
-                            .flatten()
-                            .filter(|paint| paint.id != note.preset.id),
-                    )
-                    .collect();
-                for paint in &paints {
-                    choices.addItemWithTitle(&string(&paint.label));
-                }
-                view.addSubview(&choices);
-                editor.setAccessoryView(Some(&view));
-                match editor.runModal() {
-                    value if value == NSAlertFirstButtonReturn => {
-                        let mut edited = note.clone();
-                        edited.text = field.stringValue().to_string();
-                        if let Some(paint) = paints.get(choices.indexOfSelectedItem() as usize) {
-                            edited.preset = (*paint).clone();
-                        }
-                        save(&review.scope, &edited.id, &edited)?;
-                        review.notes[index] = edited;
-                    }
-                    value if value == NSAlertThirdButtonReturn => {
-                        open()?
-                            .execute(
-                                "DELETE FROM review WHERE scope = ?1 AND id = ?2",
-                                params![review.scope, note.id],
-                            )
-                            .map_err(|e| e.to_string())?;
-                        review.notes.remove(index);
-                    }
-                    _ => {}
-                }
-            }
-        }
+pub(super) fn remove(scope: &str, id: &str) -> Result<(), String> {
+    open()?
+        .execute(
+            "DELETE FROM review WHERE scope = ?1 AND id = ?2",
+            params![scope, id],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub(super) fn save_notes(scope: &str, notes: &[Note]) -> Result<(), String> {
+    let mut db = open()?;
+    let transaction = db.transaction().map_err(|error| error.to_string())?;
+    for note in notes {
+        transaction
+            .execute(
+                "INSERT INTO review VALUES (?1, ?2, ?3)
+             ON CONFLICT(scope, id) DO UPDATE SET payload = excluded.payload",
+                params![
+                    scope,
+                    &note.id,
+                    serde_json::to_string(note).map_err(|error| error.to_string())?
+                ],
+            )
+            .map_err(|error| error.to_string())?;
     }
+    transaction.commit().map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn export(scope: String, note: Note) -> Result<(), String> {
+    use block2::RcBlock;
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSModalResponseOK, NSSavePanel};
+    use objc2_foundation::NSString;
+    let main = MainThreadMarker::new().ok_or("The file chooser needs the macOS main thread.")?;
+    let panel = NSSavePanel::savePanel(main);
+    panel.setNameFieldStringValue(&NSString::from_str("repo-city-review.json"));
+    let opened = panel.clone();
+    panel.beginWithCompletionHandler(&RcBlock::new(move |response| {
+        if response != NSModalResponseOK {
+            return;
+        }
+        let Some(path) = opened.URL().and_then(|url| url.to_file_path()) else {
+            return;
+        };
+        let result = (|| {
+            if path
+                .parent()
+                .and_then(|dir| dir.canonicalize().ok())
+                .is_some_and(|parent| parent.starts_with(&scope))
+            {
+                return Err("Choose a location outside the inspected repository.".to_owned());
+            }
+            let bytes = serde_json::to_vec_pretty(&serde_json::json!({
+                "version": 1, "repository": scope, "revision": note.revision,
+                "baseline": note.baseline, "notes": [note],
+            }))
+            .map_err(|e| e.to_string())?;
+            std::fs::write(path, bytes).map_err(|e| e.to_string())
+        })();
+        if let Err(error) = result {
+            warn!("Could not export review note: {error}");
+        }
+    }));
     Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(super) fn panel(_: &mut Review, _: Panel) -> Result<(), String> {
-    Err("The native review editor is available on macOS.".into())
+pub(super) fn export(_: String, _: Note) -> Result<(), String> {
+    Err("The review export picker is available on macOS.".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_changes_are_scoped_idempotent_and_keep_the_note() {
+        let db = Connection::open_in_memory().unwrap();
+        initialize(&db).unwrap();
+        let note = Note {
+            id: "note".into(),
+            revision: "worktree:base".into(),
+            baseline: Some("base".into()),
+            anchor: Anchor {
+                path: "src/file.rs".into(),
+                before: false,
+                start: 1,
+                end: 2,
+            },
+            preset: defaults()[0].clone().unwrap(),
+            text: "Explain the invariant.".into(),
+            published: None,
+            remote: false,
+            resolved: None,
+            attention: false,
+        };
+        let payload = serde_json::to_string(&note).unwrap();
+        db.execute("INSERT INTO review VALUES ('one', 'note', ?1)", [&payload])
+            .unwrap();
+        assert!(mark_in(&db, "two", "note", LocalState::Addressed).is_err());
+        for _ in 0..2 {
+            mark_in(&db, "one", "note", LocalState::Addressed).unwrap();
+        }
+        assert_eq!(
+            states_in(&db, "one").unwrap()["note"],
+            LocalState::Addressed
+        );
+        assert_eq!(
+            db.query_row("SELECT payload FROM review", [], |row| row
+                .get::<_, String>(0))
+                .unwrap(),
+            payload
+        );
+    }
 }

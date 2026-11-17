@@ -4,17 +4,28 @@ mod android;
 mod blame;
 mod city_menu;
 mod city_navigation;
+mod city_stream;
 mod code_texture;
 mod comparison_scene;
 mod district;
 mod file_facade;
 mod file_picker;
+#[cfg(not(target_arch = "wasm32"))]
+mod github_choices;
 mod guide;
 mod listing;
+#[cfg(not(target_arch = "wasm32"))]
+mod live_worktree;
+#[cfg(not(target_arch = "wasm32"))]
+mod native_github;
+#[cfg(not(target_arch = "wasm32"))]
+mod native_panel;
 mod physics;
 mod progress;
 mod repository_picker;
 mod review_notes;
+#[cfg(not(target_arch = "wasm32"))]
+mod review_tablet;
 #[path = "../shapes.rs"]
 mod shapes;
 mod world_set;
@@ -22,10 +33,12 @@ mod world_set;
 use avian3d::prelude::{Collider, PhysicsPlugins, RigidBody};
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
+#[cfg(not(target_arch = "wasm32"))]
+use bevy::window::{CursorGrabMode, CursorOptions};
 use bevy::{
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
     prelude::*,
-    window::{CursorGrabMode, CursorOptions, PrimaryWindow},
+    window::PrimaryWindow,
 };
 use repo_world::{Change, FileAnatomy, Repository};
 use repo_world::{comparison::Comparison, syntax};
@@ -35,6 +48,7 @@ use world_set::{WorldSet, color};
 type PlayerCamera = (With<Camera3d>, Without<district::MirrorCamera>);
 
 const CAMERA_FLOOR: f32 = 0.05;
+const MAX_LOOK_PITCH: f32 = 1.5;
 
 #[derive(Resource)]
 struct Repo(Repository);
@@ -62,7 +76,6 @@ struct Explorer {
     comparison_mode: u8,
     hunk: usize,
     pending_fracture: bool,
-    frame_loaded_source: bool,
 }
 impl Explorer {
     fn new(index: usize) -> Self {
@@ -89,11 +102,9 @@ impl Explorer {
             comparison_mode: 0,
             hunk: 0,
             pending_fracture: false,
-            frame_loaded_source: true,
         }
     }
     fn open(&mut self, repo: &Repository, index: usize) {
-        self.frame_loaded_source = true;
         self.selected = index;
         self.before = repo.files[index].after.is_none();
         self.function = None;
@@ -110,7 +121,12 @@ impl Explorer {
                 self.source = source.clone();
                 self.original = source;
                 self.anatomy = Some(anatomy);
-                self.notice = "Source loaded from the selected commit.".into();
+                self.notice = if repo.is_worktree() && !self.before {
+                    "Source loaded from the worktree."
+                } else {
+                    "Source loaded from the selected commit."
+                }
+                .into();
             }
             Err(e) => {
                 self.source = String::new();
@@ -224,6 +240,8 @@ struct Palette {
 #[derive(Component)]
 struct CityObject;
 #[derive(Component)]
+struct FileBuilding(usize);
+#[derive(Component)]
 struct Facade {
     index: usize,
 }
@@ -241,6 +259,8 @@ struct TopHud;
 struct BottomHud;
 #[derive(Component)]
 struct StatusHud;
+#[derive(Component)]
+struct ReviewToast;
 #[derive(Component)]
 struct AimHud;
 #[derive(Component)]
@@ -277,6 +297,7 @@ struct Smoke {
     directory: PathBuf,
     elapsed: f32,
     stage: usize,
+    stop: usize,
     pending: bool,
     prepared: bool,
     expected_draft: Option<String>,
@@ -292,14 +313,30 @@ fn main() {
     };
     if args.iter().any(|a| a == "--help") {
         println!(
-            "repo-city --repo PATH [--rev HEAD] [--base REF] [--trace FILE] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · E flies to the aimed face · Space/Ctrl altitude · Shift boost · Click captures the cursor · Esc releases it\nHold left mouse close to wash source · Home frames the file · G diff · B blame\nC reviews changes · T follows a supplied stack · W/S fly between platforms · Esc returns to the city\nG ghost/pair · [ ] hunks · Enter source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
+            "repo-city [--repo PATH [--rev HEAD | --live] [--base REF] | --github URL [--rev REF] [--base REF]] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · E flies to the aimed face · Space/Ctrl altitude · Shift boost · Click captures the cursor · Esc releases it\nHold left mouse close to wash source · Home frames the file · G diff · B blame\nC reviews changes · T follows a supplied stack · W/S or scroll fly between review stops · Q returns to the diff wall\nG ghost/pair · [ ] hunks · Enter source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
         );
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if args.iter().any(|arg| arg == "--notes-mcp") {
+        let result = arg("--repo")
+            .ok_or_else(|| "--notes-mcp requires --repo PATH".to_owned())
+            .and_then(|path| review_notes::mcp::serve(std::path::Path::new(path)));
+        if let Err(error) = result {
+            eprintln!("Repo City MCP: {error}");
+            std::process::exit(1);
+        }
         return;
     }
     #[cfg(not(target_arch = "wasm32"))]
     let explicit = arg("--repo").map(PathBuf::from);
     #[cfg(not(target_arch = "wasm32"))]
-    let root = explicit.clone().or_else(repository_picker::last_folder);
+    let remote = arg("--github");
+    #[cfg(not(target_arch = "wasm32"))]
+    let root = remote
+        .is_none()
+        .then(|| explicit.clone().or_else(repository_picker::last_folder))
+        .flatten();
     #[cfg(not(target_arch = "wasm32"))]
     let mut startup_error = String::new();
     #[cfg(target_arch = "wasm32")]
@@ -307,7 +344,12 @@ fn main() {
     #[cfg(not(target_arch = "wasm32"))]
     let repo = match root {
         Some(root) => {
-            match repository_picker::load(&root, arg("--rev").unwrap_or("HEAD"), arg("--base")) {
+            let revision = if args.iter().any(|arg| arg == "--live") {
+                "WORKTREE"
+            } else {
+                arg("--rev").unwrap_or("HEAD")
+            };
+            match repository_picker::load(&root, revision, arg("--base")) {
                 Ok(repo) => repo,
                 Err(error) if explicit.is_none() => {
                     startup_error = error;
@@ -334,6 +376,7 @@ fn main() {
         std::process::exit(1)
     });
     let initial = arg("--file")
+        .filter(|_| !repo.files.is_empty())
         .map(|path| {
             repo.files
                 .iter()
@@ -390,6 +433,21 @@ fn main() {
             eprintln!("Trace: {error}");
             std::process::exit(1)
         });
+    let picker = repository_picker::RepositoryPicker::new(startup_error);
+    #[cfg(not(target_arch = "wasm32"))]
+    let picker = {
+        let mut picker = picker;
+        picker.restore_session();
+        if let Some(input) = remote {
+            picker.open_github(
+                input,
+                arg("--rev").unwrap_or_default(),
+                arg("--base").unwrap_or_default(),
+                arg("--file").map(str::to_owned),
+            );
+        }
+        picker
+    };
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: repository_picker::window_title(&set, &repo),
@@ -415,10 +473,11 @@ fn main() {
     .insert_resource(set)
     .insert_resource(explorer)
     .insert_resource(navigation)
-    .insert_resource(repository_picker::RepositoryPicker::new(startup_error))
+    .insert_resource(picker)
     .init_resource::<Nearest>()
     .init_resource::<city_menu::Menu>()
     .init_resource::<file_picker::FilePicker>()
+    .init_resource::<file_facade::ChangesOnly>()
     .init_resource::<listing::Listing>()
     .init_resource::<listing::find::Search>()
     .init_resource::<progress::Progress>()
@@ -428,11 +487,21 @@ fn main() {
     .add_systems(
         Update,
         (
-            file_picker::update,
+            (file_facade::lower_unchanged, file_picker::update).chain(),
             flight,
             (file_facade::keep_beams_clear, targeting).chain(),
             (city_menu::update, listing::find::update).chain(),
-            (review_notes::update, review_notes::panels).chain(),
+            (
+                review_notes::update,
+                review_notes::panels,
+                #[cfg(not(target_arch = "wasm32"))]
+                review_notes::update_color_picker,
+                #[cfg(not(target_arch = "wasm32"))]
+                review_tablet::update,
+                #[cfg(not(target_arch = "wasm32"))]
+                live_worktree::focus_latest,
+            )
+                .chain(),
             city_navigation::navigate
                 .run_if(city_menu::gameplay_enabled)
                 .run_if(listing::find::movement_enabled),
@@ -445,9 +514,7 @@ fn main() {
             listing::controls
                 .run_if(city_menu::gameplay_enabled)
                 .run_if(listing::find::movement_enabled),
-            listing::wash_stream
-                .run_if(city_menu::gameplay_enabled)
-                .run_if(listing::find::movement_enabled),
+            listing::wash_stream,
             (
                 guide::advance,
                 listing::paint_notes,
@@ -470,13 +537,23 @@ fn main() {
     );
     app.add_systems(
         Update,
+        city_menu::apply_filter_shortcut
+            .after(file_facade::lower_unchanged)
+            .before(file_picker::update)
+            .run_if(repository_picker::has_city),
+    );
+    app.add_systems(
+        Update,
         (
+            #[cfg(not(target_arch = "wasm32"))]
             repository_picker::open_repository,
+            #[cfg(not(target_arch = "wasm32"))]
+            live_worktree::update,
             spawn_city,
             progress::restore,
         )
             .chain()
-            .before(file_picker::update),
+            .before(file_facade::lower_unchanged),
     );
     app.add_systems(
         Update,
@@ -486,9 +563,25 @@ fn main() {
             .run_if(repository_picker::has_city),
     );
     #[cfg(not(target_arch = "wasm32"))]
-    app.init_resource::<guide::Guide>()
-        .add_systems(Update, guide::update.before(flight));
+    app.add_plugins(bevy::input_focus::tab_navigation::TabNavigationPlugin)
+        .init_resource::<review_notes::ReviewUi>()
+        .init_resource::<review_tablet::Tablet>()
+        .init_resource::<live_worktree::Live>()
+        .add_systems(
+            Update,
+            live_worktree::animate
+                .after(spawn_city)
+                .before(listing::draw),
+        )
+        .init_resource::<guide::Guide>()
+        .add_systems(Update, guide::update.before(file_facade::lower_unchanged))
+        .add_systems(Update, live_worktree::highlight.after(animate))
+        .add_systems(Update, native_panel::raise_tablet);
     app.add_systems(Startup, district::setup);
+    app.add_systems(
+        Update,
+        city_stream::draw_project_map.after(city_navigation::navigate),
+    );
     app.add_systems(Update, district::reflect.after(listing::draw_overview));
     #[cfg(target_arch = "wasm32")]
     app.add_systems(
@@ -522,16 +615,25 @@ fn main() {
                 let _ = std::fs::write(&failure_path, info.to_string());
                 default_hook(info);
             }));
+            let stage = args
+                .iter()
+                .find_map(|arg| match arg.as_str() {
+                    "--smoke-walls" => Some(7),
+                    "--smoke-blame" => Some(8),
+                    "--smoke-source" => Some(9),
+                    "--smoke-github-picker" => Some(10),
+                    "--smoke-help" => Some(11),
+                    "--smoke-review" => Some(12),
+                    "--smoke-tablet" => Some(13),
+                    "--smoke-paint" => Some(14),
+                    _ => None,
+                })
+                .unwrap_or(0);
             app.insert_resource(Smoke {
                 directory: directory.into(),
                 elapsed: 0.,
-                stage: std::env::args()
-                    .find_map(|arg| match arg.as_str() {
-                        "--smoke-walls" => Some(7),
-                        "--smoke-blame" => Some(8),
-                        _ => None,
-                    })
-                    .unwrap_or(0),
+                stage,
+                stop: (stage + 1).max(9),
                 pending: false,
                 prepared: false,
                 expected_draft: None,
@@ -566,31 +668,15 @@ fn browser_refresh(
     mut version: Local<u32>,
     mut styling: Local<u32>,
     mut listing: ResMut<listing::Listing>,
-    mut camera: Query<&mut Transform, PlayerCamera>,
 ) {
     let current = repo_world::browser_source_version();
     if current != *version {
         *version = current;
         if explorer.anatomy.is_none() || (explorer.comparison.is_none() && !explorer.dirty) {
             let page = explorer.page;
-            let awaiting_source = explorer.anatomy.is_none();
             explorer.reload(&repo.0);
             listing.invalidate();
             explorer.page = page;
-            if awaiting_source
-                && explorer.frame_loaded_source
-                && !explorer.highlighted.is_empty()
-                && let Ok(mut camera) = camera.single_mut()
-            {
-                let file = &repo.0.files[explorer.selected];
-                let pending = listing::view(file, 0);
-                // Frame the first source only if the player stayed at its loading pose.
-                if camera.translation.distance_squared(pending.translation) < 0.0001
-                    && camera.rotation.dot(pending.rotation).abs() > 0.99999
-                {
-                    *camera = listing::view(file, explorer.highlighted.len());
-                }
-            }
         }
     }
     let syntax_version = repo_world::browser_syntax_version();
@@ -658,9 +744,7 @@ fn setup(
     mut images: ResMut<Assets<Image>>,
     mut fonts: ResMut<Assets<Font>>,
 ) {
-    let font = fonts.add(Font::from_bytes(
-        include_bytes!("../../../../assets/fonts/FiraMono-Medium.ttf").to_vec(),
-    ));
+    load_ui_font(&mut fonts);
     let unit = meshes.add(shapes::rounded_box(Vec3::ONE, 0.035));
     let shell = materials.add(StandardMaterial {
         base_color: color(set.shell),
@@ -726,6 +810,10 @@ fn setup(
             Camera3d::default(),
             bevy::ui::IsDefaultUiCamera,
             Camera { ..default() },
+            Projection::Perspective(PerspectiveProjection {
+                far: 100_000.,
+                ..default()
+            }),
             Msaa::Sample4,
             Transform::default(),
             Pilot::default(),
@@ -738,16 +826,21 @@ fn setup(
             shadow_maps_enabled: true,
             ..default()
         },
+        bevy::light::CascadeShadowConfigBuilder {
+            first_cascade_far_bound: 22.,
+            maximum_distance: city_stream::RADIUS * 1.5,
+            overlap_proportion: 0.25,
+            ..default()
+        }
+        .build(),
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.9, -0.4, 0.)),
     ));
-    let ui_font = |size| TextFont {
-        font: bevy::text::FontSource::Handle(font.clone()),
-        font_size: FontSize::Px(size),
-        ..default()
-    };
+    let ui_font = TextFont::from_font_size;
     file_picker::spawn(&mut commands, &ui_font(13.), color(set.ink));
     city_menu::spawn(&mut commands, &ui_font(13.), color(set.ink));
     guide::spawn_hint(&mut commands, &ui_font(13.), color(set.ink));
+    #[cfg(not(target_arch = "wasm32"))]
+    review_notes::spawn_empty_hint(&mut commands, ui_font(13.), color(set.ink));
     listing::find::spawn(&mut commands, &ui_font(13.), color(set.ink));
     #[cfg(not(target_arch = "wasm32"))]
     guide::spawn(&mut commands, &ui_font(15.), color(set.ink));
@@ -787,23 +880,52 @@ fn setup(
         },
         TopHud,
     ));
-    commands.spawn((
-        Text::new(""),
-        ui_font(14.),
-        TextColor(Color::srgb(0.7, 0.8, 0.82)),
-        BackgroundColor(Color::srgba(0.01, 0.02, 0.03, 0.94)),
-        Node {
-            position_type: PositionType::Absolute,
-            left: px(24.),
-            bottom: px(22.),
-            padding: UiRect::all(px(14.)),
-            ..default()
-        },
-        BottomHud,
+    let _bottom_hud = commands
+        .spawn((
+            Text::new(""),
+            ui_font(14.),
+            TextColor(Color::srgb(0.7, 0.8, 0.82)),
+            BackgroundColor(Color::srgba(0.01, 0.02, 0.03, 0.94)),
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(24.),
+                top: if cfg!(target_arch = "wasm32") {
+                    Val::Auto
+                } else {
+                    px(92.)
+                },
+                bottom: if cfg!(target_arch = "wasm32") {
+                    px(22.)
+                } else {
+                    Val::Auto
+                },
+                max_width: percent(90.),
+                display: if cfg!(target_arch = "wasm32") {
+                    Display::Flex
+                } else {
+                    Display::None
+                },
+                padding: UiRect::all(px(14.)),
+                ..default()
+            },
+            BottomHud,
+        ))
+        .id();
+    #[cfg(not(target_arch = "wasm32"))]
+    commands.entity(_bottom_hud).insert((
+        bevy::ui_widgets::Button,
+        GlobalZIndex(25),
+        file_picker::FileButton,
+        bevy::picking::hover::Hovered::default(),
+        bevy::ui_widgets::observe(live_worktree::request_focus),
     ));
     commands.spawn((
         Text::new(""),
-        ui_font(13.),
+        ui_font(if cfg!(target_arch = "wasm32") {
+            13.
+        } else {
+            17.
+        }),
         TextColor(color(set.ink)),
         BackgroundColor(Color::srgba(0.01, 0.02, 0.03, 0.91)),
         Node {
@@ -814,12 +936,43 @@ fn setup(
             } else {
                 20.
             }),
-            max_width: px(460.),
+            max_width: px(if cfg!(target_arch = "wasm32") {
+                460.
+            } else {
+                320.
+            }),
             padding: UiRect::all(px(14.)),
             ..default()
         },
         StatusHud,
     ));
+    #[cfg(not(target_arch = "wasm32"))]
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::ZERO,
+                bottom: px(22.),
+                width: percent(100.),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            bevy::picking::Pickable::IGNORE,
+        ))
+        .with_child((
+            ReviewToast,
+            Text::new(""),
+            ui_font(15.),
+            TextColor(color(set.ink)),
+            BackgroundColor(Color::srgba(0.024, 0.066, 0.08, 0.95)),
+            Node {
+                display: Display::None,
+                max_width: percent(54.),
+                padding: UiRect::axes(px(12.), px(8.)),
+                ..default()
+            },
+            bevy::picking::Pickable::IGNORE,
+        ));
     commands.spawn((
         Text::new("+"),
         ui_font(24.),
@@ -849,66 +1002,32 @@ fn setup(
     ));
 }
 
-fn spawn_city(
-    mut commands: Commands,
-    repo: Res<Repo>,
-    set: Res<WorldSet>,
-    explorer: Res<Explorer>,
-    palette: Res<Palette>,
-    mut camera: Query<(&mut Transform, &mut Pilot), PlayerCamera>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut images: ResMut<Assets<Image>>,
-) {
-    if !repo.is_changed() || repo.0.files.is_empty() {
-        return;
-    }
-    let unit = &palette.unit;
-    let plate = &palette.plate;
-    let shell = &palette.shell;
-    if let Ok((mut pose, mut pilot)) = camera.single_mut() {
-        *pose = listing::view(&repo.0.files[explorer.selected], explorer.highlighted.len());
-        pilot.captured = false;
-    }
-    let extent = repo
-        .0
-        .districts
-        .iter()
-        .fold(Vec2::splat(22.), |extent, district| {
-            extent.max(Vec2::from_array(district.position) + Vec2::from_array(district.size))
-        });
-    commands.spawn((
-        CityObject,
-        Mesh3d(unit.clone()),
-        MeshMaterial3d(plate.clone()),
-        Transform::from_xyz(extent.x / 2., -0.7, extent.y / 2.).with_scale(Vec3::new(
-            extent.x + 56.,
-            1.,
-            extent.y + 56.,
-        )),
-        RigidBody::Static,
-        Collider::cuboid(1., 1., 1.),
-    ));
-    let lights = district::Lights::new(&mut meshes, &mut materials);
-    for (index, district) in repo.0.districts.iter().enumerate() {
-        let [x, z] = district.position;
-        let [w, d] = district.size;
-        commands.spawn((
-            CityObject,
-            Mesh3d(unit.clone()),
-            MeshMaterial3d(shell.clone()),
-            Transform::from_xyz(x + w / 2. - 3., -0.12, z + d / 2. - 1.)
-                .with_scale(Vec3::new(w, 0.18, d)),
-        ));
-        lights.spawn(
-            &mut commands,
-            &mut meshes,
-            &mut materials,
-            &mut images,
-            district,
-            index,
-        );
-    }
+fn load_ui_font(fonts: &mut Assets<Font>) {
+    fonts
+        .insert(
+            Handle::<Font>::default().id(),
+            Font::from_bytes(
+                include_bytes!("../../../../assets/fonts/FiraMono-Medium.ttf").to_vec(),
+            ),
+        )
+        .expect("default user interface font");
+}
+
+struct BuildingAssets {
+    block: Handle<Mesh>,
+    rim: Handle<Mesh>,
+    status: [Handle<StandardMaterial>; 4],
+    mirror: Handle<Mesh>,
+    glass: Handle<StandardMaterial>,
+    beams: [Handle<StandardMaterial>; file_facade::INK.len()],
+    lights: district::Lights,
+}
+
+fn building_assets(
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    set: &WorldSet,
+) -> BuildingAssets {
     let mut block = Mesh::from(Cuboid::from_size(Vec3::ONE));
     // The stock cuboid rotates its UVs by face. Keep row height aligned on every wall.
     if let (
@@ -949,7 +1068,6 @@ fn spawn_city(
             ..default()
         })
     });
-    use file_facade::{Part, transform};
     let mirror = meshes.add(Rectangle::new(1., 1.));
     let glass = materials.add(StandardMaterial {
         base_color: Color::srgb(0.065, 0.10, 0.14),
@@ -957,40 +1075,173 @@ fn spawn_city(
         ..default()
     });
     let beams = file_facade::INK.map(|ink| materials.add(file_facade::beam_material(ink)));
-    for (i, file) in repo.0.files.iter().enumerate() {
-        let size = listing::block_size(file);
+    BuildingAssets {
+        block,
+        rim,
+        status: [added, removed, modified, unchanged],
+        mirror,
+        glass,
+        beams,
+        lights: district::Lights::new(meshes, materials),
+    }
+}
+
+fn spawn_city(
+    mut commands: Commands,
+    repo: Res<Repo>,
+    set: Res<WorldSet>,
+    explorer: Res<Explorer>,
+    palette: Res<Palette>,
+    mut camera: Query<(&mut Transform, &mut Pilot), PlayerCamera>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    #[cfg(not(target_arch = "wasm32"))] mut live: ResMut<live_worktree::Live>,
+    mut stream: Local<city_stream::Stream>,
+    mut assets: Local<Option<BuildingAssets>>,
+    mut listing: Option<ResMut<listing::Listing>>,
+    parts: Query<
+        (
+            Entity,
+            Option<&FileBuilding>,
+            Option<&city_stream::DistrictPart>,
+        ),
+        Or<(With<FileBuilding>, With<city_stream::DistrictPart>)>,
+    >,
+) {
+    use city_stream::Item;
+    use file_facade::{Part, transform};
+    if repo.0.files.is_empty() {
+        return;
+    }
+    let unit = &palette.unit;
+    let plate = &palette.plate;
+    let shell = &palette.shell;
+    #[cfg(not(target_arch = "wasm32"))]
+    let keep_camera = std::mem::take(&mut live.keep_camera);
+    #[cfg(target_arch = "wasm32")]
+    let keep_camera = false;
+    #[cfg(not(target_arch = "wasm32"))]
+    let refreshed_files = live.refreshed_files.take();
+    #[cfg(target_arch = "wasm32")]
+    let refreshed_files: Option<HashSet<usize>> = None;
+    if repo.is_changed()
+        && !keep_camera
+        && let Ok((mut pose, mut pilot)) = camera.single_mut()
+    {
+        *pose = listing::view(&repo.0.files[explorer.selected], explorer.highlighted.len());
+        pilot.captured = false;
+    }
+    if let Some(files) = refreshed_files.as_ref() {
+        stream.refresh_files(files);
+    } else if repo.is_changed() {
+        stream.reset(&repo.0);
+        let extent = repo
+            .0
+            .districts
+            .iter()
+            .fold(Vec2::splat(22.), |extent, district| {
+                extent.max(Vec2::from_array(district.position) + Vec2::from_array(district.size))
+            });
         commands.spawn((
             CityObject,
-            Facade { index: i },
-            Mesh3d(block.clone()),
-            MeshMaterial3d(palette.facade_closed.clone()),
-            transform(file, size, Part::Body),
+            Mesh3d(unit.clone()),
+            MeshMaterial3d(plate.clone()),
+            Transform::from_xyz(extent.x / 2., -0.7, extent.y / 2.).with_scale(Vec3::new(
+                extent.x + 56.,
+                1.,
+                extent.y + 56.,
+            )),
             RigidBody::Static,
             Collider::cuboid(1., 1., 1.),
         ));
-        commands.spawn((
-            CityObject,
-            FacadeRim(i),
-            bevy::light::NotShadowCaster,
-            Mesh3d(rim.clone()),
-            MeshMaterial3d(palette.facade_rims[0].clone()),
-            transform(file, size, Part::Roof),
-        ));
-        let status = match file.change {
-            Change::Added => &added,
-            Change::Removed => &removed,
-            Change::Modified => &modified,
-            Change::Unchanged => &unchanged,
-        };
-        for face in [-1., 1.] {
-            let part = Part::Stripe(face);
-            commands.spawn((
-                CityObject,
-                Mesh3d(block.clone()),
-                MeshMaterial3d(status.clone()),
-                transform(file, size, part),
-            ));
+    }
+    let eye = camera.single().map_or_else(
+        |_| Vec2::from_array(repo.0.files[explorer.selected].position),
+        |(pose, _)| pose.translation.xz(),
+    );
+    let (evicted, batch) = stream.next(&repo.0, eye, explorer.selected);
+    if !evicted.is_empty() {
+        for (entity, file, district) in &parts {
+            let item = file
+                .map(|file| Item::File(file.0))
+                .or_else(|| district.map(|district| Item::District(district.0)));
+            if item.is_some_and(|item| evicted.contains(&item)) {
+                commands.entity(entity).despawn();
+            }
         }
+    }
+    let assets = assets.get_or_insert_with(|| building_assets(&mut meshes, &mut materials, &set));
+    for item in batch {
+        let i = match item {
+            Item::District(index) => {
+                let district = &repo.0.districts[index];
+                let [x, z] = district.position;
+                let [w, d] = district.size;
+                commands.spawn((
+                    CityObject,
+                    city_stream::DistrictPart(index),
+                    Mesh3d(unit.clone()),
+                    MeshMaterial3d(shell.clone()),
+                    Transform::from_xyz(x + w / 2. - 3., -0.12, z + d / 2. - 1.)
+                        .with_scale(Vec3::new(w, 0.18, d)),
+                ));
+                assets.lights.spawn(
+                    &mut commands,
+                    &mut meshes,
+                    &mut materials,
+                    &mut images,
+                    district,
+                    index,
+                );
+                continue;
+            }
+            Item::File(index) => index,
+        };
+        let file = &repo.0.files[i];
+        if let Some(listing) = listing.as_mut() {
+            listing.building_loaded(i);
+        }
+        let size = listing::block_size(file);
+        let body = commands
+            .spawn((
+                CityObject,
+                Facade { index: i },
+                Mesh3d(assets.block.clone()),
+                MeshMaterial3d(palette.facade_closed.clone()),
+                transform(file, size, Part::Body),
+                RigidBody::Static,
+                Collider::cuboid(1., 1., 1.),
+            ))
+            .id();
+        let roof = commands
+            .spawn((
+                CityObject,
+                FacadeRim(i),
+                bevy::light::NotShadowCaster,
+                Mesh3d(assets.rim.clone()),
+                MeshMaterial3d(palette.facade_rims[0].clone()),
+                transform(file, size, Part::Roof),
+            ))
+            .id();
+        let status = match file.change {
+            Change::Added => &assets.status[0],
+            Change::Removed => &assets.status[1],
+            Change::Modified => &assets.status[2],
+            Change::Unchanged => &assets.status[3],
+        };
+        let stripes = [-1., 1.].map(|face| {
+            let part = Part::Stripe(face);
+            let stripe = commands
+                .spawn((
+                    CityObject,
+                    Mesh3d(assets.block.clone()),
+                    MeshMaterial3d(status.clone()),
+                    transform(file, size, part),
+                ))
+                .id();
+            (stripe, part)
+        });
         let kind = file_facade::kind(&file.path);
         let name = file.path.rsplit('/').next().unwrap_or(&file.path);
         let extension = file_facade::extension(&file.path);
@@ -1012,22 +1263,59 @@ fn spawn_city(
         commands
             .entity(sign)
             .insert(transform(file, size, Part::Label));
-        commands.spawn((
-            CityObject,
-            file_facade::FileBeam,
-            bevy::light::NotShadowCaster,
-            Mesh3d(block.clone()),
-            MeshMaterial3d(beams[kind].clone()),
-            transform(file, size, Part::Beam),
-        ));
-        commands.spawn((
-            CityObject,
-            district::Glass,
-            bevy::light::NotShadowCaster,
-            Mesh3d(mirror.clone()),
-            MeshMaterial3d(glass.clone()),
-            transform(file, size, Part::Mirror),
-        ));
+        let beam = commands
+            .spawn((
+                CityObject,
+                file_facade::FileBeam,
+                bevy::light::NotShadowCaster,
+                Mesh3d(assets.block.clone()),
+                MeshMaterial3d(assets.beams[kind].clone()),
+                transform(file, size, Part::Beam),
+            ))
+            .id();
+        let pane = commands
+            .spawn((
+                CityObject,
+                district::Glass,
+                bevy::light::NotShadowCaster,
+                Mesh3d(assets.mirror.clone()),
+                MeshMaterial3d(assets.glass.clone()),
+                transform(file, size, Part::Mirror),
+            ))
+            .id();
+        let parts = [
+            (body, Part::Body),
+            (roof, Part::Roof),
+            (sign, Part::Label),
+            (beam, Part::Beam),
+            (pane, Part::Mirror),
+        ]
+        .into_iter()
+        .chain(stripes);
+        for (entity, _) in parts.clone() {
+            commands.entity(entity).insert(FileBuilding(i));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(&previous) = live.growth.get(&i) {
+            for (entity, part) in parts.clone() {
+                live_worktree::grow(
+                    &mut commands,
+                    entity,
+                    file,
+                    part,
+                    previous,
+                    size,
+                    live.growing_until,
+                );
+            }
+        }
+        if file.change == Change::Unchanged {
+            for (entity, part) in parts {
+                commands
+                    .entity(entity)
+                    .insert(file_facade::SinkPart::new(file, size, part));
+            }
+        }
     }
 }
 
@@ -1047,6 +1335,9 @@ fn flight(
     file_buttons: Query<&bevy::picking::hover::Hovered, With<file_picker::FileButton>>,
     review: Res<review_notes::Review>,
     search: Res<listing::find::Search>,
+    #[cfg(not(target_arch = "wasm32"))] repository: Option<
+        Res<repository_picker::RepositoryPicker>,
+    >,
     #[cfg(target_arch = "wasm32")] mut previous_pointer_ui: Local<Option<bool>>,
 ) {
     let Ok((mut camera, mut pilot)) = camera.single_mut() else {
@@ -1055,11 +1346,11 @@ fn flight(
     let Ok(window) = windows.single() else {
         return;
     };
-    let pointer_ui_open = picker.is_open()
-        || menu.is_open()
-        || review.blocked
-        || search.blocks_controls()
-        || navigation.overview();
+    let menu_open = menu.is_open();
+    let pointer_ui_open = picker.is_open() || review.blocked || search.blocks_controls();
+    #[cfg(not(target_arch = "wasm32"))]
+    let pointer_ui_open =
+        pointer_ui_open || repository.is_some_and(|picker| picker.blocks_controls());
     let was_captured = pilot.captured;
     let over_button = !was_captured && file_buttons.iter().any(|hovered| hovered.get());
     #[cfg(target_arch = "wasm32")]
@@ -1087,10 +1378,8 @@ fn flight(
     }
     let focused = window.focused || (cfg!(target_arch = "wasm32") && pilot.captured);
     #[cfg(not(target_arch = "wasm32"))]
-    if focused && !pointer_ui_open && !over_button {
-        if keys.just_pressed(KeyCode::Tab) {
-            pilot.captured = !pilot.captured;
-        } else if mouse.just_pressed(MouseButton::Left) {
+    if focused && !pointer_ui_open && !menu_open && !over_button {
+        if mouse.just_pressed(MouseButton::Left) {
             pilot.captured = true;
         }
     }
@@ -1119,6 +1408,12 @@ fn flight(
             cursor.visible = !pilot.captured;
         }
     }
+    if menu_open {
+        pilot.fire_ready = false;
+        pilot.firing = false;
+        pilot.shot = false;
+        return;
+    }
     pilot.update_fire(&mouse);
     if pointer_ui_open || listing.turning() || !focused {
         return;
@@ -1130,7 +1425,7 @@ fn flight(
     if was_captured && pilot.captured && motion.delta != Vec2::ZERO {
         let (yaw, pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
         let yaw = yaw - motion.delta.x * 0.0025;
-        let pitch = (pitch - motion.delta.y * 0.0025).clamp(-1.5, 1.5);
+        let pitch = (pitch - motion.delta.y * 0.0025).clamp(-MAX_LOOK_PITCH, MAX_LOOK_PITCH);
         camera.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.);
     }
     if navigation.guides_camera() {
@@ -1139,7 +1434,12 @@ fn flight(
     let axis = |p, n| f32::from(keys.pressed(p)) - f32::from(keys.pressed(n));
     let mut direction = camera.forward().as_vec3() * axis(KeyCode::KeyW, KeyCode::KeyS)
         + camera.right().as_vec3() * axis(KeyCode::KeyD, KeyCode::KeyA)
-        + Vec3::Y * axis(KeyCode::Space, KeyCode::ControlLeft);
+        + Vec3::Y
+            * if city_navigation::history_direction(&keys).is_some() {
+                0.
+            } else {
+                axis(KeyCode::Space, KeyCode::ControlLeft)
+            };
     if explorer.anchored {
         direction = Vec3::new(
             axis(KeyCode::KeyD, KeyCode::KeyA),
@@ -1147,16 +1447,22 @@ fn flight(
             0.,
         );
     }
-    let speed = if keys.pressed(KeyCode::ShiftLeft) {
-        42.
-    } else if explorer.anchored {
-        3.
-    } else {
-        13.
-    };
+    let speed = flight_speed(
+        camera.translation.y,
+        explorer.anchored,
+        keys.pressed(KeyCode::ShiftLeft),
+    );
     let movement = direction.clamp_length_max(1.) * speed * time.delta_secs();
     camera.translation += movement;
     camera.translation.y = camera.translation.y.max(CAMERA_FLOOR);
+}
+
+fn flight_speed(altitude: f32, anchored: bool, boost: bool) -> f32 {
+    if anchored {
+        return if boost { 42. } else { 3. };
+    }
+    let scale = 1. + ((altitude - listing::MAX_HEIGHT) / 55.).clamp(0., 11.);
+    scale * if boost { 42. } else { 13. }
 }
 
 fn ray_box(origin: Vec3, direction: Vec3, min: Vec3, max: Vec3) -> Option<f32> {
@@ -1191,6 +1497,7 @@ fn ray_box_entry(origin: Vec3, direction: Vec3, min: Vec3, max: Vec3) -> Option<
 }
 fn targeting(
     repo: Res<Repo>,
+    focus: Res<file_facade::ChangesOnly>,
     explorer: Res<Explorer>,
     camera: Query<(&Camera, &Transform, &Pilot), PlayerCamera>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -1237,6 +1544,9 @@ fn targeting(
         .filter(|_| !(explorer.anchored && explorer.comparison_mode > 0))
     {
         let file = &repo.0.files[f.index];
+        if !focus.includes(file) {
+            continue;
+        }
         let [x, z] = file.position;
         let size = listing::block_size(file);
         let min = Vec3::new(x - size.x / 2., 0., z - size.z / 2.);
@@ -1678,7 +1988,6 @@ fn animate(
 }
 fn hud(
     repo: Res<Repo>,
-    set: Res<WorldSet>,
     explorer: Res<Explorer>,
     nearest: Res<Nearest>,
     navigation: Res<city_navigation::Navigation>,
@@ -1686,14 +1995,22 @@ fn hud(
     progress: Res<progress::Progress>,
     tour: Res<guide::Tour>,
     picker: Res<file_picker::FilePicker>,
+    #[cfg(not(target_arch = "wasm32"))] repository: Res<repository_picker::RepositoryPicker>,
+    #[cfg(not(target_arch = "wasm32"))] native: (
+        Res<review_notes::Review>,
+        Res<Time>,
+        Res<live_worktree::Live>,
+    ),
     mut label: Query<(&mut Text, &mut TextColor, &mut Node), With<TargetLabel>>,
     mut texts: Query<
         (
             &mut Text,
+            &mut Node,
             Has<TopHud>,
             Has<BottomHud>,
             Has<StatusHud>,
             Has<AimHud>,
+            Has<ReviewToast>,
         ),
         Without<TargetLabel>,
     >,
@@ -1754,30 +2071,101 @@ fn hud(
             node.display = Display::None;
         }
     }
-    for (mut text, top, bottom, status, aim) in &mut texts {
-        let value = if top {
-            let title = repo
-                .0
-                .root
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy();
-            let name = if cfg!(target_arch = "wasm32") {
-                repo.0.root.to_string_lossy().into_owned()
+    for (mut text, mut node, top, bottom, status, aim, toast) in &mut texts {
+        #[cfg(not(target_arch = "wasm32"))]
+        if top || status || bottom || toast {
+            let (review, time, live) = &native;
+            let value = if top {
+                let name = repository.github.as_ref().map_or_else(
+                    || {
+                        repo.0
+                            .root
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned()
+                    },
+                    native_github::Target::label,
+                );
+                if repo.0.is_worktree() {
+                    format!("{name} · WORKTREE")
+                } else {
+                    name
+                }
+            } else if status {
+                let (city, diffs, total_diffs) = progress.visited_counts();
+                let progress = if total_diffs == 0 {
+                    format!("City {city}/{}", repo.0.files.len())
+                } else {
+                    format!(
+                        "City {city}/{} · Diffs {diffs}/{total_diffs}",
+                        repo.0.files.len()
+                    )
+                };
+                if let Some(level) = navigation.overview_level() {
+                    let title = match level {
+                        city_navigation::Overview::District => "District overview",
+                        city_navigation::Overview::Project => "Project overview",
+                    };
+                    format!("{title}\n{progress}")
+                } else {
+                    let filename = file.path.rsplit('/').next().unwrap_or(&file.path);
+                    let side = if explorer.before { "Before" } else { "After" };
+                    let (read, lines) = listing.counts(&explorer);
+                    let reading = navigation
+                        .route_status()
+                        .unwrap_or_else(|| format!("{read}/{lines} lines revealed"));
+                    format!("{filename} · {side}\n{reading}\n{progress}")
+                }
+            } else if toast {
+                review
+                    .feedback
+                    .as_ref()
+                    .filter(|(deadline, _)| time.elapsed_secs() < *deadline)
+                    .map(|(_, message)| message.clone())
+                    .or_else(|| review.auto_publish.then(|| "Auto-publish on".into()))
+                    .unwrap_or_default()
+            } else if let Some((path, _)) = live
+                .last_touched(time.elapsed_secs_f64())
+                .filter(|(_, age)| *age < 8)
+            {
+                let filename = path.rsplit('/').next().unwrap_or(path);
+                format!("Updated {filename}    L to fly")
             } else {
-                format!("{}  /  {title}", set.name)
+                String::new()
             };
+            let display = if value.is_empty() {
+                Display::None
+            } else {
+                Display::Flex
+            };
+            if node.display != display {
+                node.display = display;
+            }
+            if text.0 != value {
+                text.0 = value;
+            }
+            continue;
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = (&mut node, toast);
+        let value = if top {
             format!(
-                "{name}\n{} files · {} districts · {} → {}",
+                "{}\n{} files · {} districts · {} → {}",
+                repo.0.root.to_string_lossy(),
                 repo.0.files.len(),
                 repo.0.districts.len(),
                 repo.0.baseline.as_ref().map_or("empty", |s| &s[..8]),
-                &repo.0.revision[..8]
+                if repo.0.is_worktree() {
+                    "WORKTREE"
+                } else {
+                    &repo.0.revision[..8]
+                }
             )
         } else if bottom {
             if navigation.overview() {
                 format!(
-                    "District view · Click or E flies to a file · {} finds files · M returns",
+                    "Overview · E visits a file · {} searches · M changes view",
                     file_picker::SHORTCUT
                 )
             } else if tour.active() {
@@ -1880,29 +2268,94 @@ fn smoke(
     sections: Query<(&Section, &Transform), Without<Camera3d>>,
     fragments: Query<Entity, With<physics::Fragment>>,
     debris: Query<Entity, With<physics::Lifetime>>,
-    listing: Res<listing::Listing>,
+    mut listing: ResMut<listing::Listing>,
+    mut picker: ResMut<repository_picker::RepositoryPicker>,
+    window: Query<Entity, With<PrimaryWindow>>,
+    (mut guide, mut review): (ResMut<guide::Guide>, ResMut<review_notes::Review>),
 ) {
-    if check.pending {
+    if check.pending || repo.0.files.is_empty() {
         return;
     }
-    if check.stage >= 9 {
+    if check.stage >= check.stop {
         if explorer.dirty {
             let expected = explorer.original.clone();
             explorer.reload(&repo.0);
             assert_eq!(explorer.source, expected);
         }
-        std::fs::write(
-            check.directory.join("passed.txt"),
-            "Rendered pair, ghost, syntax wall, city overview, district mirror, diff and blame walls. The draft action detached the exact declaration, spawned physical fragments, and restore recovered the immutable source and cleared debris.",
-        )
-        .expect("smoke report");
-        println!(
-            "Native smoke passed: pair, ghost, syntax, physical fragment, restore, neon, mirror, diff and blame."
-        );
+        let report = if check.stop == 15 {
+            "Rendered the paint color picker."
+        } else if check.stop == 14 {
+            "Rendered the changed files tablet."
+        } else if check.stop == 13 {
+            "Rendered the review comment previews."
+        } else if check.stop == 12 {
+            "Rendered the controls sheet."
+        } else if check.stop == 11 {
+            "Rendered the GitHub picker."
+        } else if check.stop == 10 {
+            "Rendered the revealed source wall."
+        } else {
+            "Rendered pair, ghost, syntax wall, city overview, district mirror, diff and blame walls. The draft action detached the exact declaration, spawned physical fragments, and restore recovered the immutable source and cleared debris."
+        };
+        std::fs::write(check.directory.join("passed.txt"), report).expect("smoke report");
+        println!("Native smoke passed. {report}");
         commands.write_message(AppExit::Success);
         return;
     }
     if !check.prepared {
+        match check.stage {
+            10 => picker.smoke_open(),
+            11 => guide.open(),
+            12 => {
+                picker.smoke_review();
+                let path = &repo.0.files[explorer.selected].path;
+                let preset = review.palette[4].as_ref().expect("Explain preset").clone();
+                review.notes = [
+                    ("smoke-one", 5, preset.prompt.clone()),
+                    ("smoke-two", 9, "Please describe when this runs.".to_owned()),
+                ]
+                .into_iter()
+                .map(|(id, start, text)| review_notes::Note {
+                    id: id.into(),
+                    revision: repo.0.revision.clone(),
+                    baseline: repo.0.baseline.clone(),
+                    anchor: review_notes::Anchor {
+                        path: path.clone(),
+                        before: false,
+                        start,
+                        end: start + 1,
+                    },
+                    preset: preset.clone(),
+                    text,
+                    published: None,
+                    remote: false,
+                    resolved: None,
+                    attention: false,
+                })
+                .collect();
+                review.request = Some(review_notes::Panel::Notes);
+            }
+            13 => {
+                use bevy::input::{
+                    ButtonState,
+                    keyboard::{Key, KeyboardInput},
+                };
+                commands.write_message(KeyboardInput {
+                    key_code: KeyCode::Tab,
+                    logical_key: Key::Tab,
+                    text: None,
+                    state: ButtonState::Pressed,
+                    repeat: false,
+                    window: window.single().expect("primary smoke window"),
+                });
+            }
+            14 => commands.queue(|world: &mut World| {
+                world
+                    .resource_mut::<review_notes::ReviewUi>()
+                    .smoke_edit_paint();
+            }),
+            _ => {}
+        }
         if let Ok(mut camera) = camera.single_mut() {
             let [x, z] = repo.0.files[explorer.selected].position;
             match check.stage {
@@ -1986,13 +2439,30 @@ fn smoke(
                     )
                     .looking_at(pane.translation, Vec3::Y);
                 }
-                _ => {
+                9 => {
+                    let file = &repo.0.files[explorer.selected];
+                    let count = explorer.highlighted.len();
+                    explorer.anchored = false;
+                    explorer.comparison_mode = 0;
+                    for row in (0..count).step_by(listing::TILE_ROWS) {
+                        listing.reveal(
+                            explorer.selected,
+                            explorer.before,
+                            file,
+                            row..(row + listing::TILE_ROWS).min(count),
+                            count,
+                        );
+                    }
+                    *camera = listing::view(file, count);
+                }
+                7 | 8 => {
                     *camera = listing::smoke_side(
                         &explorer,
                         &repo.0.files[explorer.selected],
                         check.stage == 8,
                     );
                 }
+                _ => {}
             }
         }
         explorer.rebuild = true;
@@ -2000,7 +2470,23 @@ fn smoke(
         check.prepared = true;
         return;
     }
+    let previous = check.elapsed;
     check.elapsed += time.delta_secs();
+    if check.stage == 10 && previous < 1. && check.elapsed >= 1. {
+        use bevy::input::{
+            ButtonState,
+            keyboard::{Key, KeyboardInput, NativeKeyCode},
+        };
+        let text = "привет";
+        commands.write_message(KeyboardInput {
+            key_code: KeyCode::Unidentified(NativeKeyCode::Unidentified),
+            logical_key: Key::Character(text.into()),
+            text: Some(text.into()),
+            state: ButtonState::Pressed,
+            repeat: false,
+            window: window.single().expect("primary smoke window"),
+        });
+    }
     if check.elapsed < 4. {
         return;
     }
@@ -2025,6 +2511,9 @@ fn smoke(
             listing::smoke_blame_ready(&listing, explorer.highlighted.len()),
             "blame rows missing"
         );
+    }
+    if check.stage == 9 {
+        assert!(listing::smoke_source_ready(&listing), "source rows missing");
     }
     std::fs::create_dir_all(&check.directory).expect("smoke output");
     let path = check.directory.join(format!("{:02}.png", check.stage));
@@ -2069,6 +2558,29 @@ fn smoke(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn default_ui_font_has_cyrillic_glyphs_for_editable_text_and_picker_rows() {
+        let mut fonts = Assets::<Font>::default();
+        let default_font = Handle::<Font>::default();
+        fonts
+            .insert(
+                default_font.id(),
+                Font::from_bytes(bevy::text::DEFAULT_FONT_DATA.to_vec()),
+            )
+            .unwrap();
+        load_ui_font(&mut fonts);
+        let font =
+            swash::FontRef::from_index(fonts.get(&default_font).unwrap().data.as_ref(), 0).unwrap();
+        for character in "ПриветЁжЪыЇєҐў·".chars() {
+            assert_ne!(
+                font.charmap().map(character),
+                0,
+                "missing glyph for {character}"
+            );
+        }
+    }
     #[test]
     fn ray_selects_frontmost_positive_intersection() {
         for normal in [Vec3::Z, Vec3::X, Vec3::NEG_X, Vec3::NEG_Z, Vec3::Y] {
@@ -2085,6 +2597,22 @@ mod tests {
                 Vec3::splat(1.)
             )
             .is_none()
+        );
+    }
+}
+
+#[cfg(test)]
+mod flight_speed_tests {
+    #[test]
+    fn flying_above_roofs_speeds_up_without_changing_wall_controls() {
+        use super::flight_speed;
+        assert_eq!(flight_speed(20., false, false), 13.);
+        assert_eq!(flight_speed(250., true, false), 3.);
+        assert!(flight_speed(250., false, false) > 50.);
+        assert!(flight_speed(450., false, true) > flight_speed(250., false, false));
+        assert_eq!(
+            flight_speed(1000., false, false),
+            flight_speed(2000., false, false)
         );
     }
 }

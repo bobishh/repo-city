@@ -2,7 +2,7 @@
 
 ## Local Git and source inspection
 
-The native app reads immutable commits from a local Git checkout. Use
+The native app can read immutable commits from a local Git checkout. Use
 `--rev REF` to select a commit, branch, or tag. Pass `--base REF` to compare
 with that revision directly. To review a branch from its merge base, resolve
 the base with Git before launching.
@@ -10,6 +10,14 @@ the base with Git before launching.
 ```sh
 ./scripts/run-native.sh . --rev HEAD --base HEAD~1 --file web/app.mjs
 ```
+
+The native Live worktree mode compares on-disk content with `HEAD`. It follows
+staged and unstaged changes and untracked files that Git does not ignore. The
+watcher groups filesystem events and assembles snapshots on a background
+thread. The city keeps existing file positions and animates building height
+changes when it switches snapshots. The watcher follows the batching pattern
+from Sloposcope at `11ebbc7b33a3e8faf3cee8bc0ee155290bf3940e`. Repo City
+passes snapshots to its scene instead of maintaining a graph in SQLite.
 
 To inspect a stack trace, save one repository-relative `path:line` frame
 per line, starting at the error. Pass `--trace FILE` and press **T** in the
@@ -37,7 +45,9 @@ in the city.
 The active presentation is configured in
 [`world_sets/code-city.json`](../world_sets/code-city.json). Source revisions
 and hashes for reused code are recorded in
-[`source-provenance.json`](source-provenance.json).
+[`source-provenance.json`](source-provenance.json). The city uses the copied
+`rounded_box` mesh for buildings and the Android tool model. The mesh module
+contains only that shared geometry.
 
 ## Build and test
 

@@ -165,3 +165,16 @@ form button:focus-visible, form summary:focus-visible, form a:focus-visible { ou
 .review-status { min-height: 1.4em; margin-block: 7px; color: #e9b8c8; }
 .review-copy { white-space: pre-wrap; overflow-wrap: anywhere; }
 #review-dialog article { border-block-start: 1px solid #26343e; padding-block: .5em; }
+
+.review-changed-files { display: grid; gap: 4px; max-height: 55vh; overflow: auto; }
+.review-changed-files button { text-align: left; overflow-wrap: anywhere; }
+.review-changed-files time { display: block; opacity: .75; font-size: .85em; }
+#review-dialog[data-view="changed-files"] button[aria-pressed="true"] { outline: 1px solid currentColor; }
+#review-dialog[data-view="changed-files"][open] { animation: review-tablet-in .2s ease-out; }
+@keyframes review-tablet-in {
+  from { transform: translateY(12vh) scale(.93); opacity: .55; }
+  to { transform: none; opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #review-dialog[data-view="changed-files"][open] { animation: none; }
+}

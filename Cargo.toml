@@ -1,7 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/geo", "crates/repository", "crates/explorer"]
-exclude = ["crates/game", "crates/session"]
+members = ["crates/repository", "crates/explorer"]
 
 [workspace.package]
 edition = "2024"

@@ -2,17 +2,12 @@
 use std::path::Path;
 
 pub fn lines(root: &Path, revision: &str, path: &str) -> Result<Vec<String>, String> {
-    let output = super::git(
-        root,
-        &[
-            "--literal-pathspecs",
-            "blame",
-            "--line-porcelain",
-            revision,
-            "--",
-            path,
-        ],
-    )?;
+    let mut args = vec!["--literal-pathspecs", "blame", "--line-porcelain"];
+    if !revision.starts_with("worktree:") {
+        args.push(revision);
+    }
+    args.extend(["--", path]);
+    let output = super::git(root, &args)?;
     let text = String::from_utf8_lossy(&output);
     let mut commit = "";
     let mut author = "";

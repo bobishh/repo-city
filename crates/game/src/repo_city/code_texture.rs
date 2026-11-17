@@ -57,6 +57,18 @@ struct Canvas {
 }
 impl Canvas {
     fn text(&mut self, text: &str, x: f32, y: f32, size: f32, color: impl Fn(usize) -> [f32; 3]) {
+        self.scaled_text(text, x, y, size, Vec2::ONE, color);
+    }
+
+    fn scaled_text(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        size: f32,
+        scale: Vec2,
+        color: impl Fn(usize) -> [f32; 3],
+    ) {
         let font = FontRef::from_index(
             include_bytes!("../../../../assets/fonts/FiraMono-Medium.ttf"),
             0,
@@ -64,18 +76,22 @@ impl Canvas {
         .unwrap();
         let metrics = font.glyph_metrics(&[]).scale(size);
         let mut scaler = self.context.builder(font).size(size).hint(true).build();
+        let mut render = Render::new(&[Source::Outline]);
+        if scale != Vec2::ONE {
+            render.transform(Some(swash::zeno::Transform::scale(scale.x, scale.y)));
+        }
         let mut x = x;
         for (byte, ch) in text.char_indices() {
             if x >= self.width as f32 - 14. {
                 break;
             }
             if ch == '\t' {
-                x += metrics.advance_width(font.charmap().map(' ')) * 4.;
+                x += metrics.advance_width(font.charmap().map(' ')) * 4. * scale.x;
                 continue;
             }
             let id = font.charmap().map(ch);
             let ink = color(byte);
-            if let Some(glyph) = Render::new(&[Source::Outline]).render(&mut scaler, id) {
+            if let Some(glyph) = render.render(&mut scaler, id) {
                 let p = glyph.placement;
                 for gy in 0..p.height {
                     for gx in 0..p.width {
@@ -98,7 +114,7 @@ impl Canvas {
                     }
                 }
             }
-            x += metrics.advance_width(id);
+            x += metrics.advance_width(id) * scale.x;
         }
     }
     fn band(&mut self, start: u32, end: u32, rgb: [u8; 3]) {
@@ -257,6 +273,8 @@ pub(super) fn listing_preview<'a>(
     row: impl Fn(usize) -> (Option<&'a Line>, Mark),
     revealed: impl Fn(usize) -> bool,
     face: Face,
+    glyph_scale: Vec2,
+    paint_at: impl Fn(usize) -> Option<Vec4>,
 ) -> Image {
     const WIDTH: usize = 256;
     let height = (count * 4).clamp(64, 2048);
@@ -270,12 +288,26 @@ pub(super) fn listing_preview<'a>(
         } else {
             Coverage::Closed
         };
-        let background = listing_background(face, mark);
+        let mut background = listing_background(face, mark);
+        let paint = paint_at(index);
+        if let Some(paint) = paint {
+            let alpha = paint.w * 0.36;
+            for (value, ink) in background.iter_mut().zip(paint.to_array()) {
+                *value = (*value as f32 * (1. - alpha) + ink * 255. * alpha) as u8;
+            }
+        }
         for pixel in pixels.chunks_exact_mut(4) {
             pixel.copy_from_slice(&[background[0], background[1], background[2], 255]);
         }
         let gutter = WIDTH * 91 / LISTING_WIDTH as usize;
-        pixels[gutter * 4..gutter * 4 + 3].copy_from_slice(&coverage.accent());
+        if let Some(paint) = paint {
+            let color = [paint.x, paint.y, paint.z].map(|value| (value * 255.) as u8);
+            for x in gutter.saturating_sub(3)..gutter + 2 {
+                pixels[x * 4..x * 4 + 3].copy_from_slice(&color);
+            }
+        } else {
+            pixels[gutter * 4..gutter * 4 + 3].copy_from_slice(&coverage.accent());
+        }
         if let Some(ink) = source_change_ink(face, mark) {
             let change = WIDTH * 102 / LISTING_WIDTH as usize * 4;
             pixels[change..change + 3].copy_from_slice(&ink);
@@ -287,7 +319,7 @@ pub(super) fn listing_preview<'a>(
                 continue;
             }
             let stroke = coverage.stroke();
-            let (start, end) = covered_span(&line.text);
+            let (start, end) = covered_span(&line.text, glyph_scale.x);
             let start = start * WIDTH / LISTING_WIDTH as usize;
             let end = (end * WIDTH / LISTING_WIDTH as usize).max(start + 1);
             for x in start..end {
@@ -326,24 +358,32 @@ pub(super) fn source_change_ink(face: Face, mark: Mark) -> Option<[u8; 3]> {
     }
 }
 
-pub(super) fn covered_span(text: &str) -> (usize, usize) {
+pub(super) fn covered_span(text: &str, x_scale: f32) -> (usize, usize) {
     let indent = (text.len() - text.trim_start().len()).min(40);
-    let start = 106 + indent * 12;
-    let end = (106 + text.len().min(128) * 12).min((LISTING_WIDTH - 16) as usize);
+    let start = 106 + (indent as f32 * 12. * x_scale) as usize;
+    let end = (106 + (text.len().min(128) as f32 * 12. * x_scale) as usize)
+        .min((LISTING_WIDTH - 16) as usize);
     (start, end)
 }
 
-pub fn listing(rows: &[(Option<Line>, Mark)], face: Face) -> Image {
-    listing_with_notes(rows, face, None)
+pub fn listing(rows: &[(Option<Line>, Mark)], face: Face, glyph_scale: Vec2) -> Image {
+    listing_with_notes(rows, face, glyph_scale, None)
 }
 
 pub(super) fn listing_with_notes(
     rows: &[(Option<Line>, Mark)],
     face: Face,
+    glyph_scale: Vec2,
     notes: Option<&[String]>,
 ) -> Image {
-    let width = LISTING_WIDTH;
-    let height = rows.len() as u32 * LISTING_ROW_PIXELS;
+    let pixel_density = |scale: f32, limit: f32| (1. / scale).round().clamp(1., limit) as u32;
+    let x_density = pixel_density(glyph_scale.x, 2.);
+    let y_density = pixel_density(glyph_scale.y, 4.);
+    let width = LISTING_WIDTH * x_density;
+    let row_pixels = LISTING_ROW_PIXELS * y_density;
+    let height = rows.len() as u32 * row_pixels;
+    let x = |position: f32| position * x_density as f32;
+    let glyph_scale = glyph_scale * Vec2::new(x_density as f32, y_density as f32);
     let mut canvas = Canvas {
         pixels: vec![0; (width * height * 4) as usize],
         width,
@@ -351,27 +391,34 @@ pub(super) fn listing_with_notes(
         context: ScaleContext::new(),
     };
     for (index, (line, mark)) in rows.iter().enumerate() {
-        let y = index as u32 * LISTING_ROW_PIXELS;
-        canvas.band(y, y + LISTING_ROW_PIXELS, listing_background(face, *mark));
+        let y = index as u32 * row_pixels;
+        canvas.band(y, y + row_pixels, listing_background(face, *mark));
         let accent = Coverage::Open.accent();
         let change = source_change_ink(face, *mark);
-        for py in y..y + LISTING_ROW_PIXELS {
-            for x in 91..96 {
+        for py in y..y + row_pixels {
+            for x in 91 * x_density..96 * x_density {
                 let pixel = ((py * width + x) * 4) as usize;
                 canvas.pixels[pixel..pixel + 3].copy_from_slice(&accent);
             }
             if let Some(ink) = change {
-                for x in 101..105 {
+                for x in 101 * x_density..105 * x_density {
                     let pixel = ((py * width + x) * 4) as usize;
                     canvas.pixels[pixel..pixel + 3].copy_from_slice(&ink);
                 }
             }
         }
         let Some(line) = line else { continue };
-        let baseline = y as f32 + 21.;
-        canvas.text(&format!("{:>6}", line.number), 12., baseline, 20., |_| {
-            [0.50, 0.66, 0.71]
-        });
+        let row_center = row_pixels as f32 / 2.;
+        let baseline =
+            y as f32 + row_center + (21. - LISTING_ROW_PIXELS as f32 / 2.) * glyph_scale.y;
+        canvas.scaled_text(
+            &format!("{:>6}", line.number),
+            x(84.) - 72. * glyph_scale.x,
+            baseline,
+            20.,
+            glyph_scale,
+            |_| [0.50, 0.66, 0.71],
+        );
         let text_start = if let Some(notes) = notes {
             if let Some(author) = notes.get(line.number.saturating_sub(1)) {
                 let (limit, size) = if cfg!(target_arch = "wasm32") {
@@ -380,7 +427,9 @@ pub(super) fn listing_with_notes(
                     (28, 17.)
                 };
                 let short = author.chars().take(limit).collect::<String>();
-                canvas.text(&short, 106., baseline, size, |_| [0.53, 0.83, 0.78]);
+                canvas.scaled_text(&short, x(106.), baseline, size, glyph_scale, |_| {
+                    [0.53, 0.83, 0.78]
+                });
             }
             if cfg!(target_arch = "wasm32") {
                 470
@@ -390,7 +439,8 @@ pub(super) fn listing_with_notes(
         } else {
             106
         };
-        canvas.text(&line.text, text_start as f32, baseline, 20., |byte| {
+        let start = x(106.) + (text_start as f32 - 106.) * glyph_scale.x;
+        canvas.scaled_text(&line.text, start, baseline, 20., glyph_scale, |byte| {
             ink(line
                 .spans
                 .iter()
@@ -409,4 +459,73 @@ pub(super) fn listing_with_notes(
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::default(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn distant_comments_color_their_row_and_widen_the_gutter_mark() {
+        let plain = listing_preview(
+            2,
+            |_| (None, Mark::Context),
+            |_| true,
+            Face::Source,
+            Vec2::ONE,
+            |_| None,
+        );
+        let marked = listing_preview(
+            2,
+            |_| (None, Mark::Context),
+            |_| true,
+            Face::Source,
+            Vec2::ONE,
+            |row| (row == 1).then_some(Vec4::new(1., 0.65, 0.15, 1.)),
+        );
+        let plain = plain.data.unwrap();
+        let marked = marked.data.unwrap();
+        let row_bytes = 256 * 4;
+        assert_eq!(&plain[..32 * row_bytes], &marked[..32 * row_bytes]);
+        let edge = 32 * row_bytes + 14 * 4;
+        assert_eq!(&marked[edge..edge + 3], &[255, 165, 38]);
+        assert_ne!(plain[34 * row_bytes], marked[34 * row_bytes]);
+    }
+
+    #[test]
+    fn compressed_wall_glyphs_keep_enough_texels_and_the_same_normalized_gutter() {
+        let rows = [(
+            Some(Line {
+                number: 1,
+                text: "HELLO".into(),
+                spans: Vec::new(),
+            }),
+            Mark::Context,
+        )];
+        for (scale, density) in [
+            (Vec2::ONE, UVec2::ONE),
+            (Vec2::new(0.5, 1.), UVec2::new(2, 1)),
+            (Vec2::new(1., 0.25), UVec2::new(1, 4)),
+        ] {
+            let image = listing(&rows, Face::Source, scale);
+            assert_eq!(image.width(), LISTING_WIDTH * density.x);
+            assert_eq!(image.height(), LISTING_ROW_PIXELS * density.y);
+            let data = image.data.unwrap();
+            let gutter = (91 * density.x * 4) as usize;
+            assert_eq!(&data[gutter..gutter + 3], &Coverage::Open.accent());
+            let width = image.texture_descriptor.size.width as usize;
+            let bright_rows = data
+                .chunks_exact(width * 4)
+                .filter(|row| {
+                    row[106 * density.x as usize * 4..]
+                        .chunks_exact(4)
+                        .any(|p| p[0] > 160)
+                })
+                .count();
+            assert!(
+                bright_rows >= 12,
+                "{scale:?} only used {bright_rows} texels"
+            );
+        }
+    }
 }

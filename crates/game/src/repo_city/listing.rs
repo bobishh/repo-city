@@ -13,8 +13,9 @@ mod paint;
 pub(super) use cover::Plugin as CoverPlugin;
 pub(super) use paint::draw as paint_notes;
 
-const TILE_ROWS: usize = 16;
+pub(super) const TILE_ROWS: usize = 16;
 const TILES_PER_SIDE: usize = 6;
+const MAX_VISIBLE_TILES: usize = 10;
 const RETIRING_TILES: usize = 2;
 const TEXTURES_PER_FRAME: usize = 2;
 pub(super) const WIDTH: f32 = 14.;
@@ -55,7 +56,12 @@ pub(super) fn view(file: &repo_world::File, count: usize) -> Transform {
 
 pub(super) fn view_from_size(file: &repo_world::File, count: usize, size: Vec3) -> Transform {
     let side = WallSide::new(file, count, Face::Source, size);
-    side.view(side.wall.y(count.clamp(1, 8) as f32 / 2.))
+    let row = if count == 0 {
+        4.
+    } else {
+        count.min(8) as f32 / 2.
+    };
+    side.view(side.wall.y(row).max(side.wall.top * 0.5))
 }
 
 struct Wall {
@@ -123,7 +129,7 @@ pub(super) struct Listing {
     listing_facade: Option<usize>,
     viewing: Option<Face>,
     destination: Option<Face>,
-    wash_remaining: f32,
+    wash_preview: Option<WashPreview>,
     blame: super::blame::Blame,
     turn: Option<(f32, Transform, Transform)>,
     scroll_remaining: f32,
@@ -136,6 +142,44 @@ pub(super) struct Listing {
     blame_header: Option<Tile>,
     diff_lines: Vec<(Option<syntax::Line>, Mark)>,
     source_marks: Vec<Mark>,
+    preview_marks: Vec<(review_notes::Anchor, Vec4)>,
+}
+
+#[derive(Clone, Debug)]
+struct WashPreview {
+    file: usize,
+    before: bool,
+    rows: Range<usize>,
+    elapsed: f32,
+}
+
+impl WashPreview {
+    fn time_needed(&self) -> f32 {
+        5. + self.rows.len().saturating_sub(1) as f32 * 0.075
+    }
+
+    fn advance(
+        active: &mut Option<Self>,
+        file: usize,
+        before: bool,
+        rows: Range<usize>,
+        delta: f32,
+    ) -> bool {
+        if active
+            .as_ref()
+            .is_none_or(|p| p.file != file || p.before != before || p.rows != rows)
+        {
+            *active = Some(Self {
+                file,
+                before,
+                rows,
+                elapsed: 0.,
+            });
+        }
+        let preview = active.as_mut().expect("the current tile is previewed");
+        preview.elapsed += delta;
+        preview.elapsed >= preview.time_needed()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -303,6 +347,15 @@ fn projected_row(explorer: &Explorer, row: usize, to_diff: bool) -> usize {
 }
 
 impl Listing {
+    pub(super) fn building_loaded(&mut self, index: usize) {
+        if self.reveal_progress.contains_key(&(index, true))
+            || self.reveal_progress.contains_key(&(index, false))
+            || self.rendered.is_some_and(|(active, _, _)| active == index)
+        {
+            self.overview_dirty.insert(index);
+        }
+    }
+
     #[cfg(target_arch = "wasm32")]
     pub(super) fn invalidate(&mut self) {
         self.invalidated = true;
@@ -323,18 +376,23 @@ impl Listing {
     pub(super) fn turning(&self) -> bool {
         self.turn.is_some()
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn live_reset(&self) -> Self {
+        Self {
+            overview_dirty: self.listing_facade.into_iter().collect(),
+            ..default()
+        }
+    }
     pub(super) fn reset_view(&mut self) {
         self.viewing = None;
         self.destination = None;
-        self.wash_remaining = 0.;
+        self.wash_preview = None;
         self.turn = None;
         self.scroll_remaining = 0.;
     }
     pub(super) fn visible(explorer: &Explorer, navigation: &city_navigation::Navigation) -> bool {
-        explorer.comparison_mode == 0
-            && !explorer.anchored
-            && !navigation.guides_camera()
-            && !navigation.overview()
+        explorer.comparison_mode == 0 && !explorer.anchored && !navigation.guides_camera()
     }
 
     pub(super) fn arrival_view(
@@ -361,7 +419,7 @@ impl Listing {
         };
         let side = WallSide::new(file, count, face, size);
         let y = if count == 0 {
-            side.wall.top * 0.92
+            side.wall.y(0.5)
         } else {
             let preferred =
                 surface.map_or(0, |surface| side.wall.row(size.y * surface.height, count));
@@ -390,6 +448,37 @@ impl Listing {
                 .sum::<usize>()
         });
         side.view(side.wall.y(row.min(count.saturating_sub(1)) as f32 + 0.5))
+    }
+
+    pub(super) fn review_line_view(
+        explorer: &Explorer,
+        file: &repo_world::File,
+        line: usize,
+    ) -> Option<Transform> {
+        let source_row = line.checked_sub(1)?;
+        let diff_count = diff_rows(explorer);
+        if diff_count > 0 {
+            let mut row = 0;
+            for pair in &explorer.comparison.as_ref()?.rows {
+                let removed = pair.before.is_some() && (pair.changed || pair.after.is_none());
+                let target = if explorer.before {
+                    (removed && pair.before == Some(source_row)).then_some(row)
+                } else {
+                    (pair.after == Some(source_row)).then_some(row + usize::from(removed))
+                };
+                if let Some(target) = target {
+                    let side = WallSide::new(file, diff_count, Face::Diff, block_size(file));
+                    return Some(side.view(side.wall.y(target as f32 + 0.5)));
+                }
+                row += diff_row_width(pair);
+            }
+        }
+        let count = explorer.highlighted.len();
+        if source_row >= count {
+            return None;
+        }
+        let side = WallSide::new(file, count, Face::Source, block_size(file));
+        Some(side.view(side.wall.y(source_row as f32 + 0.5)))
     }
 
     fn readable_hit(
@@ -431,6 +520,12 @@ impl Listing {
             .map_or(0, |progress| progress.opened)
             .min(total);
         (visible, total)
+    }
+
+    fn wash_time_remaining(&self) -> Option<f32> {
+        self.wash_preview
+            .as_ref()
+            .map(|preview| (preview.time_needed() - preview.elapsed).max(0.))
     }
 
     fn wash(
@@ -509,6 +604,7 @@ impl Listing {
     }
 
     pub(super) fn clear_progress(&mut self) {
+        self.wash_preview = None;
         self.overview_dirty
             .extend(self.reveal_progress.keys().map(|&(index, _)| index));
         self.revealed.clear();
@@ -690,18 +786,24 @@ pub(super) fn wash_stream(
     picker: Res<file_picker::FilePicker>,
     mut progress: ResMut<progress::Progress>,
     mut review: ResMut<review_notes::Review>,
+    menu: Res<city_menu::Menu>,
+    search: Res<find::Search>,
 ) {
     let Ok((camera, pilot)) = camera.single() else {
+        listing.wash_preview = None;
         return;
     };
     if !pilot.firing
+        || !pilot.captured
+        || menu.is_open()
+        || search.blocks_controls()
         || review.slot != 0
         || review.blocked
         || picker.is_open()
         || listing.turning()
         || !Listing::visible(&explorer, &navigation)
     {
-        listing.wash_remaining = 0.;
+        listing.wash_preview = None;
         return;
     }
     let count = explorer.highlighted.len();
@@ -715,16 +817,30 @@ pub(super) fn wash_stream(
                 .is_none_or(|aim| aim.index == explorer.selected)
         })
     else {
-        listing.wash_remaining = 0.;
+        listing.wash_preview = None;
         return;
     };
     review.washing = true;
-    listing.wash_remaining -= time.delta_secs();
-    if listing.wash_remaining <= 0. {
+    let row = side.wall.row(hit.y, count);
+    let rows = tile_rows(row, count);
+    let file_index = explorer.selected;
+    let before = explorer.before;
+    if rows
+        .clone()
+        .all(|row| listing.revealed.contains(&(file_index, before, row + 1)))
+    {
+        listing.wash_preview = None;
+    } else if WashPreview::advance(
+        &mut listing.wash_preview,
+        file_index,
+        before,
+        rows,
+        time.delta_secs(),
+    ) {
         if let Some(mark) = listing.wash(&explorer, file, hit.y) {
             progress.mark(mark, true);
         }
-        listing.wash_remaining = 0.12;
+        listing.wash_preview = None;
     }
     if review.nozzle >= 0.85 {
         physics::spray_stream(
@@ -778,7 +894,8 @@ impl WallSide {
             Face::Blame => (x - size.x / 2. - PANEL_OFFSET, z, size.z),
         };
         let heading_height = width * HEADING_RATIO;
-        let wall = Wall::new(count, size.y - heading_height);
+        let mut wall = Wall::new(count, size.y - heading_height);
+        wall.row_height = wall.row_height.min(texture_row_height(width) * 1.5);
         Self {
             top: Vec3::new(x, wall.top, z),
             wall,
@@ -790,6 +907,11 @@ impl WallSide {
 
     fn normal(&self) -> Vec3 {
         self.face.normal()
+    }
+
+    fn glyph_scale(&self) -> Vec2 {
+        let vertical_stretch = self.wall.row_height / texture_row_height(self.width);
+        Vec2::new(vertical_stretch.min(1.), vertical_stretch.recip().min(1.))
     }
 
     fn ray_hit(&self, camera: &Transform, facing_limit: f32, range: f32) -> Option<(Vec3, f32)> {
@@ -813,26 +935,49 @@ impl WallSide {
         (self.width * 2.4).min(DETAIL_RAY_REACH)
     }
 
-    fn keeps_detail(&self, camera: &Transform) -> bool {
+    fn detail_distance(&self, camera: &Transform, aspect: f32, retained: bool) -> Option<f32> {
         let normal = self.normal();
         let offset = camera.translation - self.top;
         let across = Vec3::Y.cross(normal);
+        if offset.dot(normal) <= 0. {
+            return None;
+        }
         let along = offset.dot(across).clamp(-self.width / 2., self.width / 2.);
-        let nearest = self.top.with_y(
-            camera
-                .translation
-                .y
-                .clamp(0., self.top.y + self.heading_height),
-        ) + across * along;
-        offset.dot(normal) > 0.
-            && camera.forward().dot(normal) < -0.025
-            && camera.translation.distance_squared(nearest) <= (self.detail_range() * 1.15).powi(2)
+        let height = self.top.y + self.heading_height;
+        let nearest = self.top.with_y(camera.translation.y.clamp(0., height)) + across * along;
+        let distance = camera.translation.distance_squared(nearest);
+        let range = self.detail_range().max(2.) * if retained { 1.18 } else { 1. };
+        if distance > range.powi(2) {
+            return None;
+        }
+        // The wall can fill the edge of the screen even when the reticle misses it.
+        let center = self.top.with_y(height * 0.5) - camera.translation;
+        let forward = camera.forward().as_vec3();
+        let up = camera.up().as_vec3();
+        let right = camera.right().as_vec3();
+        let slope = std::f32::consts::FRAC_PI_8.tan() * if retained { 1.10 } else { 1. };
+        [
+            forward,
+            forward * slope + up,
+            forward * slope - up,
+            forward * (slope * aspect) + right,
+            forward * (slope * aspect) - right,
+        ]
+        .into_iter()
+        .all(|plane| {
+            center.dot(plane)
+                + across.dot(plane).abs() * self.width * 0.5
+                + plane.y.abs() * height * 0.5
+                >= 0.
+        })
+        .then_some(distance)
     }
 
-    fn visible_height(&self, camera: &Transform) -> f32 {
-        let half_fov = std::f32::consts::FRAC_PI_8;
-        let forward = camera.forward().as_vec3() * half_fov.cos();
-        let vertical = camera.up().as_vec3() * half_fov.sin();
+    fn visible_rows(&self, camera: &Transform, count: usize, aspect: f32) -> Range<usize> {
+        let slope = std::f32::consts::FRAC_PI_8.tan();
+        let forward = camera.forward().as_vec3();
+        let vertical = camera.up().as_vec3() * slope;
+        let horizontal = camera.right().as_vec3() * (slope * aspect);
         let normal = self.normal();
         let gap = (camera.translation - self.top).dot(normal);
         let edge = |direction: Vec3| {
@@ -845,7 +990,14 @@ impl WallSide {
                 0.
             }
         };
-        (edge(forward + vertical) + edge(forward - vertical)) * 0.5
+        let [a, b, c, d] = [
+            forward + vertical + horizontal,
+            forward + vertical - horizontal,
+            forward - vertical + horizontal,
+            forward - vertical - horizontal,
+        ]
+        .map(|ray| self.wall.row(edge(ray), count));
+        a.min(b).min(c).min(d)..a.max(b).max(c).max(d).saturating_add(1).min(count)
     }
 
     fn wash_hit(&self, camera: &Transform, count: usize) -> Option<Vec3> {
@@ -855,7 +1007,8 @@ impl WallSide {
             return None;
         }
         let (point, _) = self.ray_hit(camera, 0.12, self.detail_range())?;
-        (count > 0 && point.y < self.wall.top).then_some(point)
+        (count > 0 && (self.wall.y(count as f32)..self.wall.top).contains(&point.y))
+            .then_some(point)
     }
 
     fn look_height(&self, camera: &Transform) -> f32 {
@@ -876,12 +1029,25 @@ impl WallSide {
         Transform::from_translation(eye.with_y(eye.y.max(1.))).looking_at(target, Vec3::Y)
     }
 
-    fn window(&self, focus: usize, count: usize) -> Range<usize> {
+    fn window(&self, visible: Range<usize>, focus: usize, count: usize) -> Range<usize> {
         let total = count.div_ceil(TILE_ROWS);
+        let visible_tiles = visible.end.div_ceil(TILE_ROWS) - visible.start / TILE_ROWS;
+        let capacity = (visible_tiles + 2).clamp(TILES_PER_SIDE, MAX_VISIBLE_TILES);
         let start = (focus / TILE_ROWS)
-            .saturating_sub(TILES_PER_SIDE / 2)
-            .min(total.saturating_sub(TILES_PER_SIDE));
-        start..(start + TILES_PER_SIDE).min(total)
+            .saturating_sub(capacity / 2)
+            .min(total.saturating_sub(capacity));
+        start..(start + capacity).min(total)
+    }
+
+    fn focus_row(&self, visible: &Range<usize>, aim: usize) -> usize {
+        let visible_tiles = visible.end.div_ceil(TILE_ROWS) - visible.start / TILE_ROWS;
+        if visible_tiles > MAX_VISIBLE_TILES {
+            return aim.clamp(
+                visible.start,
+                visible.end.saturating_sub(1).max(visible.start),
+            );
+        }
+        (visible.start + visible.end) / 2
     }
 
     fn pose(&self, y: f32) -> Transform {
@@ -995,13 +1161,13 @@ impl WallRender<'_, '_, '_> {
         height: f32,
         layer: Layer,
         cover: Option<cover::CoverRows>,
+        alpha: f32,
     ) -> Tile {
         let image = self.images.add(image);
-        let alpha = if layer == Layer::Tile { 0. } else { 1. };
         let material = StandardMaterial {
             base_color: Color::WHITE.with_alpha(alpha),
             base_color_texture: Some(image.clone()),
-            alpha_mode: if layer == Layer::Tile {
+            alpha_mode: if alpha < 1. {
                 AlphaMode::Blend
             } else {
                 AlphaMode::Opaque
@@ -1045,6 +1211,7 @@ impl WallRender<'_, '_, '_> {
             height,
             Layer::Heading,
             None,
+            1.,
         )
     }
 
@@ -1072,6 +1239,7 @@ impl WallRender<'_, '_, '_> {
                 count as f32 * side.wall.row_height,
                 Layer::Preview,
                 None,
+                1.,
             );
             state.preview = Some(tile.image);
             state.preview_dirty = false;
@@ -1082,13 +1250,16 @@ impl WallRender<'_, '_, '_> {
         &mut self,
         side: &WallSide,
         state: &mut Tiles,
-        read_y: f32,
+        visible: Range<usize>,
+        aim: usize,
         count: usize,
         texture: impl Fn(Range<usize>) -> Image,
         details: Option<TileDetails<'_>>,
     ) {
-        let focus = side.wall.row(read_y, count);
-        let window = side.window(focus, count);
+        let focus = side.focus_row(&visible, aim);
+        let visible_tiles = visible.start / TILE_ROWS..visible.end.div_ceil(TILE_ROWS);
+        let window = side.window(visible, focus, count);
+        let reading = !state.resident.is_empty();
         let mut retiring: Vec<_> = state
             .resident
             .keys()
@@ -1150,7 +1321,13 @@ impl WallRender<'_, '_, '_> {
             .dirty
             .retain(|index| state.resident.contains_key(index));
         let mut priority = window.collect::<Vec<_>>();
-        priority.sort_unstable_by_key(|index| (index.abs_diff(focus / TILE_ROWS), *index));
+        priority.sort_unstable_by_key(|index| {
+            (
+                !visible_tiles.contains(index),
+                index.abs_diff(focus / TILE_ROWS),
+                *index,
+            )
+        });
         for index in priority {
             if self.remaining == 0 {
                 break;
@@ -1172,7 +1349,16 @@ impl WallRender<'_, '_, '_> {
                 let height = rows.len() as f32 * side.wall.row_height;
                 let center = side.wall.y((rows.start + rows.end) as f32 / 2.);
                 let metadata = details.as_ref().map(|details| details.build(rows.clone()));
-                let tile = self.plane(side, texture(rows), center, height, Layer::Tile, metadata);
+                let alpha = f32::from(reading && visible_tiles.contains(&index));
+                let tile = self.plane(
+                    side,
+                    texture(rows),
+                    center,
+                    height,
+                    Layer::Tile,
+                    metadata,
+                    alpha,
+                );
                 state.resident.insert(index, tile);
             }
             self.remaining -= 1;
@@ -1189,14 +1375,25 @@ pub(super) fn draw(
     mut listing: ResMut<Listing>,
     old: Query<(Entity, &ListingSurface)>,
     camera: Query<&Transform, PlayerCamera>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     time: Option<Res<Time>>,
     mut covered: ResMut<Assets<cover::Material>>,
     review: Option<Res<review_notes::Review>>,
+    #[cfg(not(target_arch = "wasm32"))] live: Option<Res<live_worktree::Live>>,
 ) {
     let visible = Listing::visible(&explorer, &navigation);
+    #[cfg(not(target_arch = "wasm32"))]
+    let visible = visible
+        && !live
+            .as_ref()
+            .zip(time.as_ref())
+            .is_some_and(|(live, time)| {
+                time.elapsed_secs_f64() < live.growing_until
+                    && live.growth.contains_key(&explorer.selected)
+            });
     let count = explorer.highlighted.len();
     let key = visible.then_some((explorer.selected, explorer.before, count));
     let changed = key != listing.rendered;
@@ -1313,15 +1510,21 @@ pub(super) fn draw(
 
     let fallback = view(file, count);
     let camera = camera.single().unwrap_or(&fallback);
+    let aspect = windows
+        .single()
+        .map_or(16. / 9., |window| window.width() / window.height().max(1.));
+    let near = |face, retained| {
+        WallSide::new(file, 1, face, size).detail_distance(camera, aspect, retained)
+    };
     let viewed = Face::at_camera(file, size, camera, DETAIL_RAY_REACH)
-        .filter(|face| {
-            let side = WallSide::new(file, 1, *face, size);
-            side.ray_hit(camera, 0.12, side.detail_range()).is_some()
-        })
+        .filter(|&face| near(face, false).is_some())
+        .or_else(|| listing.viewing.filter(|&face| near(face, true).is_some()))
         .or_else(|| {
-            listing
-                .viewing
-                .filter(|face| WallSide::new(file, 1, *face, size).keeps_detail(camera))
+            [Face::Source, Face::Diff, Face::Blame]
+                .into_iter()
+                .filter_map(|face| near(face, false).map(|distance| (face, distance)))
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(face, _)| face)
         });
     if listing.turn.is_none() {
         listing.viewing = viewed;
@@ -1352,25 +1555,27 @@ pub(super) fn draw(
         diff_lines,
         source_marks,
         revealed,
+        wash_preview,
+        preview_marks,
         blame: attribution,
         ..
     } = &mut *listing;
     let is_revealed = |line| revealed.contains(&(explorer.selected, explorer.before, line));
     let source_row = |index| (Some(&explorer.highlighted[index]), source_marks[index]);
     let diff_row = |index: usize| (diff_lines[index].0.as_ref(), diff_lines[index].1);
-    render.preview(&source, source_tiles, count, || {
-        code_texture::listing_preview(count, source_row, is_revealed, Face::Source)
-    });
-    render.preview(&diff, diff_tiles, diff_count, || {
-        code_texture::listing_preview(diff_count, diff_row, |_| true, Face::Diff)
-    });
-    if viewed != Some(Face::Source) {
+    let retain = |face, tiles: &Tiles| {
+        viewed == Some(face) || (!tiles.resident.is_empty() && near(face, true).is_some())
+    };
+    let show_source = retain(Face::Source, source_tiles);
+    let show_diff = retain(Face::Diff, diff_tiles);
+    let show_blame = retain(Face::Blame, blame_tiles);
+    if !show_source {
         render.hide_side(source_tiles);
     }
-    if viewed != Some(Face::Diff) {
+    if !show_diff {
         render.hide_side(diff_tiles);
     }
-    if viewed != Some(Face::Blame) {
+    if !show_blame {
         render.hide_side(blame_tiles);
     }
 
@@ -1383,8 +1588,17 @@ pub(super) fn draw(
         })
         .collect::<Vec<_>>()
     };
-    let mask = |rows| cover::mask(rows, &is_revealed);
-    let metadata = |rows, bits| cover::CoverRows::new(&source_rows(rows), bits);
+    let active_wash = wash_preview
+        .as_ref()
+        .filter(|preview| preview.file == explorer.selected && preview.before == explorer.before);
+    let mask = |rows| {
+        cover::mask(rows, &|line| {
+            is_revealed(line)
+                || active_wash.is_some_and(|preview| preview.rows.contains(&(line - 1)))
+        })
+    };
+    let metadata =
+        |rows, bits| cover::CoverRows::new(&source_rows(rows), bits, source.glyph_scale());
     let tone = |[r, g, b]: [u8; 3], alpha| {
         Vec4::new(r as f32 / 255., g as f32 / 255., b as f32 / 255., alpha)
     };
@@ -1394,15 +1608,12 @@ pub(super) fn draw(
             review
                 .notes
                 .iter()
-                .filter(|note| {
-                    note.anchor.path == file.path
-                        && review_notes::Review::on_snapshot(note, &repo.0)
-                })
+                .filter(|note| note.anchor.path == file.path && review.shows_paint(note, &repo.0))
                 .map(|note| {
                     (
                         &note.anchor,
                         tone(
-                            note.preset.color,
+                            note.ink(),
                             if note.resolved == Some(true) {
                                 0.38
                             } else {
@@ -1412,6 +1623,54 @@ pub(super) fn draw(
                     )
                 }),
         );
+    }
+    if preview_marks.len() != marks.len()
+        || preview_marks
+            .iter()
+            .zip(&marks)
+            .any(|((old, color), (anchor, next))| old != *anchor || color != next)
+    {
+        *preview_marks = marks
+            .iter()
+            .map(|(anchor, color)| ((*anchor).clone(), *color))
+            .collect();
+        source_tiles.preview_dirty = true;
+        diff_tiles.preview_dirty = true;
+    }
+    let line_paint = |before, line| {
+        preview_marks
+            .iter()
+            .rev()
+            .find(|(anchor, _)| {
+                anchor.before == before && (anchor.start..=anchor.end).contains(&line)
+            })
+            .map(|(_, paint)| *paint)
+    };
+    render.preview(&source, source_tiles, count, || {
+        code_texture::listing_preview(
+            count,
+            source_row,
+            is_revealed,
+            Face::Source,
+            source.glyph_scale(),
+            |index| line_paint(explorer.before, index + 1),
+        )
+    });
+    render.preview(&diff, diff_tiles, diff_count, || {
+        code_texture::listing_preview(
+            diff_count,
+            diff_row,
+            |_| true,
+            Face::Diff,
+            diff.glyph_scale(),
+            |index| {
+                let (line, mark) = &diff_lines[index];
+                line.as_ref()
+                    .and_then(|line| line_paint(*mark == Mark::Removed, line.number))
+            },
+        )
+    });
+    if let Some(review) = review.as_ref() {
         if let (Some((_, anchor)), Some(preset)) = (&review.drag, review.paint())
             && anchor.path == file.path
         {
@@ -1431,46 +1690,60 @@ pub(super) fn draw(
             &marks,
         )
     };
-    match viewed {
-        Some(Face::Source) => render.tiles(
-            &source,
-            source_tiles,
-            source.visible_height(camera),
-            count,
-            |rows| code_texture::listing(&source_rows(rows), Face::Source),
-            Some(TileDetails {
-                mask: &mask,
-                metadata: &metadata,
-                paint: &source_paint,
-            }),
-        ),
-        Some(Face::Diff) => render.tiles(
-            &diff,
-            diff_tiles,
-            diff.visible_height(camera),
-            diff_count,
-            |rows| code_texture::listing(&diff_lines[rows], Face::Diff),
-            Some(TileDetails {
-                mask: &|_| u32::MAX,
-                metadata: &|rows, bits| cover::CoverRows::new(&diff_lines[rows], bits),
-                paint: &diff_paint,
-            }),
-        ),
-        Some(Face::Blame) => render.tiles(
-            &blame,
-            blame_tiles,
-            blame.visible_height(camera),
-            count,
-            |rows| {
-                code_texture::listing_with_notes(
-                    &source_rows(rows),
-                    Face::Blame,
-                    attribution.notes(),
-                )
-            },
-            None,
-        ),
-        None => {}
+    for face in viewed.into_iter().chain(
+        [Face::Source, Face::Diff, Face::Blame]
+            .into_iter()
+            .filter(|face| Some(*face) != viewed),
+    ) {
+        match face {
+            Face::Source if show_source => render.tiles(
+                &source,
+                source_tiles,
+                source.visible_rows(camera, count, aspect),
+                source.wall.row(source.look_height(camera), count),
+                count,
+                |rows| {
+                    code_texture::listing(&source_rows(rows), Face::Source, source.glyph_scale())
+                },
+                Some(TileDetails {
+                    mask: &mask,
+                    metadata: &metadata,
+                    paint: &source_paint,
+                }),
+            ),
+            Face::Diff if show_diff => render.tiles(
+                &diff,
+                diff_tiles,
+                diff.visible_rows(camera, diff_count, aspect),
+                diff.wall.row(diff.look_height(camera), diff_count),
+                diff_count,
+                |rows| code_texture::listing(&diff_lines[rows], Face::Diff, diff.glyph_scale()),
+                Some(TileDetails {
+                    mask: &|_| u32::MAX,
+                    metadata: &|rows, bits| {
+                        cover::CoverRows::new(&diff_lines[rows], bits, diff.glyph_scale())
+                    },
+                    paint: &diff_paint,
+                }),
+            ),
+            Face::Blame if show_blame => render.tiles(
+                &blame,
+                blame_tiles,
+                blame.visible_rows(camera, count, aspect),
+                blame.wall.row(blame.look_height(camera), count),
+                count,
+                |rows| {
+                    code_texture::listing_with_notes(
+                        &source_rows(rows),
+                        Face::Blame,
+                        blame.glyph_scale(),
+                        attribution.notes(),
+                    )
+                },
+                None,
+            ),
+            _ => {}
+        }
     }
 }
 
@@ -1498,6 +1771,11 @@ pub(super) fn smoke_side(explorer: &Explorer, file: &repo_world::File, blame: bo
         side.wall.y(row.clamp(0, count - 1) as f32 + 0.5)
     };
     side.view(focus)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn smoke_source_ready(listing: &Listing) -> bool {
+    !listing.source_tiles.resident.is_empty()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1547,6 +1825,70 @@ mod tests {
     }
 
     #[test]
+    fn glyphs_keep_equal_world_scale_with_mismatched_row_counts() {
+        let file = fixture_with_rows(80);
+        let size = block_size(&file);
+        for face in [Face::Source, Face::Diff, Face::Blame] {
+            for count in [32, 80, 190] {
+                let side = WallSide::new(&file, count, face, size);
+                let scale = side.glyph_scale();
+                let horizontal = side.width * scale.x / code_texture::LISTING_WIDTH as f32;
+                let vertical =
+                    side.wall.row_height * scale.y / code_texture::LISTING_ROW_PIXELS as f32;
+                assert!((horizontal - vertical).abs() < 0.00001);
+            }
+        }
+    }
+
+    #[test]
+    fn sparse_source_rows_fit_at_the_top_without_resizing_the_building() {
+        let file = fixture_with_rows(300);
+        let size = block_size(&file);
+        let count = 25;
+        let side = WallSide::new(&file, count, Face::Source, size);
+        assert!((side.wall.top + side.heading_height - size.y).abs() < 0.00001);
+        assert_eq!(side.wall.row_height, texture_row_height(side.width) * 1.5);
+        let below_code = side.wall.y(count as f32) - 1.;
+        let target = side.top.with_y(below_code);
+        let camera = Transform::from_translation(target + Vec3::Z * 2.).looking_at(target, Vec3::Y);
+        assert!(side.wash_hit(&camera, count).is_none());
+    }
+
+    #[test]
+    fn wider_reading_window_covers_visible_rows_and_preloads_around_them() {
+        let file = fixture_with_rows(724);
+        let side = WallSide::new(&file, 724, Face::Source, block_size(&file));
+        let before = side.window(120..125, 122, 724);
+        let after = side.window(221..352, 286, 724);
+        assert_eq!(before.len(), TILES_PER_SIDE);
+        assert_eq!(after.len(), MAX_VISIBLE_TILES);
+        assert!(after.contains(&(221 / TILE_ROWS)));
+        assert!(after.contains(&(351 / TILE_ROWS)));
+        let visible = 0..724;
+        let glancing = side.window(visible.clone(), side.focus_row(&visible, 60), 724);
+        assert!(glancing.contains(&(60 / TILE_ROWS)));
+    }
+
+    #[test]
+    fn review_line_centers_github_line_numbers_on_the_correct_side() {
+        let file = fixture_with_rows(32);
+        let mut explorer = Explorer::new(0);
+        let prefix = "let start = 1;\n";
+        let suffix = "let end = 2;\n".repeat(28);
+        let before = format!("{prefix}let old = 1;\n{suffix}");
+        let after = format!("{prefix}let new = 1;\n{suffix}");
+        explorer.comparison = Some(Comparison::new(&file.path, &before, &after).unwrap());
+        let count = diff_rows(&explorer);
+        let side = WallSide::new(&file, count, Face::Diff, block_size(&file));
+        for (before, expected) in [(false, 2), (true, 1)] {
+            explorer.before = before;
+            let camera = Listing::review_line_view(&explorer, &file, 2).unwrap();
+            let hit = side.ray_hit(&camera, 0.12, side.detail_range()).unwrap().0;
+            assert_eq!(side.wall.row(hit.y, count), expected);
+        }
+    }
+
+    #[test]
     fn readable_tiles_and_previews_keep_the_same_rows_on_distinct_depths() {
         let file = fixture_file();
         for face in [Face::Source, Face::Diff, Face::Blame] {
@@ -1559,6 +1901,19 @@ mod tests {
             assert_eq!(clear.rotation, blurred.rotation);
             assert!(separation >= 0.0029 && separation < PANEL_OFFSET);
         }
+    }
+
+    #[test]
+    fn washing_only_saves_a_tile_after_continuous_focus() {
+        let mut preview = None;
+        assert!(!WashPreview::advance(&mut preview, 0, false, 0..16, 4.));
+        assert!(!WashPreview::advance(&mut preview, 0, false, 16..17, 2.));
+        assert!(!WashPreview::advance(&mut preview, 0, false, 0..16, 3.));
+        assert!(!WashPreview::advance(&mut preview, 0, false, 0..16, 3.));
+        assert!(WashPreview::advance(&mut preview, 0, false, 0..16, 0.2));
+        preview = None;
+        assert!(!WashPreview::advance(&mut preview, 0, false, 16..17, 4.9));
+        assert!(WashPreview::advance(&mut preview, 0, false, 16..17, 0.2));
     }
 
     #[test]
@@ -1617,10 +1972,18 @@ mod tests {
                 .ray_hit(&camera, 0.12, source.detail_range())
                 .is_none()
         );
-        assert!(source.keeps_detail(&camera));
-        assert!(source.visible_height(&camera) > 0.);
+        assert!(source.detail_distance(&camera, 16. / 9., false).is_some());
+        assert!(!source.visible_rows(&camera, count, 16. / 9.).is_empty());
         assert!(source.wash_hit(&camera, count).is_none());
-        assert!(!source.keeps_detail(&camera.with_translation(eye + Vec3::Z * 32.)));
+        assert!(
+            source
+                .detail_distance(
+                    &camera.with_translation(eye + Vec3::Z * 32.),
+                    16. / 9.,
+                    true
+                )
+                .is_none()
+        );
     }
 
     #[test]
