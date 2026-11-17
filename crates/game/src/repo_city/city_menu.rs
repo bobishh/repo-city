@@ -67,15 +67,23 @@ extern "C" {
     fn browser_filter_requested() -> bool;
 }
 
-#[cfg(target_arch = "wasm32")]
 pub(super) fn apply_filter_shortcut(
     mut focus: ResMut<file_facade::ChangesOnly>,
     mut menu: ResMut<Menu>,
     picker: Res<file_picker::FilePicker>,
     search: Res<listing::find::Search>,
     review: Res<review_notes::Review>,
+    #[cfg(not(target_arch = "wasm32"))] keys: Res<ButtonInput<KeyCode>>,
+    #[cfg(not(target_arch = "wasm32"))] repository: Option<
+        Res<repository_picker::RepositoryPicker>,
+    >,
 ) {
-    if browser_filter_requested()
+    #[cfg(target_arch = "wasm32")]
+    let requested = browser_filter_requested();
+    #[cfg(not(target_arch = "wasm32"))]
+    let requested = keys.just_pressed(KeyCode::KeyF)
+        && !repository.is_some_and(|picker| picker.blocks_controls());
+    if requested
         && focus.available
         && !picker.is_open()
         && !search.blocks_controls()

@@ -361,8 +361,14 @@ pub(super) fn listing_with_notes(
     glyph_scale: Vec2,
     notes: Option<&[String]>,
 ) -> Image {
-    let width = LISTING_WIDTH;
-    let height = rows.len() as u32 * LISTING_ROW_PIXELS;
+    let pixel_density = |scale: f32, limit: f32| (1. / scale).round().clamp(1., limit) as u32;
+    let x_density = pixel_density(glyph_scale.x, 2.);
+    let y_density = pixel_density(glyph_scale.y, 4.);
+    let width = LISTING_WIDTH * x_density;
+    let row_pixels = LISTING_ROW_PIXELS * y_density;
+    let height = rows.len() as u32 * row_pixels;
+    let x = |position: f32| position * x_density as f32;
+    let glyph_scale = glyph_scale * Vec2::new(x_density as f32, y_density as f32);
     let mut canvas = Canvas {
         pixels: vec![0; (width * height * 4) as usize],
         width,
@@ -370,28 +376,29 @@ pub(super) fn listing_with_notes(
         context: ScaleContext::new(),
     };
     for (index, (line, mark)) in rows.iter().enumerate() {
-        let y = index as u32 * LISTING_ROW_PIXELS;
-        canvas.band(y, y + LISTING_ROW_PIXELS, listing_background(face, *mark));
+        let y = index as u32 * row_pixels;
+        canvas.band(y, y + row_pixels, listing_background(face, *mark));
         let accent = Coverage::Open.accent();
         let change = source_change_ink(face, *mark);
-        for py in y..y + LISTING_ROW_PIXELS {
-            for x in 91..96 {
+        for py in y..y + row_pixels {
+            for x in 91 * x_density..96 * x_density {
                 let pixel = ((py * width + x) * 4) as usize;
                 canvas.pixels[pixel..pixel + 3].copy_from_slice(&accent);
             }
             if let Some(ink) = change {
-                for x in 101..105 {
+                for x in 101 * x_density..105 * x_density {
                     let pixel = ((py * width + x) * 4) as usize;
                     canvas.pixels[pixel..pixel + 3].copy_from_slice(&ink);
                 }
             }
         }
         let Some(line) = line else { continue };
-        let row_center = LISTING_ROW_PIXELS as f32 / 2.;
-        let baseline = y as f32 + row_center + (21. - row_center) * glyph_scale.y;
+        let row_center = row_pixels as f32 / 2.;
+        let baseline =
+            y as f32 + row_center + (21. - LISTING_ROW_PIXELS as f32 / 2.) * glyph_scale.y;
         canvas.scaled_text(
             &format!("{:>6}", line.number),
-            84. - 72. * glyph_scale.x,
+            x(84.) - 72. * glyph_scale.x,
             baseline,
             20.,
             glyph_scale,
@@ -405,7 +412,7 @@ pub(super) fn listing_with_notes(
                     (28, 17.)
                 };
                 let short = author.chars().take(limit).collect::<String>();
-                canvas.scaled_text(&short, 106., baseline, size, glyph_scale, |_| {
+                canvas.scaled_text(&short, x(106.), baseline, size, glyph_scale, |_| {
                     [0.53, 0.83, 0.78]
                 });
             }
@@ -417,7 +424,7 @@ pub(super) fn listing_with_notes(
         } else {
             106
         };
-        let start = 106. + (text_start as f32 - 106.) * glyph_scale.x;
+        let start = x(106.) + (text_start as f32 - 106.) * glyph_scale.x;
         canvas.scaled_text(&line.text, start, baseline, 20., glyph_scale, |byte| {
             ink(line
                 .spans
@@ -437,4 +444,46 @@ pub(super) fn listing_with_notes(
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::default(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compressed_wall_glyphs_keep_enough_texels_and_the_same_normalized_gutter() {
+        let rows = [(
+            Some(Line {
+                number: 1,
+                text: "HELLO".into(),
+                spans: Vec::new(),
+            }),
+            Mark::Context,
+        )];
+        for (scale, density) in [
+            (Vec2::ONE, UVec2::ONE),
+            (Vec2::new(0.5, 1.), UVec2::new(2, 1)),
+            (Vec2::new(1., 0.25), UVec2::new(1, 4)),
+        ] {
+            let image = listing(&rows, Face::Source, scale);
+            assert_eq!(image.width(), LISTING_WIDTH * density.x);
+            assert_eq!(image.height(), LISTING_ROW_PIXELS * density.y);
+            let data = image.data.unwrap();
+            let gutter = (91 * density.x * 4) as usize;
+            assert_eq!(&data[gutter..gutter + 3], &Coverage::Open.accent());
+            let width = image.texture_descriptor.size.width as usize;
+            let bright_rows = data
+                .chunks_exact(width * 4)
+                .filter(|row| {
+                    row[106 * density.x as usize * 4..]
+                        .chunks_exact(4)
+                        .any(|p| p[0] > 160)
+                })
+                .count();
+            assert!(
+                bright_rows >= 12,
+                "{scale:?} only used {bright_rows} texels"
+            );
+        }
+    }
 }

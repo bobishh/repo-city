@@ -6,6 +6,10 @@ use super::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
+#[cfg(not(target_arch = "wasm32"))]
+mod ui;
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) use ui::{ReviewUi, update as panels};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(super) struct Preset {
@@ -250,8 +254,8 @@ impl Review {
             revision: repo.revision.clone(),
             baseline: repo.baseline.clone(),
             anchor,
+            text: preset.prompt.clone(),
             preset,
-            text: String::new(),
             published: None,
             remote: false,
             resolved: None,
@@ -400,32 +404,8 @@ pub(super) fn update(
     review.nozzle = (review.nozzle + direction * time.delta_secs() / 0.11).clamp(0., 1.);
 }
 
-pub(super) fn panels(
-    mut review: ResMut<Review>,
-    mut explorer: ResMut<Explorer>,
-    mut camera: Query<&mut Pilot, PlayerCamera>,
-    #[cfg(not(target_arch = "wasm32"))] mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
-    #[cfg(not(target_arch = "wasm32"))] time: Res<Time>,
-    #[cfg(not(target_arch = "wasm32"))] mut hint: Query<&mut Visibility, With<EmptyNotesHint>>,
-    #[cfg(not(target_arch = "wasm32"))] mut hint_until: Local<f32>,
-    #[cfg(not(target_arch = "wasm32"))] _main_thread: bevy::ecs::system::NonSendMarker,
-) {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        if review.notes.is_empty() && matches!(review.request, Some(Panel::Notes | Panel::Aimed)) {
-            review.request = None;
-            *hint_until = time.elapsed_secs() + 3.5;
-        } else if review.request.is_some() {
-            *hint_until = 0.;
-        }
-        if let Ok(mut hint) = hint.single_mut() {
-            hint.set_if_neq(if time.elapsed_secs() < *hint_until {
-                Visibility::Inherited
-            } else {
-                Visibility::Hidden
-            });
-        }
-    }
+#[cfg(target_arch = "wasm32")]
+pub(super) fn panels(mut review: ResMut<Review>, mut camera: Query<&mut Pilot, PlayerCamera>) {
     let Some(panel) = review.request.take() else {
         return;
     };
@@ -436,26 +416,12 @@ pub(super) fn panels(
         pilot.fire_ready = false;
     }
     review.drag = None;
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = &mut explorer;
-        browser_panel(
-            &serde_json::to_string(&panel).unwrap_or_default(),
-            &serde_json::to_string(&review.palette).unwrap_or_default(),
-            review.slot,
-            review.aim_note.as_deref().unwrap_or(""),
-        );
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        if let Ok(mut cursor) = cursor.single_mut() {
-            cursor.grab_mode = CursorGrabMode::None;
-            cursor.visible = true;
-        }
-        if let Err(error) = native::panel(&mut review, panel) {
-            explorer.notice = error;
-        }
-    }
+    browser_panel(
+        &serde_json::to_string(&panel).unwrap_or_default(),
+        &serde_json::to_string(&review.palette).unwrap_or_default(),
+        review.slot,
+        review.aim_note.as_deref().unwrap_or(""),
+    );
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -509,7 +475,10 @@ mod tests {
     #[test]
     fn opening_empty_notes_keeps_capture_and_the_hint_expires() {
         let mut app = App::new();
-        app.insert_resource(Time::<()>::default())
+        app.init_resource::<ReviewUi>()
+            .init_resource::<bevy::input_focus::InputFocus>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .insert_resource(Time::<()>::default())
             .insert_resource(Explorer::new(0))
             .insert_resource(Review {
                 request: Some(Panel::Notes),

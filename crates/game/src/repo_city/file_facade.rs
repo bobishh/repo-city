@@ -54,16 +54,27 @@ pub(super) fn lower_unchanged(
     mut explorer: ResMut<Explorer>,
     mut listing: ResMut<listing::Listing>,
     mut navigation: ResMut<city_navigation::Navigation>,
-    mut parts: Query<(&SinkPart, &mut Transform)>,
+    mut comparison: Local<Option<(PathBuf, String, Option<String>)>>,
+    mut parts: ParamSet<(
+        Query<(&SinkPart, &mut Transform)>,
+        Query<(&SinkPart, &mut Transform), Added<SinkPart>>,
+    )>,
 ) {
     #[cfg(target_arch = "wasm32")]
     let available = browser_can_filter_changes();
     #[cfg(not(target_arch = "wasm32"))]
-    let available = false;
+    let available = repo.0.baseline.is_some();
     focus.available = available;
     if repo.is_changed() {
-        focus.lowered = 0.;
-        focus.enabled = false;
+        let identity = (
+            repo.0.root.clone(),
+            repo.0.revision.clone(),
+            repo.0.baseline.clone(),
+        );
+        if comparison.as_ref() != Some(&identity) {
+            *comparison = Some(identity);
+            focus.enabled = false;
+        }
     }
     if !available {
         focus.enabled = false;
@@ -72,7 +83,6 @@ pub(super) fn lower_unchanged(
         && let Some(index) = repo.0.files.iter().position(|file| focus.includes(file))
     {
         explorer.open(&repo.0, index);
-        explorer.frame_loaded_source = false;
         explorer.anchored = false;
         explorer.comparison_mode = 0;
         listing.reset_view();
@@ -80,12 +90,17 @@ pub(super) fn lower_unchanged(
     }
     let target = f32::from(focus.enabled);
     if focus.lowered == target {
+        if target > 0. {
+            for (part, mut pose) in &mut parts.p1() {
+                pose.translation.y = part.height(target);
+            }
+        }
         return;
     }
     let step = time.delta_secs() / 0.65;
     focus.lowered += (target - focus.lowered).clamp(-step, step);
     let eased = focus.lowered * focus.lowered * (3. - 2. * focus.lowered);
-    for (part, mut pose) in &mut parts {
+    for (part, mut pose) in &mut parts.p0() {
         pose.translation.y = part.height(eased);
     }
 }
@@ -415,6 +430,53 @@ mod tests {
             file.change = change;
             assert!(focus.includes(&file));
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_building_streamed_after_the_filter_settles_starts_below_the_street() {
+        let mut repo = repository_picker::empty();
+        repo.baseline = Some("base".into());
+        repo.files.push(repo_world::File {
+            path: "changed.rs".into(),
+            before: None,
+            after: None,
+            change: Change::Added,
+            position: [0., 0.],
+        });
+        let mut app = App::new();
+        app.insert_resource(Repo(repo))
+            .insert_resource(Explorer::new(0))
+            .insert_resource(Time::<()>::default())
+            .init_resource::<ChangesOnly>()
+            .init_resource::<listing::Listing>()
+            .init_resource::<city_navigation::Navigation>()
+            .add_systems(Update, lower_unchanged);
+        app.update();
+        {
+            let mut filter = app.world_mut().resource_mut::<ChangesOnly>();
+            filter.toggle();
+            filter.lowered = 1.;
+        }
+        let building = app
+            .world_mut()
+            .spawn((
+                SinkPart {
+                    street_y: 5.,
+                    depth: 30.,
+                },
+                Transform::from_xyz(4., 5., 6.),
+            ))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<Transform>(building)
+                .unwrap()
+                .translation
+                .y,
+            -25.
+        );
     }
 
     #[test]

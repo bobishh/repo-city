@@ -758,6 +758,7 @@ test("publishes a painted preset in one action and still supports suggestions", 
   await canvas.screenshot({ path: testInfo.outputPath("live-paint.png") });
   await page.mouse.up();
   await expect.poll(() => page.evaluate(() => JSON.parse(globalThis.repoCity.reviewRead()).notes.filter(note => !note.remote).length)).toBe(1);
+  await expect(review).toBeHidden();
   await page.keyboard.press("KeyJ", { delay: 120 });
   await expect(review).toBeVisible({ timeout: 20_000 });
   const draft = review.getByRole("button", { name: /Investigate.*Draft/ });
@@ -777,7 +778,11 @@ test("publishes a painted preset in one action and still supports suggestions", 
   await page.mouse.down();
   await page.waitForTimeout(350);
   await page.mouse.up();
-  await expect.poll(() => page.evaluate(() => JSON.parse(globalThis.repoCity.reviewRead()).notes.filter(note => !note.remote).length)).toBeGreaterThanOrEqual(1);
+  await expect.poll(() => page.evaluate(() => JSON.parse(globalThis.repoCity.reviewRead()).notes.filter(note => !note.remote && !note.published).length)).toBeGreaterThan(0);
+  await expect(review).toBeHidden();
+  await page.keyboard.press("KeyJ", { delay: 120 });
+  await expect(review).toBeVisible({ timeout: 20_000 });
+  if (await draft.isVisible()) await draft.click();
   await expect(review.getByRole("button", { name: "Edit comment" })).toBeVisible({ timeout: 20_000 });
   await review.getByRole("button", { name: "Write a comment" }).click();
   await expect(review.getByLabel("Comment")).toHaveValue("");

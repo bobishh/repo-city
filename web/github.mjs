@@ -1,5 +1,4 @@
 const API = "https://api.github.com";
-const MAX_FILES = 5000;
 const MAX_BLOB_SIZE = 1024 * 1024;
 
 export function parseRepository(input) {
@@ -133,18 +132,40 @@ export async function loadGitHub(input, ref, base, request = fetch) {
       : head.parents[0];
   }
 
+  const subtrees = new Map();
+  function subtree(repository, sha) {
+    const key = `${repository}:${sha}`;
+    if (!subtrees.has(key)) subtrees.set(key, read(`/git/trees/${sha}`, repository));
+    return subtrees.get(key);
+  }
+
   async function inventory(commit, repository) {
     if (!commit) return {};
     const tree = await read(`/git/trees/${commit.sha}?recursive=1`, repository);
-    if (tree.truncated) throw new Error("GitHub truncated this tree. Choose a smaller repository.");
-    return Object.fromEntries(tree.tree.filter(entry => entry.type === "blob").map(entry => [
-      entry.path, { id: entry.sha, mode: entry.mode, size: entry.size },
-    ]));
+    const blob = entry => ({ id: entry.sha, mode: entry.mode, size: entry.size });
+    if (!tree.truncated) return Object.fromEntries(tree.tree
+      .filter(entry => entry.type === "blob").map(entry => [entry.path, blob(entry)]));
+    const files = Object.create(null);
+    const folders = [{ path: "", sha: tree.sha || commit.sha }];
+    for (let offset = 0; offset < folders.length;) {
+      const batch = folders.slice(offset, offset + 8);
+      const contents = await Promise.all(batch.map(folder => subtree(repository, folder.sha)));
+      contents.forEach(({ tree, truncated }, index) => {
+        const prefix = batch[index].path;
+        if (truncated) throw new Error(`GitHub truncated the directory ${prefix || "/"}.`);
+        for (const entry of tree) {
+          const path = prefix + entry.path;
+          if (entry.type === "blob") files[path] = blob(entry);
+          if (entry.type === "tree") folders.push({ path: path + "/", sha: entry.sha });
+        }
+      });
+      offset += batch.length;
+    }
+    return files;
   }
 
   const [before, after] = await Promise.all([inventory(baseline, name), inventory(head, headRepository)]);
-  const paths = new Set([...Object.keys(before), ...Object.keys(after)]);
-  if (!paths.size || paths.size > MAX_FILES) throw new Error(`Repo City supports 1 to ${MAX_FILES} files per comparison.`);
+  if (!Object.keys(before).length && !Object.keys(after).length) throw new Error("This comparison has no files.");
 
   const forkBlobs = headRepository === name ? null : new Set(Object.values(after).map(file => file.id));
   function blameTarget(path, useBase) {

@@ -232,7 +232,6 @@ pub(super) fn update(
     } else if !next.files.is_empty() {
         next_explorer.open(&next, index);
     }
-    next_explorer.frame_loaded_source = false;
     repository_picker::replace_selection(
         &mut commands,
         &old_city,

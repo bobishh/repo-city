@@ -125,6 +125,7 @@ impl Lights {
         let pane = Vec3::new(x + 3., 4.25, max_z);
         commands.spawn((
             CityObject,
+            city_stream::DistrictPart(index),
             Glass,
             NotShadowCaster,
             Mesh3d(self.glass.clone()),
@@ -133,6 +134,7 @@ impl Lights {
         ));
         commands.spawn((
             CityObject,
+            city_stream::DistrictPart(index),
             Beacon(index),
             NotShadowCaster,
             Mesh3d(self.beacon.clone()),
@@ -160,13 +162,14 @@ impl Lights {
         {
             commands.spawn((
                 CityObject,
+                city_stream::DistrictPart(index),
                 NotShadowCaster,
                 Mesh3d(meshes.add(mesh.expect("district has lights"))),
                 MeshMaterial3d(material.clone()),
                 Transform::from_translation(origin),
             ));
         }
-        label(
+        let sign = label(
             commands,
             meshes,
             materials,
@@ -176,6 +179,9 @@ impl Lights {
             24.,
             TINTS[ink],
         );
+        commands
+            .entity(sign)
+            .insert(city_stream::DistrictPart(index));
     }
 }
 

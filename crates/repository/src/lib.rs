@@ -200,12 +200,6 @@ impl Repository {
         let mut paths: Vec<_> = before.keys().chain(after.keys()).cloned().collect();
         paths.sort();
         paths.dedup();
-        if paths.len() > 5000 {
-            return Err(format!(
-                "{} files: first version supports up to 5000. Select a smaller repository.",
-                paths.len()
-            ));
-        }
         let files = paths
             .into_iter()
             .map(|path| {
@@ -412,6 +406,28 @@ pub fn cut_lines(source: &str, start: u32, end: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn comparison_keeps_all_paths_above_the_city_residency_limit() {
+        let after = (0..5001)
+            .map(|index| {
+                (
+                    format!("src/{index:04}.rs"),
+                    Blob {
+                        id: index.to_string(),
+                        mode: "100644".into(),
+                        size: 40,
+                    },
+                )
+            })
+            .collect();
+        let repo =
+            Repository::from_trees(PathBuf::new(), "head".into(), None, BTreeMap::new(), after)
+                .unwrap();
+        assert_eq!(repo.files.len(), 5001);
+        assert_eq!(repo.files[5000].path, "src/5000.rs");
+    }
+
     #[test]
     fn lower_roofs_face_the_street_and_no_tall_ring_blocks_them() {
         let files = (0..24)

@@ -22,7 +22,27 @@ test("a branch comparison inventories its merge base and loads source on demand"
   assert.equal(new TextDecoder().decode(await repo.blob("head")), "xyz");
 });
 
-test("a truncated tree fails instead of silently dropping files", async () => {
+test("a truncated recursive tree is completed through its subtrees", async () => {
+  const files = Array.from({ length: 5001 }, (_, index) => ({
+    path: `file-${index}.rs`, sha: `blob-${index}`, type: "blob", mode: "100644", size: 3,
+  }));
+  const repo = await loadGitHub("owner/project", "main", "", async input => {
+    const url = new URL(input);
+    if (url.pathname.includes("/commits/")) return Response.json({ sha: "head", parents: [] });
+    if (url.searchParams.has("recursive")) return Response.json({ truncated: true, tree: [] });
+    if (url.pathname.endsWith("/head")) return Response.json({ tree: [
+      { path: "src", sha: "folder", type: "tree" },
+      { path: "tests", sha: "folder", type: "tree" },
+    ] });
+    assert.ok(url.pathname.endsWith("/folder"));
+    return Response.json({ tree: files });
+  });
+  const { after } = JSON.parse(repo.snapshot);
+  assert.equal(Object.keys(after).length, 10002);
+  assert.equal(after["tests/file-5000.rs"].id, "blob-5000");
+});
+
+test("an individually truncated directory cannot silently drop files", async () => {
   await assert.rejects(loadGitHub("owner/project", "main", "", async url =>
     Response.json(url.includes("/commits/") ? { sha: "head", parents: [] } : { truncated: true })), /truncated/);
 });

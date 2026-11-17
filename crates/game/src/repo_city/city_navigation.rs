@@ -67,7 +67,7 @@ struct Hop {
 
 #[derive(Clone, Copy)]
 enum Arrival {
-    Facade(Option<file_facade::Aim>),
+    Facade,
     Stop,
     ReviewWall,
     ReviewLine,
@@ -88,13 +88,8 @@ impl Hop {
         }
     }
 
-    fn facade(
-        start: Transform,
-        end: Transform,
-        aim: Option<file_facade::Aim>,
-        repo: &Repository,
-    ) -> Self {
-        let mut hop = Self::new(start, end, Arrival::Facade(aim));
+    fn facade(start: Transform, end: Transform, repo: &Repository) -> Self {
+        let mut hop = Self::new(start, end, Arrival::Facade);
         hop.roof = hop
             .roof
             .max(flight_roof(start.translation, end.translation, repo));
@@ -114,7 +109,7 @@ impl Hop {
             translation.y += lift * (std::f32::consts::PI * eased).sin().max(0.);
         }
         let mut rotation = self.start.rotation.slerp(self.end.rotation, eased);
-        if matches!(self.arrival, Arrival::Facade(_) | Arrival::ReviewLine) {
+        if matches!(self.arrival, Arrival::Facade | Arrival::ReviewLine) {
             let smooth = |v: f32| {
                 let v = v.clamp(0., 1.);
                 v * v * (3. - 2. * v)
@@ -359,7 +354,6 @@ pub(super) fn navigate(
             explorer.before = destination.anchor.before;
             explorer.reload(&repo.0);
         }
-        explorer.frame_loaded_source = false;
         explorer.rebuild = true;
         listing.reset_view();
         navigation.review_line = Some((destination.anchor.start, time.elapsed_secs() + 10.));
@@ -377,7 +371,7 @@ pub(super) fn navigate(
                 {
                     Hop::new(*camera, end, Arrival::ReviewWall)
                 } else {
-                    let mut hop = Hop::facade(*camera, end, None, &repo.0);
+                    let mut hop = Hop::facade(*camera, end, &repo.0);
                     hop.arrival = Arrival::ReviewLine;
                     hop
                 },
@@ -454,20 +448,6 @@ pub(super) fn navigate(
         return;
     }
     if let Some(hop) = &mut navigation.hop {
-        if let Arrival::Facade(aim) = hop.arrival {
-            let file = &repo.0.files[explorer.selected];
-            let end = listing.arrival_view(
-                &explorer,
-                file,
-                listing::block_size(file),
-                aim,
-                hop.start.translation,
-            );
-            if hop.end != end {
-                // Loaded rows can refine the arrival target on the wall.
-                *hop = Hop::facade(*camera, end, aim, &repo.0);
-            }
-        }
         hop.elapsed += time.delta_secs();
         let progress = hop.elapsed / hop.duration;
         *camera = hop.pose(progress);
@@ -505,10 +485,8 @@ pub(super) fn navigate(
                     }
                     navigation.redraw = true;
                 }
-                Arrival::Facade(_)
-                | Arrival::Overview
-                | Arrival::ReviewWall
-                | Arrival::ReviewLine => {}
+                Arrival::Facade | Arrival::Overview | Arrival::ReviewWall | Arrival::ReviewLine => {
+                }
             }
         }
         return;
@@ -621,14 +599,13 @@ pub(super) fn navigate(
         explorer.rebuild = true;
         let file = &repo.0.files[index];
         let size = listing::block_size(file);
-        explorer.frame_loaded_source = false;
         let end = listing.arrival_view(&explorer, file, size, aimed, camera.translation);
         if camera.translation.distance_squared(end.translation) < 0.04
             && camera.rotation.dot(end.rotation).abs() > 0.9999
         {
             return;
         }
-        let mut hop = Hop::facade(*camera, end, aimed, &repo.0);
+        let mut hop = Hop::facade(*camera, end, &repo.0);
         if from_overview {
             hop.duration = hop.duration.min(1.65);
         }
@@ -641,7 +618,6 @@ pub(super) fn navigate(
     {
         listing.reset_view();
         explorer.open(&repo.0, index);
-        explorer.frame_loaded_source = false;
     }
 }
 
@@ -1030,7 +1006,7 @@ mod tests {
     fn approach_clears_roofs_and_ends_at_the_reading_view() {
         let start = Transform::from_xyz(0., 5., 10.);
         let end = Transform::from_xyz(100., 8., 15.).looking_to(Vec3::NEG_X, Vec3::Y);
-        let hop = Hop::new(start, end, Arrival::Facade(None));
+        let hop = Hop::new(start, end, Arrival::Facade);
         assert_eq!(hop.pose(0.).translation, start.translation);
         assert!(hop.pose(0.5).translation.y > 18.);
         assert_eq!(hop.pose(1.).translation, end.translation);

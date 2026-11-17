@@ -104,7 +104,7 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
                 left: px(if cfg!(target_arch = "wasm32") {
                     24.
                 } else {
-                    325.
+                    410.
                 }),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4.),
@@ -217,6 +217,10 @@ pub(super) fn update(
     mut events: MessageReader<KeyboardInput>,
     mut picker: ResMut<FilePicker>,
     search: Res<listing::find::Search>,
+    review: Option<Res<review_notes::Review>>,
+    #[cfg(not(target_arch = "wasm32"))] repository: Option<
+        Res<repository_picker::RepositoryPicker>,
+    >,
     repo: Res<Repo>,
     focus: Res<file_facade::ChangesOnly>,
     mut pilot: Query<&mut Pilot>,
@@ -235,7 +239,10 @@ pub(super) fn update(
     #[cfg(not(target_arch = "wasm32"))] reset_button: Query<&Children, With<ResetProgressButton>>,
 ) {
     picker.suppress_input = false;
-    if search.blocks_controls() {
+    let modal = review.is_some_and(|review| review.blocked);
+    #[cfg(not(target_arch = "wasm32"))]
+    let modal = modal || repository.is_some_and(|repository| repository.blocks_controls());
+    if search.blocks_controls() || modal {
         events.clear();
         return;
     }

@@ -13,7 +13,7 @@ mod paint;
 pub(super) use cover::Plugin as CoverPlugin;
 pub(super) use paint::draw as paint_notes;
 
-const TILE_ROWS: usize = 16;
+pub(super) const TILE_ROWS: usize = 16;
 const TILES_PER_SIDE: usize = 6;
 const MAX_VISIBLE_TILES: usize = 10;
 const RETIRING_TILES: usize = 2;
@@ -56,7 +56,12 @@ pub(super) fn view(file: &repo_world::File, count: usize) -> Transform {
 
 pub(super) fn view_from_size(file: &repo_world::File, count: usize, size: Vec3) -> Transform {
     let side = WallSide::new(file, count, Face::Source, size);
-    side.view(side.wall.y(count.clamp(1, 8) as f32 / 2.))
+    let row = if count == 0 {
+        4.
+    } else {
+        count.min(8) as f32 / 2.
+    };
+    side.view(side.wall.y(row).max(side.wall.top * 0.5))
 }
 
 struct Wall {
@@ -304,6 +309,15 @@ fn projected_row(explorer: &Explorer, row: usize, to_diff: bool) -> usize {
 }
 
 impl Listing {
+    pub(super) fn building_loaded(&mut self, index: usize) {
+        if self.reveal_progress.contains_key(&(index, true))
+            || self.reveal_progress.contains_key(&(index, false))
+            || self.rendered.is_some_and(|(active, _, _)| active == index)
+        {
+            self.overview_dirty.insert(index);
+        }
+    }
+
     #[cfg(target_arch = "wasm32")]
     pub(super) fn invalidate(&mut self) {
         self.invalidated = true;
@@ -367,7 +381,7 @@ impl Listing {
         };
         let side = WallSide::new(file, count, face, size);
         let y = if count == 0 {
-            side.wall.top * 0.92
+            side.wall.y(0.5)
         } else {
             let preferred =
                 surface.map_or(0, |surface| side.wall.row(size.y * surface.height, count));
@@ -815,7 +829,8 @@ impl WallSide {
             Face::Blame => (x - size.x / 2. - PANEL_OFFSET, z, size.z),
         };
         let heading_height = width * HEADING_RATIO;
-        let wall = Wall::new(count, size.y - heading_height);
+        let mut wall = Wall::new(count, size.y - heading_height);
+        wall.row_height = wall.row_height.min(texture_row_height(width) * 1.5);
         Self {
             top: Vec3::new(x, wall.top, z),
             wall,
@@ -927,7 +942,8 @@ impl WallSide {
             return None;
         }
         let (point, _) = self.ray_hit(camera, 0.12, self.detail_range())?;
-        (count > 0 && point.y < self.wall.top).then_some(point)
+        (count > 0 && (self.wall.y(count as f32)..self.wall.top).contains(&point.y))
+            .then_some(point)
     }
 
     fn look_height(&self, camera: &Transform) -> f32 {
@@ -1498,13 +1514,19 @@ pub(super) fn draw(
             diff.glyph_scale(),
         )
     });
-    if viewed != Some(Face::Source) {
+    let retain = |face, tiles: &Tiles| {
+        viewed == Some(face) || (!tiles.resident.is_empty() && near(face, true).is_some())
+    };
+    let show_source = retain(Face::Source, source_tiles);
+    let show_diff = retain(Face::Diff, diff_tiles);
+    let show_blame = retain(Face::Blame, blame_tiles);
+    if !show_source {
         render.hide_side(source_tiles);
     }
-    if viewed != Some(Face::Diff) {
+    if !show_diff {
         render.hide_side(diff_tiles);
     }
-    if viewed != Some(Face::Blame) {
+    if !show_blame {
         render.hide_side(blame_tiles);
     }
 
@@ -1566,52 +1588,60 @@ pub(super) fn draw(
             &marks,
         )
     };
-    match viewed {
-        Some(Face::Source) => render.tiles(
-            &source,
-            source_tiles,
-            source.visible_rows(camera, count, aspect),
-            source.wall.row(source.look_height(camera), count),
-            count,
-            |rows| code_texture::listing(&source_rows(rows), Face::Source, source.glyph_scale()),
-            Some(TileDetails {
-                mask: &mask,
-                metadata: &metadata,
-                paint: &source_paint,
-            }),
-        ),
-        Some(Face::Diff) => render.tiles(
-            &diff,
-            diff_tiles,
-            diff.visible_rows(camera, diff_count, aspect),
-            diff.wall.row(diff.look_height(camera), diff_count),
-            diff_count,
-            |rows| code_texture::listing(&diff_lines[rows], Face::Diff, diff.glyph_scale()),
-            Some(TileDetails {
-                mask: &|_| u32::MAX,
-                metadata: &|rows, bits| {
-                    cover::CoverRows::new(&diff_lines[rows], bits, diff.glyph_scale())
+    for face in viewed.into_iter().chain(
+        [Face::Source, Face::Diff, Face::Blame]
+            .into_iter()
+            .filter(|face| Some(*face) != viewed),
+    ) {
+        match face {
+            Face::Source if show_source => render.tiles(
+                &source,
+                source_tiles,
+                source.visible_rows(camera, count, aspect),
+                source.wall.row(source.look_height(camera), count),
+                count,
+                |rows| {
+                    code_texture::listing(&source_rows(rows), Face::Source, source.glyph_scale())
                 },
-                paint: &diff_paint,
-            }),
-        ),
-        Some(Face::Blame) => render.tiles(
-            &blame,
-            blame_tiles,
-            blame.visible_rows(camera, count, aspect),
-            blame.wall.row(blame.look_height(camera), count),
-            count,
-            |rows| {
-                code_texture::listing_with_notes(
-                    &source_rows(rows),
-                    Face::Blame,
-                    blame.glyph_scale(),
-                    attribution.notes(),
-                )
-            },
-            None,
-        ),
-        None => {}
+                Some(TileDetails {
+                    mask: &mask,
+                    metadata: &metadata,
+                    paint: &source_paint,
+                }),
+            ),
+            Face::Diff if show_diff => render.tiles(
+                &diff,
+                diff_tiles,
+                diff.visible_rows(camera, diff_count, aspect),
+                diff.wall.row(diff.look_height(camera), diff_count),
+                diff_count,
+                |rows| code_texture::listing(&diff_lines[rows], Face::Diff, diff.glyph_scale()),
+                Some(TileDetails {
+                    mask: &|_| u32::MAX,
+                    metadata: &|rows, bits| {
+                        cover::CoverRows::new(&diff_lines[rows], bits, diff.glyph_scale())
+                    },
+                    paint: &diff_paint,
+                }),
+            ),
+            Face::Blame if show_blame => render.tiles(
+                &blame,
+                blame_tiles,
+                blame.visible_rows(camera, count, aspect),
+                blame.wall.row(blame.look_height(camera), count),
+                count,
+                |rows| {
+                    code_texture::listing_with_notes(
+                        &source_rows(rows),
+                        Face::Blame,
+                        blame.glyph_scale(),
+                        attribution.notes(),
+                    )
+                },
+                None,
+            ),
+            _ => {}
+        }
     }
 }
 
@@ -1639,6 +1669,11 @@ pub(super) fn smoke_side(explorer: &Explorer, file: &repo_world::File, blame: bo
         side.wall.y(row.clamp(0, count - 1) as f32 + 0.5)
     };
     side.view(focus)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn smoke_source_ready(listing: &Listing) -> bool {
+    !listing.source_tiles.resident.is_empty()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1701,6 +1736,20 @@ mod tests {
                 assert!((horizontal - vertical).abs() < 0.00001);
             }
         }
+    }
+
+    #[test]
+    fn sparse_source_rows_fit_at_the_top_without_resizing_the_building() {
+        let file = fixture_with_rows(300);
+        let size = block_size(&file);
+        let count = 25;
+        let side = WallSide::new(&file, count, Face::Source, size);
+        assert!((side.wall.top + side.heading_height - size.y).abs() < 0.00001);
+        assert_eq!(side.wall.row_height, texture_row_height(side.width) * 1.5);
+        let below_code = side.wall.y(count as f32) - 1.;
+        let target = side.top.with_y(below_code);
+        let camera = Transform::from_translation(target + Vec3::Z * 2.).looking_at(target, Vec3::Y);
+        assert!(side.wash_hit(&camera, count).is_none());
     }
 
     #[test]

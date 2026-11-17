@@ -253,7 +253,6 @@ pub(crate) fn draw(
                 match review.save_draft(&repo.0, anchor) {
                     Ok(note) => {
                         review.aim_note = Some(note.id);
-                        review.request = Some(review_notes::Panel::Aimed);
                         explorer.notice = "Draft saved. Press J to reopen an aimed note.".into();
                     }
                     Err(error) => explorer.notice = error,

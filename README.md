@@ -54,8 +54,21 @@ first argument.
 
 Choose **Revisions… → Live worktree** to compare the working directory with
 `HEAD`. Saves update changed buildings, and new non-ignored files appear in
-the city. Press **G** at a changed file to read its diff. From the command line,
+the city. Press **F** to show only changed files and **G** at a changed file
+to read its diff. From the command line,
 run `./scripts/run-native.sh /path/to/checkout --live`.
+The script runs the Rust development build. The watcher updates the city when
+the inspected checkout changes. Restart the program to load changes to Repo
+City's own Rust code.
+
+Choose **GitHub…** to open a GitHub repository or pull request by URL. Use
+**Sign in** to request a device code, then **Enter code on GitHub** to
+authorize the app in your browser. Public repositories can open before you
+sign in. The app uses Git to fetch snapshots and the GitHub API for review
+comments.
+
+In large repositories the city loads nearby buildings as you fly. File search
+still covers the entire comparison.
 
 ## Controls
 
@@ -86,13 +99,16 @@ unchanged file contents and diffs.
 ## Leave review notes
 
 Wash the source or use the readable diff wall. Pick a paint with **U** and
-drag over lines to color them and open a draft. To reopen it, aim at the
+drag over lines to color them and save a draft with that paint's reusable
+prompt. To open the draft, aim at the
 marked lines and press **J**. Each draft keeps its original file, revision,
 and line range.
 Change a paint's name, color, spray text, or reusable prompt in **Paints**.
 
 The Mac app saves notes and palettes in SQLite without a GitHub login.
 Choose **Review notes** from the right-click menu to reopen or export them.
+When viewing an open GitHub pull request, signed-in users with write access
+can explicitly publish a note from its detail panel.
 In the browser, sign in with GitHub to save drafts for a pull request in
 IndexedDB. Existing public review threads are readable without signing in.
 Choose a local paint for a GitHub thread from its detail panel. GitHub still
