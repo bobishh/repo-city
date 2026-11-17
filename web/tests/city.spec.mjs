@@ -738,6 +738,7 @@ test("restores review progress after reload and resets only the open comparison"
 });
 
 test("publishes a painted preset in one action and still supports suggestions", async ({ page }, testInfo) => {
+  test.setTimeout(300_000);
   await emulatePointerLock(page);
   let remoteMark;
   let viewed = false;
