@@ -40,3 +40,9 @@ Copyright 2015 Google Inc. See `licenses/pulldown-cmark-MIT.txt`.
 Native HTML layout uses bevy_markup 0.8.0 under MIT or Apache-2.0.
 Copyright 2026 Nikita Chashchinskii. See `licenses/bevy-markup-MIT.txt`
 and `licenses/bevy-markup-APACHE.txt`.
+
+## Project artwork
+
+The repository cover (`web/assets/start-screen.webp`) and facade texture
+(`assets/city/facade-print.png`) are original artwork created for this project.
+They are distributed under the project's MIT or Apache-2.0 license.
