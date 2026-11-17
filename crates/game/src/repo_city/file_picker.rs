@@ -237,6 +237,8 @@ pub(super) fn update(
     >,
     mut labels: Query<(&mut Text, Has<PickerQuery>, Has<PickerHint>)>,
     #[cfg(not(target_arch = "wasm32"))] reset_button: Query<&Children, With<ResetProgressButton>>,
+    (nearest, explorer): (Option<Res<Nearest>>, Option<Res<Explorer>>),
+    #[cfg(not(target_arch = "wasm32"))] mut markdown: Option<ResMut<markdown_preview::Request>>,
 ) {
     picker.suppress_input = false;
     let modal = review.is_some_and(|review| review.blocked);
@@ -252,6 +254,37 @@ pub(super) fn update(
         KeyCode::ControlLeft,
         KeyCode::ControlRight,
     ]);
+    if keys.just_pressed(KeyCode::KeyP)
+        && !command
+        && !picker.open
+        && !keys.any_pressed([
+            KeyCode::AltLeft,
+            KeyCode::AltRight,
+            KeyCode::ShiftLeft,
+            KeyCode::ShiftRight,
+        ])
+        && let Some(index) = nearest
+            .as_ref()
+            .and_then(|nearest| nearest.file.map(|aim| aim.index).or(nearest.near_source))
+        && let Some(file) = repo
+            .0
+            .files
+            .get(index)
+            .filter(|file| focus.includes(file) && markdown_preview::is_markdown(&file.path))
+    {
+        let before = file.after.is_none()
+            || explorer
+                .as_ref()
+                .is_some_and(|explorer| explorer.selected == index && explorer.before);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(markdown) = markdown.as_deref_mut() {
+            markdown.0 = Some((index, before));
+        }
+        #[cfg(target_arch = "wasm32")]
+        markdown_preview::open_browser(&file.path, before);
+        events.clear();
+        return;
+    }
     let shortcut = keys.just_pressed(KeyCode::KeyP)
         && if cfg!(target_arch = "wasm32") {
             !command && !picker.open

@@ -18,6 +18,7 @@ pub(super) enum Mark {
         path: String,
         diff: bool,
     },
+    ReadDocument(markdown_preview::ReadDocument),
 }
 
 #[derive(Resource, Default)]
@@ -199,6 +200,14 @@ pub(super) fn restore(
                     progress.visited.insert(index);
                 }
             }
+            Ok(Mark::ReadDocument(document)) => {
+                if let Some(&index) = paths.get(document.path.as_str())
+                    && document.matches(&repo.0.files[index])
+                {
+                    listing.reveal_document(index, document.before, document.rows);
+                    progress.visited.insert(index);
+                }
+            }
             Ok(Mark::Visited { path, diff }) => {
                 if let Some(&index) = paths.get(path.as_str()) {
                     progress.visited.insert(index);
@@ -220,7 +229,12 @@ pub(super) fn sync(
     navigation: Res<city_navigation::Navigation>,
     review: Res<review_notes::Review>,
     camera: Query<(&Transform, &Pilot), PlayerCamera>,
+    #[cfg(not(target_arch = "wasm32"))] mut document: Option<ResMut<markdown_preview::ReadQueue>>,
 ) {
+    #[cfg(not(target_arch = "wasm32"))]
+    let read = document.as_deref_mut().and_then(|queue| queue.0.take());
+    #[cfg(target_arch = "wasm32")]
+    let read = markdown_preview::take_browser_read();
     #[cfg(target_arch = "wasm32")]
     {
         let version = browser_reset_version();
@@ -228,6 +242,18 @@ pub(super) fn sync(
             progress.reset_version = version;
             progress.reset = true;
         }
+    }
+    if let Some(document) = read
+        && let Some((index, file)) = repo
+            .0
+            .files
+            .iter()
+            .enumerate()
+            .find(|(_, file)| document.matches(file))
+        && listing.reveal_document(index, document.before, document.rows)
+    {
+        progress.visit(index, file, false);
+        progress.mark(Mark::ReadDocument(document), true);
     }
     if std::mem::take(&mut progress.reset) {
         #[cfg(not(target_arch = "wasm32"))]

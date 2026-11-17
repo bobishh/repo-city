@@ -177,11 +177,11 @@ pub(super) struct Destination {
     pub revision: String,
 }
 
-pub(super) fn take_destination() -> Option<Destination> {
+pub(super) fn take_destination(_review: Option<&mut Review>) -> Option<Destination> {
     #[cfg(target_arch = "wasm32")]
     return serde_json::from_str(&browser_destination()).ok();
     #[cfg(not(target_arch = "wasm32"))]
-    None
+    _review?.destination.take()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -238,6 +238,9 @@ pub(super) struct Review {
     pub can_paint: bool,
     pub nozzle: f32,
     pub washing: bool,
+    pub tablet_open: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    destination: Option<Destination>,
     pub aim_note: Option<String>,
     pub phrase: Option<(f32, String)>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -273,6 +276,9 @@ impl Default for Review {
             can_paint: !cfg!(target_arch = "wasm32"),
             nozzle: 0.,
             washing: false,
+            tablet_open: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            destination: None,
             aim_note: None,
             phrase: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -413,9 +419,12 @@ pub(super) fn update(
     menu: Res<city_menu::Menu>,
     navigation: Res<city_navigation::Navigation>,
     camera: Query<&Pilot, PlayerCamera>,
+    listing: Option<Res<listing::Listing>>,
     #[cfg(not(target_arch = "wasm32"))] search: Option<Res<listing::find::Search>>,
+    #[cfg(not(target_arch = "wasm32"))] comments: Option<Res<native_github::PullComments>>,
 ) {
     review.washing = false;
+    review.tablet_open = false;
     #[cfg(target_arch = "wasm32")]
     {
         let version = browser_version();
@@ -434,6 +443,7 @@ pub(super) fn update(
             review.version = version;
         }
         review.blocked = browser_modal();
+        review.tablet_open = browser_tablet();
         review.can_paint = browser_can_paint();
         if !review.can_paint {
             review.select(0);
@@ -466,6 +476,25 @@ pub(super) fn update(
             review.feedback = None;
         }
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    if repo.is_changed()
+        || comments
+            .as_ref()
+            .is_some_and(|comments| comments.is_changed())
+    {
+        review.notes.retain(|note| !note.remote);
+        if let Some(native_github::PullComments::Loaded(Ok(imported))) = comments.as_deref() {
+            for note in imported {
+                if !review
+                    .notes
+                    .iter()
+                    .any(|local| local.published == note.published)
+                {
+                    review.notes.push(note.clone());
+                }
+            }
+        }
+    }
 
     let Ok(pilot) = camera.single() else {
         return;
@@ -480,11 +509,7 @@ pub(super) fn update(
         && !navigation.is_flying()
         && (pilot.captured || cfg!(not(target_arch = "wasm32")))
     {
-        review.request = Some(if cfg!(target_arch = "wasm32") {
-            Panel::Aimed
-        } else {
-            Panel::Notes
-        });
+        review.request = Some(Panel::Aimed);
     } else if pilot.captured {
         if keys.just_pressed(KeyCode::KeyU) && review.can_paint {
             review.request = Some(Panel::Paints);
@@ -523,7 +548,12 @@ pub(super) fn update(
         review.nozzle = 0.;
         return;
     }
-    let raised = pilot.firing && !review.blocked && !picker.is_open() && !menu.is_open();
+    let spraying = if review.slot == 0 {
+        pilot.firing || listing.as_ref().is_some_and(|listing| listing.water_on())
+    } else {
+        pilot.firing
+    };
+    let raised = spraying && !review.blocked && !picker.is_open() && !menu.is_open();
     let direction = if raised { 1. } else { -1. };
     review.nozzle = (review.nozzle + direction * time.delta_secs() / 0.11).clamp(0., 1.);
 }
@@ -567,6 +597,8 @@ extern "C" {
     fn browser_destination() -> String;
     #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = reviewModal)]
     fn browser_modal() -> bool;
+    #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = reviewTablet)]
+    fn browser_tablet() -> bool;
     #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = reviewCanPaint)]
     fn browser_can_paint() -> bool;
     #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = reviewId)]

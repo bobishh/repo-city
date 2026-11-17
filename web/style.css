@@ -54,8 +54,6 @@ h1 { position: absolute; z-index: 2; inset-block-start: 14px; inset-inline-start
 }
 .city-dialog::backdrop { background: #030812aa; }
 .city-dialog h2 { margin: 0 0 .5em; color: #c2ffef; }
-#help-dialog { width: min(380px, calc(100% - 32px)); }
-#help-start { color: #092824; background: #97ecd8; font-weight: 650; }
 .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .city-dialog button { padding: 5px 10px; }
 #start-controls {
@@ -164,17 +162,42 @@ form button:focus-visible, form summary:focus-visible, form a:focus-visible { ou
 .paint-preview { min-height: 1.4em; font: 700 1.12rem/1.4 Caveat, cursive; }
 .review-status { min-height: 1.4em; margin-block: 7px; color: #e9b8c8; }
 .review-copy { white-space: pre-wrap; overflow-wrap: anywhere; }
+.markdown-preview { max-width: 82ch; overflow-wrap: anywhere; }
+.markdown-preview :is(th, td) p { margin: 0; }
+.markdown-end { height: 1px; }
 #review-dialog article { border-block-start: 1px solid #26343e; padding-block: .5em; }
 
 .review-changed-files { display: grid; gap: 4px; max-height: 55vh; overflow: auto; }
 .review-changed-files button { text-align: left; overflow-wrap: anywhere; }
 .review-changed-files time { display: block; opacity: .75; font-size: .85em; }
 #review-dialog[data-view="changed-files"] button[aria-pressed="true"] { outline: 1px solid currentColor; }
-#review-dialog[data-view="changed-files"][open] { animation: review-tablet-in .2s ease-out; }
+#review-dialog[data-tablet][open] {
+  box-sizing: border-box;
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 14px solid #1c2a35;
+  padding: clamp(16px, 3vw, 38px);
+  background: #0a1820;
+  animation: review-tablet-in .38s ease-in-out;
+}
+.vibepad-bar, .vibepad-bar nav { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.vibepad-bar { justify-content: space-between; margin-bottom: 16px; }
+.vibepad-bar span { color: #a1b8c1; }
+.vibepad-bar span::before { content: ""; display: inline-block; width: 5px; height: 5px; margin-right: 8px; background: #f45e6f; vertical-align: middle; }
+.vibepad-bar button[aria-pressed="true"] { border-color: #91fbdf; }
+.review-reading { max-width: 42rem; }
+.review-controls { display: grid; grid-template-columns: max-content 1fr; gap: 8px 14px; }
+.review-controls dt { color: #a8f7e4; }
+.review-controls dd { margin: 0; }
+@media (max-width: 460px) { .review-controls { grid-template-columns: 1fr; } }
+#review-dialog[data-tablet]::backdrop { background: transparent; }
 @keyframes review-tablet-in {
-  from { transform: translateY(12vh) scale(.93); opacity: .55; }
-  to { transform: none; opacity: 1; }
+  from { transform: translateY(100vh) scale(.72) rotate(5deg); }
+  to { transform: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  #review-dialog[data-view="changed-files"][open] { animation: none; }
+  #review-dialog[data-tablet][open] { animation: none; }
 }

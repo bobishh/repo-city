@@ -106,7 +106,7 @@ pub(super) fn advance(
         Step::Travel => "2 / 3   Aim at a building and press E to fly there.",
         Step::Arriving => "2 / 3   Flying to the wall…",
         Step::Wash if !pilot.captured => "3 / 3   Click to capture the cursor again.",
-        Step::Wash => "3 / 3   Aim at a line. Hold left click to wash it with water (0).",
+        Step::Wash => "3 / 3   Aim at a line. Click to turn water on or off (0).",
         Step::Finish(_) => {
             if cfg!(target_arch = "wasm32") {
                 "U opens paints. Sign in for PR notes. Publishing needs Pull requests: write."
@@ -165,6 +165,7 @@ mod native {
         Toggle,
         Close,
         StartTour,
+        ToggleWaterDelay,
     }
 
     #[derive(Resource, Default)]
@@ -194,6 +195,7 @@ mod native {
     #[derive(Component)]
     pub(crate) struct HelpAction {
         initial_focus: bool,
+        water_delay: bool,
     }
 
     pub(crate) fn update(
@@ -208,11 +210,14 @@ mod native {
         focus_visible: Res<InputFocusVisible>,
         editable: Query<(), With<EditableText>>,
         mut panel: Query<&mut Node, With<Panel>>,
-        mut actions: Query<(Entity, &HelpAction, &mut Outline)>,
+        mut actions: Query<(Entity, &HelpAction, &mut Outline, &Children)>,
         mut controls: Query<(&mut ScrollPosition, &ComputedNode), With<Controls>>,
         scroll: Res<AccumulatedMouseScroll>,
-        mut pilot: Query<&mut Pilot, PlayerCamera>,
-        mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+        (mut pilot, mut cursor): (
+            Query<&mut Pilot, PlayerCamera>,
+            Query<&mut CursorOptions, With<PrimaryWindow>>,
+        ),
+        (mut reading, mut labels): (Option<ResMut<reading::Settings>>, Query<&mut Text>),
     ) {
         let was_open = guide.open;
         let action = guide.action.take().or_else(|| {
@@ -243,6 +248,21 @@ mod native {
             Some(Action::Toggle) if was_open => guide.open = false,
             Some(Action::Toggle) if can_open => guide.open = true,
             Some(Action::Close) => guide.open = false,
+            Some(Action::ToggleWaterDelay) if was_open => {
+                if let Some(settings) = reading.as_deref_mut() {
+                    let mode = if settings.mode == reading::Mode::Immediate {
+                        reading::Mode::Delayed
+                    } else {
+                        reading::Mode::Immediate
+                    };
+                    let next = reading::Settings { mode, ..*settings };
+                    if let Err(error) = next.save() {
+                        warn!("Could not save reading preferences: {error}");
+                    } else {
+                        *settings = next;
+                    }
+                }
+            }
             Some(Action::StartTour) if was_open => {
                 review.select(0);
                 tour.start();
@@ -253,7 +273,9 @@ mod native {
 
         if guide.open && !was_open {
             focus.clear();
-            if let Some((entity, _, _)) = actions.iter().find(|(_, action, _)| action.initial_focus)
+            if let Some((entity, _, _, _)) = actions
+                .iter()
+                .find(|(_, action, _, _)| action.initial_focus)
             {
                 focus.set(entity, FocusCause::Navigated);
             }
@@ -286,7 +308,21 @@ mod native {
             }
         }
         if guide.open {
-            for (entity, _, mut outline) in &mut actions {
+            for (entity, action, mut outline, children) in &mut actions {
+                if action.water_delay
+                    && let Some(settings) = reading.as_deref()
+                    && let Some(&label) = children.first()
+                    && let Ok(mut text) = labels.get_mut(label)
+                {
+                    let value = if settings.mode == reading::Mode::Immediate {
+                        "Water: Immediate"
+                    } else {
+                        "Water: Delayed"
+                    };
+                    if text.0 != value {
+                        text.0 = value.into();
+                    }
+                }
                 let width = if focus_visible.0 && focus.get() == Some(entity) {
                     px(1.)
                 } else {
@@ -497,6 +533,7 @@ mod native {
                         })
                         .with_children(|buttons| {
                             for (index, (label, action)) in [
+                                ("Water: Delayed", Action::ToggleWaterDelay),
                                 ("Start tour", Action::StartTour),
                                 ("Close", Action::Close),
                             ].into_iter().enumerate() {
@@ -504,7 +541,7 @@ mod native {
                                     file_picker::button(label, font, ink, AlignSelf::Auto),
                                     TabIndex(index as i32),
                                     Outline::new(px(0.), px(2.), ink),
-                                    HelpAction { initial_focus: index == 1 },
+                                    HelpAction { initial_focus: index == 2, water_delay: index == 0 },
                                     observe(move |_: On<Activate>, mut guide: ResMut<Guide>| {
                                         guide.action = Some(action);
                                     }),

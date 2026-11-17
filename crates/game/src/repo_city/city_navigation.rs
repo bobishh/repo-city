@@ -302,7 +302,7 @@ impl Navigation {
         };
         let shortcut = file_picker::SHORTCUT;
         format!(
-            "Click to capture · Esc releases · Right-click opens actions · E flies to the aimed face\nScroll follows the text · Files / {shortcut} searches paths · WASD flies\nHold left mouse close to wash source · Home frames the file · G diff · B blame · C reviews changes{trace}"
+            "Click to capture · Esc releases · Right-click opens actions · E flies to the aimed face\nScroll follows the text · Files / {shortcut} searches paths · WASD flies\nClick close to start or stop washing source · Home frames the file · G diff · B blame · C reviews changes{trace}"
         )
     }
 }
@@ -411,6 +411,7 @@ pub(super) fn navigate(
     mut menu: ResMut<city_menu::Menu>,
     mut saved_progress: ResMut<progress::Progress>,
     search: Res<listing::find::Search>,
+    mut review: Option<ResMut<review_notes::Review>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut camera: Query<(&mut Transform, &Pilot), PlayerCamera>,
 ) {
@@ -424,7 +425,7 @@ pub(super) fn navigate(
         return;
     }
 
-    if let Some(destination) = review_notes::take_destination()
+    if let Some(destination) = review_notes::take_destination(review.as_deref_mut())
         && destination.revision == repo.0.revision
         && let Some(index) = repo
             .0
@@ -697,12 +698,15 @@ pub(super) fn navigate(
         return;
     }
     let next_changed = keys.just_pressed(KeyCode::KeyN) && !search.owns_next();
-    let distant_shot = pilot.shot.then_some(nearest.file).flatten().filter(|aim| {
-        let file = &repo.0.files[aim.index];
-        let size = listing::block_size(file);
-        nearest.near_source != Some(aim.index)
-            && !aim.within_tool_reach(file, size, camera.translation, nearest.file_distance)
-    });
+    let distant_shot = (pilot.shot && !listing.water_on())
+        .then_some(nearest.file)
+        .flatten()
+        .filter(|aim| {
+            let file = &repo.0.files[aim.index];
+            let size = listing::block_size(file);
+            nearest.near_source != Some(aim.index)
+                && !aim.within_tool_reach(file, size, camera.translation, nearest.file_distance)
+        });
     let target = if let Some(aim) = menu.destination.take() {
         Some((aim.index, Some(aim)))
     } else if let Some(file) = requested_file {

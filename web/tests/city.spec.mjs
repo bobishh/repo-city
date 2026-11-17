@@ -5,6 +5,43 @@ const after = "b".repeat(40);
 const before = "a".repeat(40);
 const next = "e".repeat(40);
 
+test("opens a rendered Markdown document from its building with P", async ({ page }) => {
+  await emulatePointerLock(page);
+  const source = "# Project notes\n\nUse **this** command.\n\n- First step\n\n| Action | Example |\n| --- | --- |\n| Inspect | status |\n\n```sh\ngit status\n```\n\n[Unsafe](javascript:alert%281%29)\n\n" +
+    "Read the next paragraph.\n\n".repeat(50);
+  await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
+  await page.route("https://api.github.com/**", route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/repos/owner/preview") return route.fulfill({ json: { default_branch: "main" } });
+    if (path.includes("/commits/")) return route.fulfill({ json: { sha: after, parents: [] } });
+    if (path.includes("/git/trees/")) return route.fulfill({ json: {
+      tree: [{ path: "README.md", type: "blob", mode: "100644", sha: after, size: source.length }],
+    } });
+    return route.fulfill({ json: { size: source.length, encoding: "base64", content: Buffer.from(source).toString("base64") } });
+  });
+  await page.goto("/?repo=owner%2Fpreview");
+  await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+  const canvas = page.locator("canvas");
+  await page.mouse.move(640, 400);
+  await canvas.evaluate(element => element.requestPointerLock());
+  await expect(canvas).toHaveAttribute("data-pointer-locked", "");
+  await expect(page.locator("#progress-summary")).toContainText("0 lines revealed");
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await page.keyboard.press("KeyP", { delay: 180 });
+  const preview = page.getByRole("dialog", { name: "README.md" });
+  await expect(preview.getByRole("heading", { name: "Project notes" })).toBeVisible({ timeout: 20_000 });
+  await expect(preview.locator("strong")).toHaveText("this");
+  await expect(preview.getByRole("listitem")).toHaveText("First step");
+  await expect(preview.getByRole("table").getByRole("row")).toHaveCount(2);
+  await expect(preview.locator("pre code")).toContainText("git status");
+  await expect(preview.locator('a[href^="javascript:"]')).toHaveCount(0);
+  await expect(page.locator("#progress-summary")).toContainText("0 lines revealed");
+  await preview.locator(".markdown-end").scrollIntoViewIfNeeded();
+  await expect(page.locator("#progress-summary")).toContainText(`${source.split("\n").length - 1} lines revealed`, { timeout: 20_000 });
+  await page.keyboard.press("Tab");
+  await expect(preview).toBeHidden();
+});
+
 test("shows the guide once and keeps it available from the help button", async ({ page }) => {
   let releaseTree;
   const pendingTree = new Promise(resolve => { releaseTree = resolve; });
@@ -51,6 +88,21 @@ test("shows the guide once and keeps it available from the help button", async (
   await expect(guide).toBeHidden();
   await help.click();
   await expect(guide).toBeVisible();
+  await guide.getByRole("button", { name: "Settings" }).click();
+  const settings = page.getByRole("dialog", { name: "Settings" });
+  await expect(settings).toContainText("Brysbaert");
+  await expect(settings.getByLabel("Minimum delay (seconds)")).toHaveValue("3");
+  await settings.getByLabel("Minimum delay (seconds)").fill("7");
+  await settings.getByRole("button", { name: "Save settings" }).click();
+  await expect(settings.getByRole("status")).toContainText("Minimum delay must not exceed");
+  await settings.getByLabel("Minimum delay (seconds)").fill("");
+  await settings.getByLabel("Maximum delay (seconds)").fill("5.5");
+  await settings.getByRole("button", { name: "Save settings" }).click();
+  await expect(settings.getByRole("status")).toContainText("Saved");
+  await settings.getByLabel("Water").selectOption("immediate");
+  await settings.getByRole("button", { name: "Save settings" }).click();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("repo-city-reading-v1"))))
+    .toEqual({mode: "immediate", min_seconds: null, max_seconds: 5.5});
   await page.keyboard.press("Escape");
   await expect(guide).toBeHidden();
   await page.evaluate(() => localStorage.removeItem("repo-city-guide-v1"));
@@ -338,9 +390,17 @@ test("opens a merged pull request from the URL using its fork head and merge bas
   await page.keyboard.press("Tab");
   const tablet = page.getByRole("dialog", { name: "Changed files" });
   await expect(tablet.getByRole("button", { name: "src/pr.rs" })).toBeVisible();
+  await expect(tablet).toHaveCSS("width", `${page.viewportSize().width}px`);
+  await expect(tablet).toHaveCSS("height", `${page.viewportSize().height}px`);
   await expect(tablet.getByRole("button", { name: "LICENSE" })).toHaveCount(0);
   await tablet.getByRole("button", { name: "Viewed", exact: true }).click();
   await expect(tablet).toContainText("No changed files viewed.");
+  await expect(tablet.getByRole("button", { name: "Close", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Shift+Tab");
+  await expect(tablet).toBeVisible();
+  await page.keyboard.press("Tab");
+  await expect(tablet).toBeHidden();
+  await expect(page.locator("canvas")).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(tablet).toBeVisible();
   await page.keyboard.press("Escape");
@@ -611,17 +671,14 @@ test("restores review progress after reload and resets only the open comparison"
   await canvas.click({ position: { x: 640, y: 400 }, delay: 150 });
   await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  await page.mouse.down();
+  await page.mouse.click(640, 400, { delay: 100 });
   await page.waitForTimeout(400);
-  await page.mouse.up();
+  await page.mouse.click(640, 400, { delay: 100 });
   expect((await read(scope)).some(mark => JSON.parse(mark).reveal)).toBe(false);
-  await page.mouse.down();
-  try {
-    await expect.poll(async () => (await read(scope)).some(mark => JSON.parse(mark).reveal), polling).toBe(true);
-    await canvas.screenshot({ path: testInfo.outputPath("city-window-washer.png") });
-  } finally {
-    await page.mouse.up();
-  }
+  await page.mouse.click(640, 400, { delay: 100 });
+  await expect.poll(async () => (await read(scope)).some(mark => JSON.parse(mark).reveal), polling).toBe(true);
+  await page.mouse.click(640, 400, { delay: 100 });
+  await canvas.screenshot({ path: testInfo.outputPath("city-window-washer.png") });
   const marks = await read(scope);
   await page.keyboard.press("Escape");
   await page.evaluate(async ({ separate, reviewed }) => {
@@ -696,7 +753,7 @@ test("publishes a painted preset in one action and still supports suggestions", 
       state: "open", base: { sha: before }, head: { sha: after },
     } });
     if (path.endsWith("/comments")) return route.fulfill({ json: [
-      { id: 13, node_id: "comment-13", path: "src/demo.rs", line: 25, side: "RIGHT", body: "Separate note", user: { login: "ada" } },
+      { id: 13, node_id: "comment-13", path: "src/demo.rs", line: 25, side: "RIGHT", body: "**Separate note**", user: { login: "ada" } },
       { id: 14, node_id: "comment-14", in_reply_to_id: 13, body: "Got it, @Reviewer. Check the line above.", user: { login: "sam" } },
       { id: 15, node_id: "comment-15", path: "src/demo.rs", line: 26, side: "RIGHT", body: "Resolved note", user: { login: "ada" } },
       ...(remoteMark ? [remoteMark] : []),
@@ -753,9 +810,9 @@ test("publishes a painted preset in one action and still supports suggestions", 
   const review = page.locator("#review-dialog");
   await lock();
   expect(await page.evaluate(() => globalThis.repoCity.reviewCanPaint())).toBe(true);
-  await page.mouse.down();
-  await expect(page.locator("#progress-summary")).toHaveText(/[1-9]\d* lines revealed/, { timeout: 40_000 });
-  await page.mouse.up();
+  await page.mouse.click(640, 400, { delay: 100 });
+  await expect(page.locator("#progress-summary")).toHaveText(/[1-9]\d* lines revealed/, { timeout: 65_000 });
+  await page.mouse.click(640, 400, { delay: 100 });
   await page.keyboard.press("KeyU", { delay: 120 });
   await expect(review).toBeVisible({ timeout: 20_000 });
   await review.getByRole("button", { name: "Edit paint slot 8" }).click();
@@ -778,7 +835,7 @@ test("publishes a painted preset in one action and still supports suggestions", 
   await expect(review).toBeVisible({ timeout: 20_000 });
   const draft = review.getByRole("button", { name: /Investigate.*Draft/ });
   if (await draft.isVisible()) await draft.click();
-  await expect(review.locator("pre").getByText("Reproduce first.", { exact: true })).toBeVisible();
+  await expect(review.locator(".markdown-preview").getByText("Reproduce first.", { exact: true })).toBeVisible();
   await expect(review.getByLabel("Comment")).toBeHidden();
   expect(posts).toHaveLength(0);
   const firstMark = await page.evaluate(() => JSON.parse(globalThis.repoCity.reviewRead()).notes.find(note => !note.remote));
@@ -788,7 +845,8 @@ test("publishes a painted preset in one action and still supports suggestions", 
   expect(posts[0]).toMatchObject({ ...firstMark.anchor, revision: after, preset: firstMark.preset.id, text: "Reproduce first." });
   await review.getByRole("button", { name: "Publish to GitHub" }).click();
   await expect(review.getByRole("link", { name: "Published on GitHub" })).toBeVisible();
-  await review.getByRole("button", { name: "Close" }).click();
+  await page.keyboard.press("Tab");
+  await expect(review).toBeHidden();
   await lock();
   await page.mouse.down();
   await page.waitForTimeout(350);
@@ -859,14 +917,15 @@ test("publishes a painted preset in one action and still supports suggestions", 
     const title = await review.evaluate(dialog => dialog.open ? dialog.querySelector("h2").textContent : null);
     if (title === "src/demo.rs:25") return true;
     if (title !== null) {
-      await review.getByRole("button", { name: "Close", exact: true }).click();
+      await page.keyboard.press("Tab");
+      await expect(review).toBeHidden();
       return false;
     }
     if (!await page.evaluate(() => Boolean(document.pointerLockElement))) await lock();
     await page.keyboard.press("KeyJ", { delay: 120 });
     return false;
   }, { timeout: 20_000 }).toBe(true);
-  await expect(review.getByText("Separate note")).toBeVisible();
+  await expect(review.locator(".markdown-preview strong").getByText("Separate note")).toBeVisible();
   await expect(review.getByText("Got it, @Reviewer. Check the line above.")).toBeVisible();
   await review.getByRole("button", { name: "Mark viewed on GitHub 👀" }).click();
   await expect(review.locator("article").getByRole("status")).toContainText("Pull requests: write");
@@ -879,7 +938,7 @@ test("publishes a painted preset in one action and still supports suggestions", 
   await page.reload();
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
   await expect.poll(() => page.evaluate(() => JSON.parse(globalThis.repoCity.reviewRead()).notes
-    .filter(note => note.remote).map(note => [note.id, note.preset.label, note.resolved]))).toEqual([
+    .filter(note => note.remote).map(note => [note.id, note.preset.label, note.resolved])), { timeout: 20_000 }).toEqual([
     ["github-13", "Investigate", false], ["github-15", "Comment", true], ["github-42", "Investigate", null],
   ]);
   expect(await page.evaluate(() => JSON.parse(globalThis.repoCity.reviewRead()).notes

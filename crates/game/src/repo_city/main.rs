@@ -16,12 +16,14 @@ mod guide;
 mod listing;
 #[cfg(not(target_arch = "wasm32"))]
 mod live_worktree;
+mod markdown_preview;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_github;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_panel;
 mod physics;
 mod progress;
+mod reading;
 mod repository_picker;
 mod review_notes;
 #[cfg(not(target_arch = "wasm32"))]
@@ -313,7 +315,7 @@ fn main() {
     };
     if args.iter().any(|a| a == "--help") {
         println!(
-            "repo-city [--repo PATH [--rev HEAD | --live] [--base REF] | --github URL [--rev REF] [--base REF]] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · E flies to the aimed face · Space/Ctrl altitude · Shift boost · Click captures the cursor · Esc releases it\nHold left mouse close to wash source · Home frames the file · G diff · B blame\nC reviews changes · T follows a supplied stack · W/S or scroll fly between review stops · Q returns to the diff wall\nG ghost/pair · [ ] hunks · Enter source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
+            "repo-city [--repo PATH [--rev HEAD | --live] [--base REF] | --github URL [--rev REF] [--base REF]] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · E flies to the aimed face · Space/Ctrl altitude · Shift boost · Click captures the cursor · Esc releases it\nClick close to start or stop washing source · Home frames the file · G diff · B blame\nC reviews changes · T follows a supplied stack · W/S or scroll fly between review stops · Q returns to the diff wall\nG ghost/pair · [ ] hunks · Enter source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
         );
         return;
     }
@@ -479,6 +481,7 @@ fn main() {
     .init_resource::<file_picker::FilePicker>()
     .init_resource::<file_facade::ChangesOnly>()
     .init_resource::<listing::Listing>()
+    .init_resource::<reading::Settings>()
     .init_resource::<listing::find::Search>()
     .init_resource::<progress::Progress>()
     .init_resource::<review_notes::Review>()
@@ -519,7 +522,7 @@ fn main() {
                 guide::advance,
                 listing::paint_notes,
                 listing::find::mark,
-                android::show_sprayer,
+                (android::show_sprayer, android::show_tablet),
             )
                 .chain(),
             physics::splashes,
@@ -577,6 +580,10 @@ fn main() {
         .add_systems(Update, guide::update.before(file_facade::lower_unchanged))
         .add_systems(Update, live_worktree::highlight.after(animate))
         .add_systems(Update, native_panel::raise_tablet);
+    #[cfg(not(target_arch = "wasm32"))]
+    app.insert_resource(reading::Settings::load());
+    #[cfg(target_arch = "wasm32")]
+    app.add_systems(Update, reading::apply.before(listing::wash_stream));
     app.add_systems(Startup, district::setup);
     app.add_systems(
         Update,
@@ -1011,7 +1018,15 @@ fn load_ui_font(fonts: &mut Assets<Font>) {
             ),
         )
         .expect("default user interface font");
+    #[cfg(not(target_arch = "wasm32"))]
+    fonts
+        .insert(EMOJI_FONT.id(), Font::from_bytes(EMOJI_FONT_DATA.to_vec()))
+        .expect("emoji fallback font");
 }
+
+const EMOJI_FONT_DATA: &[u8] = include_bytes!("../../../../assets/fonts/NotoEmoji.ttf");
+#[cfg(not(target_arch = "wasm32"))]
+const EMOJI_FONT: Handle<Font> = bevy::asset::uuid_handle!("3b4571e0-061f-44e9-8cbf-771e89a9860d");
 
 struct BuildingAssets {
     block: Handle<Mesh>,
@@ -1356,7 +1371,7 @@ fn flight(
     #[cfg(target_arch = "wasm32")]
     {
         if let Some(document) = web_sys::window().and_then(|window| window.document()) {
-            let pointer_ui = pointer_ui_open || over_button;
+            let pointer_ui = picker.is_open() || search.blocks_controls() || over_button;
             if *previous_pointer_ui != Some(pointer_ui)
                 && let Some(canvas) = document.get_element_by_id("repo-city")
             {

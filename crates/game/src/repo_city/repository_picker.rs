@@ -24,6 +24,8 @@ pub(super) struct RepositoryPicker {
     #[cfg(not(target_arch = "wasm32"))]
     pending: Option<native_github::Job<native_github::Snapshot>>,
     #[cfg(not(target_arch = "wasm32"))]
+    comments: Option<native_github::Job<Vec<review_notes::Note>>>,
+    #[cfg(not(target_arch = "wasm32"))]
     pub github: Option<native_github::Target>,
     #[cfg(not(target_arch = "wasm32"))]
     pull_open: bool,
@@ -89,6 +91,8 @@ impl RepositoryPicker {
             status,
             #[cfg(not(target_arch = "wasm32"))]
             pending: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            comments: None,
             #[cfg(not(target_arch = "wasm32"))]
             github: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -912,6 +916,10 @@ pub(super) fn open_repository(
             }
         }
     }
+    if let Some(result) = picker.comments.as_ref().and_then(native_github::Job::take) {
+        picker.comments = None;
+        commands.insert_resource(native_github::PullComments::Loaded(result));
+    }
     if let Some(result) = picker.pending.as_ref().and_then(native_github::Job::take) {
         picker.pending = None;
         match result {
@@ -925,6 +933,16 @@ pub(super) fn open_repository(
                 let mut explorer = Explorer::new(selected);
                 explorer.open(&next, selected);
                 window.title = format!("{} · {}", set.name, snapshot.target.label());
+                picker.comments = native_github::pull_comments(
+                    &snapshot.target,
+                    &next,
+                    native_github::token(picker.session.as_ref()),
+                );
+                if picker.comments.is_some() {
+                    commands.insert_resource(native_github::PullComments::Loading);
+                } else {
+                    commands.remove_resource::<native_github::PullComments>();
+                }
                 picker.github = Some(snapshot.target);
                 picker.pull_open = snapshot.pull_open;
                 picker.status.clear();
@@ -942,6 +960,8 @@ pub(super) fn open_repository(
         picker.local = None;
         match result {
             Ok(next) => {
+                picker.comments = None;
+                commands.remove_resource::<native_github::PullComments>();
                 picker.github = None;
                 picker.pull_open = false;
                 window.title = window_title(&set, &next);
