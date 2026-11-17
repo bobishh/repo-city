@@ -16,3 +16,6 @@ for document and comment previews and publishes its MIT license alongside the st
 
 Caveat (`web/assets/caveat-latin-wght.woff2`) is licensed under the SIL Open Font License 1.1.
 Copyright 2014 The Caveat Project Authors. See `web/assets/OFL-Caveat.txt`.
+
+Markdown parsing uses pulldown-cmark 0.13.6 under the MIT license.
+Copyright 2015 Google Inc. See `licenses/pulldown-cmark-MIT.txt`.
