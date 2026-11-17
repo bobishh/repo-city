@@ -255,7 +255,7 @@ mod native {
                     } else {
                         reading::Mode::Immediate
                     };
-                    let next = reading::Settings { mode };
+                    let next = reading::Settings { mode, ..*settings };
                     if let Err(error) = next.save() {
                         warn!("Could not save reading preferences: {error}");
                     } else {

@@ -16,6 +16,7 @@ mod guide;
 mod listing;
 #[cfg(not(target_arch = "wasm32"))]
 mod live_worktree;
+mod markdown_preview;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_github;
 #[cfg(not(target_arch = "wasm32"))]
@@ -1370,7 +1371,7 @@ fn flight(
     #[cfg(target_arch = "wasm32")]
     {
         if let Some(document) = web_sys::window().and_then(|window| window.document()) {
-            let pointer_ui = pointer_ui_open || over_button;
+            let pointer_ui = picker.is_open() || search.blocks_controls() || over_button;
             if *previous_pointer_ui != Some(pointer_ui)
                 && let Some(canvas) = document.get_element_by_id("repo-city")
             {

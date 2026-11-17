@@ -113,6 +113,7 @@ impl RevealProgress {
             let rows =
                 ((band + 1) * self.rows).div_ceil(bands) - (band * self.rows).div_ceil(bands);
             match self.bands[band] {
+                _ if self.opened == self.rows => Coverage::Open,
                 0 => Coverage::Closed,
                 opened if opened == rows => Coverage::Open,
                 _ => Coverage::Partial,
@@ -587,7 +588,7 @@ impl Listing {
             .reveal_progress
             .entry((index, before))
             .or_insert_with(|| RevealProgress::new(count));
-        if progress.rows != count {
+        if progress.rows != count || progress.opened == count {
             return false;
         }
         let mut changed = false;
@@ -607,9 +608,30 @@ impl Listing {
         changed
     }
 
+    pub(super) fn reveal_document(&mut self, index: usize, before: bool, count: usize) -> bool {
+        if count == 0 || self.document_revealed(index, before, count) {
+            return false;
+        }
+        let mut coverage = RevealProgress::new(count);
+        coverage.opened = count;
+        self.reveal_progress.insert((index, before), coverage);
+        self.source_tiles.preview_dirty = true;
+        self.overview_dirty.insert(index);
+        true
+    }
+
+    fn document_revealed(&self, index: usize, before: bool, rows: usize) -> bool {
+        self.reveal_progress
+            .get(&(index, before))
+            .is_some_and(|coverage| coverage.rows == rows && coverage.opened == rows)
+    }
+
     #[cfg(target_arch = "wasm32")]
     pub(super) fn revealed_count(&self) -> usize {
-        self.revealed.len()
+        self.reveal_progress
+            .values()
+            .map(|coverage| coverage.opened)
+            .sum()
     }
 
     pub(super) fn clear_progress(&mut self) {
@@ -842,9 +864,10 @@ pub(super) fn wash_stream(
     let rows = tile_rows(row, count);
     let file_index = explorer.selected;
     let before = explorer.before;
-    if rows
-        .clone()
-        .all(|row| listing.revealed.contains(&(file_index, before, row + 1)))
+    if listing.document_revealed(file_index, before, count)
+        || rows
+            .clone()
+            .all(|row| listing.revealed.contains(&(file_index, before, row + 1)))
     {
         listing.wash_preview = None;
     } else if settings.mode == reading::Mode::Immediate
@@ -1581,12 +1604,17 @@ pub(super) fn draw(
         diff_lines,
         source_marks,
         revealed,
+        reveal_progress,
         wash_preview,
         preview_marks,
         blame: attribution,
         ..
     } = &mut *listing;
-    let is_revealed = |line| revealed.contains(&(explorer.selected, explorer.before, line));
+    let fully_revealed = reveal_progress
+        .get(&(explorer.selected, explorer.before))
+        .is_some_and(|coverage| coverage.rows == count && coverage.opened == count);
+    let is_revealed =
+        |line| fully_revealed || revealed.contains(&(explorer.selected, explorer.before, line));
     let source_row = |index| (Some(&explorer.highlighted[index]), source_marks[index]);
     let diff_row = |index: usize| (diff_lines[index].0.as_ref(), diff_lines[index].1);
     let retain = |face, tiles: &Tiles| {
@@ -1933,7 +1961,11 @@ mod tests {
     fn reading_delay_tracks_content_and_accepts_an_explicit_override() {
         let short = ["fn f() {}", ""];
         let dense = ["fn f() { call(argument, other_argument); }", ""];
-        let estimate = reading::Settings::default();
+        let estimate = reading::Settings {
+            min_seconds: None,
+            max_seconds: None,
+            ..default()
+        };
         assert!(estimate.seconds(short) > 0.);
         assert!(estimate.seconds(short) < estimate.seconds(dense));
         assert_eq!(
@@ -1942,6 +1974,7 @@ mod tests {
         );
         let instant = reading::Settings {
             mode: reading::Mode::Immediate,
+            ..default()
         };
         assert_eq!(instant.seconds(dense), 0.);
     }
