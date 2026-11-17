@@ -149,7 +149,7 @@ pub(super) fn update(
     mut tablet: ResMut<Tablet>,
     mut review: ResMut<review_notes::Review>,
     mut focus: ResMut<InputFocus>,
-    parents: Query<&ChildOf>,
+    (parents, entrances): (Query<&ChildOf>, Query<&native_panel::TabletEntrance>),
     wheel: Res<AccumulatedMouseScroll>,
     mut rows: Query<(&mut ScrollPosition, &RelativeCursorPosition), With<FileRows>>,
 ) {
@@ -241,6 +241,11 @@ pub(super) fn update(
     if !redraw {
         return;
     }
+    let entrance = if let Some(panel) = tablet.panel {
+        entrances.get(panel).ok().copied()
+    } else {
+        Some(native_panel::TabletEntrance::default())
+    };
     if let Some(panel) = tablet.panel {
         native_panel::close(&mut commands, panel, &mut focus, &parents);
     }
@@ -250,11 +255,8 @@ pub(super) fn update(
         .min(files.len().div_ceil(FILES_PER_PAGE).saturating_sub(1));
     let (panel, first) = draw(&mut commands, &tablet, &files, time.elapsed_secs_f64());
     tablet.panel = Some(panel);
-    if !was_open {
-        commands.entity(panel).insert((
-            native_panel::TabletEntrance::default(),
-            native_panel::tablet_pose(1.),
-        ));
+    if let Some(entrance) = entrance {
+        commands.entity(panel).insert((entrance, entrance.pose()));
     }
     focus.set(first, FocusCause::Navigated);
 }

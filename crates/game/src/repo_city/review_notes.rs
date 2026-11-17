@@ -509,11 +509,7 @@ pub(super) fn update(
         && !navigation.is_flying()
         && (pilot.captured || cfg!(not(target_arch = "wasm32")))
     {
-        review.request = Some(if cfg!(target_arch = "wasm32") {
-            Panel::Aimed
-        } else {
-            Panel::Notes
-        });
+        review.request = Some(Panel::Aimed);
     } else if pilot.captured {
         if keys.just_pressed(KeyCode::KeyU) && review.can_paint {
             review.request = Some(Panel::Paints);

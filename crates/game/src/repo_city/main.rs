@@ -1017,7 +1017,15 @@ fn load_ui_font(fonts: &mut Assets<Font>) {
             ),
         )
         .expect("default user interface font");
+    #[cfg(not(target_arch = "wasm32"))]
+    fonts
+        .insert(EMOJI_FONT.id(), Font::from_bytes(EMOJI_FONT_DATA.to_vec()))
+        .expect("emoji fallback font");
 }
+
+const EMOJI_FONT_DATA: &[u8] = include_bytes!("../../../../assets/fonts/NotoEmoji.ttf");
+#[cfg(not(target_arch = "wasm32"))]
+const EMOJI_FONT: Handle<Font> = bevy::asset::uuid_handle!("3b4571e0-061f-44e9-8cbf-771e89a9860d");
 
 struct BuildingAssets {
     block: Handle<Mesh>,

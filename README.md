@@ -112,8 +112,10 @@ drag over lines to color them and save a draft with that paint's reusable
 prompt. Each draft keeps its original file, revision, and line range.
 Change a paint's name, color, spray text, or reusable prompt in **Paints**.
 
-The Mac app saves notes and palettes in SQLite. Press **J** to preview the
-current comparison's notes. Use **Edit** to add details or export a note.
+The Mac app saves notes and palettes in SQLite. Press **J** while aiming at a
+marked line to open its comment in VibePad. Away from a mark, **J** opens all
+comments on the current comparison. **All comments** returns to that list.
+Use **Edit** to add details or export a note.
 When you open a GitHub pull request, **J** also lists its review comments.
 Choose **Fly to lines** to see an anchored comment on its building, or
 **Open on GitHub** to read the full thread. In the **M** overview, gold pins

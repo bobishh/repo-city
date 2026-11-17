@@ -55,6 +55,32 @@ struct Canvas {
     height: u32,
     context: ScaleContext,
 }
+
+fn emoji_font() -> FontRef<'static> {
+    static FONT: std::sync::OnceLock<FontRef<'static>> = std::sync::OnceLock::new();
+    *FONT
+        .get_or_init(|| FontRef::from_index(super::EMOJI_FONT_DATA, 0).expect("bundled emoji font"))
+}
+
+#[cfg(test)]
+#[test]
+fn emoji_fallback_rasterizes_eyes_and_other_glyphs() {
+    let rendered = |text| {
+        let mut canvas = Canvas {
+            pixels: vec![0; 64 * 64 * 4],
+            width: 64,
+            height: 64,
+            context: ScaleContext::new(),
+        };
+        canvas.text(text, 5., 40., 36., |_| [1.; 3]);
+        canvas.pixels
+    };
+    let eyes = rendered("👀");
+    assert!(eyes.iter().any(|&value| value > 0));
+    assert_ne!(eyes, rendered("\u{10ffff}"));
+    assert_ne!(eyes, rendered("👍"));
+}
+
 impl Canvas {
     fn text(&mut self, text: &str, x: f32, y: f32, size: f32, color: impl Fn(usize) -> [f32; 3]) {
         self.scaled_text(text, x, y, size, Vec2::ONE, color);
@@ -76,6 +102,7 @@ impl Canvas {
         .unwrap();
         let metrics = font.glyph_metrics(&[]).scale(size);
         let mut scaler = self.context.builder(font).size(size).hint(true).build();
+        let mut emoji_context = None::<ScaleContext>;
         let mut render = Render::new(&[Source::Outline]);
         if scale != Vec2::ONE {
             render.transform(Some(swash::zeno::Transform::scale(scale.x, scale.y)));
@@ -89,9 +116,29 @@ impl Canvas {
                 x += metrics.advance_width(font.charmap().map(' ')) * 4. * scale.x;
                 continue;
             }
+            if matches!(ch, '\u{fe0e}' | '\u{fe0f}' | '\u{200d}') {
+                continue;
+            }
             let id = font.charmap().map(ch);
             let ink = color(byte);
-            if let Some(glyph) = render.render(&mut scaler, id) {
+            let (glyph, advance) = if id == 0 && emoji_font().charmap().map(ch) != 0 {
+                let emoji = emoji_font();
+                let size = size * 0.85;
+                let id = emoji.charmap().map(ch);
+                let mut emoji_scaler = emoji_context
+                    .get_or_insert_with(ScaleContext::new)
+                    .builder(emoji)
+                    .size(size)
+                    .hint(true)
+                    .build();
+                (
+                    render.render(&mut emoji_scaler, id),
+                    emoji.glyph_metrics(&[]).scale(size).advance_width(id),
+                )
+            } else {
+                (render.render(&mut scaler, id), metrics.advance_width(id))
+            };
+            if let Some(glyph) = glyph {
                 let p = glyph.placement;
                 for gy in 0..p.height {
                     for gx in 0..p.width {
@@ -114,7 +161,7 @@ impl Canvas {
                     }
                 }
             }
-            x += metrics.advance_width(id) * scale.x;
+            x += advance * scale.x;
         }
     }
     fn band(&mut self, start: u32, end: u32, rgb: [u8; 3]) {
