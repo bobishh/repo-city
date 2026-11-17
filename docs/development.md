@@ -38,8 +38,8 @@ Source loads on demand. The native app uses Tree-sitter to highlight Rust,
 JavaScript, TypeScript, Ruby, Elixir, and Elm. The browser loads TextMate
 grammars in a Web Worker and also supports TOML and JSON. Other file types
 show plain text. Native function extraction and its structural measurements
-cover supported languages. The dataset is limited to 5,000 files and 1 MiB
-per inspected UTF-8 source file. Binaries and symlinks keep their positions
+cover supported languages. The city streams up to 5,000 nearby buildings while search covers the full
+comparison. UTF-8 source inspection is limited to 1 MiB per file. Binaries and symlinks keep their positions
 in the city.
 
 The active presentation is configured in

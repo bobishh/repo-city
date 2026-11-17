@@ -1,6 +1,6 @@
 # Repo City
 
-Repo City turns a Git repository into a 3D city you can fly through. Directories
+Repo City opens a GitHub repository or pull request as a 3D city in your browser. Directories
 form districts. Each file has walls for its source, diff, and blame. Open a
 GitHub pull request to see what it changes in the context of the whole codebase.
 
@@ -9,6 +9,9 @@ The demo opens at `crates/repository/src/syntax.rs`. Press **G** to see its
 diff, or press **P** to find another file.
 
 ![The diff wall of syntax.rs, with syntax highlighting and neighboring file buildings visible](docs/repo-city-diff.webp)
+
+The Mac application lives in the separate [Vibe City repository](https://github.com/bobishh/vibe-city).
+It also supports local worktrees.
 
 ## Open a repository
 

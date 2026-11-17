@@ -62,3 +62,17 @@ test("publishes explicit diff coordinates, retains stale anchors, and finds a pr
   assert.equal((await run({ ...comment, id: "e20ca9be-aeb0-4238-b3e7-a40af23486ba" })).status, 409);
   assert.equal(writes, 1);
 });
+
+test("rejects malformed note identities, GitHub anchors and bodies before any network request", async () => {
+  for (const fields of [
+    { id: "not-a-note-id" }, { revision: "not-a-commit" }, { preset: "has spaces" },
+    { path: "../outside.rs" }, { path: "/absolute.rs" }, { path: "a\u0000.rs" },
+    { before: "false" }, { start: 0 }, { start: 1.5 }, { end: 1 },
+    { end: Number.MAX_SAFE_INTEGER + 1 }, { fileLevel: "true" },
+    { text: "   " }, { text: "x".repeat(6001) }, { text: null },
+  ]) {
+    assert.deepEqual(await writeReviewComment({ ...comment, ...fields }, "reviewer", () => assert.fail("Invalid input must not reach GitHub")), {
+      status: 400, value: { error: "Invalid draft comment." },
+    });
+  }
+});
