@@ -13,3 +13,6 @@ license notices under `syntax-licenses/`.
 
 The web build uses [GitHub Markdown CSS](https://github.com/sindresorhus/github-markdown-css)
 for document and comment previews and publishes its MIT license alongside the stylesheet.
+
+Caveat (`web/assets/caveat-latin-wght.woff2`) is licensed under the SIL Open Font License 1.1.
+Copyright 2014 The Caveat Project Authors. See `web/assets/OFL-Caveat.txt`.
