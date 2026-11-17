@@ -229,7 +229,7 @@ pub(crate) fn draw(
 
     let mut hint = listing
         .wash_time_remaining()
-        .map(|seconds| format!("Hold to keep revealed · {seconds:.1}s"))
+        .map(|seconds| format!("Water on · {seconds:.1}s remaining"))
         .unwrap_or_else(|| {
             aimed.map_or_else(String::new, |(_, label)| format!("{label} · J opens note"))
         });

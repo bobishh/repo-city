@@ -161,7 +161,11 @@ fn draw(
         View::Notes { .. } => "Review comments",
     };
     let notes_view = matches!(view, View::Notes { .. });
-    let panel = native_panel::panel(commands, title, if notes_view { 650. } else { 490. });
+    let panel = if notes_view {
+        native_panel::tablet(commands, title)
+    } else {
+        native_panel::panel(commands, title, 490.)
+    };
     ui.panel = Some(panel);
     commands.entity(panel).with_children(|parent| {
         match view {
@@ -264,7 +268,8 @@ fn draw(
                         Node {
                             flex_direction: FlexDirection::Column,
                             row_gap: px(8.),
-                            max_height: px(365.),
+                            flex_grow: 1.,
+                            min_height: px(0.),
                             overflow: Overflow::scroll_y(),
                             ..default()
                         },
@@ -827,9 +832,10 @@ pub(crate) fn update(
             && matches!(ui.view, Some(View::Notes { .. }))
             && let Some(panel) = ui.panel
         {
-            commands
-                .entity(panel)
-                .insert(native_panel::TabletEntrance::default());
+            commands.entity(panel).insert((
+                native_panel::TabletEntrance::default(),
+                native_panel::tablet_pose(1.),
+            ));
         }
         if let Some(field) = ui
             .fields
@@ -841,6 +847,7 @@ pub(crate) fn update(
             focus.set(field, FocusCause::Navigated);
         }
     }
+    review.tablet_open = matches!(ui.view, Some(View::Notes { .. }));
     review.blocked = was_open
         || ui.view.is_some()
         || guide.as_ref().is_some_and(|guide| guide.is_open())

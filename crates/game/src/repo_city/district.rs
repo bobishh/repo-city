@@ -368,7 +368,7 @@ pub(super) fn reflect(
         motion.drift = 0.;
         #[cfg(target_arch = "wasm32")]
         for (joint, mut local) in &mut joints {
-            android::animate(*joint, &mut local, time.elapsed_secs(), 0., 0.24, 0.);
+            android::animate(*joint, &mut local, time.elapsed_secs(), 0., 0.24, 0., false);
         }
         return;
     };
@@ -400,6 +400,7 @@ pub(super) fn reflect(
             motion.drift,
             yaw,
             review.nozzle,
+            review.tablet_open,
         );
     }
     visibility.set_if_neq(Visibility::Visible);

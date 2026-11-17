@@ -51,6 +51,8 @@ test("shows the guide once and keeps it available from the help button", async (
   await expect(guide).toBeHidden();
   await help.click();
   await expect(guide).toBeVisible();
+  await guide.getByLabel("Water").selectOption("immediate");
+  expect(await page.evaluate(() => globalThis.repoCity.takeReadingSettings())).toBe(true);
   await page.keyboard.press("Escape");
   await expect(guide).toBeHidden();
   await page.evaluate(() => localStorage.removeItem("repo-city-guide-v1"));
@@ -338,6 +340,8 @@ test("opens a merged pull request from the URL using its fork head and merge bas
   await page.keyboard.press("Tab");
   const tablet = page.getByRole("dialog", { name: "Changed files" });
   await expect(tablet.getByRole("button", { name: "src/pr.rs" })).toBeVisible();
+  await expect(tablet).toHaveCSS("width", `${page.viewportSize().width}px`);
+  await expect(tablet).toHaveCSS("height", `${page.viewportSize().height}px`);
   await expect(tablet.getByRole("button", { name: "LICENSE" })).toHaveCount(0);
   await tablet.getByRole("button", { name: "Viewed", exact: true }).click();
   await expect(tablet).toContainText("No changed files viewed.");
@@ -611,17 +615,14 @@ test("restores review progress after reload and resets only the open comparison"
   await canvas.click({ position: { x: 640, y: 400 }, delay: 150 });
   await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  await page.mouse.down();
+  await page.mouse.click(640, 400, { delay: 100 });
   await page.waitForTimeout(400);
-  await page.mouse.up();
+  await page.mouse.click(640, 400, { delay: 100 });
   expect((await read(scope)).some(mark => JSON.parse(mark).reveal)).toBe(false);
-  await page.mouse.down();
-  try {
-    await expect.poll(async () => (await read(scope)).some(mark => JSON.parse(mark).reveal), polling).toBe(true);
-    await canvas.screenshot({ path: testInfo.outputPath("city-window-washer.png") });
-  } finally {
-    await page.mouse.up();
-  }
+  await page.mouse.click(640, 400, { delay: 100 });
+  await expect.poll(async () => (await read(scope)).some(mark => JSON.parse(mark).reveal), polling).toBe(true);
+  await page.mouse.click(640, 400, { delay: 100 });
+  await canvas.screenshot({ path: testInfo.outputPath("city-window-washer.png") });
   const marks = await read(scope);
   await page.keyboard.press("Escape");
   await page.evaluate(async ({ separate, reviewed }) => {
@@ -753,9 +754,9 @@ test("publishes a painted preset in one action and still supports suggestions", 
   const review = page.locator("#review-dialog");
   await lock();
   expect(await page.evaluate(() => globalThis.repoCity.reviewCanPaint())).toBe(true);
-  await page.mouse.down();
-  await expect(page.locator("#progress-summary")).toHaveText(/[1-9]\d* lines revealed/, { timeout: 40_000 });
-  await page.mouse.up();
+  await page.mouse.click(640, 400, { delay: 100 });
+  await expect(page.locator("#progress-summary")).toHaveText(/[1-9]\d* lines revealed/, { timeout: 65_000 });
+  await page.mouse.click(640, 400, { delay: 100 });
   await page.keyboard.press("KeyU", { delay: 120 });
   await expect(review).toBeVisible({ timeout: 20_000 });
   await review.getByRole("button", { name: "Edit paint slot 8" }).click();

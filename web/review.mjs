@@ -35,7 +35,10 @@ export function createReview({ canvas, release, onClose }) {
   const repaint = () => { version++; };
   let defaults = [];
 
-  dialog.addEventListener("close", onClose);
+  dialog.addEventListener("close", () => {
+    delete dialog.dataset.tablet;
+    onClose();
+  });
   dialog.addEventListener("cancel", event => { if (busy) event.preventDefault(); });
   for (const type of ["keydown", "keyup"]) dialog.addEventListener(type, event => event.stopPropagation());
   canvas.addEventListener("wheel", event => {
@@ -327,6 +330,7 @@ export function createReview({ canvas, release, onClose }) {
       path => before[path]?.id !== after[path]?.id || before[path]?.mode !== after[path]?.mode
     );
     dialog.dataset.view = "changed-files";
+    dialog.dataset.tablet = "";
     view("Changed files");
     const bar = make("div", undefined, { class: "dialog-actions" });
     const status = make("p", "Loading file dates…", { class: "review-status", role: "status" });
@@ -744,10 +748,15 @@ export function createReview({ canvas, release, onClose }) {
     defaults = JSON.parse(palette);
     selected = slot;
     const note = kind === '"aimed"' && notes().find(note => note.id === id);
-    if (kind === '"paints"') paintsPanel();
-    else if (note?.remote) threadPanel(note);
-    else if (note) noteEditor(note);
-    else notesPanel();
+    if (kind === '"paints"') {
+      delete dialog.dataset.tablet;
+      paintsPanel();
+    } else {
+      dialog.dataset.tablet = "";
+      if (note?.remote) threadPanel(note);
+      else if (note) noteEditor(note);
+      else notesPanel();
+    }
     show();
   }
   return {
@@ -765,5 +774,6 @@ export function createReview({ canvas, release, onClose }) {
       return value ? JSON.stringify(value) : "";
     },
     modal: () => Boolean(document.querySelector("dialog[open]")),
+    tablet: () => dialog.open && "tablet" in dialog.dataset,
   };
 }

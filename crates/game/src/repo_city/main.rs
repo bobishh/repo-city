@@ -22,6 +22,7 @@ mod native_github;
 mod native_panel;
 mod physics;
 mod progress;
+mod reading;
 mod repository_picker;
 mod review_notes;
 #[cfg(not(target_arch = "wasm32"))]
@@ -313,7 +314,7 @@ fn main() {
     };
     if args.iter().any(|a| a == "--help") {
         println!(
-            "repo-city [--repo PATH [--rev HEAD | --live] [--base REF] | --github URL [--rev REF] [--base REF]] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · E flies to the aimed face · Space/Ctrl altitude · Shift boost · Click captures the cursor · Esc releases it\nHold left mouse close to wash source · Home frames the file · G diff · B blame\nC reviews changes · T follows a supplied stack · W/S or scroll fly between review stops · Q returns to the diff wall\nG ghost/pair · [ ] hunks · Enter source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
+            "repo-city [--repo PATH [--rev HEAD | --live] [--base REF] | --github URL [--rev REF] [--base REF]] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · E flies to the aimed face · Space/Ctrl altitude · Shift boost · Click captures the cursor · Esc releases it\nClick close to start or stop washing source · Home frames the file · G diff · B blame\nC reviews changes · T follows a supplied stack · W/S or scroll fly between review stops · Q returns to the diff wall\nG ghost/pair · [ ] hunks · Enter source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
         );
         return;
     }
@@ -479,6 +480,7 @@ fn main() {
     .init_resource::<file_picker::FilePicker>()
     .init_resource::<file_facade::ChangesOnly>()
     .init_resource::<listing::Listing>()
+    .init_resource::<reading::Settings>()
     .init_resource::<listing::find::Search>()
     .init_resource::<progress::Progress>()
     .init_resource::<review_notes::Review>()
@@ -519,7 +521,7 @@ fn main() {
                 guide::advance,
                 listing::paint_notes,
                 listing::find::mark,
-                android::show_sprayer,
+                (android::show_sprayer, android::show_tablet),
             )
                 .chain(),
             physics::splashes,
@@ -577,6 +579,10 @@ fn main() {
         .add_systems(Update, guide::update.before(file_facade::lower_unchanged))
         .add_systems(Update, live_worktree::highlight.after(animate))
         .add_systems(Update, native_panel::raise_tablet);
+    #[cfg(not(target_arch = "wasm32"))]
+    app.insert_resource(reading::Settings::load());
+    #[cfg(target_arch = "wasm32")]
+    app.add_systems(Update, reading::apply.before(listing::wash_stream));
     app.add_systems(Startup, district::setup);
     app.add_systems(
         Update,

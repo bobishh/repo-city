@@ -130,6 +130,7 @@ pub(super) struct Listing {
     viewing: Option<Face>,
     destination: Option<Face>,
     wash_preview: Option<WashPreview>,
+    water_on: bool,
     blame: super::blame::Blame,
     turn: Option<(f32, Transform, Transform)>,
     scroll_remaining: f32,
@@ -151,19 +152,17 @@ struct WashPreview {
     before: bool,
     rows: Range<usize>,
     elapsed: f32,
+    seconds: f32,
 }
 
 impl WashPreview {
-    fn time_needed(&self) -> f32 {
-        5. + self.rows.len().saturating_sub(1) as f32 * 0.075
-    }
-
     fn advance(
         active: &mut Option<Self>,
         file: usize,
         before: bool,
         rows: Range<usize>,
         delta: f32,
+        estimate: impl FnOnce() -> f32,
     ) -> bool {
         if active
             .as_ref()
@@ -174,11 +173,12 @@ impl WashPreview {
                 before,
                 rows,
                 elapsed: 0.,
+                seconds: estimate(),
             });
         }
         let preview = active.as_mut().expect("the current tile is previewed");
         preview.elapsed += delta;
-        preview.elapsed >= preview.time_needed()
+        preview.elapsed >= preview.seconds
     }
 }
 
@@ -387,10 +387,19 @@ impl Listing {
     pub(super) fn reset_view(&mut self) {
         self.viewing = None;
         self.destination = None;
-        self.wash_preview = None;
+        self.stop_water();
         self.turn = None;
         self.scroll_remaining = 0.;
     }
+    pub(super) fn water_on(&self) -> bool {
+        self.water_on
+    }
+
+    pub(super) fn stop_water(&mut self) {
+        self.water_on = false;
+        self.wash_preview = None;
+    }
+
     pub(super) fn visible(explorer: &Explorer, navigation: &city_navigation::Navigation) -> bool {
         explorer.comparison_mode == 0 && !explorer.anchored && !navigation.guides_camera()
     }
@@ -525,7 +534,7 @@ impl Listing {
     fn wash_time_remaining(&self) -> Option<f32> {
         self.wash_preview
             .as_ref()
-            .map(|preview| (preview.time_needed() - preview.elapsed).max(0.))
+            .map(|preview| (preview.seconds - preview.elapsed).max(0.))
     }
 
     fn wash(
@@ -604,7 +613,7 @@ impl Listing {
     }
 
     pub(super) fn clear_progress(&mut self) {
-        self.wash_preview = None;
+        self.stop_water();
         self.overview_dirty
             .extend(self.reveal_progress.keys().map(|&(index, _)| index));
         self.revealed.clear();
@@ -788,13 +797,13 @@ pub(super) fn wash_stream(
     mut review: ResMut<review_notes::Review>,
     menu: Res<city_menu::Menu>,
     search: Res<find::Search>,
+    settings: Res<reading::Settings>,
 ) {
     let Ok((camera, pilot)) = camera.single() else {
-        listing.wash_preview = None;
+        listing.stop_water();
         return;
     };
-    if !pilot.firing
-        || !pilot.captured
+    if !pilot.captured
         || menu.is_open()
         || search.blocks_controls()
         || review.slot != 0
@@ -803,7 +812,14 @@ pub(super) fn wash_stream(
         || listing.turning()
         || !Listing::visible(&explorer, &navigation)
     {
-        listing.wash_preview = None;
+        listing.stop_water();
+        return;
+    }
+    if pilot.shot && listing.water_on {
+        listing.stop_water();
+        return;
+    }
+    if !pilot.shot && !listing.water_on {
         return;
     }
     let count = explorer.highlighted.len();
@@ -820,6 +836,7 @@ pub(super) fn wash_stream(
         listing.wash_preview = None;
         return;
     };
+    listing.water_on = true;
     review.washing = true;
     let row = side.wall.row(hit.y, count);
     let rows = tile_rows(row, count);
@@ -830,13 +847,22 @@ pub(super) fn wash_stream(
         .all(|row| listing.revealed.contains(&(file_index, before, row + 1)))
     {
         listing.wash_preview = None;
-    } else if WashPreview::advance(
-        &mut listing.wash_preview,
-        file_index,
-        before,
-        rows,
-        time.delta_secs(),
-    ) {
+    } else if settings.mode == reading::Mode::Immediate
+        || WashPreview::advance(
+            &mut listing.wash_preview,
+            file_index,
+            before,
+            rows.clone(),
+            time.delta_secs(),
+            || {
+                settings.seconds(
+                    explorer.highlighted[rows]
+                        .iter()
+                        .map(|line| line.text.as_str()),
+                )
+            },
+        )
+    {
         if let Some(mark) = listing.wash(&explorer, file, hit.y) {
             progress.mark(mark, true);
         }
@@ -1904,16 +1930,65 @@ mod tests {
     }
 
     #[test]
+    fn reading_delay_tracks_content_and_accepts_an_explicit_override() {
+        let short = ["fn f() {}", ""];
+        let dense = ["fn f() { call(argument, other_argument); }", ""];
+        let estimate = reading::Settings::default();
+        assert!(estimate.seconds(short) > 0.);
+        assert!(estimate.seconds(short) < estimate.seconds(dense));
+        assert_eq!(
+            estimate.seconds(short),
+            estimate.seconds(["fn f() {}", "  ", "}"])
+        );
+        let instant = reading::Settings {
+            mode: reading::Mode::Immediate,
+        };
+        assert_eq!(instant.seconds(dense), 0.);
+    }
+
+    #[test]
     fn washing_only_saves_a_tile_after_continuous_focus() {
         let mut preview = None;
-        assert!(!WashPreview::advance(&mut preview, 0, false, 0..16, 4.));
-        assert!(!WashPreview::advance(&mut preview, 0, false, 16..17, 2.));
-        assert!(!WashPreview::advance(&mut preview, 0, false, 0..16, 3.));
-        assert!(!WashPreview::advance(&mut preview, 0, false, 0..16, 3.));
-        assert!(WashPreview::advance(&mut preview, 0, false, 0..16, 0.2));
-        preview = None;
-        assert!(!WashPreview::advance(&mut preview, 0, false, 16..17, 4.9));
-        assert!(WashPreview::advance(&mut preview, 0, false, 16..17, 0.2));
+        assert!(!WashPreview::advance(
+            &mut preview,
+            0,
+            false,
+            0..16,
+            4.,
+            || 6.
+        ));
+        assert!(!WashPreview::advance(
+            &mut preview,
+            0,
+            false,
+            16..17,
+            2.,
+            || 3.
+        ));
+        assert!(!WashPreview::advance(
+            &mut preview,
+            0,
+            false,
+            0..16,
+            3.,
+            || 6.
+        ));
+        assert!(WashPreview::advance(
+            &mut preview,
+            0,
+            false,
+            0..16,
+            3.,
+            || panic!("recounted tile")
+        ));
+        let mut listing = Listing {
+            water_on: true,
+            wash_preview: preview,
+            ..default()
+        };
+        listing.stop_water();
+        assert!(listing.wash_preview.is_none());
+        assert!(!listing.water_on());
     }
 
     #[test]

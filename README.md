@@ -88,7 +88,7 @@ still covers the entire comparison.
 | Return to a building | **Ctrl+O** goes back in jump history and **Ctrl+I** goes forward. |
 | Browse changes | **Tab** opens the changed files tablet. **Viewed** limits the list to changes you visited. Select a file to fly there. With a form open, **Tab** moves focus. |
 | Approach a wall | Far away, left-click a building to fly to its nearest covered lines or the top of its source wall. Press **E** to fly to the aimed face. Scroll to move along the wall. |
-| Wash or paint lines | **0** equips water. Hold left click close to a source wall to see the lines. Keep washing the same block for about 5–6 seconds to save the reveal. **1–9** equip paints; drag from one readable line to another on the same side of the file. |
+| Wash or paint lines | **0** equips water. Click close to a source wall to start or stop water. Code appears while you aim at the block. Delayed mode saves the reveal after a reading estimate based on the amount of text. Change Water to Immediate in the controls to save it right away. **1–9** equip paints; drag from one readable line to another on the same side of the file. |
 | Edit paints and notes | **U** opens paints; **⌘ + scroll** cycles tools on Mac. **J** opens the note you are aiming at or the review list. |
 | Find text on the current wall | **/** or **Find in file** in the actions menu. **Enter** keeps results; **N** and **Shift+N** visit matches. |
 | Turn to the diff or blame wall | **G** for diff, **B** for blame. Sign in with GitHub for line attribution in the browser. |
@@ -96,7 +96,7 @@ still covers the entire comparison.
 | Open controls on Mac | **H** opens or closes the controls panel. |
 
 Repo City saves revealed lines and reviewed files in your browser or on your
-Mac. The same repository and comparison restore those marks. Press **V** to
+Mac. The Mac stores the water setting as `{"mode":"delayed"}` or `{"mode":"immediate"}` in `~/Library/Application Support/Repo City/reading.json`. The same repository and comparison restore those marks. Press **V** to
 toggle the selected file’s review mark. To start over on the open comparison,
 choose **Reset progress** in the browser’s repository dialog or the Mac
 **Files** menu.

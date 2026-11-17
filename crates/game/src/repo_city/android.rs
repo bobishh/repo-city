@@ -215,6 +215,12 @@ impl Workshop {
 pub(super) struct ViewSprayer(bool);
 #[derive(Component)]
 pub(super) struct MirrorSprayer(bool);
+#[derive(Component)]
+pub(super) struct MirrorTablet;
+
+#[derive(Component)]
+pub(super) struct ViewTablet;
+
 #[derive(Resource)]
 pub(super) struct CanPigment(Handle<StandardMaterial>);
 
@@ -294,6 +300,15 @@ pub(super) fn build(
             );
         }
     }
+    let tablet = commands
+        .spawn((
+            ChildOf(body),
+            MirrorTablet,
+            Transform::from_xyz(0., 0.25, 1.02).with_rotation(Quat::from_rotation_x(-0.22)),
+            Visibility::Hidden,
+        ))
+        .id();
+    tablet_case(&w, commands, tablet);
     let head = w.joint(commands, body, [0.02, 1.18, 0.02], Joint::Head);
     w.block(commands, head, Metal, [0., 0.47, 0.], [0.69, 0.88, 0.51]);
     w.block(commands, head, Dark, [0., 0.53, 0.268], [0.64, 0.27, 0.11]);
@@ -478,6 +493,15 @@ pub(super) fn build(
         ))
         .id();
     let first_person = Workshop { layer: 0, ..w };
+    let tablet = commands
+        .spawn((
+            ChildOf(pilot),
+            ViewTablet,
+            Transform::from_xyz(0., -0.9, -0.95),
+            Visibility::Hidden,
+        ))
+        .id();
+    tablet_case(&first_person, commands, tablet);
     let can = commands
         .spawn((
             ChildOf(pilot),
@@ -520,6 +544,53 @@ pub(super) fn build(
     }
 }
 
+fn tablet_case(w: &Workshop, commands: &mut Commands, tablet: Entity) {
+    use Paint::*;
+    w.block(commands, tablet, Dark, [0.; 3], [1.15, 0.71, 0.085]);
+    w.block(commands, tablet, Blue, [0., 0., 0.044], [1.07, 0.63, 0.012]);
+    w.block(commands, tablet, Dark, [0., 0., 0.052], [0.99, 0.55, 0.012]);
+    w.block(
+        commands,
+        tablet,
+        Lamp,
+        [0.49, -0.30, -0.048],
+        [0.042, 0.015, 0.01],
+    );
+}
+
+pub(super) fn show_tablet(
+    review: Res<review_notes::Review>,
+    time: Res<Time>,
+    mut amount: Local<f32>,
+    mut mirror: Query<&mut Visibility, (With<MirrorTablet>, Without<ViewTablet>)>,
+    mut view: Query<(&mut Visibility, &mut Transform), With<ViewTablet>>,
+) {
+    let direction = if review.tablet_open { 1. } else { -1. };
+    *amount = (*amount + direction * time.delta_secs() / 0.20).clamp(0., 1.);
+    for mut visibility in &mut mirror {
+        visibility.set_if_neq(if review.tablet_open {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
+    }
+    let t = *amount;
+    for (mut visibility, mut transform) in &mut view {
+        visibility.set_if_neq(if t > 0. && t < 1. {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
+        if t > 0. && t < 1. {
+            let remaining = (1. - t).powi(3);
+            transform.set_if_neq(
+                Transform::from_xyz(0., -remaining * 1.0, -0.83)
+                    .with_rotation(Quat::from_rotation_x(-remaining * 0.55)),
+            );
+        }
+    }
+}
+
 pub(super) fn spray_origin(camera: &Transform, raised: f32, can: bool) -> Vec3 {
     let tip = if can {
         Vec3::new(0., 0.088, 0.055)
@@ -539,7 +610,7 @@ pub(super) fn show_sprayer(
 ) {
     let paint = review.paint();
     let can = paint.is_some();
-    let raised = if navigation.guides_camera() {
+    let raised = if navigation.guides_camera() || review.tablet_open {
         0.
     } else {
         review.nozzle
@@ -603,12 +674,23 @@ pub(super) fn animate(
     drift: f32,
     turn: f32,
     raised: f32,
+    tablet: bool,
 ) {
     if let Joint::Thruster(side) = joint {
         transform.scale.y = 0.24 + drift * 1.42 + (t * 28. + side * 1.7).sin() * 0.10;
         return;
     }
-    transform.rotation = pose(joint, t, drift, turn, raised);
+    transform.rotation = if tablet {
+        match joint {
+            Joint::Shoulder(side) => {
+                Quat::from_euler(EulerRot::YXZ, -side * 0.22, -0.76, side * 0.06)
+            }
+            Joint::Elbow(side) => Quat::from_euler(EulerRot::YXZ, 0., -0.78, side * 0.20),
+            _ => pose(joint, t, drift, turn, 0.),
+        }
+    } else {
+        pose(joint, t, drift, turn, raised)
+    };
     if matches!(joint, Joint::Body) {
         transform.translation.y = (t * 2.1).sin() * (0.035 + drift * 0.045);
     }

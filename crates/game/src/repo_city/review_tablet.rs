@@ -203,6 +203,7 @@ pub(super) fn update(
         }
         redraw |= repo.is_changed();
         review.blocked = true;
+        review.tablet_open = true;
         if let Ok((mut scroll, relative)) = rows.single_mut()
             && relative.cursor_over()
             && wheel.delta.y != 0.
@@ -229,6 +230,7 @@ pub(super) fn update(
         ));
         tablet.pending = Some(load_times(&repo.0));
         review.blocked = true;
+        review.tablet_open = true;
     }
 
     if let Some(result) = tablet.pending.as_ref().and_then(native_github::Job::take) {
@@ -249,9 +251,10 @@ pub(super) fn update(
     let (panel, first) = draw(&mut commands, &tablet, &files, time.elapsed_secs_f64());
     tablet.panel = Some(panel);
     if !was_open {
-        commands
-            .entity(panel)
-            .insert(native_panel::TabletEntrance::default());
+        commands.entity(panel).insert((
+            native_panel::TabletEntrance::default(),
+            native_panel::tablet_pose(1.),
+        ));
     }
     focus.set(first, FocusCause::Navigated);
 }
@@ -262,7 +265,7 @@ fn draw(
     files: &[(usize, &repo_world::File, Freshness)],
     elapsed: f64,
 ) -> (Entity, Entity) {
-    let panel = native_panel::panel(commands, "Changed files", 720.);
+    let panel = native_panel::tablet(commands, "Changed files");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -294,8 +297,8 @@ fn draw(
                 RelativeCursorPosition::default(),
                 Node {
                     flex_direction: FlexDirection::Column,
-                    height: px(452.),
-                    min_height: px(72.),
+                    flex_grow: 1.,
+                    min_height: px(0.),
                     row_gap: px(4.),
                     overflow: Overflow::scroll_y(),
                     ..default()

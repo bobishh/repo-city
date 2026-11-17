@@ -170,11 +170,23 @@ form button:focus-visible, form summary:focus-visible, form a:focus-visible { ou
 .review-changed-files button { text-align: left; overflow-wrap: anywhere; }
 .review-changed-files time { display: block; opacity: .75; font-size: .85em; }
 #review-dialog[data-view="changed-files"] button[aria-pressed="true"] { outline: 1px solid currentColor; }
-#review-dialog[data-view="changed-files"][open] { animation: review-tablet-in .2s ease-out; }
+#review-dialog[data-tablet][open] {
+  box-sizing: border-box;
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 14px solid #1c2a35;
+  padding: clamp(16px, 3vw, 38px);
+  background: #0a1820;
+  animation: review-tablet-in .2s ease-out;
+}
+#review-dialog[data-tablet]::backdrop { background: transparent; }
 @keyframes review-tablet-in {
-  from { transform: translateY(12vh) scale(.93); opacity: .55; }
-  to { transform: none; opacity: 1; }
+  from { transform: translateY(100vh) scale(.72) rotate(5deg); }
+  to { transform: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  #review-dialog[data-view="changed-files"][open] { animation: none; }
+  #review-dialog[data-tablet][open] { animation: none; }
 }

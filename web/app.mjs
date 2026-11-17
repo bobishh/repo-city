@@ -19,6 +19,13 @@ const startControls = document.querySelector("#start-controls");
 const dialog = document.querySelector("#repository-dialog");
 const guide = document.querySelector("#help-dialog");
 const help = document.querySelector("#help");
+const washMode = document.querySelector("#wash-mode");
+try { if (localStorage.getItem("repo-city-wash-mode") === "immediate") washMode.value = "immediate"; }
+catch { /* Preferences still work for this session. */ }
+washMode.addEventListener("change", () => {
+  try { localStorage.setItem("repo-city-wash-mode", washMode.value); }
+  catch { /* Preferences still work for this session. */ }
+});
 const guideKey = "repo-city-guide-v1";
 let tourCommand = 0;
 let tourEntry = null;
@@ -199,6 +206,8 @@ async function openRepository(repo, ref, base) {
           return requested;
         },
         reviewModal: review.modal,
+        reviewTablet: review.tablet,
+        takeReadingSettings: () => washMode.value === "immediate",
         reviewCanPaint: review.canPaint,
         reviewId: review.id,
         snapshot: () => active.repository.snapshot,
