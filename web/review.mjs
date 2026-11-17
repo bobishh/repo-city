@@ -29,27 +29,60 @@ const mentions = (body, login) =>
     .some(([, , name]) => name.toLowerCase() === login.toLowerCase());
 const uuid = () => crypto.randomUUID();
 
-export function createReview({ canvas, release, onClose }) {
+export function createReview({ canvas, release, onClose, onTour }) {
   const dialog = document.querySelector("#review-dialog");
+  const settingsKey = "repo-city-reading-v1";
+  let reading = { mode: "delayed", min_seconds: 3, max_seconds: 6 };
+  try {
+    if (localStorage.getItem("repo-city-wash-mode") === "immediate") reading.mode = "immediate";
+    const stored = JSON.parse(localStorage.getItem(settingsKey));
+    if (stored && !readingError(stored)) reading = stored;
+  } catch { /* Use the built-in preferences. */ }
+  let readingChanged = true;
   let session, version = 0, selected = 0, pendingSlot = -1, busy = false, destination, fileDestination;
+  let renderMarkdown;
+  let markdownRead;
+  let readingEnd;
   const repaint = () => { version++; };
   let defaults = [];
 
   dialog.addEventListener("close", () => {
+    if (dialog.open) return;
+    readingEnd?.disconnect();
     delete dialog.dataset.tablet;
     onClose();
   });
-  dialog.addEventListener("cancel", event => { if (busy) event.preventDefault(); });
+  dialog.addEventListener("cancel", event => {
+    if (busy) event.preventDefault();
+    else if (dialog.dataset.view === "help") onTour(false);
+  });
   for (const type of ["keydown", "keyup"]) dialog.addEventListener(type, event => event.stopPropagation());
   canvas.addEventListener("wheel", event => {
     if (event.metaKey && document.pointerLockElement === canvas) event.preventDefault();
   }, { passive: false });
 
   function view(title, tag = "h2") {
+    readingEnd?.disconnect();
     dialog.replaceChildren(make(tag, title, { id: "review-title" }));
+    if ("tablet" in dialog.dataset) {
+      const bar = make("header", undefined, { class: "vibepad-bar" });
+      const tabs = make("nav", undefined, { "aria-label": "VibePad" });
+      for (const [label, page, open] of [
+        ["Files", "changed-files", changedFiles],
+        ["Help", "help", help],
+        ["Settings", "settings", settings],
+      ]) {
+        const tab = button(label, open);
+        tab.setAttribute("aria-pressed", String(page === dialog.dataset.view));
+        tabs.append(tab);
+      }
+      bar.append(make("span", "VibePad"), tabs);
+      dialog.prepend(bar);
+    }
     return dialog;
   }
   function actions(...children) {
+    if (!children.length) return;
     const row = make("div", undefined, { class: "dialog-actions" });
     row.append(...children);
     dialog.append(row);
@@ -58,9 +91,122 @@ export function createReview({ canvas, release, onClose }) {
     release();
     if (!dialog.open) dialog.showModal();
   }
-  const close = () => dialog.close();
+  function close() {
+    dialog.close();
+    onClose();
+  }
+  function dismissTablet() {
+    if (!dialog.open || !("tablet" in dialog.dataset)) return false;
+    if (!busy) {
+      if (dialog.dataset.view === "help") onTour(false);
+      close();
+    }
+    return true;
+  }
   const closeButton = () => button("Close", close);
   const signIn = () => make("a", "Sign in with GitHub", { href: githubSignIn() });
+
+  function markdown(text, container = make("div", undefined, { class: "markdown-preview markdown-body" })) {
+    if (renderMarkdown) container.innerHTML = renderMarkdown(text);
+    else container.textContent = text;
+    return container;
+  }
+
+  function previewMarkdown(path, load) {
+    dialog.dataset.view = "markdown";
+    dialog.dataset.tablet = "";
+    view(path);
+    const content = make("article", "Loading document…", { class: "markdown-preview markdown-body", "aria-live": "polite" });
+    dialog.append(content);
+    show();
+    void load().then(({ text, mark }) => {
+      if (!content.isConnected) return;
+      if (!text.trim()) { content.textContent = "Empty document."; return; }
+      markdown(text, content);
+      const end = make("div", undefined, { class: "markdown-end", "aria-hidden": "true" });
+      content.append(end);
+      readingEnd = new IntersectionObserver(entries => {
+        if (dialog.open && end.isConnected && entries.some(entry => entry.isIntersecting)) {
+          markdownRead = mark;
+          readingEnd.disconnect();
+        }
+      }, { root: dialog });
+      readingEnd.observe(end);
+    }).catch(error => {
+      if (content.isConnected) content.textContent = error.message;
+    });
+  }
+
+  function help() {
+    dialog.dataset.view = "help";
+    dialog.dataset.tablet = "";
+    view("Take a quick tour");
+    dialog.append(make("p", "Click the Repo City logo to open the repository picker."));
+    const controls = make("dl", undefined, { class: "review-controls" });
+    for (const [keys, purpose] of [
+      ["WASD / Space / Ctrl", "Fly and change altitude"],
+      ["E / M", "Fly to the aimed wall or switch overview"],
+      ["Tab / P", "Browse changes, preview Markdown at an aimed building, or find a file"],
+      ["F / G / B", "Filter changed files, open diff, or open blame"],
+      ["Scroll", "Read along a wall or move between review stops"],
+      ["0 / 1–9 / U", "Select water, select paint, or edit paints"],
+      ["C / J", "Follow changed lines or open review comments"],
+    ]) controls.append(make("dt", keys), make("dd", purpose));
+    dialog.append(controls);
+    const finish = started => { onTour(started); close(); };
+    actions(button("Skip", () => finish(false)), button("Start tour", () => finish(true)));
+    show();
+  }
+
+  function readingError(values) {
+    if (!["delayed", "immediate"].includes(values.mode) ||
+        [values.min_seconds, values.max_seconds].some(value => value !== null &&
+          (!Number.isFinite(value) || value < 0 || value > 3.4028234e38))) {
+      return "Enter non-negative seconds or leave the field blank.";
+    }
+    if (values.min_seconds !== null && values.max_seconds !== null && values.min_seconds > values.max_seconds) {
+      return "Minimum delay must not exceed maximum delay.";
+    }
+    return "";
+  }
+
+  function settings() {
+    dialog.dataset.view = "settings";
+    dialog.dataset.tablet = "";
+    view("Settings");
+    const form = make("form", undefined, { class: "review-reading" });
+    const mode = make("select");
+    for (const value of ["delayed", "immediate"]) {
+      mode.append(make("option", value === "delayed" ? "Delayed" : "Immediate", { value }));
+    }
+    mode.value = reading.mode;
+    const bound = value => make("input", undefined, { type: "text", inputmode: "decimal", value: value ?? "", placeholder: "No limit" });
+    const min = bound(reading.min_seconds), max = bound(reading.max_seconds);
+    const status = make("p", "", { class: "review-status", role: "status" });
+    form.append(field("Water", mode), field("Minimum delay (seconds)", min), field("Maximum delay (seconds)", max),
+      make("p", "Leave a bound blank to remove that limit. Delayed mode estimates reading time from the amount of code using Brysbaert’s 2019 estimate of 238 words per minute for English nonfiction."),
+      status);
+    const row = make("div", undefined, { class: "dialog-actions" });
+    row.append(make("button", "Save settings", { type: "submit" }));
+    form.append(row);
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      const seconds = input => input.value.trim() === "" ? null : Number(input.value);
+      const next = { mode: mode.value, min_seconds: seconds(min), max_seconds: seconds(max) };
+      const error = readingError(next);
+      if (error) { status.textContent = error; return; }
+      reading = next;
+      readingChanged = true;
+      try {
+        localStorage.setItem(settingsKey, JSON.stringify(reading));
+        status.textContent = "Saved.";
+      } catch {
+        status.textContent = "Applied for this session. Browser storage is unavailable.";
+      }
+    });
+    dialog.append(form);
+    show();
+  }
 
   async function load(repository) {
     const { review, progressScope } = repository;
@@ -88,11 +234,12 @@ export function createReview({ canvas, release, onClose }) {
       try {
         const carried = [];
         for (const json of await readProgress(prior.progressScope)) {
-          const { reveal, reviewed } = JSON.parse(json);
-          if (reveal) {
-            const side = reveal.before ? "before" : "after";
-            const old = prior.blobs?.[reveal.path]?.[side];
-            if (old && old === snapshot[side][reveal.path]?.id) carried.push([json, true]);
+          const { reveal, read_document, reviewed } = JSON.parse(json);
+          const source = reveal ?? read_document;
+          if (source) {
+            const side = source.before ? "before" : "after";
+            const old = read_document?.blob ?? prior.blobs?.[source.path]?.[side];
+            if (old && old === snapshot[side][source.path]?.id) carried.push([json, true]);
           } else if (reviewed) {
             const old = prior.blobs?.[reviewed];
             if (old && old.before === (snapshot.before[reviewed]?.id ?? null) &&
@@ -342,7 +489,6 @@ export function createReview({ canvas, release, onClose }) {
     const seen = button("Viewed", () => { viewedOnly = true; render(); });
     bar.append(all, seen);
     dialog.append(bar, status, list);
-    actions(closeButton());
     show();
 
     const visible = () => session === data && dialog.open && dialog.dataset.view === "changed-files";
@@ -368,7 +514,7 @@ export function createReview({ canvas, release, onClose }) {
     void readProgress(data.progressScope).then(values => {
       viewed = new Set(values.map(value => {
         const mark = JSON.parse(value);
-        return mark.visited?.path ?? mark.reveal?.path ?? mark.reviewed;
+        return mark.visited?.path ?? mark.reveal?.path ?? mark.read_document?.path ?? mark.reviewed;
       }).filter(Boolean));
       if (visible() && viewedOnly) render();
     }).catch(() => {});
@@ -446,14 +592,14 @@ export function createReview({ canvas, release, onClose }) {
     }
     if (!entries.length && !pending) list.append(make("p", "No notes yet."));
     dialog.append(list);
-    const controls = [closeButton()];
+    const controls = [];
     if (allowedDraft() && !pending) controls.unshift(button("Mark snapshot reviewed", async () => {
       const data = session;
       try {
         const { snapshot, progressScope } = data;
         const paths = new Set((await readProgress(progressScope)).map(json => {
-          const { reveal, reviewed } = JSON.parse(json);
-          return reveal?.path ?? reviewed;
+          const { reveal, read_document, reviewed } = JSON.parse(json);
+          return reveal?.path ?? read_document?.path ?? reviewed;
         }).filter(Boolean));
         const blobs = Object.fromEntries([...paths].map(path => [path, {
           before: snapshot.before[path]?.id ?? null, after: snapshot.after[path]?.id ?? null,
@@ -511,7 +657,7 @@ export function createReview({ canvas, release, onClose }) {
     for (const item of note.discussion) {
       const article = make("article");
       article.append(make("strong", item.user?.login ?? "Unknown author"),
-        make("p", readCommentText(item.body).text, { class: "review-copy" }));
+        markdown(readCommentText(item.body).text));
       const href = safeDiscussion(item.html_url);
       if (href) article.append(link("View on GitHub", href));
       const personal = note.personal.find(comment => comment.id === item.id);
@@ -578,7 +724,7 @@ export function createReview({ canvas, release, onClose }) {
     });
     dialog.append(field("Local paint", paint), feedback);
     const travel = note.original || note.fileLevel ? [] : [button("Fly to line", () => flyTo(note))];
-    actions(button("Back", notesPanel), ...travel, save, closeButton());
+    actions(button("Back", notesPanel), ...travel, save);
   }
 
   function noteEditor(note) {
@@ -600,7 +746,7 @@ export function createReview({ canvas, release, onClose }) {
     paintLabel.prepend(swatch(note.preset));
     const paintField = field("Paint", preset);
     const textField = field("Comment", text);
-    const preview = make("pre", note.text, { class: "review-copy" });
+    const preview = markdown(note.text);
     const codeField = field("Replacement code", code);
     const edit = button("Edit comment", () => {
       editing = true;
@@ -672,7 +818,7 @@ export function createReview({ canvas, release, onClose }) {
     if (note.published) {
       text.readOnly = code.readOnly = true;
       preset.disabled = true;
-      actions(button("Back", notesPanel), closeButton());
+      actions(button("Back", notesPanel));
     } else {
       if (data.review.pullState === "open" && !githubAccount()?.login && current(note, data.review)) dialog.append(signIn());
       actions(button("Back", notesPanel), remove, save, ...(canPublish ? [prepare] : []));
@@ -685,7 +831,7 @@ export function createReview({ canvas, release, onClose }) {
     view(suggestion ? "Publish a suggestion" : fileLevel ? "Publish a file comment" : "Publish a review comment");
     const data = session;
     dialog.append(make("p", `PR #${data.review.pull} · ${fileLevel ? note.anchor.path : pathLabel(note)}`));
-    if (note.text.trim()) dialog.append(make("pre", note.text.trim(), { class: "review-copy" }));
+    if (note.text.trim()) dialog.append(markdown(note.text.trim()));
     if (suggestion) dialog.append(make("pre", note.replacement, { class: "review-copy" }));
     const access = make("p", "Publishing requires write access to pull requests. ");
     const install = safeDiscussion(githubAccount()?.installUrl);
@@ -760,7 +906,19 @@ export function createReview({ canvas, release, onClose }) {
     show();
   }
   return {
-    load, version: () => version, snapshot, add, panel, changedFiles, id: uuid, canPaint: allowedDraft,
+    load, version: () => version, snapshot, add, panel, changedFiles, help, previewMarkdown, dismissTablet,
+    setMarkdown(renderer) { renderMarkdown = renderer; },
+    takeMarkdownRead() {
+      const mark = markdownRead;
+      markdownRead = undefined;
+      return mark ? JSON.stringify(mark) : "";
+    },
+    id: uuid, canPaint: allowedDraft,
+    takeReadingSettings() {
+      if (!readingChanged) return "";
+      readingChanged = false;
+      return JSON.stringify(reading);
+    },
     takeFileDestination() {
       const value = fileDestination;
       fileDestination = undefined;

@@ -173,6 +173,40 @@ impl Canvas {
         }
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn vibepad_wordmark() -> Image {
+    let mut canvas = Canvas {
+        pixels: vec![0; 256 * 64 * 4],
+        width: 256,
+        height: 64,
+        context: ScaleContext::new(),
+    };
+    canvas.text("VıbePad", 8., 51., 52., |_| [1.; 3]);
+    for (index, pixel) in canvas.pixels.chunks_exact_mut(4).enumerate() {
+        let x = (index % 256) as f32;
+        let y = (index / 256) as f32;
+        let dot = Vec2::new(x, y).distance_squared(Vec2::new(56., 16.)) <= 4.5 * 4.5;
+        if dot {
+            pixel.copy_from_slice(&[255, 65, 89, 255]);
+        } else {
+            let coverage = pixel[0];
+            pixel.copy_from_slice(&[209, 220, 228, coverage]);
+        }
+    }
+    Image::new(
+        Extent3d {
+            width: 256,
+            height: 64,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        canvas.pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    )
+}
+
 pub fn source(
     title: &str,
     rows: &[(Option<Line>, Mark)],

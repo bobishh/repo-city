@@ -6,6 +6,7 @@
   <title>Repo City</title>
   <link rel="icon" type="image/svg+xml" href="./assets/robot-head.svg">
   <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png">
+  <link rel="stylesheet" href="./github-markdown.css">
   <link rel="stylesheet" href="./style.css">
   <script type="module" src="./app.mjs"></script>
 </head>
@@ -19,7 +20,7 @@
       <img class="android" src="./assets/robot-head.svg" alt="">
       <span class="wordmark">Repo City</span>
     </button></h1>
-    <button id="help" type="button" aria-label="How to use Repo City" aria-haspopup="dialog" aria-controls="help-dialog" title="How to use Repo City" hidden>?</button>
+    <button id="help" type="button" aria-label="How to use Repo City" aria-haspopup="dialog" aria-controls="review-dialog" title="How to use Repo City" hidden>H</button>
     <aside id="progress-warning" hidden>
       <span role="status"></span>
       <button type="button" aria-label="Dismiss progress warning">×</button>
@@ -97,20 +98,6 @@
       </form>
     </div>
     <dialog id="repository-dialog" aria-label="Open repository"></dialog>
-    <dialog id="help-dialog" class="city-dialog" aria-labelledby="help-title">
-      <h2 id="help-title">Take a quick tour</h2>
-      <p>Learn to look around, fly to a file, and wash a line of code.</p>
-      <p>Click the Repo City logo to open the repository picker.</p>
-      <label for="wash-mode">Water</label>
-      <select id="wash-mode">
-        <option value="delayed">Delayed</option>
-        <option value="immediate">Immediate</option>
-      </select>
-      <div class="dialog-actions">
-        <button id="help-skip" type="button">Skip</button>
-        <button id="help-start" type="button" autofocus>Start tour</button>
-      </div>
-    </dialog>
     <dialog id="review-dialog" class="city-dialog" aria-labelledby="review-title"></dialog>
   </main>
 </body>

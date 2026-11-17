@@ -96,7 +96,7 @@ jobs:
 
   deploy:
     name: Deploy to Cloudflare
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: github.repository == 'bobishh/repo-city' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: [native, browser]
     runs-on: ubuntu-24.04
     timeout-minutes: 10

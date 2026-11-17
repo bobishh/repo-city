@@ -16,6 +16,7 @@ mod guide;
 mod listing;
 #[cfg(not(target_arch = "wasm32"))]
 mod live_worktree;
+mod markdown_preview;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_github;
 #[cfg(not(target_arch = "wasm32"))]
@@ -29,6 +30,8 @@ mod review_notes;
 mod review_tablet;
 #[path = "../shapes.rs"]
 mod shapes;
+#[cfg(not(target_arch = "wasm32"))]
+mod tablet_display;
 mod world_set;
 
 use avian3d::prelude::{Collider, PhysicsPlugins, RigidBody};
@@ -46,7 +49,11 @@ use repo_world::{comparison::Comparison, syntax};
 use std::{collections::HashSet, path::PathBuf};
 use world_set::{WorldSet, color};
 
-type PlayerCamera = (With<Camera3d>, Without<district::MirrorCamera>);
+type PlayerCamera = (
+    With<Camera3d>,
+    Without<district::MirrorCamera>,
+    Without<android::TabletCamera>,
+);
 
 const CAMERA_FLOOR: f32 = 0.05;
 const MAX_LOOK_PITCH: f32 = 1.5;
@@ -568,6 +575,8 @@ fn main() {
     app.add_plugins(bevy::input_focus::tab_navigation::TabNavigationPlugin)
         .init_resource::<review_notes::ReviewUi>()
         .init_resource::<review_tablet::Tablet>()
+        .init_resource::<markdown_preview::Request>()
+        .init_resource::<markdown_preview::ReadQueue>()
         .init_resource::<live_worktree::Live>()
         .add_systems(
             Update,
@@ -575,12 +584,17 @@ fn main() {
                 .after(spawn_city)
                 .before(listing::draw),
         )
-        .init_resource::<guide::Guide>()
-        .add_systems(Update, guide::update.before(file_facade::lower_unchanged))
         .add_systems(Update, live_worktree::highlight.after(animate))
-        .add_systems(Update, native_panel::raise_tablet);
+        .add_systems(Update, tablet_display::toggle.after(android::show_tablet))
+        .add_systems(
+            First,
+            tablet_display::pointer.in_set(bevy::picking::PickingSystems::Input),
+        );
     #[cfg(not(target_arch = "wasm32"))]
-    app.insert_resource(reading::Settings::load());
+    {
+        markdown_preview::register(&mut app);
+        app.insert_resource(reading::Settings::load());
+    }
     #[cfg(target_arch = "wasm32")]
     app.add_systems(Update, reading::apply.before(listing::wash_stream));
     app.add_systems(Startup, district::setup);
@@ -825,7 +839,14 @@ fn setup(
             Pilot::default(),
         ))
         .id();
-    android::build(&mut commands, &mut meshes, &mut materials, pilot);
+    android::build(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        #[cfg(not(target_arch = "wasm32"))]
+        &mut images,
+        pilot,
+    );
     commands.spawn((
         DirectionalLight {
             illuminance: 10000.,
@@ -849,7 +870,7 @@ fn setup(
     review_notes::spawn_empty_hint(&mut commands, ui_font(13.), color(set.ink));
     listing::find::spawn(&mut commands, &ui_font(13.), color(set.ink));
     #[cfg(not(target_arch = "wasm32"))]
-    guide::spawn(&mut commands, &ui_font(15.), color(set.ink));
+    review_tablet::spawn_help(&mut commands, &ui_font(15.), color(set.ink));
     commands.spawn((
         review_notes::ToolHud,
         Text::new(""),
@@ -1370,7 +1391,8 @@ fn flight(
     #[cfg(target_arch = "wasm32")]
     {
         if let Some(document) = web_sys::window().and_then(|window| window.document()) {
-            let pointer_ui = pointer_ui_open || over_button;
+            // Browser dialogs manage their own pointer state synchronously.
+            let pointer_ui = picker.is_open() || search.blocks_controls() || over_button;
             if *previous_pointer_ui != Some(pointer_ui)
                 && let Some(canvas) = document.get_element_by_id("repo-city")
             {
@@ -2285,7 +2307,7 @@ fn smoke(
     mut listing: ResMut<listing::Listing>,
     mut picker: ResMut<repository_picker::RepositoryPicker>,
     window: Query<Entity, With<PrimaryWindow>>,
-    (mut guide, mut review): (ResMut<guide::Guide>, ResMut<review_notes::Review>),
+    (mut tablet, mut review): (ResMut<review_tablet::Tablet>, ResMut<review_notes::Review>),
 ) {
     if check.pending || repo.0.files.is_empty() {
         return;
@@ -2319,7 +2341,7 @@ fn smoke(
     if !check.prepared {
         match check.stage {
             10 => picker.smoke_open(),
-            11 => guide.open(),
+            11 => tablet.open_help(),
             12 => {
                 picker.smoke_review();
                 let path = &repo.0.files[explorer.selected].path;

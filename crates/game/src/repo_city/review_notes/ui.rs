@@ -4,7 +4,6 @@ use bevy::{
     clipboard::Clipboard,
     input_focus::{FocusCause, InputFocus, tab_navigation::TabIndex},
     text::EditableText,
-    ui::RelativeCursorPosition,
 };
 
 use super::{native, *};
@@ -26,6 +25,7 @@ pub(super) enum Action {
     Save(usize),
     EditNotes,
     AllComments,
+    OpenTablet(review_tablet::Page),
     Remove(usize),
     Export(usize),
     Visit(usize),
@@ -203,6 +203,28 @@ fn draw(
     };
     ui.panel = Some(panel);
     commands.entity(panel).with_children(|parent| {
+        if notes_view {
+            parent
+                .spawn(Node {
+                    column_gap: px(6.),
+                    flex_wrap: FlexWrap::Wrap,
+                    ..default()
+                })
+                .with_children(|bar| {
+                    for (index, (page, label)) in
+                        review_tablet::Page::NAVIGATION.into_iter().enumerate()
+                    {
+                        let button = tab_button(
+                            bar,
+                            label,
+                            INK,
+                            Action::OpenTablet(page),
+                            -10 + index as i32,
+                        );
+                        ui.primary = ui.primary.or(Some(button));
+                    }
+                });
+        }
         match view {
             View::Palette(selected) => {
                 parent
@@ -309,7 +331,6 @@ fn draw(
                             ..default()
                         },
                         ScrollPosition(Vec2::new(0., ui.scroll)),
-                        RelativeCursorPosition::default(),
                     ))
                     .with_children(|list| {
                         if all && let Some(comments) = comments {
@@ -380,10 +401,9 @@ fn draw(
                                     );
                                     ui.draft_fields.push((index, field));
                                 } else {
-                                    native_panel::text(
+                                    markdown_preview::draw(
                                         card,
-                                        note.comment(),
-                                        Color::srgb_u8(221, 235, 240),
+                                        markdown_preview::markdown_html(note.comment()),
                                     );
                                 }
                                 let can_visit = note.anchor.start > 0
@@ -492,8 +512,6 @@ fn draw(
                                 10_002,
                             );
                         }
-                        let close = tab_button(actions, "Close", INK, Action::Close, 10_004);
-                        ui.primary = ui.primary.or(Some(close));
                     });
                 if can_publish
                     && draft_count != 0
@@ -604,18 +622,18 @@ pub(crate) fn update(
     mut feedback: Query<&mut Text, With<Feedback>>,
     repo: Option<Res<Repo>>,
     mut picker: Option<ResMut<repository_picker::RepositoryPicker>>,
-    (guide, mut clipboard, wheel, mut lists, comments, entrances): (
-        Option<Res<guide::Guide>>,
+    (mut tablet, mut clipboard, wheel, mut lists, comments): (
+        Option<ResMut<review_tablet::Tablet>>,
         Option<ResMut<Clipboard>>,
         Option<Res<AccumulatedMouseScroll>>,
-        Query<(&mut ScrollPosition, &RelativeCursorPosition), With<NoteRows>>,
+        Query<&mut ScrollPosition, With<NoteRows>>,
         Option<Res<native_github::PullComments>>,
-        Query<&native_panel::TabletEntrance>,
     ),
 ) {
     let fallback = repository_picker::empty();
     let repo = repo.as_ref().map_or(&fallback, |repo| &repo.0);
     let mut redraw = false;
+    let mut handoff = false;
     if comments
         .as_ref()
         .is_some_and(|comments| comments.is_changed())
@@ -624,10 +642,8 @@ pub(crate) fn update(
         redraw = true;
     }
     let mut message = String::new();
-    if let Ok((mut position, relative)) = lists.single_mut() {
-        if relative.cursor_over()
-            && let Some(wheel) = wheel.as_ref()
-        {
+    if let Ok(mut position) = lists.single_mut() {
+        if let Some(wheel) = wheel.as_ref() {
             let delta = match wheel.unit {
                 bevy::input::mouse::MouseScrollUnit::Line => wheel.delta.y * 34.,
                 bevy::input::mouse::MouseScrollUnit::Pixel => wheel.delta.y,
@@ -723,12 +739,24 @@ pub(crate) fn update(
         });
     }
 
-    let action = ui
-        .action
-        .take()
-        .or_else(|| (was_open && keys.just_pressed(KeyCode::Escape)).then_some(Action::Close));
+    let action = ui.action.take().or_else(|| {
+        let dismiss = keys.just_pressed(KeyCode::Escape)
+            || (matches!(ui.view, Some(View::Notes { .. })) && review_tablet::plain_tab(&keys));
+        (was_open && dismiss).then_some(Action::Close)
+    });
     if let Some(action) = action {
         match action {
+            Action::OpenTablet(page) => match save_edits(&mut review, &ui, &fields) {
+                Ok(()) => {
+                    if let Some(tablet) = tablet.as_deref_mut() {
+                        tablet.open_page(page);
+                        ui.view = None;
+                        handoff = true;
+                        redraw = true;
+                    }
+                }
+                Err(error) => message = error,
+            },
             Action::AllComments => {
                 ui.select_view(Panel::Notes, &review, repo, comments.is_some());
                 ui.scroll = 0.;
@@ -942,11 +970,6 @@ pub(crate) fn update(
         }
     }
     if redraw {
-        let entrance = if let Some(panel) = ui.panel {
-            entrances.get(panel).ok().copied()
-        } else {
-            Some(native_panel::TabletEntrance::default())
-        };
         if let Some(panel) = ui.panel.take() {
             native_panel::close(&mut commands, panel, &mut focus, &parents);
         }
@@ -958,12 +981,6 @@ pub(crate) fn update(
             picker.as_deref(),
             comments.as_deref(),
         );
-        if matches!(ui.view, Some(View::Notes { .. }))
-            && let Some(panel) = ui.panel
-            && let Some(entrance) = entrance
-        {
-            commands.entity(panel).insert((entrance, entrance.pose()));
-        }
         if let Some(field) = ui
             .fields
             .first()
@@ -975,9 +992,9 @@ pub(crate) fn update(
         }
     }
     review.tablet_open = matches!(ui.view, Some(View::Notes { .. }));
-    review.blocked = was_open
+    review.blocked = (was_open && !handoff)
         || ui.view.is_some()
-        || guide.as_ref().is_some_and(|guide| guide.is_open())
+        || tablet.as_ref().is_some_and(|tablet| tablet.is_open())
         || picker
             .as_ref()
             .is_some_and(|picker| picker.blocks_controls());

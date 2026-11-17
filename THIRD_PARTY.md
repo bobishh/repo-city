@@ -10,3 +10,6 @@ See `assets/fonts/NotoEmoji-LICENSE`.
 The browser syntax worker bundles Shiki and its TextMate grammars, plus the
 JavaScript regex engine and its dependencies. The web build publishes their
 license notices under `syntax-licenses/`.
+
+The web build uses [GitHub Markdown CSS](https://github.com/sindresorhus/github-markdown-css)
+for document and comment previews and publishes its MIT license alongside the stylesheet.

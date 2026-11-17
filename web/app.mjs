@@ -17,15 +17,7 @@ const blame = document.querySelector("#blame");
 const startScreen = document.querySelector("#start-screen");
 const startControls = document.querySelector("#start-controls");
 const dialog = document.querySelector("#repository-dialog");
-const guide = document.querySelector("#help-dialog");
 const help = document.querySelector("#help");
-const washMode = document.querySelector("#wash-mode");
-try { if (localStorage.getItem("repo-city-wash-mode") === "immediate") washMode.value = "immediate"; }
-catch { /* Preferences still work for this session. */ }
-washMode.addEventListener("change", () => {
-  try { localStorage.setItem("repo-city-wash-mode", washMode.value); }
-  catch { /* Preferences still work for this session. */ }
-});
 const guideKey = "repo-city-guide-v1";
 let tourCommand = 0;
 let tourEntry = null;
@@ -41,7 +33,16 @@ progressWarning.querySelector("button").addEventListener("click", () => { progre
 const submit = document.querySelector("#open-city");
 const syntax = createSyntaxCache();
 const releasePointer = setupPointer(canvas, dialog);
-const review = createReview({ canvas, release: releasePointer, onClose: focusCanvas });
+const review = createReview({
+  canvas, release: releasePointer, onClose: focusCanvas,
+  onTour(started) {
+    tourCommand = ((tourCommand & ~1) + 2) | Number(started);
+    activeTourEntry = started ? (tourEntry ?? "help") : null;
+    analytics.tour(started ? "start" : "skip", tourEntry ?? "help");
+    if (started) review.equipWater();
+    try { localStorage.setItem(guideKey, "seen"); } catch { /* Available for this session. */ }
+  },
+});
 let active;
 let running = false;
 let sourceVersion = 0;
@@ -57,13 +58,22 @@ function focusCanvas() {
 
 document.addEventListener("keydown", event => {
   const locked = document.pointerLockElement === canvas;
-  if (event.code === "Tab" && !event.shiftKey && !event.metaKey && !event.ctrlKey &&
-      !event.altKey && running && (locked || event.target === canvas) &&
+  const plain = !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey;
+  if (event.code === "Tab" && plain && review.tablet()) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!event.repeat) review.dismissTablet();
+    return;
+  }
+  if (["Tab", "KeyH"].includes(event.code) && plain && running && (locked || event.target === canvas) &&
       !canvas.hasAttribute("data-pointer-ui") && !canvas.hasAttribute("data-action-menu") &&
       !document.querySelector("dialog[open]")) {
     event.preventDefault();
     event.stopPropagation();
-    if (!event.repeat) review.changedFiles();
+    if (!event.repeat) {
+      if (event.code === "KeyH") openGuide("help");
+      else review.changedFiles();
+    }
     return;
   }
   if (event.code !== "KeyF" || event.repeat || event.metaKey || event.ctrlKey ||
@@ -75,8 +85,7 @@ document.addEventListener("keydown", event => {
 
 function openGuide(entry) {
   tourEntry = entry;
-  releasePointer();
-  if (!guide.open) guide.showModal();
+  review.help();
 }
 help.addEventListener("click", () => { if (running) openGuide("help"); });
 function offerFirstTour() {
@@ -84,30 +93,6 @@ function offerFirstTour() {
   catch { /* The tour remains available when storage is disabled. */ }
   openGuide("first_run");
 }
-function dismissGuide() {
-  try { localStorage.setItem(guideKey, "seen"); } catch { /* Storage may be disabled. */ }
-  guide.close();
-}
-document.querySelector("#help-start").addEventListener("click", () => {
-  tourCommand = ((tourCommand & ~1) + 2) | 1;
-  activeTourEntry = tourEntry;
-  analytics.tour("start", activeTourEntry);
-  review.equipWater();
-  dismissGuide();
-});
-document.querySelector("#help-skip").addEventListener("click", () => {
-  tourCommand = (tourCommand & ~1) + 2;
-  analytics.tour("skip", tourEntry);
-  activeTourEntry = null;
-  dismissGuide();
-});
-guide.addEventListener("cancel", event => {
-  event.preventDefault();
-  analytics.tour("skip", tourEntry);
-  dismissGuide();
-});
-guide.addEventListener("close", focusCanvas);
-for (const type of ["keydown", "keyup"]) guide.addEventListener(type, event => event.stopPropagation());
 
 logo.addEventListener("click", () => {
   if (!running) {
@@ -207,7 +192,20 @@ async function openRepository(repo, ref, base) {
         },
         reviewModal: review.modal,
         reviewTablet: review.tablet,
-        takeReadingSettings: () => washMode.value === "immediate",
+        previewMarkdown(path, before) {
+          const { repository } = active;
+          const snapshot = JSON.parse(repository.snapshot);
+          const blob = snapshot[before ? "before" : "after"][path];
+          review.previewMarkdown(path, async () => {
+            if (!blob || blob.mode === "120000") throw new Error("No readable source in this snapshot.");
+            if (blob.size > 1024 * 1024) throw new Error("Source exceeds the 1 MiB inspection limit.");
+            const text = new TextDecoder("utf-8", { fatal: true }).decode(await repository.blob(blob.id));
+            const rows = text.split("\n").length - Number(!text || text.endsWith("\n"));
+            return { text, mark: { path, blob: blob.id, before, rows } };
+          });
+        },
+        takeMarkdownRead: review.takeMarkdownRead,
+        takeReadingSettings: review.takeReadingSettings,
         reviewCanPaint: review.canPaint,
         reviewId: review.id,
         snapshot: () => active.repository.snapshot,
@@ -264,6 +262,7 @@ async function openRepository(repo, ref, base) {
       };
       canvas.hidden = false;
       await engine.default();
+      review.setMarkdown(engine.markdown_html);
       running = true;
       document.documentElement.dataset.playing = "";
       startScreen.hidden = true;

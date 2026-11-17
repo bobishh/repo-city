@@ -1,4 +1,9 @@
-# Repo City
+# Vibe City
+
+Vibe City is the Mac application. Its public web counterpart is
+[Repo City](https://repo-city.meta-uber-engineer.dev/).
+This private repository retains Repo City's history. The shared upstream is
+[bobishh/repo-city](https://github.com/bobishh/repo-city).
 
 Repo City turns a Git repository into a 3D city you can fly through. Directories
 form districts. Each file has walls for its source, diff, and blame. Open a
@@ -33,17 +38,17 @@ and forks from the repository field. Under your GitHub handle, use **Choose
 private repositories** to grant read access to selected repositories. Use
 **Default branch** or **Compare…** to find branches and tags or search commit messages
 on the default branch. Click the **Repo City** logo to reopen the picker.
-The first city visit offers a controls tour. Use **?** to take it again.
+The first city visit offers a controls tour. Open **H** to take it again.
 
 ### On your Mac
 
-Build the app with Rust and open the resulting bundle.
+The desktop app is called **Vibe City**. Build it with Rust and open the resulting bundle.
 
 ```sh
-git clone https://github.com/bobishh/repo-city.git
-cd repo-city
+git clone https://github.com/bobishh/vibe-city.git
+cd vibe-city
 ./scripts/build-macos.sh
-open "dist/Repo City.app"
+open "dist/Vibe City.app"
 ```
 
 Click **Open Repository…** or press **⌘O** and pick a local Git checkout.
@@ -81,22 +86,31 @@ still covers the entire comparison.
 | Action | Control |
 | --- | --- |
 | Find a file by name or path | **P** in the browser, **⌘P** on Mac |
+| Preview a Markdown file | Aim at its building and press **P** to open the formatted document in VibePad. |
 | Fly | **WASD**, **Space** and **Ctrl** for altitude, **Shift** to boost |
 | Capture or release the cursor | Click the scene to capture. **Esc** releases. |
 | Use the actions menu | Right-click to open or close it. Scroll or use the arrow keys to highlight an action. Click or press **Enter** to select it. |
 | See the city from above | Press **M** to cycle through the district, the project, and your original view. Fly freely after each move. |
 | Return to a building | **Ctrl+O** goes back in jump history and **Ctrl+I** goes forward. |
-| Browse changes | **Tab** opens the changed files tablet. **Viewed** limits the list to changes you visited. Select a file to fly there. With a form open, **Tab** moves focus. |
+| Browse changes | **Tab** opens and puts away VibePad. **Viewed** limits the list to changes you visited. Select a file to fly there. **Shift+Tab** moves focus inside VibePad. |
 | Approach a wall | Far away, left-click a building to fly to its nearest covered lines or the top of its source wall. Press **E** to fly to the aimed face. Scroll to move along the wall. |
-| Wash or paint lines | **0** equips water. Click close to a source wall to start or stop water. Code appears while you aim at the block. Delayed mode saves the reveal after a reading estimate based on the amount of text. Change Water to Immediate in the controls to save it right away. **1–9** equip paints; drag from one readable line to another on the same side of the file. |
+| Wash or paint lines | **0** equips water. Click close to a source wall to start or stop water. Code appears while you aim at the block. In VibePad **Settings**, choose **Immediate** to save the reveal right away or **Delayed** to wait for the reading estimate. **1–9** equip paints; drag from one readable line to another on the same side of the file. |
 | Edit paints and notes | **U** opens paints; **⌘ + scroll** cycles tools on Mac. **J** opens the note you are aiming at or the review list. |
 | Find text on the current wall | **/** or **Find in file** in the actions menu. **Enter** keeps results; **N** and **Shift+N** visit matches. |
 | Turn to the diff or blame wall | **G** for diff, **B** for blame. Sign in with GitHub for line attribution in the browser. |
 | Follow a file’s changes | **C** starts the review. Scroll up or press **W** for the next stop. Scroll down or press **S** for the previous stop. **Q** returns to the diff wall. |
-| Open controls on Mac | **H** opens or closes the controls panel. |
+| Open controls | **H** opens VibePad Help. Choose **Start tour** to practice flying and washing source. |
 
+Delayed mode starts with a minimum of 3 seconds and a maximum of 6 seconds.
+Clear either setting to remove that bound. Repo City estimates reading time
+from the amount of code using [Brysbaert’s English nonfiction reading rate](https://doi.org/10.1016/j.jml.2019.104047)
+as an approximation. The Mac stores `mode`, `min_seconds`, and `max_seconds`
+in `~/Library/Application Support/Repo City/reading.json`. A `null` bound
+has no limit.
+
+Reach the end of a Markdown preview to reveal the file's source wall.
 Repo City saves revealed lines and reviewed files in your browser or on your
-Mac. The Mac stores the water setting as `{"mode":"delayed"}` or `{"mode":"immediate"}` in `~/Library/Application Support/Repo City/reading.json`. The same repository and comparison restore those marks. Press **V** to
+Mac. The same repository and comparison restore those marks. Press **V** to
 toggle the selected file’s review mark. To start over on the open comparison,
 choose **Reset progress** in the browser’s repository dialog or the Mac
 **Files** menu.
@@ -116,6 +130,7 @@ The Mac app saves notes and palettes in SQLite. Press **J** while aiming at a
 marked line to open its comment in VibePad. Away from a mark, **J** opens all
 comments on the current comparison. **All comments** returns to that list.
 Use **Edit** to add details or export a note.
+Comment previews render Markdown in VibePad.
 When you open a GitHub pull request, **J** also lists its review comments.
 Choose **Fly to lines** to see an anchored comment on its building, or
 **Open on GitHub** to read the full thread. In the **M** overview, gold pins

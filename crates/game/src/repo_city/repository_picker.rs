@@ -297,9 +297,14 @@ pub(super) fn load(path: &Path, revision: &str, base: Option<&str>) -> Result<Re
 }
 
 pub(super) fn window_title(set: &WorldSet, repo: &Repository) -> String {
+    let name = if cfg!(target_arch = "wasm32") {
+        set.name.as_str()
+    } else {
+        "Vibe City"
+    };
     match repo.root.file_name() {
-        Some(name) => format!("{} · {}", set.name, name.to_string_lossy()),
-        None => "Repo City".into(),
+        Some(repository) => format!("{name} · {}", repository.to_string_lossy()),
+        None => name.into(),
     }
 }
 
@@ -932,7 +937,7 @@ pub(super) fn open_repository(
                     .unwrap_or_else(|| next.initial_file());
                 let mut explorer = Explorer::new(selected);
                 explorer.open(&next, selected);
-                window.title = format!("{} · {}", set.name, snapshot.target.label());
+                window.title = format!("Vibe City · {}", snapshot.target.label());
                 picker.comments = native_github::pull_comments(
                     &snapshot.target,
                     &next,
