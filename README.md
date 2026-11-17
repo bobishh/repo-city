@@ -2,7 +2,7 @@
 
 Vibe City is the Mac application. Its public web counterpart is
 [Repo City](https://repo-city.meta-uber-engineer.dev/).
-This private repository retains Repo City's history. The shared upstream is
+This repository retains Repo City's history. The shared upstream is
 [bobishh/repo-city](https://github.com/bobishh/repo-city).
 
 Repo City turns a Git repository into a 3D city you can fly through. Directories
