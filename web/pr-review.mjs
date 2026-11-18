@@ -108,7 +108,6 @@ export async function writeReviewComment(input, login, call) {
   const pull = await call("");
   if (!pull.ok) return accessError(pull);
   const snapshot = await pull.json();
-  if (snapshot.state !== "open") return fail(409, "This pull request is closed. Your draft is still saved.");
   if (snapshot.head?.sha !== revision) return fail(409, "The pull request changed. Open the current revision and reselect the lines.");
   let file;
   for (let page = 1; page <= 30; page++) {

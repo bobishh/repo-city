@@ -7,6 +7,28 @@ const patch = "@@ -2,3 +2,4 @@\n context\n-old\n+new\n+another\n after\n@@ -18 +
 const path = "src/lib.rs";
 const comment = { id: "f20ca9be-aeb0-4238-b3e7-a40af23486ba", revision: sha, path, before: false, start: 2, end: 4, preset: "tests", text: "Test both outcomes." };
 
+test("publishes comments on closed and merged pull requests without bypassing diff validation", async () => {
+  for (const merged of [false, true]) {
+    let posted;
+    const call = async (suffix, payload) => {
+      if (!suffix) return Response.json({ state: "closed", merged, head: { sha } });
+      if (suffix.startsWith("/files")) return Response.json([{ filename: path, patch }]);
+      if (!payload) return Response.json([]);
+      posted = payload;
+      return Response.json({ id: 42 });
+    };
+    // Given a historical PR at its actual head, valid coordinates can still publish.
+    assert.equal((await writeReviewComment(comment, "reviewer", call)).status, 201);
+    assert.equal(posted.commit_id, sha);
+    assert.equal(posted.line, 4);
+    posted = undefined;
+    // Stale revisions and invalid lines remain private, irrespective of PR state.
+    assert.equal((await writeReviewComment({ ...comment, revision: "b".repeat(40) }, "reviewer", call)).status, 409);
+    assert.equal((await writeReviewComment({ ...comment, end: 19 }, "reviewer", call)).status, 422);
+    assert.equal(posted, undefined);
+  }
+});
+
 test("validates the whole inclusive range on one GitHub diff side", () => {
   assert.equal(containsRange(patch, false, 2, 5), true);
   assert.equal(containsRange(patch, true, 2, 4), true);

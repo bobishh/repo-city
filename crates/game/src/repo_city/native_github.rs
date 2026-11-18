@@ -101,7 +101,6 @@ impl Target {
 struct Pull {
     head: Commit,
     base: Commit,
-    state: String,
 }
 
 #[derive(Deserialize)]
@@ -755,7 +754,6 @@ fn sha(value: &str) -> Result<&str, String> {
 
 pub(super) struct Snapshot {
     pub target: Target,
-    pub pull_open: bool,
     pub repository: Repository,
 }
 
@@ -772,10 +770,8 @@ impl Snapshot {
             git(&root, &["init", "--bare", "--quiet"], None)?;
         }
         let origin = format!("https://github.com/{}.git", target.slug());
-        let mut pull_open = false;
         let repository = if let Some(endpoint) = target.pull_endpoint() {
             let pull: Pull = api(&endpoint, token, None)?;
-            pull_open = pull.state == "open";
             let head = sha(&pull.head.sha)?;
             let base = sha(&pull.base.sha)?;
             let reference = format!("refs/pull/{}/head", target.pull.unwrap());
@@ -806,11 +802,7 @@ impl Snapshot {
             };
             repository_picker::load(&root, &head, merge_base.as_deref())?
         };
-        Ok(Self {
-            target,
-            pull_open,
-            repository,
-        })
+        Ok(Self { target, repository })
     }
 }
 
@@ -903,9 +895,6 @@ pub(super) fn publish(
             .pull_endpoint()
             .ok_or("Open a GitHub pull request first.")?;
         let pull: Pull = api(&endpoint, Some(&token), None)?;
-        if pull.state != "open" {
-            return Err("This pull request is closed. Drafts are saved locally.".into());
-        }
         if notes.iter().any(|note| pull.head.sha != note.revision) {
             return Err("The pull request changed. Reopen it and select the current lines.".into());
         }

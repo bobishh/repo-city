@@ -4,7 +4,7 @@ Repo City helps a reviewer inspect code, leave feedback on exact lines, and retu
 
 ## Open a review
 
-The browser already accepts a GitHub PR URL and opens the head tree against the merge base, including fork PRs. Today it only opens PRs that are still open. Give **Pull requests** a place in the repository picker alongside branches and commits. List open PRs by default and show number, title, author, base, and head. Offer closed and merged PRs as read-only history once the viewer supports those snapshots. Keep the PR number in the URL so the reviewer can return to the same discussion after a new commit.
+The browser accepts a GitHub PR URL and opens the head tree against the merge base, including fork PRs. **Pull requests** in the repository picker lists open, closed and merged PRs with their state. All three states support private notes and publication by an authorized reviewer. Publishing still validates the current head and GitHub diff coordinates; GitHub permission or discussion restrictions leave the draft editable. Keep the PR number in the URL so the reviewer can return to the same discussion after a new commit.
 
 Use the base repository and PR number as the review identity, including for forks. Use the head and merge-base SHAs to identify the snapshot being inspected. GitHub REST exposes the PR list, details, and changed files under `/repos/{owner}/{repo}/pulls`. Use the changed files and GitHub’s diff coordinates for publishing, since a city wall can show a whole file even when GitHub’s diff includes only a few hunks. [GitHub pull request endpoints](https://docs.github.com/en/rest/pulls/pulls)
 
@@ -89,6 +89,7 @@ Add live agent activity after the core review loop works. An optional runner can
 - In a local checkout with no GitHub session, mark a range, add a note, reopen the same snapshot, and see the note at the same lines. Resetting read progress leaves the note in place.
 - Open a public PR from its URL or the PR picker. An existing inline discussion appears as one neutral marker with its replies and link. A reviewer without write access sees the relevant sign-in or permission action before attempting to publish.
 - Publish a range from an authorized PR review and reopen the PR. The comment appears once with its preset, author, and range. If the head moved or GitHub rejected the range, the draft stays editable.
+- On a closed or merged PR, create a private note and publish it using the same permission and anchor checks as an open PR. A denied publication preserves the note for retry.
 - Advance the PR head. The reviewer can find newly changed lines, the old discussion, and any outdated anchors without losing the original note.
 - Switch paint presets and spray once. The can, spray, and gutter marker use the same color. The reflection raises and lowers the tool together with the first-person animation, and the resting view leaves the source readable.
 

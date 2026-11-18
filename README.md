@@ -115,8 +115,9 @@ With no base specified, Repo City compares the revision with its first parent.
 A pull request opens its head tree and highlights changed lines in place. The
 diff wall also shows deleted lines. Paste a pull request URL or choose **Pull
 requests** after selecting its repository. Closed and merged pull requests
-show their historical changes and comments. Publishing review notes requires
-an open pull request.
+show their historical changes and comments. Signed-in reviewers can annotate
+open, closed and merged pull requests. Publishing requires GitHub write access
+to pull requests and valid anchors on the PR's head revision.
 Press **F** or choose **Only changes** from the right-click menu to lower
 untouched buildings below the street and filter the file picker. Press **F**
 again or choose **Show all files** to restore the full city.
@@ -226,6 +227,9 @@ It uses Alacritty's terminal emulator and a real PTY, including cursor movement,
 alternate screens, UTF-8, resizing, clipboard paste and Ctrl+C. **Ctrl+Tab** puts
 away the tablet while the shell keeps running; plain Tab and Esc go to the shell.
 **F6** switches keyboard focus between the shell and tablet controls.
+Exiting the shell starts a new session in the same checkout. Five consecutive
+exits within two seconds of startup pause automatic restarts, including failed
+launches. Close and reopen VibePad, or choose **Restart shell**, to retry.
 Shell commands run in the inspected repository and may change it. Git history
 and comparison controls only read it. If Git is missing, install it and restart
 the app; the tablet shows installation guidance rather than closing the app.
@@ -271,7 +275,7 @@ When you open a GitHub pull request, **J** also lists its review comments.
 Choose **Fly to lines** to see an anchored comment on its building, or
 **Open on GitHub** to read the full thread. In the **M** overview, gold pins
 mark buildings with comments on the current comparison.
-In an open pull request, **Publish all** sends the current drafts to GitHub
+In a pull request, **Publish all** sends the current drafts to GitHub
 with write access. Turn on **Auto-publish** to send new marks as you make them.
 This setting turns off when you open another comparison. GitHub sign-in uses
 the macOS Keychain to restore the session.

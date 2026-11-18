@@ -28,8 +28,6 @@ pub(super) struct RepositoryPicker {
     #[cfg(not(target_arch = "wasm32"))]
     pub github: Option<native_github::Target>,
     #[cfg(not(target_arch = "wasm32"))]
-    pull_open: bool,
-    #[cfg(not(target_arch = "wasm32"))]
     github_file: Option<String>,
     #[cfg(not(target_arch = "wasm32"))]
     folder: Option<FolderSelection>,
@@ -98,8 +96,6 @@ impl RepositoryPicker {
             #[cfg(not(target_arch = "wasm32"))]
             github: None,
             #[cfg(not(target_arch = "wasm32"))]
-            pull_open: false,
-            #[cfg(not(target_arch = "wasm32"))]
             github_file: None,
             #[cfg(not(target_arch = "wasm32"))]
             folder: None,
@@ -152,7 +148,6 @@ impl RepositoryPicker {
     pub(super) fn smoke_review(&mut self) {
         self.github =
             native_github::Target::parse("https://github.com/example/repo-city/pull/1").ok();
-        self.pull_open = true;
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -222,7 +217,9 @@ impl RepositoryPicker {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn can_publish(&self) -> bool {
-        self.pull_open && self.github.is_some()
+        self.github
+            .as_ref()
+            .is_some_and(native_github::Target::is_pull)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1110,7 +1107,6 @@ pub(super) fn open_repository(
                     commands.remove_resource::<native_github::PullComments>();
                 }
                 picker.github = Some(snapshot.target);
-                picker.pull_open = snapshot.pull_open;
                 picker.status.clear();
                 if matches!(picker.view, Some(RepositoryView::GitHub { .. })) {
                     close_view(&mut commands, &mut picker, &mut focus, &parents);
@@ -1129,7 +1125,6 @@ pub(super) fn open_repository(
                 picker.comments = None;
                 commands.remove_resource::<native_github::PullComments>();
                 picker.github = None;
-                picker.pull_open = false;
                 window.title = window_title(&set, &next);
                 picker.status = remember(&next.root).err().unwrap_or_default();
                 replace_city(&mut commands, &old_city, next);
@@ -1435,6 +1430,16 @@ pub(super) fn open_repository(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn historical_pull_requests_allow_publication_but_plain_repositories_do_not() {
+        let mut picker = RepositoryPicker::new(String::new());
+        picker.github = native_github::Target::parse("https://github.com/owner/repo/pull/7").ok();
+        assert!(picker.can_publish());
+        picker.github = native_github::Target::parse("https://github.com/owner/repo").ok();
+        assert!(!picker.can_publish());
+    }
 
     #[test]
     fn windows_settings_use_roaming_app_data_without_home() {

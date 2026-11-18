@@ -484,11 +484,11 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     try { const parsed = new URL(url); return parsed.origin === "https://github.com" ? parsed.href : null; }
     catch { return null; }
   }
-  function allowedDraft() { return session?.review.pullState === "open" && Boolean(githubAccount()?.login); }
+  function allowedDraft() { return Boolean(session?.review.pull) && Boolean(githubAccount()?.login); }
   function add(json) {
     if (!allowedDraft()) {
-      if (session?.review.pullState === "open") return "Sign in with GitHub to leave a PR note.";
-      return "Open an active pull request to leave a note in the browser.";
+      if (session?.review.pull) return "Sign in with GitHub to leave a PR note.";
+      return "Open a pull request to leave a note in the browser.";
     }
     const data = session;
     const draft = JSON.parse(json);
@@ -718,7 +718,8 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     view(review.pull ? `Review · PR #${review.pull}` : "Review notes");
     if (review.pull && review.pullState !== "open") {
       dialog.append(make("p", review.pullState === "merged" ? "Merged pull request" : "Closed pull request"));
-    } else if (review.pull && !githubAccount()?.login) {
+    }
+    if (review.pull && !githubAccount()?.login) {
       dialog.append(make("p", "Sign in to create private review drafts."), signIn());
     } else if (!review.pull) {
       dialog.append(make("p", "Open a GitHub pull request to leave review notes."));
@@ -989,7 +990,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       preset.disabled = true;
       actions(button("Back", notesPanel));
     } else {
-      if (data.review.pullState === "open" && !githubAccount()?.login && current(note, data.review)) dialog.append(signIn());
+      if (data.review.pull && !githubAccount()?.login && current(note, data.review)) dialog.append(signIn());
       actions(button("Back", notesPanel), copyButton([note]), remove, save, ...(canPublish ? [prepare] : []));
     }
   }

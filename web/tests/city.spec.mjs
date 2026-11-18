@@ -524,7 +524,7 @@ test("opens a merged pull request from the URL using its fork head and merge bas
 });
 
 
-test("selects a closed PR in the picker while a signed-in viewer stays read-only", async ({ page }) => {
+test("selects a closed PR in the picker and permits a signed-in viewer to annotate it", async ({ page }) => {
   const seen = [];
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: true, login: "reviewer" } }));
   await page.route("**/github/api/**", route => {
@@ -559,7 +559,7 @@ test("selects a closed PR in the picker while a signed-in viewer stays read-only
   expect(seen).toEqual(["all"]);
   const snapshot = await page.evaluate(() => JSON.parse(globalThis.repoCity.snapshot()));
   expect(snapshot).toMatchObject({ name: "owner/demo#7", revision: after, baseline: before });
-  expect(await page.evaluate(() => globalThis.repoCity.reviewCanPaint())).toBe(false);
+  expect(await page.evaluate(() => globalThis.repoCity.reviewCanPaint())).toBe(true);
 });
 
 test("finds account repositories and revisions in their own fields", async ({ page }, testInfo) => {

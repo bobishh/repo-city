@@ -9,7 +9,49 @@ use bevy::{
     picking::events::PointerPress,
 };
 use session::{Session, Size};
-use std::{path::PathBuf, sync::Mutex};
+use std::{
+    path::PathBuf,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
+
+const IMMEDIATE_EXIT: Duration = Duration::from_secs(2);
+const RETRY_DELAY: Duration = Duration::from_millis(200);
+const MAX_IMMEDIATE_EXITS: u8 = 5;
+
+#[derive(Default)]
+struct Recovery {
+    failures: u8,
+    started: Option<Instant>,
+    retry_at: Option<Instant>,
+}
+
+impl Recovery {
+    fn ended(&mut self, now: Instant) {
+        let immediate = self
+            .started
+            .take()
+            .is_none_or(|started| now.duration_since(started) < IMMEDIATE_EXIT);
+        self.failures = if immediate {
+            self.failures.saturating_add(1)
+        } else {
+            0
+        };
+        self.retry_at = (self.failures < MAX_IMMEDIATE_EXITS).then_some(
+            now + if immediate {
+                RETRY_DELAY
+            } else {
+                Duration::ZERO
+            },
+        );
+    }
+    fn reopen(&mut self, now: Instant) {
+        if self.failures >= MAX_IMMEDIATE_EXITS {
+            self.retry_at = Some(now);
+        }
+        self.failures = 0;
+    }
+}
 
 #[derive(Resource, Default)]
 pub(super) struct Terminal {
@@ -23,6 +65,8 @@ pub(super) struct Terminal {
     paste: Option<ClipboardRead>,
     pub active: bool,
     dirty: bool,
+    recovery: Recovery,
+    pad_open: bool,
 }
 
 #[derive(Component)]
@@ -42,8 +86,67 @@ impl native_panel::Actions<Action> for Terminal {
 }
 
 impl Terminal {
+    fn maintain(&mut self, root: &std::path::Path, now: Instant, pad_open: bool) {
+        if pad_open && !self.pad_open {
+            self.recovery.reopen(now);
+        }
+        self.pad_open = pad_open;
+        if let Some(result) = self.pending.as_ref().and_then(native_github::Job::take) {
+            self.pending = None;
+            match result {
+                Ok(session) => {
+                    self.session = Some(session);
+                    self.recovery.started = Some(now);
+                    self.status = "Shell ready".into();
+                }
+                Err(error) => {
+                    self.error = error;
+                    self.recovery.ended(now);
+                    self.exit_status();
+                }
+            }
+            self.dirty = true;
+        }
+        let exited = if let Some(session) = self.session_mut() {
+            let changed = session.poll();
+            let exited = session.exited;
+            self.dirty |= changed;
+            exited
+        } else {
+            false
+        };
+        if exited {
+            self.session = None;
+            self.recovery.ended(now);
+            self.exit_status();
+        }
+        if self.root.as_deref() == Some(root)
+            && self.session.is_none()
+            && self.pending.is_none()
+            && self.recovery.retry_at.is_some_and(|retry| now >= retry)
+        {
+            self.launch(root.to_owned());
+        }
+    }
+
+    fn exit_status(&mut self) {
+        self.status = if self.recovery.failures >= MAX_IMMEDIATE_EXITS {
+            format!("Shell stopped after 5 immediate exits. Close and reopen VibePad, or restart the shell. {}", self.error).trim().to_owned()
+        } else if self.error.is_empty() {
+            "Shell exited. Starting a new session…".into()
+        } else {
+            format!("{}. Retrying…", self.error)
+        };
+    }
+
     fn start(&mut self, root: PathBuf) {
+        self.recovery = Recovery::default();
+        self.launch(root);
+    }
+    fn launch(&mut self, root: PathBuf) {
         self.session = None;
+        self.recovery.started = None;
+        self.recovery.retry_at = None;
         self.root = Some(root.clone());
         self.error.clear();
         self.status = "Starting shell…".into();
@@ -147,20 +250,7 @@ pub(super) fn update(
     let shown = tablet.page_name() == Some("terminal");
     let view = views.iter().next().map(|(entity, _, _)| entity);
     terminal.active = shown && focus.get() == view && view.is_some();
-    if let Some(result) = terminal.pending.as_ref().and_then(native_github::Job::take) {
-        terminal.pending = None;
-        match result {
-            Ok(session) => {
-                terminal.session = Some(session);
-                terminal.status = "Shell ready".into();
-            }
-            Err(error) => {
-                terminal.error = error.clone();
-                terminal.status = error;
-            }
-        }
-        terminal.dirty = true;
-    }
+    terminal.maintain(&repo.0.root, Instant::now(), tablet.is_open());
     if let Some(action) = terminal.action.take() {
         match action {
             Action::Restart => terminal.start(repo.0.root.clone()),
@@ -260,14 +350,6 @@ pub(super) fn update(
                 }
             }
             Err(error) => terminal.status = error.to_string(),
-        }
-    }
-    if let Some(session) = terminal.session_mut() {
-        let changed = session.poll();
-        let exited = session.exited;
-        terminal.dirty |= changed;
-        if exited {
-            terminal.status = "Shell exited. Restart shell to continue.".into();
         }
     }
     if shown {
@@ -380,4 +462,91 @@ fn render(frame: &session::Frame) -> Image {
         }
     }
     canvas.image()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn exiting_the_shell_starts_a_new_session_without_reopening_the_terminal() {
+        let root = std::env::temp_dir();
+        let mut session = Session::open(&root, Some("/bin/sh")).unwrap();
+        session.send(b"exit\r".to_vec()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !session.exited {
+            session.poll();
+            assert!(Instant::now() < deadline, "Shell did not exit");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let now = Instant::now();
+        let mut terminal = Terminal {
+            root: Some(root.clone()),
+            session: Some(Mutex::new(session)),
+            ..default()
+        };
+        terminal.recovery.started = Some(now - Duration::from_secs(3));
+        terminal.maintain(&root, now, true);
+        assert!(
+            terminal.pending.is_some(),
+            "Exiting must launch a new shell"
+        );
+        assert!(terminal.session.is_none());
+    }
+
+    #[test]
+    fn five_immediate_exits_pause_until_the_tablet_reopens() {
+        let now = Instant::now();
+        let mut recovery = Recovery::default();
+        for attempt in 1..=MAX_IMMEDIATE_EXITS {
+            recovery.started = Some(now);
+            recovery.ended(now + Duration::from_millis(10));
+            assert_eq!(recovery.failures, attempt);
+            assert_eq!(recovery.retry_at.is_some(), attempt < MAX_IMMEDIATE_EXITS);
+        }
+        recovery.reopen(now);
+        assert_eq!(recovery.failures, 0);
+        assert_eq!(recovery.retry_at, Some(now));
+        // A failed spawn has no running timestamp and consumes the same retry budget.
+        recovery.ended(now);
+        assert_eq!(recovery.failures, 1);
+    }
+
+    #[test]
+    fn a_normal_shell_lifetime_resets_the_consecutive_failure_budget() {
+        let now = Instant::now();
+        let mut recovery = Recovery {
+            failures: 4,
+            started: Some(now),
+            retry_at: None,
+        };
+        recovery.ended(now + IMMEDIATE_EXIT);
+        assert_eq!(recovery.failures, 0);
+        assert_eq!(recovery.retry_at, Some(now + IMMEDIATE_EXIT));
+        recovery.started = Some(now + IMMEDIATE_EXIT);
+        recovery.ended(now + IMMEDIATE_EXIT + Duration::from_millis(10));
+        assert_eq!(recovery.failures, 1);
+    }
+
+    #[test]
+    fn reopening_vibepad_retries_a_paused_terminal() {
+        let root = std::env::temp_dir();
+        let now = Instant::now();
+        let mut terminal = Terminal {
+            root: Some(root.clone()),
+            pad_open: true,
+            recovery: Recovery {
+                failures: MAX_IMMEDIATE_EXITS,
+                ..default()
+            },
+            ..default()
+        };
+        terminal.maintain(&root, now, true);
+        assert!(terminal.pending.is_none());
+        terminal.maintain(&root, now, false);
+        terminal.maintain(&root, now, true);
+        assert!(terminal.pending.is_some());
+        assert_eq!(terminal.recovery.failures, 0);
+    }
 }
