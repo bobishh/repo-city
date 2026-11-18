@@ -34,12 +34,14 @@ fn texture_row_height(width: f32) -> f32 {
 }
 
 pub(super) fn block_size(file: &repo_world::File) -> Vec3 {
-    let estimated = file
-        .after
+    size_from_rows(estimated_rows(file))
+}
+
+fn estimated_rows(file: &repo_world::File) -> usize {
+    file.after
         .as_ref()
         .or(file.before.as_ref())
-        .map_or(1, |blob| (blob.size as usize / 40).max(1));
-    size_from_rows(estimated)
+        .map_or(1, |blob| (blob.size / 40).max(1))
 }
 
 fn size_from_rows(rows: usize) -> Vec3 {
@@ -403,6 +405,44 @@ impl Listing {
 
     pub(super) fn visible(explorer: &Explorer, navigation: &city_navigation::Navigation) -> bool {
         explorer.comparison_mode == 0 && !explorer.anchored && !navigation.guides_camera()
+    }
+
+    pub(super) fn visible_face(&self) -> Option<Face> {
+        self.rendered.and(self.viewing)
+    }
+
+    /// Zero-based rows in the source wall's viewport, excluding hidden or distant walls.
+    pub(super) fn visible_source_rows(
+        &self,
+        file: &repo_world::File,
+        camera: &Transform,
+        explorer: &Explorer,
+        aspect: f32,
+    ) -> Option<Range<usize>> {
+        let count = explorer.highlighted.len();
+        if count == 0
+            || self.rendered != Some((explorer.selected, explorer.before, count))
+            || self.viewing != Some(Face::Source)
+            || explorer.comparison_mode != 0
+            || explorer.anchored
+        {
+            return None;
+        }
+        let side = WallSide::new(file, count, Face::Source, block_size(file));
+        side.detail_distance(camera, aspect, true)?;
+        let rows = side.visible_rows(camera, count, aspect);
+        (!rows.is_empty()).then_some(rows)
+    }
+
+    /// A visible row may still be covered; only revealed or actively washed rows can be read.
+    pub(super) fn source_row_is_readable(&self, explorer: &Explorer, row: usize) -> bool {
+        self.revealed
+            .contains(&(explorer.selected, explorer.before, row + 1))
+            || self.wash_preview.as_ref().is_some_and(|preview| {
+                preview.file == explorer.selected
+                    && preview.before == explorer.before
+                    && preview.rows.contains(&row)
+            })
     }
 
     pub(super) fn arrival_view(
@@ -942,9 +982,15 @@ impl WallSide {
             Face::Diff => (x + size.x / 2. + PANEL_OFFSET, z, size.z),
             Face::Blame => (x - size.x / 2. - PANEL_OFFSET, z, size.z),
         };
-        let heading_height = width * HEADING_RATIO;
-        let mut wall = Wall::new(count, size.y - heading_height);
-        wall.row_height = wall.row_height.min(texture_row_height(width) * 1.5);
+        // Fill nominal short files; keep sparse content within the existing row-height cap.
+        let row_limit =
+            (texture_row_height(width) * 1.5).max(size.y / (estimated_rows(file) as f32 + 1.));
+        let row_height = (size.y / (count.max(1) as f32 + 1.)).min(row_limit);
+        let heading_height = row_height;
+        let wall = Wall {
+            top: size.y - heading_height,
+            row_height,
+        };
         Self {
             top: Vec3::new(x, wall.top, z),
             wall,
@@ -1072,8 +1118,10 @@ impl WallSide {
     }
 
     fn view(&self, y: f32) -> Transform {
-        let target = self.top.with_y(y);
-        let eye = target + self.normal() * (self.width * 0.84).max(0.18);
+        // Keep the left gutter in view when compressed rows require a closer approach.
+        let leading = self.width * (1. - self.glyph_scale().x) / 2.;
+        let target = self.top.with_y(y) - Vec3::Y.cross(self.normal()) * leading;
+        let eye = target + self.normal() * (self.width * 0.84 * self.glyph_scale().x).max(0.18);
         // Clear district curbs when framing a very short file near the ground.
         Transform::from_translation(eye.with_y(eye.y.max(1.))).looking_at(target, Vec3::Y)
     }
@@ -1177,6 +1225,9 @@ impl Layer {
         if self == Self::Preview {
             // Behind the readable tiles, still outside the building shell.
             pose.translation -= side.normal() * (side.wall.row_height * 0.08).clamp(0.003, 0.018);
+        } else if self == Self::Heading {
+            // Keep the title in front of the roof rim's vertical fascia.
+            pose.translation += side.normal() * 0.003;
         }
         pose
     }
@@ -1251,7 +1302,12 @@ impl WallRender<'_, '_, '_> {
     }
 
     fn header(&mut self, side: &WallSide, title: &str, tint: [f32; 3]) -> Tile {
-        let image = code_texture::render(title, &[], tint, 1280, 64);
+        let image = code_texture::heading(
+            title,
+            tint,
+            side.heading_height / side.width,
+            side.glyph_scale().x,
+        );
         let height = side.heading_height;
         self.plane(
             side,
@@ -1430,10 +1486,18 @@ pub(super) fn draw(
     mut images: ResMut<Assets<Image>>,
     time: Option<Res<Time>>,
     mut covered: ResMut<Assets<cover::Material>>,
-    review: Option<Res<review_notes::Review>>,
+    (review, focus): (
+        Option<Res<review_notes::Review>>,
+        Option<Res<file_facade::ChangesOnly>>,
+    ),
     #[cfg(not(target_arch = "wasm32"))] live: Option<Res<live_worktree::Live>>,
 ) {
-    let visible = Listing::visible(&explorer, &navigation);
+    let visible = Listing::visible(&explorer, &navigation)
+        && repo
+            .0
+            .files
+            .get(explorer.selected)
+            .is_some_and(|file| focus.as_ref().is_none_or(|focus| focus.includes(file)));
     #[cfg(not(target_arch = "wasm32"))]
     let visible = visible
         && !live
@@ -1844,6 +1908,183 @@ pub(super) fn smoke_blame_ready(listing: &Listing, count: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn four_line_file() -> (repo_world::File, Explorer) {
+        let source = "// Math helpers\nexport function add(a, b) {\n  return a + b;\n}\n";
+        let mut file = fixture_file();
+        file.path = "math.mjs".into();
+        file.after = Some(repo_world::Blob {
+            id: String::new(),
+            size: source.len(),
+            mode: "100644".into(),
+        });
+        let mut explorer = Explorer::new(0);
+        explorer.highlighted = syntax::highlight(&file.path, source);
+        (file, explorer)
+    }
+
+    #[test]
+    fn four_line_source_reserves_a_single_row_for_its_heading() {
+        let (file, explorer) = four_line_file();
+        let side = WallSide::new(
+            &file,
+            explorer.highlighted.len(),
+            Face::Source,
+            block_size(&file),
+        );
+        assert!(
+            side.heading_height <= side.wall.row_height * 1.01,
+            "the heading must not consume more height than a source row"
+        );
+    }
+
+    #[test]
+    fn source_heading_sits_in_front_of_the_roof_rim() {
+        let (file, explorer) = four_line_file();
+        let size = block_size(&file);
+        let rim = file_facade::transform(&file, size, file_facade::Part::Roof);
+        for (face, extent) in [
+            (Face::Source, rim.scale.z),
+            (Face::Diff, rim.scale.x),
+            (Face::Blame, rim.scale.x),
+        ] {
+            let side = WallSide::new(&file, explorer.highlighted.len(), face, size);
+            let heading = Layer::Heading.pose(&side, side.top.y + side.heading_height / 2.);
+            let heading_depth = (heading.translation - rim.translation).dot(side.normal());
+            assert!(
+                heading_depth > extent / 2. + 0.001,
+                "the roof fascia must not cover a readable heading on {face:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn four_line_approach_keeps_body_glyphs_readable_when_metadata_underestimates_rows() {
+        let (file, explorer) = four_line_file();
+        let size = block_size(&file);
+        let side = WallSide::new(&file, explorer.highlighted.len(), Face::Source, size);
+        let camera =
+            Listing::default().arrival_view(&explorer, &file, size, None, Vec3::new(0., 5., 30.));
+        let nominal_glyph =
+            side.width * side.glyph_scale().x * 20. / code_texture::LISTING_WIDTH as f32;
+        let point = side.top.with_y(side.wall.y(0.5));
+        let screen_y = |point: Vec3| {
+            let local = camera.compute_affine().inverse().transform_point3(point);
+            local.y / -local.z / std::f32::consts::FRAC_PI_8.tan() * 1080. / 2.
+        };
+        let pixels = (screen_y(point + Vec3::Y * nominal_glyph / 2.)
+            - screen_y(point - Vec3::Y * nominal_glyph / 2.))
+        .abs();
+        assert!(
+            pixels >= 18.,
+            "approached source glyph is only {pixels:.1} screen pixels tall"
+        );
+        let across = Vec3::Y.cross(side.normal());
+        let heading_start = side.top
+            + Vec3::Y * side.heading_height / 2.
+            + across
+                * (-side.width / 2.
+                    + side.width * code_texture::HEADING_LEFT / code_texture::LISTING_WIDTH as f32);
+        let local = camera
+            .compute_affine()
+            .inverse()
+            .transform_point3(heading_start);
+        let heading_x = 864. + local.x / -local.z / std::f32::consts::FRAC_PI_8.tan() * 1080. / 2.;
+        assert!(
+            heading_x >= 8.,
+            "approach clips the header at {heading_x:.1}px"
+        );
+    }
+
+    #[test]
+    fn visible_source_context_excludes_hidden_faces_and_unwashed_rows() {
+        let file = fixture_with_rows(40);
+        let mut explorer = Explorer::new(0);
+        explorer.highlighted = syntax::highlight("test.rs", &"let x = 1;\n".repeat(40));
+        let camera = view(&file, 40);
+        let mut listing = Listing::default();
+        assert_eq!(
+            listing.visible_source_rows(&file, &camera, &explorer, 1.6),
+            None
+        );
+        listing.rendered = Some((0, false, 40));
+        listing.viewing = Some(Face::Source);
+        let rows = listing
+            .visible_source_rows(&file, &camera, &explorer, 1.6)
+            .unwrap();
+        assert!(!rows.is_empty() && rows.end <= 40);
+        assert!(!listing.source_row_is_readable(&explorer, rows.start));
+        listing.revealed.insert((0, false, rows.start + 1));
+        assert!(listing.source_row_is_readable(&explorer, rows.start));
+        listing.viewing = Some(Face::Diff);
+        assert_eq!(
+            listing.visible_source_rows(&file, &camera, &explorer, 1.6),
+            None
+        );
+        listing.viewing = Some(Face::Source);
+        listing.rendered = None;
+        assert_eq!(
+            listing.visible_source_rows(&file, &camera, &explorer, 1.6),
+            None
+        );
+    }
+
+    #[test]
+    fn filtering_out_the_last_file_removes_its_detailed_walls_and_textures() {
+        let mut file = fixture_with_rows(40);
+        file.change = Change::Unchanged;
+        let mut repo = repository_picker::empty();
+        repo.files.push(file);
+        let mut explorer = Explorer::new(0);
+        explorer.highlighted = syntax::highlight("test.rs", &"let x = 1;\n".repeat(40));
+        let mut app = App::new();
+        app.insert_resource(Repo(repo))
+            .insert_resource(explorer)
+            .insert_resource(WorldSet::load(None).unwrap())
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<cover::Material>>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<city_navigation::Navigation>()
+            .init_resource::<file_facade::ChangesOnly>()
+            .init_resource::<Listing>()
+            .add_systems(Update, draw);
+        app.update();
+        assert!(app.world().resource::<Listing>().rendered.is_some());
+        assert!(
+            app.world_mut()
+                .query::<&ListingSurface>()
+                .iter(app.world())
+                .next()
+                .is_some()
+        );
+        app.world_mut()
+            .resource_mut::<file_facade::ChangesOnly>()
+            .enabled = true;
+        app.update();
+        assert!(app.world().resource::<Listing>().rendered.is_none());
+        assert_eq!(
+            app.world_mut()
+                .query::<&ListingSurface>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+        assert!(
+            app.world()
+                .resource::<Listing>()
+                .source_tiles
+                .resident
+                .is_empty()
+        );
+        assert!(
+            app.world()
+                .resource::<Listing>()
+                .source_tiles
+                .preview
+                .is_none()
+        );
+    }
 
     #[test]
     fn source_arrival_keeps_the_original_building_dimensions_when_rows_load() {

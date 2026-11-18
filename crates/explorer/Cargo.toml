@@ -30,7 +30,8 @@ base64 = "0.22"
 notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 ureq = { version = "2.12", features = ["json"] }
-bevy = { version = "0.20", default-features = true, features = ["system_clipboard"] }
+bevy = { version = "0.20", default-features = true, features = ["system_clipboard", "jpeg", "webp"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 avian3d = { version = "0.8", default-features = false, features = ["parallel"] }
 bevy_markup = { version = "0.8.0", default-features = false, features = ["system_fonts"] }
 

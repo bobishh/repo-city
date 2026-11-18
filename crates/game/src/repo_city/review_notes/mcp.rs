@@ -6,6 +6,7 @@ use std::{
 
 use serde_json::{Value, json};
 
+use super::super::focus_context;
 use super::native::{self, LocalState};
 
 pub(crate) fn serve(root: &Path) -> Result<(), String> {
@@ -62,6 +63,12 @@ fn respond(scope: &str, request: &Value) -> Option<Value> {
                 "annotations":{"readOnlyHint":true,"openWorldHint":false}
             },
             {
+                "name":"get_focus",
+                "description":"Read the active city camera's file, comparison, viewport and readable lines. A short-lived local snapshot, not eye tracking.",
+                "inputSchema":{"type":"object","properties":{},"additionalProperties":false},
+                "annotations":{"readOnlyHint":true,"openWorldHint":false}
+            },
+            {
                 "name":"mark_note",
                 "description":"Set a local note to unread, read, or addressed. Addressed records that the requested change was made.",
                 "inputSchema":{"type":"object","properties":{
@@ -115,8 +122,11 @@ fn run_tool(scope: &str, params: &Value) -> Result<Value, String> {
                 })
                 .collect::<Vec<_>>();
             let next = matches.next().map(|_| offset + notes.len());
-            Ok(json!({"repository":scope, "notes":notes, "next_offset":next}))
+            Ok(
+                json!({"repository":scope, "notes":notes, "next_offset":next, "focus":focus_context::read(scope)}),
+            )
         }
+        Some("get_focus") => Ok(json!({"repository":scope,"focus":focus_context::read(scope)})),
         Some("mark_note") => {
             let id = args["id"].as_str().ok_or("Supply a note ID.")?;
             let state = state.ok_or("Supply a note state.")?;
@@ -124,5 +134,30 @@ fn run_tool(scope: &str, params: &Value) -> Result<Value, String> {
             Ok(json!({"id":id, "state":state}))
         }
         _ => Err("Unknown Repo City tool.".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn focus_is_discoverable_without_changing_existing_note_tools() {
+        let reply = respond(
+            "/nonexistent-checkout",
+            &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        )
+        .unwrap();
+        let names = reply["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"get_focus"));
+        assert!(names.contains(&"list_notes"));
+        assert!(names.contains(&"mark_note"));
+        let reply = respond("/nonexistent-checkout", &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_focus","arguments":{}}})).unwrap();
+        assert_eq!(reply["result"]["isError"], false);
+        assert_eq!(reply["result"]["structuredContent"]["focus"]["live"], false);
     }
 }

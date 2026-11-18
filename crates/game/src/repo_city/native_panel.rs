@@ -138,12 +138,7 @@ pub(super) fn button<
 ) -> Entity {
     parent
         .spawn((
-            file_picker::button(
-                label,
-                &TextFont::from_font_size(15.),
-                color,
-                AlignSelf::Auto,
-            ),
+            file_picker::button(label, &panel_font(), color, AlignSelf::Auto),
             action,
             observe(
                 |click: On<Activate>, actions: Query<&A>, mut state: ResMut<S>| {

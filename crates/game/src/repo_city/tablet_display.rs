@@ -107,7 +107,18 @@ pub(super) fn spawn(
         RenderLayers::layer(LAYER),
         bevy::light::NotShadowCaster,
     ));
-    let shield = commands
+    let shield = spawn_shield(commands);
+    commands.spawn(POINTER);
+    commands.insert_resource(Display {
+        ui,
+        view,
+        shield,
+        target: NormalizedRenderTarget::Image(image.into()),
+    });
+}
+
+fn spawn_shield(commands: &mut Commands) -> Entity {
+    commands
         .spawn((
             GlobalZIndex(900),
             Node {
@@ -119,14 +130,9 @@ pub(super) fn spawn(
             },
             BackgroundColor(Color::srgba(0.01, 0.02, 0.04, 0.62)),
         ))
-        .id();
-    commands.spawn(POINTER);
-    commands.insert_resource(Display {
-        ui,
-        view,
-        shield,
-        target: NormalizedRenderTarget::Image(image.into()),
-    });
+        // The projected pointer owns tablet focus. The window pointer only blocks the HUD.
+        .observe(|mut focus: On<bevy::input_focus::AcquireFocus>| focus.propagate(false))
+        .id()
 }
 
 pub(super) fn target(commands: &mut Commands, root: Entity) {
@@ -246,6 +252,36 @@ pub(super) fn pointer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projected_input_keeps_focus_when_the_window_pointer_hits_the_shield() {
+        use bevy::input_focus::{AcquireFocus, InputFocus, InputFocusPlugin};
+        let mut app = App::new();
+        app.add_plugins((bevy::input::InputPlugin, InputFocusPlugin))
+            .add_systems(Startup, |mut commands: Commands| {
+                spawn_shield(&mut commands);
+            });
+        app.world_mut().register_component::<ChildOf>();
+        let window = app
+            .world_mut()
+            .spawn((Window::default(), PrimaryWindow))
+            .id();
+        app.update();
+        let input = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .insert_resource(InputFocus::from_entity(input));
+        let shield = app
+            .world_mut()
+            .query_filtered::<Entity, With<BackgroundColor>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().trigger(AcquireFocus {
+            focused_entity: shield,
+            window,
+        });
+        app.update();
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(input));
+    }
 
     #[test]
     fn pointer_maps_onto_the_physical_screen_and_excludes_the_bezel() {

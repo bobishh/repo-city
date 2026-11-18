@@ -43,6 +43,27 @@ export function containsRange(patch, before, start, end) {
 const validPath = value => typeof value === "string" && value.length <= 4096 &&
   !/[\u0000-\u001f]/u.test(value) && value.split("/").every(part => part && part !== "." && part !== "..");
 
+function validIdentity({ id, revision, preset }) {
+  // The local note ID makes retries idempotent; the preset survives in comment metadata.
+  // The revision identifies the GitHub PR head that the reviewer actually inspected.
+  return typeof id === "string" && noteId.test(id) &&
+    typeof revision === "string" && sha.test(revision) &&
+    typeof preset === "string" && presetId.test(preset);
+}
+
+function validAnchor({ path, before, start, end, fileLevel }) {
+  // GitHub uses inclusive positive line numbers and separate LEFT/RIGHT diff sides.
+  // Membership in the current PR and a single hunk is checked against GitHub below.
+  return validPath(path) && typeof before === "boolean" &&
+    Number.isSafeInteger(start) && start >= 1 && Number.isSafeInteger(end) && end >= start &&
+    (fileLevel === undefined || typeof fileLevel === "boolean");
+}
+
+function validBody({ text }, suggestion) {
+  // A replacement suggestion can supply the whole body without explanatory text.
+  return typeof text === "string" && text.length <= 6000 && (suggestion || Boolean(text.trim()));
+}
+
 export async function readSmallJson(request) {
   if (!request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json") || !request.body) return null;
   const reader = request.body.getReader();
@@ -64,13 +85,10 @@ export async function readSmallJson(request) {
 }
 
 export async function writeReviewComment(input, login, call) {
-  const { id, revision, path, before, start, end, preset, text, fileLevel, replacement } = input ?? {};
+  const draft = input ?? {};
+  const { id, revision, path, before, start, end, preset, text, fileLevel, replacement } = draft;
   const suggestion = replacement !== undefined;
-  if (typeof id !== "string" || !noteId.test(id) || typeof revision !== "string" || !sha.test(revision) ||
-      !validPath(path) || typeof before !== "boolean" || !Number.isSafeInteger(start) || start < 1 ||
-      !Number.isSafeInteger(end) || end < start || typeof preset !== "string" || !presetId.test(preset) ||
-      typeof text !== "string" || text.length > 6000 || (!suggestion && !text.trim()) ||
-      (fileLevel !== undefined && typeof fileLevel !== "boolean")) {
+  if (!validIdentity(draft) || !validAnchor(draft) || !validBody(draft, suggestion)) {
     return fail(400, "Invalid draft comment.");
   }
   if (suggestion && (fileLevel || before || typeof replacement !== "string" || !replacement.length ||

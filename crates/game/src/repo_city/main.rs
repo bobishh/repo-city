@@ -2,6 +2,8 @@
 #![allow(dead_code)]
 mod android;
 mod blame;
+#[cfg(not(target_arch = "wasm32"))]
+mod city_audio;
 mod city_menu;
 mod city_navigation;
 mod city_stream;
@@ -9,10 +11,16 @@ mod code_texture;
 mod comparison_scene;
 mod district;
 mod file_facade;
+#[cfg(not(target_arch = "wasm32"))]
+mod file_links;
 mod file_picker;
+#[cfg(not(target_arch = "wasm32"))]
+mod focus_context;
 #[cfg(not(target_arch = "wasm32"))]
 mod github_choices;
 mod guide;
+#[cfg(not(target_arch = "wasm32"))]
+mod image_preview;
 mod listing;
 #[cfg(not(target_arch = "wasm32"))]
 mod live_worktree;
@@ -279,6 +287,7 @@ struct Pilot {
     fire_ready: bool,
     firing: bool,
     shot: bool,
+    map_click: bool,
 }
 impl Pilot {
     fn update_fire(&mut self, mouse: &ButtonInput<MouseButton>) {
@@ -573,10 +582,16 @@ fn main() {
     );
     #[cfg(not(target_arch = "wasm32"))]
     app.add_plugins(bevy::input_focus::tab_navigation::TabNavigationPlugin)
+        .add_plugins(city_audio::Plugin)
+        .add_plugins(focus_context::Plugin)
+        .init_resource::<file_links::Links>()
+        .add_systems(Update, file_links::update.before(review_tablet::update))
+        .add_systems(Update, file_links::draw.after(file_links::update))
         .init_resource::<review_notes::ReviewUi>()
         .init_resource::<review_tablet::Tablet>()
         .init_resource::<markdown_preview::Request>()
         .init_resource::<markdown_preview::ReadQueue>()
+        .init_resource::<image_preview::Request>()
         .init_resource::<live_worktree::Live>()
         .add_systems(
             Update,
@@ -890,18 +905,23 @@ fn setup(
         bevy::picking::Pickable::IGNORE,
     ));
     #[cfg(not(target_arch = "wasm32"))]
-    repository_picker::spawn(&mut commands, &ui_font(13.), color(set.ink));
+    repository_picker::spawn(&mut commands, &ui_font(13.), color(set.ink), &mut images);
     commands.spawn((
         Text::new("REPO CITY"),
         ui_font(18.),
         TextColor(color(set.ink)),
         Node {
             position_type: PositionType::Absolute,
-            left: px(24.),
+            left: px(if cfg!(target_arch = "wasm32") {
+                24.
+            } else {
+                222.
+            }),
+            max_width: percent(42.),
             top: px(if cfg!(target_arch = "wasm32") {
                 75.
             } else {
-                20.
+                28.
             }),
             ..default()
         },
@@ -1373,7 +1393,7 @@ fn flight(
     #[cfg(not(target_arch = "wasm32"))] repository: Option<
         Res<repository_picker::RepositoryPicker>,
     >,
-    #[cfg(target_arch = "wasm32")] mut previous_pointer_ui: Local<Option<bool>>,
+    #[cfg(target_arch = "wasm32")] mut previous_pointer_ui: Local<Option<(bool, bool)>>,
 ) {
     let Ok((mut camera, mut pilot)) = camera.single_mut() else {
         return;
@@ -1382,6 +1402,7 @@ fn flight(
         return;
     };
     let menu_open = menu.is_open();
+    let map_open = navigation.overview();
     let pointer_ui_open = picker.is_open() || review.blocked || search.blocks_controls();
     #[cfg(not(target_arch = "wasm32"))]
     let pointer_ui_open =
@@ -1393,7 +1414,7 @@ fn flight(
         if let Some(document) = web_sys::window().and_then(|window| window.document()) {
             // Browser dialogs manage their own pointer state synchronously.
             let pointer_ui = picker.is_open() || search.blocks_controls() || over_button;
-            if *previous_pointer_ui != Some(pointer_ui)
+            if *previous_pointer_ui != Some((pointer_ui, map_open))
                 && let Some(canvas) = document.get_element_by_id("repo-city")
             {
                 if pointer_ui {
@@ -1401,12 +1422,17 @@ fn flight(
                 } else {
                     let _ = canvas.remove_attribute("data-pointer-ui");
                 }
-                *previous_pointer_ui = Some(pointer_ui);
+                if map_open {
+                    let _ = canvas.set_attribute("data-overview", "");
+                } else {
+                    let _ = canvas.remove_attribute("data-overview");
+                }
+                *previous_pointer_ui = Some((pointer_ui, map_open));
             }
             pilot.captured = document
                 .pointer_lock_element()
                 .is_some_and(|element| element.id() == "repo-city");
-            if pilot.captured && pointer_ui_open {
+            if pilot.captured && (pointer_ui_open || map_open) {
                 document.exit_pointer_lock();
                 pilot.captured = false;
             }
@@ -1414,7 +1440,7 @@ fn flight(
     }
     let focused = window.focused || (cfg!(target_arch = "wasm32") && pilot.captured);
     #[cfg(not(target_arch = "wasm32"))]
-    if focused && !pointer_ui_open && !menu_open && !over_button {
+    if focused && !pointer_ui_open && !menu_open && !over_button && !map_open {
         if mouse.just_pressed(MouseButton::Left) {
             pilot.captured = true;
         }
@@ -1425,7 +1451,7 @@ fn flight(
             explorer.anchored = false;
         }
     }
-    if !focused || pointer_ui_open {
+    if !focused || pointer_ui_open || map_open {
         pilot.captured = false;
     }
     // Updating CursorOptions on the web reapplies winit's grab mode (None)
@@ -1444,6 +1470,12 @@ fn flight(
             cursor.visible = !pilot.captured;
         }
     }
+    pilot.map_click = map_open
+        && focused
+        && !pointer_ui_open
+        && !over_button
+        && !menu_open
+        && mouse.just_pressed(MouseButton::Left);
     if menu_open {
         pilot.fire_ready = false;
         pilot.firing = false;
@@ -1542,6 +1574,8 @@ fn targeting(
     hunks: Query<(&comparison_scene::HunkBlock, &Transform)>,
     district_beams: Query<(&district::Beacon, &Transform)>,
     mut nearest: ResMut<Nearest>,
+    navigation: Res<city_navigation::Navigation>,
+    mut map_hover: Local<Option<(Vec3, Vec3, Option<usize>)>>,
 ) {
     let Ok((projection, camera, pilot)) = camera.single() else {
         nearest.screen = None;
@@ -1571,6 +1605,24 @@ fn targeting(
     nearest.hunk = None;
     nearest.near_source = None;
     nearest.district = None;
+    if navigation.overview_level() == Some(city_navigation::Overview::Project) {
+        if nearest.screen.is_some() {
+            if repo.is_changed()
+                || map_hover
+                    .as_ref()
+                    .is_none_or(|(eye, ray, _)| *eye != origin || *ray != direction)
+            {
+                *map_hover = Some((
+                    origin,
+                    direction,
+                    city_stream::district_at_ray(&repo.0, origin, direction),
+                ));
+            }
+            nearest.district = map_hover.as_ref().and_then(|(_, _, district)| *district);
+        }
+        nearest.file_distance = f32::INFINITY;
+        return;
+    }
     let mut distance = 1000.;
     let reading = file_facade::reading_plane(&repo.0, &explorer, camera);
     let mut near_distance = f32::INFINITY;
@@ -2200,10 +2252,7 @@ fn hud(
             )
         } else if bottom {
             if navigation.overview() {
-                format!(
-                    "Overview · E visits a file · {} searches · M changes view",
-                    file_picker::SHORTCUT
-                )
+                navigation.prompt(&explorer)
             } else if tour.active() {
                 String::new()
             } else {

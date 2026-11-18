@@ -30,6 +30,13 @@ pub(super) struct Tablet {
     mode: reading::Mode,
     status: String,
     document: Option<Document>,
+    links_version: u64,
+    image: Option<ImageView>,
+}
+
+struct ImageView {
+    preview: image_preview::Preview,
+    result: Option<Result<Handle<Image>, String>>,
 }
 
 #[derive(Default)]
@@ -84,13 +91,15 @@ pub(super) enum Page {
     Help,
     Settings,
     Document,
+    Connections,
+    Image,
 }
 
 impl Page {
     pub(super) const NAVIGATION: [(Self, &'static str); 3] = [
         (Self::Files, "Files"),
         (Self::Help, "Help"),
-        (Self::Settings, "Settings"),
+        (Self::Connections, "Connections"),
     ];
 }
 
@@ -103,6 +112,10 @@ enum Action {
     Mode(reading::Mode),
     Save,
     StartTour,
+    Connection(usize),
+    Ambience,
+    Speech,
+    Volume(f32),
     Close,
 }
 
@@ -123,6 +136,17 @@ impl Tablet {
 
     pub(super) fn is_open(&self) -> bool {
         self.panel.is_some()
+    }
+
+    pub(super) fn page_name(&self) -> Option<&'static str> {
+        self.is_open().then_some(match self.view {
+            Page::Files => "files",
+            Page::Connections => "connections",
+            Page::Help => "help",
+            Page::Settings => "settings",
+            Page::Document => "document",
+            Page::Image => "image",
+        })
     }
 
     fn switch(&mut self, view: Page, reading: &reading::Settings) {
@@ -296,6 +320,10 @@ pub(super) fn update(
         mut markdown,
         mut read,
         layout,
+        mut links,
+        mut audio,
+        mut image_request,
+        mut images,
     ): (
         ResMut<reading::Settings>,
         ResMut<guide::Tour>,
@@ -306,6 +334,10 @@ pub(super) fn update(
         Option<ResMut<markdown_preview::Request>>,
         Option<ResMut<markdown_preview::ReadQueue>>,
         Query<&ComputedNode, With<bevy_markup::prelude::HtmlUi>>,
+        Option<ResMut<file_links::Links>>,
+        Option<ResMut<city_audio::Settings>>,
+        Option<ResMut<image_preview::Request>>,
+        Option<ResMut<Assets<Image>>>,
     ),
 ) {
     let editing = focus.get().is_some_and(|entity| fields.contains(entity));
@@ -318,6 +350,9 @@ pub(super) fn update(
         })
     });
     let markdown = markdown.as_deref_mut().and_then(|request| request.0.take());
+    let image = image_request
+        .as_deref_mut()
+        .and_then(|request| request.0.take());
     let was_open = tablet.panel.is_some();
     let mut redraw = !was_open;
     if let Some(panel) = tablet.panel {
@@ -346,6 +381,12 @@ pub(super) fn update(
                 queue.0 = Some(mark.clone());
             }
         }
+        let connection = match action {
+            Some(Action::Connection(index)) => {
+                links.as_deref_mut().is_some_and(|links| links.visit(index))
+            }
+            _ => false,
+        };
         let destination = match action {
             Some(Action::Visit(index)) if !repo.is_changed() => Some(index),
             _ => None,
@@ -356,6 +397,7 @@ pub(super) fn update(
         }
         if matches!(action, Some(Action::Close | Action::StartTour))
             || destination.is_some()
+            || connection
             || keys.just_pressed(KeyCode::Escape)
             || plain_tab(&keys)
             || !same_comparison
@@ -363,7 +405,7 @@ pub(super) fn update(
             native_panel::close(&mut commands, panel, &mut focus, &parents);
             *tablet = Tablet::default();
             picker.destination = destination;
-            review.blocked |= destination.is_none();
+            review.blocked |= destination.is_none() && !connection;
             return;
         }
         match action {
@@ -405,6 +447,26 @@ pub(super) fn update(
                 };
                 redraw = true;
             }
+            Some(Action::Ambience | Action::Speech | Action::Volume(_)) => {
+                if let Some(audio) = audio.as_deref_mut() {
+                    let previous = audio.clone();
+                    match action {
+                        Some(Action::Ambience) => audio.ambience = !audio.ambience,
+                        Some(Action::Speech) => audio.speech = !audio.speech,
+                        Some(Action::Volume(volume)) => audio.volume = volume,
+                        _ => {}
+                    }
+                    tablet.status = match audio.save() {
+                        Ok(()) => "Saved.".into(),
+                        Err(error) => {
+                            *audio = previous;
+                            error
+                        }
+                    };
+                    tablet.capture_bounds(&fields);
+                    redraw = true;
+                }
+            }
             _ => {}
         }
         redraw |= tablet.view == Page::Files && repo.is_changed();
@@ -436,6 +498,7 @@ pub(super) fn update(
         let page = match action {
             Some(Action::Switch(page)) => page,
             _ if markdown.is_some() => Page::Document,
+            _ if image.is_some() => Page::Image,
             _ if plain_tab(&keys) => Page::Files,
             _ => return,
         };
@@ -458,6 +521,19 @@ pub(super) fn update(
             && let Some((index, before)) = markdown
         {
             tablet.document = Document::open(&repo.0, index, before);
+        }
+        if page == Page::Image
+            && let Some((index, before)) = image
+        {
+            match image_preview::Preview::open(&repo.0, index, before) {
+                Ok(preview) => {
+                    tablet.image = Some(ImageView {
+                        preview,
+                        result: None,
+                    })
+                }
+                Err(error) => tablet.status = error,
+            }
         }
         review.blocked = true;
         review.tablet_open = true;
@@ -490,6 +566,24 @@ pub(super) fn update(
         document.result = Some(result);
         redraw |= tablet.view == Page::Document;
     }
+    if let Some(image) = tablet.image.as_mut()
+        && let Some(result) = image.preview.take()
+    {
+        image.result = Some(result.and_then(|image| {
+            images
+                .as_deref_mut()
+                .map(|images| images.add(image))
+                .ok_or_else(|| "Image rendering is unavailable.".into())
+        }));
+        redraw |= tablet.view == Page::Image;
+    }
+    if !redraw {
+        if tablet.view == Page::Connections
+            && let Some(links) = &links
+        {
+            redraw = tablet.links_version != links.version();
+        }
+    }
     if !redraw {
         return;
     }
@@ -504,7 +598,14 @@ pub(super) fn update(
     tablet.page = tablet
         .page
         .min(files.len().div_ceil(FILES_PER_PAGE).saturating_sub(1));
-    let (panel, first) = draw(&mut commands, &mut tablet, &files, time.elapsed_secs_f64());
+    let (panel, first) = draw(
+        &mut commands,
+        &mut tablet,
+        &files,
+        time.elapsed_secs_f64(),
+        links.as_deref(),
+        audio.as_deref(),
+    );
     tablet.panel = Some(panel);
     focus.set(first, FocusCause::Navigated);
 }
@@ -526,11 +627,18 @@ fn draw(
     tablet: &mut Tablet,
     files: &[(usize, &repo_world::File, Freshness)],
     elapsed: f64,
+    links: Option<&file_links::Links>,
+    audio: Option<&city_audio::Settings>,
 ) -> (Entity, Entity) {
     let title = match tablet.view {
         Page::Files => "Changed files",
         Page::Help => "Help",
         Page::Settings => "Settings",
+        Page::Connections => "File connections",
+        Page::Image => tablet
+            .image
+            .as_ref()
+            .map_or("Image", |image| image.preview.path.as_str()),
         Page::Document => tablet
             .document
             .as_ref()
@@ -549,6 +657,7 @@ fn draw(
         parent
             .spawn(Node {
                 column_gap: px(6.),
+                width: percent(100.),
                 flex_wrap: FlexWrap::Wrap,
                 ..default()
             })
@@ -562,6 +671,12 @@ fn draw(
                             .insert(BackgroundColor(Color::srgb_u8(23, 79, 87)));
                     }
                 }
+                let settings = add_button(bar, "⚙", Action::Switch(Page::Settings), &mut tab);
+                bar.commands().entity(settings).insert(Node {
+                    margin: UiRect::left(Val::Auto),
+                    padding: UiRect::axes(px(12.), px(8.)),
+                    ..default()
+                });
             });
         match tablet.view {
             Page::Document => {
@@ -569,7 +684,54 @@ fn draw(
                 return;
             }
             Page::Settings => {
-                first = Some(draw_settings(parent, tablet, &mut tab));
+                first = Some(draw_settings(parent, tablet, &mut tab, audio));
+                return;
+            }
+            Page::Connections => {
+                tablet.links_version = links.map_or(0, file_links::Links::version);
+                draw_connections(parent, links, &mut tab);
+                return;
+            }
+            Page::Image => {
+                parent
+                    .spawn(Node {
+                        flex_grow: 1.,
+                        min_height: px(0.),
+                        width: percent(100.),
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        overflow: Overflow::clip(),
+                        ..default()
+                    })
+                    .with_children(|body| {
+                        match tablet
+                            .image
+                            .as_ref()
+                            .and_then(|image| image.result.as_ref())
+                        {
+                            Some(Ok(image)) => {
+                                body.spawn((
+                                    ImageNode::new(image.clone()),
+                                    Node {
+                                        max_width: percent(100.),
+                                        max_height: percent(100.),
+                                        ..default()
+                                    },
+                                    bevy::picking::Pickable::IGNORE,
+                                ));
+                            }
+                            Some(Err(error)) => native_panel::text(body, error, native_panel::INK),
+                            None => native_panel::text(
+                                body,
+                                if tablet.status.is_empty() {
+                                    "Loading image…"
+                                } else {
+                                    &tablet.status
+                                },
+                                native_panel::INK,
+                            ),
+                        }
+                    });
                 return;
             }
             Page::Help => {
@@ -705,7 +867,12 @@ fn draw_document(parent: &mut ChildSpawnerCommands, document: Option<&mut Docume
         });
 }
 
-fn draw_settings(parent: &mut ChildSpawnerCommands, tablet: &mut Tablet, tab: &mut i32) -> Entity {
+fn draw_settings(
+    parent: &mut ChildSpawnerCommands,
+    tablet: &mut Tablet,
+    tab: &mut i32,
+    audio: Option<&city_audio::Settings>,
+) -> Entity {
     let mut first = None;
     parent.spawn(Node {
         width: percent(100.),
@@ -714,6 +881,20 @@ fn draw_settings(parent: &mut ChildSpawnerCommands, tablet: &mut Tablet, tab: &m
         row_gap: px(8.),
         ..default()
     }).with_children(|form| {
+        if let Some(audio) = audio {
+            native_panel::text(form, "Sound", native_panel::INK);
+            form.spawn(Node { column_gap: px(6.), ..default() }).with_children(|row| {
+                add_button(row, if audio.ambience { "City sounds: on" } else { "City sounds: off" }, Action::Ambience, tab);
+                add_button(row, if audio.speech { "Robot voice: on" } else { "Robot voice: off" }, Action::Speech, tab);
+                for (label, volume) in [("Quiet", 0.18), ("Normal", 0.4), ("Mute", 0.)] {
+                    let entity = add_button(row, label, Action::Volume(volume), tab);
+                    if (audio.volume - volume).abs() < 0.01 {
+                        row.commands().entity(entity).insert(BackgroundColor(Color::srgb_u8(23, 79, 87)));
+                    }
+                }
+            });
+            native_panel::text(form, "Robot quotes short visible code excerpts. Reading position uses a prose reading estimate, not eye tracking. Speech stays on this Mac.", native_panel::INK);
+        }
         native_panel::text(form, "Water", native_panel::INK);
         form.spawn(Node { column_gap: px(6.), ..default() }).with_children(|row| {
             for (label, mode) in [("Delayed", reading::Mode::Delayed), ("Immediate", reading::Mode::Immediate)] {
@@ -737,6 +918,55 @@ fn draw_settings(parent: &mut ChildSpawnerCommands, tablet: &mut Tablet, tab: &m
         });
     });
     first.expect("a water mode is selected")
+}
+
+fn draw_connections(
+    parent: &mut ChildSpawnerCommands,
+    links: Option<&file_links::Links>,
+    tab: &mut i32,
+) {
+    parent
+        .spawn((
+            FileRows,
+            ScrollPosition::default(),
+            Node {
+                flex_direction: FlexDirection::Column,
+                flex_grow: 1.,
+                min_height: px(0.),
+                row_gap: px(8.),
+                overflow: Overflow::scroll_y(),
+                ..default()
+            },
+        ))
+        .with_children(|list| {
+            let Some(links) = links else { return };
+            native_panel::text(list, links.status(), native_panel::INK);
+            if let Some(file) = links.file() {
+                native_panel::text(list, &file.path, native_panel::INK);
+                for (index, link) in file.links.iter().enumerate() {
+                    let symbol = link
+                        .symbol
+                        .as_ref()
+                        .map_or(String::new(), |name| format!(" · {name}"));
+                    let label = format!("Line {} · {}{symbol}", link.line, link.import);
+                    native_panel::text(list, &label, native_panel::INK);
+                    if let Some(target) = &link.destination {
+                        let label = if target.exact {
+                            format!("{}:{}", target.path, target.line)
+                        } else {
+                            format!("{} · module start", target.path)
+                        };
+                        add_button(list, &label, Action::Connection(index), tab);
+                    } else {
+                        native_panel::text(
+                            list,
+                            link.reason.as_deref().unwrap_or("Unresolved import"),
+                            Color::srgb_u8(157, 193, 196),
+                        );
+                    }
+                }
+            }
+        });
 }
 
 fn add_button(
@@ -819,6 +1049,30 @@ mod tests {
         app.update();
         assert!(app.world().resource::<Tablet>().is_open());
         assert!(app.world().resource::<Tablet>().view == Page::Files);
+
+        // Settings remains reachable from every page without occupying a navigation tab.
+        let settings = app
+            .world_mut()
+            .query::<&Action>()
+            .iter(app.world())
+            .filter(|action| matches!(action, Action::Switch(Page::Settings)))
+            .count();
+        assert_eq!(settings, 1);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset(KeyCode::Tab);
+        app.world_mut().resource_mut::<Tablet>().action = Some(Action::Switch(Page::Settings));
+        app.update();
+        assert_eq!(
+            app.world().resource::<Tablet>().page_name(),
+            Some("settings")
+        );
+        assert!(app.world().resource::<Tablet>().inputs.is_some());
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Tab);
+        app.update();
+        assert!(!app.world().resource::<Tablet>().is_open());
     }
 
     #[test]

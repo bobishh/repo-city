@@ -13,15 +13,21 @@ const grammars = {
   elm: () => import("@shikijs/langs/elm"),
   toml: () => import("@shikijs/langs/toml"),
   json: () => import("@shikijs/langs/json"),
+  python: () => import("@shikijs/langs/python"),
+  bash: () => import("@shikijs/langs/bash"),
+  css: () => import("@shikijs/langs/css"),
+  html: () => import("@shikijs/langs/html"),
+  yaml: () => import("@shikijs/langs/yaml"),
+  markdown: () => import("@shikijs/langs/markdown"),
 };
 
 // Tags for Rust's shared palette. Diff backgrounds are selected independently.
 const scopes = [
   "keyword, storage, constant.language",
-  "string",
+  "string, markup.inline.raw, markup.underline.link",
   "comment",
   "constant.numeric",
-  "entity.name.type, support.type, support.class",
+  "entity.name.type, support.type, support.class, entity.name.tag, entity.name.section",
   "entity.name.function, support.function",
 ];
 const tag = index => `#${(index + 1).toString().padStart(6, "0")}`;

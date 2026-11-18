@@ -2,6 +2,9 @@ const languages = new Map(Object.entries({
   rs: "rust", go: "go", js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "jsx",
   ts: "typescript", tsx: "tsx", rb: "ruby", rake: "ruby", ex: "elixir", exs: "elixir",
   elm: "elm", toml: "toml", json: "json",
+  py: "python", pyi: "python", pyw: "python", sh: "bash", bash: "bash", bashrc: "bash",
+  css: "css", html: "html", htm: "html", yaml: "yaml", yml: "yaml",
+  md: "markdown", markdown: "markdown",
 }));
 const empty = new Uint32Array();
 const CACHE_ENTRIES = 12;
