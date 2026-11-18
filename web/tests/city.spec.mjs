@@ -138,6 +138,11 @@ test("shows the guide once and keeps it available from the help button", async (
   await guide.getByRole("button", { name: "Settings" }).click();
   const settings = page.getByRole("dialog", { name: "Settings" });
   await expect(settings).toContainText("Brysbaert");
+  await expect(settings.getByLabel("Lines per wash block")).toHaveValue("6");
+  await settings.getByLabel("Lines per wash block").fill("0");
+  await settings.getByRole("button", { name: "Save settings" }).click();
+  await expect(settings.getByRole("status")).toContainText("positive whole number");
+  await settings.getByLabel("Lines per wash block").fill("1");
   await expect(settings.getByLabel("Minimum delay (seconds)")).toHaveValue("3");
   await settings.getByLabel("Minimum delay (seconds)").fill("7");
   await settings.getByRole("button", { name: "Save settings" }).click();
@@ -149,7 +154,7 @@ test("shows the guide once and keeps it available from the help button", async (
   await settings.getByLabel("Water").selectOption("immediate");
   await settings.getByRole("button", { name: "Save settings" }).click();
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("repo-city-reading-v1"))))
-    .toEqual({mode: "immediate", min_seconds: null, max_seconds: 5.5});
+    .toEqual({mode: "immediate", block_lines: 1, min_seconds: null, max_seconds: 5.5});
   await page.keyboard.press("Escape");
   await expect(guide).toBeHidden();
   await page.evaluate(() => localStorage.removeItem("repo-city-guide-v1"));
@@ -813,6 +818,10 @@ test("restores review progress after reload and resets only the open comparison"
 });
 
 test("publishes a painted preset in one action and still supports suggestions", async ({ page }, testInfo) => {
+  // This flow drags over a multi-line range; make its readable block explicit.
+  await page.addInitScript(() => localStorage.setItem("repo-city-reading-v1", JSON.stringify({
+    mode: "delayed", block_lines: 16, min_seconds: 3, max_seconds: 6,
+  })));
   await emulatePointerLock(page);
   let remoteMark;
   let viewed = false;
@@ -886,6 +895,8 @@ test("publishes a painted preset in one action and still supports suggestions", 
   await lock();
   expect(await page.evaluate(() => globalThis.repoCity.reviewCanPaint())).toBe(true);
   await page.mouse.click(640, 400, { delay: 100 });
+  await page.waitForTimeout(300);
+  await canvas.screenshot({ path: testInfo.outputPath("water-countdown-ring.png") });
   await expect(page.locator("#progress-summary")).toHaveText(/[1-9]\d* lines revealed/, { timeout: 65_000 });
   await page.mouse.click(640, 400, { delay: 100 });
   await page.keyboard.press("KeyU", { delay: 120 });
@@ -1002,10 +1013,10 @@ test("publishes a painted preset in one action and still supports suggestions", 
   }, { timeout: 20_000 }).toBe(true);
   await expect(review.locator(".markdown-preview strong").getByText("Separate note")).toBeVisible();
   await expect(review.getByText("Got it, @Reviewer. Check the line above.")).toBeVisible();
-  await review.getByRole("button", { name: "Mark viewed on GitHub 👀" }).click();
+  await review.getByRole("button", { name: "Mark as viewed" }).click();
   await expect(review.locator("article").getByRole("status")).toContainText("Pull requests: write");
-  await review.getByRole("button", { name: "Mark viewed on GitHub 👀" }).click();
-  await expect(review.getByText("Viewed on GitHub 👀")).toBeVisible();
+  await review.getByRole("button", { name: "Mark as viewed" }).click();
+  await expect(review.getByText("Viewed on GitHub")).toBeVisible();
   await review.getByLabel("Local paint").selectOption({ label: "Investigate" });
   await review.getByRole("button", { name: "Save local paint" }).click();
   await expect(review.getByRole("button", { name: /Investigate.*demo\.rs:25.*GitHub thread/ })).toBeVisible();

@@ -96,6 +96,7 @@ pub(super) fn update(
                     mode: reading::Mode::Delayed,
                     min_seconds: None,
                     max_seconds: None,
+                    ..default()
                 }
                 .seconds(lines.iter().map(String::as_str));
                 let mut hash = DefaultHasher::new();

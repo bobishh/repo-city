@@ -1,6 +1,66 @@
 //! Paint follows the line mapping shared with the source and diff walls.
 use super::*;
 
+#[derive(Component)]
+pub(crate) struct ReticlePart(Option<usize>);
+
+const RING_TICKS: usize = 40;
+
+pub(crate) fn spawn_reticle(commands: &mut Commands) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: percent(50.),
+                top: percent(50.),
+                width: px(40.),
+                height: px(40.),
+                margin: UiRect {
+                    left: px(-20.),
+                    top: px(-20.),
+                    ..default()
+                },
+                ..default()
+            },
+            bevy::picking::Pickable::IGNORE,
+        ))
+        .with_children(|root| {
+            for (width, height) in [(18., 2.), (2., 18.)] {
+                root.spawn((
+                    ReticlePart(None),
+                    BackgroundColor(Color::WHITE),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: px(20. - width / 2.),
+                        top: px(20. - height / 2.),
+                        width: px(width),
+                        height: px(height),
+                        ..default()
+                    },
+                    bevy::picking::Pickable::IGNORE,
+                ));
+            }
+            for tick in 0..RING_TICKS {
+                let angle = tick as f32 * std::f32::consts::TAU / RING_TICKS as f32;
+                root.spawn((
+                    ReticlePart(Some(tick)),
+                    BackgroundColor(Color::WHITE),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        display: Display::None,
+                        left: px(19. - angle.sin() * 17.),
+                        top: px(18. - angle.cos() * 17.),
+                        width: px(2.),
+                        height: px(4.),
+                        ..default()
+                    },
+                    UiTransform::from_rotation(Rot2::radians(-angle)),
+                    bevy::picking::Pickable::IGNORE,
+                ));
+            }
+        });
+}
+
 pub(super) fn pigments(
     rows: Range<usize>,
     source_line: impl Fn(usize) -> Option<(bool, usize)>,
@@ -34,6 +94,7 @@ pub(crate) fn draw(
     camera: Query<(&Transform, &Pilot), PlayerCamera>,
     mut files_by_path: Local<HashMap<String, usize>>,
     mut hud: Query<(&mut Text, &mut TextColor), With<review_notes::ToolHud>>,
+    mut reticle: Query<(&ReticlePart, &mut BackgroundColor, &mut Node)>,
 ) {
     use review_notes::Anchor;
     let Ok((camera, pilot)) = camera.single() else {
@@ -42,6 +103,28 @@ pub(crate) fn draw(
     let Ok((mut text, mut ink)) = hud.single_mut() else {
         return;
     };
+    let tool_color = review
+        .paint()
+        .map_or(Color::srgb_u8(82, 211, 255), |paint| {
+            let [r, g, b] = paint.color;
+            Color::srgb_u8(r, g, b)
+        });
+    let remaining = listing.wash_fraction_remaining();
+    for (part, mut color, mut node) in &mut reticle {
+        let shown = pilot.captured
+            && !review.blocked
+            && match part.0 {
+                None => true,
+                Some(tick) => {
+                    remaining.is_some_and(|fraction| (tick as f32) < fraction * RING_TICKS as f32)
+                }
+            };
+        let display = if shown { Display::Flex } else { Display::None };
+        if node.display != display {
+            node.display = display;
+        }
+        color.set_if_neq(BackgroundColor(tool_color));
+    }
     let visible = Listing::visible(&explorer, &navigation) && !listing.turning();
     let Some(file) = repo.0.files.get(explorer.selected) else {
         return;
@@ -236,19 +319,11 @@ pub(crate) fn draw(
     let aimed = note.map(|note| (note.id.clone(), note.preset.label.clone()));
     review.aim_note = aimed.as_ref().map(|(id, _)| id.clone());
 
-    let mut hint = listing
-        .wash_time_remaining()
-        .map(|seconds| format!("Water on · {seconds:.1}s remaining"))
-        .unwrap_or_else(|| {
-            aimed.map_or_else(String::new, |(_, label)| format!("{label} · J opens note"))
-        });
+    let mut hint = aimed.map_or_else(String::new, |(_, label)| format!("{label} · J opens note"));
     let mut tint = Color::srgb_u8(143, 217, 207);
     if let Some(preset) = review.paint().cloned() {
         let [r, g, b] = preset.color;
         tint = Color::srgb_u8(r, g, b);
-        if hint.is_empty() && pilot.captured {
-            hint = format!("{} · {} · 0 water", review.slot, preset.label);
-        }
         if review.blocked || !pilot.captured || !visible {
             review.drag = None;
             review.phrase = None;

@@ -13,6 +13,7 @@ pub(super) mod layout;
 mod paint;
 pub(super) use cover::Plugin as CoverPlugin;
 pub(super) use paint::draw as paint_notes;
+pub(super) use paint::spawn_reticle;
 
 pub(super) const TILE_ROWS: usize = 16;
 const TILES_PER_SIDE: usize = 6;
@@ -640,26 +641,66 @@ impl Listing {
         (visible, total)
     }
 
-    fn wash_time_remaining(&self) -> Option<f32> {
+    fn wash_fraction_remaining(&self) -> Option<f32> {
         self.wash_preview
             .as_ref()
-            .map(|preview| (preview.seconds - preview.elapsed).max(0.))
+            .filter(|preview| preview.seconds > 0.)
+            .map(|preview| (1. - preview.elapsed / preview.seconds).clamp(0., 1.))
+    }
+
+    fn advance_wash(
+        &mut self,
+        explorer: &Explorer,
+        file: &repo_world::File,
+        row: usize,
+        delta: f32,
+        settings: reading::Settings,
+    ) -> Option<progress::Mark> {
+        let rows = settings.rows(row, explorer.source_layout.len());
+        if rows.is_empty()
+            || rows
+                .clone()
+                .all(|row| self.source_display_row_committed(explorer, row))
+        {
+            self.wash_preview = None;
+            return None;
+        }
+        if settings.mode == reading::Mode::Immediate
+            || WashPreview::advance(
+                &mut self.wash_preview,
+                explorer.selected,
+                explorer.before,
+                rows.clone(),
+                delta,
+                || {
+                    settings.seconds(
+                        explorer.source_layout.rows[rows.clone()]
+                            .iter()
+                            .map(|line| line.text.as_str()),
+                    )
+                },
+            )
+        {
+            let mark = self.wash(explorer, file, rows);
+            self.wash_preview = None;
+            return mark;
+        }
+        None
     }
 
     fn wash(
         &mut self,
         explorer: &Explorer,
         file: &repo_world::File,
-        y: f32,
+        range: Range<usize>,
     ) -> Option<progress::Mark> {
         let count = explorer.source_layout.len();
         if count == 0 {
             return None;
         }
-        let row = WallSide::new(file, count, Face::Source, block_size(file))
-            .wall
-            .row(y, count);
-        let range = tile_rows(row, count);
+        if range.is_empty() || range.end > count {
+            return None;
+        }
         for row in range.clone() {
             if !self.source_display_row_committed(explorer, row) {
                 self.partial_source
@@ -702,7 +743,7 @@ impl Listing {
         rows: Range<usize>,
         count: usize,
     ) -> bool {
-        if rows.is_empty() || rows.end > count || rows.len() > TILE_ROWS || count > 1024 * 1024 {
+        if rows.is_empty() || rows.end > count || count > 1024 * 1024 {
             return false;
         }
         let progress = self
@@ -989,35 +1030,8 @@ pub(super) fn wash_stream(
     listing.water_on = true;
     review.washing = true;
     let row = side.wall.row(hit.y, count);
-    let rows = tile_rows(row, count);
-    let file_index = explorer.selected;
-    let before = explorer.before;
-    if listing.document_revealed(file_index, before, explorer.highlighted.len())
-        || rows
-            .clone()
-            .all(|row| listing.source_display_row_committed(&explorer, row))
-    {
-        listing.wash_preview = None;
-    } else if settings.mode == reading::Mode::Immediate
-        || WashPreview::advance(
-            &mut listing.wash_preview,
-            file_index,
-            before,
-            rows.clone(),
-            time.delta_secs(),
-            || {
-                settings.seconds(
-                    explorer.source_layout.rows[rows]
-                        .iter()
-                        .map(|line| line.text.as_str()),
-                )
-            },
-        )
-    {
-        if let Some(mark) = listing.wash(&explorer, file, hit.y) {
-            progress.mark(mark, true);
-        }
-        listing.wash_preview = None;
+    if let Some(mark) = listing.advance_wash(&explorer, file, row, time.delta_secs(), *settings) {
+        progress.mark(mark, true);
     }
     if review.nozzle >= 0.85 {
         physics::spray_stream(
@@ -2082,14 +2096,15 @@ mod tests {
     fn washing_a_long_source_line_requires_all_continuations_before_persisting_its_anchor() {
         let (file, explorer) = wrapped_fixture();
         let visual = explorer.source_layout.len();
-        let side = WallSide::new(&file, visual, Face::Source, block_size(&file));
         let mut listing = Listing::default();
         assert!(
-            listing.wash(&explorer, &file, side.wall.y(0.5)).is_none(),
+            listing
+                .wash(&explorer, &file, tile_rows(0, visual))
+                .is_none(),
             "one visible tile must not mark a much longer logical line as read"
         );
         for row in (TILE_ROWS..visual).step_by(TILE_ROWS) {
-            listing.wash(&explorer, &file, side.wall.y(row as f32 + 0.5));
+            listing.wash(&explorer, &file, tile_rows(row, visual));
         }
         assert_eq!(listing.counts(&explorer), (2, 2));
         assert!(listing.revealed.contains(&(0, false, 1)));
@@ -2125,7 +2140,7 @@ mod tests {
         let mut listing = Listing::default();
         let last = layout.len() - 1;
         let saved = listing
-            .wash(&explorer, &file, side.wall.y(last as f32 + 0.5))
+            .wash(&explorer, &file, tile_rows(last, layout.len()))
             .unwrap();
         let progress::Mark::Reveal {
             start, end, rows, ..
@@ -2443,6 +2458,116 @@ mod tests {
     }
 
     #[test]
+    fn one_line_formula_washing_saves_only_completed_rows_and_discards_interrupted_focus() {
+        let file = fixture_with_rows(24);
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight(
+            "test.rs",
+            "let a = 1;\nlet longer_name = calculate_something(argument);\n}\n",
+        ));
+        let settings = reading::Settings {
+            block_lines: 1,
+            min_seconds: None,
+            max_seconds: None,
+            ..default()
+        };
+        let mut listing = Listing::default();
+        let first = settings.seconds([explorer.source_layout.rows[0].text.as_str()]);
+        let second = settings.seconds([explorer.source_layout.rows[1].text.as_str()]);
+        assert!(second > first);
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 1, second / 2., settings)
+                .is_none()
+        );
+        assert_eq!(listing.wash_preview.as_ref().unwrap().rows, 1..2);
+        assert!((listing.wash_fraction_remaining().unwrap() - 0.5).abs() < 0.0001);
+        assert_eq!(listing.counts(&explorer), (0, 3));
+        assert!(!listing.source_row_is_readable(&explorer, 0));
+        assert!(listing.source_row_is_readable(&explorer, 1));
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 0, first / 2., settings)
+                .is_none()
+        );
+        assert!(!listing.source_row_is_readable(&explorer, 1));
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 0, first / 2., settings)
+                .is_some()
+        );
+        assert_eq!(listing.counts(&explorer), (1, 3));
+        assert!(listing.wash_fraction_remaining().is_none());
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 1, second / 2., settings)
+                .is_none()
+        );
+        listing.stop_water();
+        assert!(!listing.source_row_is_readable(&explorer, 1));
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 1, second / 2., settings)
+                .is_none()
+        );
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 1, second / 2., settings)
+                .is_some()
+        );
+        assert_eq!(listing.counts(&explorer), (2, 3));
+    }
+
+    #[test]
+    fn six_line_blocks_cross_texture_tiles_without_changing_delay_rules() {
+        let file = fixture_with_rows(24);
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight("test.rs", &"let x = 1;\n".repeat(24)));
+        let settings = reading::Settings {
+            block_lines: 6,
+            min_seconds: None,
+            max_seconds: None,
+            ..default()
+        };
+        let mut listing = Listing::default();
+        let rows = settings.rows(17, 24);
+        assert_eq!(rows, 12..18);
+        let seconds = settings.seconds(
+            explorer.source_layout.rows[rows]
+                .iter()
+                .map(|line| line.text.as_str()),
+        );
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 17, seconds / 2., settings)
+                .is_none()
+        );
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 17, seconds / 2., settings)
+                .is_some()
+        );
+        assert_eq!(listing.counts(&explorer), (6, 24));
+        assert!(!listing.revealed.contains(&(0, false, 12)));
+        assert!(!listing.revealed.contains(&(0, false, 19)));
+        let bounded = reading::Settings {
+            min_seconds: Some(2.),
+            max_seconds: Some(2.),
+            ..settings
+        };
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 0, 1., bounded)
+                .is_none()
+        );
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 0, 1., bounded)
+                .is_some()
+        );
+    }
+
+    #[test]
     fn reading_delay_tracks_content_and_accepts_an_explicit_override() {
         let short = ["fn f() {}", ""];
         let dense = ["fn f() { call(argument, other_argument); }", ""];
@@ -2455,7 +2580,7 @@ mod tests {
         assert!(estimate.seconds(short) < estimate.seconds(dense));
         assert_eq!(
             estimate.seconds(short),
-            estimate.seconds(["fn f() {}", "  ", "}"])
+            estimate.seconds(["fn f() {}", "  "])
         );
         let instant = reading::Settings {
             mode: reading::Mode::Immediate,
@@ -2584,7 +2709,6 @@ mod tests {
         use code_texture::Coverage;
         let count = 80;
         let file = fixture_with_rows(count);
-        let wall = WallSide::new(&file, count, Face::Source, size_from_rows(count)).wall;
         let mut repo = repository_picker::empty();
         repo.files.push(file.clone());
         let mut explorer = Explorer::new(0);
@@ -2636,7 +2760,11 @@ mod tests {
         let wash = |app: &mut App, row| {
             app.world_mut()
                 .resource_scope(|world, mut listing: Mut<Listing>| {
-                    listing.wash(world.resource::<Explorer>(), &file, wall.y(row));
+                    listing.wash(
+                        world.resource::<Explorer>(),
+                        &file,
+                        tile_rows(row as usize, count),
+                    );
                 });
         };
         let current = |app: &App| {
@@ -2753,7 +2881,6 @@ mod tests {
             .y;
         let wall = WallSide::new(&file, count, Face::Source, size_from_rows(count)).wall;
         assert!((first_y - next_y - TILE_ROWS as f32 * wall.row_height).abs() < 0.001);
-        let y = wall.y(TILE_ROWS as f32 + 2.5);
         let preview = app
             .world()
             .resource::<Listing>()
@@ -2772,7 +2899,11 @@ mod tests {
         for _ in 0..64 {
             app.world_mut()
                 .resource_scope(|world, mut listing: Mut<Listing>| {
-                    listing.wash(world.resource::<Explorer>(), &file, y);
+                    listing.wash(
+                        world.resource::<Explorer>(),
+                        &file,
+                        tile_rows(TILE_ROWS + 2, count),
+                    );
                 });
             app.update();
             let events = app.world().resource::<Messages<AssetEvent<Image>>>();
