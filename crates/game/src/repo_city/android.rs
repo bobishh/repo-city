@@ -527,10 +527,7 @@ pub(super) fn build(
         for side in [-1., 1.] {
             tablet_grip(&case, commands, tablet, side);
         }
-        #[cfg(not(target_arch = "wasm32"))]
         tablet_display::spawn(commands, pilot, tablet, images, meshes, materials);
-        #[cfg(target_arch = "wasm32")]
-        browser_tablet::spawn(commands, pilot, tablet, images, meshes, materials);
     }
     let can = commands
         .spawn((
@@ -707,8 +704,8 @@ pub(super) fn tablet_pose(amount: f32, aspect: f32) -> Transform {
     let remaining = 1. - amount * amount * (3. - 2. * amount);
     Transform::from_xyz(0., -remaining * 0.95, -distance - 0.08).with_rotation(Quat::from_euler(
         EulerRot::XYZ,
-        -0.04 - remaining * 0.56,
-        0.04 + remaining * 0.2,
+        -remaining * 0.6,
+        remaining * 0.24,
         remaining * 0.13,
     ))
 }
@@ -843,6 +840,16 @@ pub(super) fn animate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reading_tablet_faces_camera_without_perspective_text_distortion() {
+        let corners = tablet_corners(&tablet_pose(1., 1.6), Vec2::new(1280., 800.)).unwrap();
+        assert!((corners[1] - corners[3]).abs() < 0.001);
+        assert!((corners[0] - corners[6]).abs() < 0.001);
+        assert!((corners[2] - corners[4]).abs() < 0.001);
+        assert!((corners[5] - corners[7]).abs() < 0.001);
+        assert_ne!(tablet_pose(0.5, 1.6).rotation, Quat::IDENTITY);
+    }
 
     #[test]
     fn raised_tablet_screen_fits_wide_and_portrait_windows() {

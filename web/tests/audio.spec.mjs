@@ -37,6 +37,8 @@ test.afterAll(async () => { await new Promise(resolve => server.close(resolve));
 async function fixture(page, context, unsupported = false) {
   await page.goto(origin + (unsupported ? "/?unsupported=1" : "/"));
   await page.waitForFunction(() => Boolean(window.audio));
+  expect(await page.evaluate(() => audio.settings().ambience)).toBe(false);
+  await page.evaluate(() => audio.updateSettings({ ambience: true }));
 }
 
 test("trusted city gesture starts real worklet audio; mute, off and repository picker silence it", async ({ page, context }) => {

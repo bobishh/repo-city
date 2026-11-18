@@ -64,13 +64,25 @@ fn surface(commands: &mut Commands, title: &str, width: f32, tablet: bool) -> En
     if tablet {
         tablet_display::target(commands, backdrop);
     }
+    heading(commands, panel, title);
+    panel
+}
+
+fn heading(commands: &mut Commands, panel: Entity, title: &str) {
+    if title.is_empty() {
+        return;
+    }
     commands.entity(panel).with_child((
         Text::new(title),
         TextFont::from_font_size(19.),
         TextColor(Color::srgb_u8(156, 241, 223)),
         Pickable::IGNORE,
     ));
-    panel
+}
+
+pub(super) fn refresh_tablet(commands: &mut Commands, panel: Entity, title: &str) {
+    commands.entity(panel).despawn_children();
+    heading(commands, panel, title);
 }
 
 pub(super) fn text(parent: &mut ChildSpawnerCommands, text: &str, ink: Color) {
@@ -111,6 +123,7 @@ pub(super) fn input(
             TextInput,
             editable,
             TextCursorStyle::default(),
+            Outline::new(px(2.), px(2.), Color::NONE),
             TabIndex(index),
             Node {
                 width: percent(100.),
@@ -139,6 +152,7 @@ pub(super) fn button<
     parent
         .spawn((
             file_picker::button(label, &panel_font(), color, AlignSelf::Auto),
+            Outline::new(px(2.), px(2.), Color::NONE),
             action,
             observe(
                 |click: On<Activate>, actions: Query<&A>, mut state: ResMut<S>| {
@@ -168,3 +182,115 @@ pub(super) fn close(
 }
 
 pub(super) const INK: Color = Color::srgb_u8(157, 231, 214);
+
+pub(super) fn focus_outline(
+    focus: Res<InputFocus>,
+    visible: Res<bevy::input_focus::InputFocusVisible>,
+    mut outlines: Query<(Entity, &mut Outline)>,
+) {
+    for (entity, mut outline) in &mut outlines {
+        let color = if visible.0 && focus.get() == Some(entity) {
+            INK
+        } else {
+            Color::NONE
+        };
+        if outline.color != color {
+            outline.color = color;
+        }
+    }
+}
+
+/// Arrow navigation uses the same modal focus order as Tab, preserving text and shell input.
+pub(super) fn keyboard_navigation(
+    keys: Res<ButtonInput<KeyCode>>,
+    navigation: bevy::input_focus::tab_navigation::TabNavigation,
+    mut focus: ResMut<InputFocus>,
+    mut visible: ResMut<bevy::input_focus::InputFocusVisible>,
+    fields: Query<Option<&Name>, With<TextInput>>,
+    disabled: Query<(), With<bevy::ui::InteractionDisabled>>,
+    parents: Query<&ChildOf>,
+    nodes: Query<(&UiGlobalTransform, &ComputedNode)>,
+    mut scrolls: Query<&mut ScrollPosition>,
+    #[cfg(not(target_arch = "wasm32"))] terminal: Option<Res<terminal::Terminal>>,
+    #[cfg(not(target_arch = "wasm32"))] terminal_views: Query<Entity, With<terminal::View>>,
+) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if keys.just_pressed(KeyCode::F6)
+        && let Ok(view) = terminal_views.single()
+    {
+        let next = if focus.get() == Some(view) {
+            navigation
+                .navigate(&focus, bevy::input_focus::tab_navigation::NavAction::First)
+                .unwrap_or(view)
+        } else {
+            view
+        };
+        focus.set(next, bevy::input_focus::FocusCause::Navigated);
+        visible.0 = true;
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if terminal.is_some_and(|terminal| terminal.active) {
+        return;
+    }
+    if keys.any_pressed([
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+        KeyCode::SuperLeft,
+        KeyCode::SuperRight,
+        KeyCode::AltLeft,
+        KeyCode::AltRight,
+    ]) {
+        return;
+    }
+    if let Some(entity) = focus.get()
+        && let Ok(name) = fields.get(entity)
+        && !(name
+            .is_some_and(|name| ["File name or path", "Filter options"].contains(&name.as_str()))
+            && keys.just_pressed(KeyCode::ArrowDown))
+    {
+        return;
+    }
+    use bevy::input_focus::{FocusCause, tab_navigation::NavAction};
+    let action = if keys.any_just_pressed([KeyCode::ArrowDown, KeyCode::ArrowRight]) {
+        NavAction::Next
+    } else if keys.any_just_pressed([KeyCode::ArrowUp, KeyCode::ArrowLeft]) {
+        NavAction::Previous
+    } else {
+        return;
+    };
+    for _ in 0..128 {
+        let Ok(next) = navigation.navigate(&focus, action) else {
+            return;
+        };
+        focus.set(next, FocusCause::Navigated);
+        if disabled.contains(next) {
+            continue;
+        }
+        visible.0 = true;
+        if let Ok((transform, node)) = nodes.get(next) {
+            let target: bevy::math::Affine2 = transform.into();
+            let top = target.translation.y - node.size().y / 2.;
+            let bottom = top + node.size().y;
+            for parent in parents.iter_ancestors(next) {
+                if let (Ok(mut scroll), Ok((transform, area))) =
+                    (scrolls.get_mut(parent), nodes.get(parent))
+                {
+                    let area_transform: bevy::math::Affine2 = transform.into();
+                    let area_top = area_transform.translation.y - area.size().y / 2.;
+                    let area_bottom = area_top + area.size().y;
+                    let delta = if top < area_top {
+                        top - area_top
+                    } else if bottom > area_bottom {
+                        bottom - area_bottom
+                    } else {
+                        0.
+                    };
+                    scroll.y = (scroll.y + delta * area.inverse_scale_factor()).max(0.);
+                    break;
+                }
+            }
+        }
+        break;
+    }
+}

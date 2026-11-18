@@ -7,15 +7,13 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 
-#[cfg(not(target_arch = "wasm32"))]
-mod color_picker;
+pub(crate) mod color_picker;
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) mod mcp;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
 mod ui;
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) use color_picker::update as update_color_picker;
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) use ui::{ReviewUi, update as panels};

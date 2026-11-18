@@ -11,6 +11,7 @@ use super::*;
 const MAX_DIMENSION: u32 = 8192;
 const MAX_PIXELS: u64 = 16 * 1024 * 1024;
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Resource, Default)]
 pub(super) struct Request(pub Option<(usize, bool)>);
 
@@ -18,11 +19,13 @@ pub(super) fn supported(path: &str) -> bool {
     file_preview::format(path) == Some(file_preview::Format::Image)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) struct Preview {
     pub path: String,
     pending: Option<native_github::Job<Image>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Preview {
     pub(super) fn open(repo: &Repository, index: usize, before: bool) -> Result<Self, String> {
         let file = repo.files.get(index).ok_or("Unknown file")?.clone();
@@ -67,7 +70,7 @@ fn validate_dimensions(width: u32, height: u32) -> Result<(), String> {
     Ok(())
 }
 
-fn decode(bytes: &[u8]) -> Result<Image, String> {
+pub(super) fn decode(bytes: &[u8]) -> Result<Image, String> {
     if bytes.len() > repo_world::ASSET_BYTES_LIMIT {
         return Err("Image exceeds the 16 MiB preview limit.".into());
     }

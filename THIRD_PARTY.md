@@ -3,7 +3,7 @@ Digitized data copyright (c) 2012–2015, The Mozilla Foundation and Telefonica 
 Licensed under the SIL Open Font License 1.1; see `assets/fonts/FiraMono-LICENSE`.
 
 Noto Emoji (`assets/fonts/NotoEmoji.ttf`) supplies monochrome emoji glyphs for
-the native interface and code walls. The unmodified font and its SIL Open Font
+the desktop and browser interfaces and code walls. The unmodified font and its SIL Open Font
 License 1.1 come from [Google Fonts revision 8b0a1d0](https://github.com/google/fonts/tree/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/notoemoji).
 See `assets/fonts/NotoEmoji-LICENSE`.
 
@@ -11,15 +11,12 @@ The browser syntax worker bundles Shiki and its TextMate grammars, plus the
 JavaScript regex engine and its dependencies. The web build publishes their
 license notices under `syntax-licenses/`.
 
-The web build uses [GitHub Markdown CSS](https://github.com/sindresorhus/github-markdown-css)
-for document and comment previews and publishes its MIT license alongside the stylesheet.
-
 Caveat (`web/assets/caveat-latin-wght.woff2`) is licensed under the SIL Open Font License 1.1.
 Copyright 2014 The Caveat Project Authors. See `web/assets/OFL-Caveat.txt`.
 
-## Native Markdown dependencies
+## GPU Markdown dependencies
 
-The native Markdown renderer uses the following unmodified MPL-2.0 packages.
+The desktop and browser GPU Markdown renderer uses the following unmodified MPL-2.0 packages.
 Their source archives are available at the links below, under the
 [Mozilla Public License 2.0](https://www.mozilla.org/en-US/MPL/2.0/).
 The application is a larger work distributed under its own license.
@@ -37,7 +34,7 @@ The application is a larger work distributed under its own license.
 Markdown parsing uses pulldown-cmark 0.13.6 under the MIT license.
 Copyright 2015 Google Inc. See `licenses/pulldown-cmark-MIT.txt`.
 
-Native HTML layout uses bevy_markup 0.8.0 under MIT or Apache-2.0.
+GPU document layout uses bevy_markup 0.8.0 under MIT or Apache-2.0.
 Copyright 2026 Nikita Chashchinskii. See `licenses/bevy-markup-MIT.txt`
 and `licenses/bevy-markup-APACHE.txt`.
 

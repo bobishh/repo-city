@@ -1,17 +1,27 @@
-# Vibe City
+# Repo City
 
-Vibe City opens a local Git checkout as a 3D city. Directories become districts;
-files become buildings with source, diff, and blame walls. Review uncommitted
-changes without switching branches, mark lines with reusable review paints,
-and share local notes and your current code context with an MCP client.
+[Repo City](https://repo-city.meta-uber-engineer.dev/) opens GitHub repositories
+and pull requests as a 3D city in your browser. **Vibe City** opens local Git
+checkouts on desktop, including live worktrees, an integrated terminal and
+local review notes shared through MCP.
 
+Directories become districts; files become buildings with source, diff, and
+blame walls. Both applications use the same Rust engine in this workspace.
 Licensed under **MIT OR Apache-2.0**; choose either license.
 
-![VibePad shows sound and reading settings inside the handheld screen](docs/vibe-city.png)
+![VibePad renders sound and reading settings with Bevy UI](docs/vibe-city.png)
 
-The browser version is [Repo City](https://repo-city.meta-uber-engineer.dev/).
-The repositories share history; [Repo City](https://github.com/bobishh/repo-city)
-is the upstream for shared code.
+## Workspace
+
+- `crates/repository` owns repository snapshots, comparisons and source analysis (`repo-world`).
+- `crates/game/src/repo_city/lib.rs` exposes the shared engine as `repo_city_core`.
+- `repo-city` is the browser entry point; `vibe-city` is the desktop entry point.
+- `web` supplies browser storage, GitHub access and speech through a service bridge.
+  Bevy renders the tablet screen and widgets on desktop and in the browser.
+
+Use one release commit for the browser deployment and desktop packages.
+Desktop adapters stay native-only; browser builds do not contain the local terminal.
+The former `bobishh/vibe-city` repository is superseded by this workspace.
 
 ## Open a repository
 
@@ -20,8 +30,8 @@ is the upstream for shared code.
 The desktop app is called **Vibe City**. Build it with Rust and open the resulting bundle.
 
 ```sh
-git clone https://github.com/bobishh/vibe-city.git
-cd vibe-city
+git clone https://github.com/bobishh/repo-city.git
+cd repo-city
 ./scripts/build-macos.sh
 open "dist/Vibe City.app"
 ```
@@ -129,7 +139,7 @@ The first city visit offers a controls tour. Open **H** to take it again.
 | Use the actions menu | Right-click to open or close it. Scroll or use the arrow keys to highlight an action. Click or press **Enter** to select it. |
 | See the city from above | Press **M** for the district, then the whole project. On the project map, click a district first, then a building. The cursor stays free in map views. **M** returns to your original view after a district jump. Fly freely after each move. |
 | Return to a building | **Ctrl+O** goes back in jump history and **Ctrl+I** goes forward. |
-| Browse changes | **Tab** opens and puts away VibePad. **Viewed** limits the list to changes you visited. Select a file to fly there. **Shift+Tab** moves focus inside VibePad. |
+| Browse changes | **Tab** opens and puts away VibePad. **Viewed** limits the list to changes you visited. Select a file to fly there. **Ctrl+Tab** moves to the next control; **Shift+Tab** moves to the previous one. |
 | Approach a wall | Far away, left-click a building to fly to its nearest covered lines or the top of its source wall. Press **E** to fly to the aimed face. Scroll to move along the wall. |
 | Wash or paint lines | **0** equips water. Click close to a source wall to start or stop water. Code appears while you aim at the block. In VibePad **Settings**, choose **Immediate** to save the reveal right away or **Delayed** to wait for the reading estimate. **1–9** equip paints; drag from one readable line to another on the same side of the file. |
 | Edit paints and notes | **U** opens paints; **⌘ + scroll** cycles tools on Mac. **J** opens the note you are aiming at or the review list. |
@@ -187,7 +197,7 @@ language and content identity.
 
 ## Sound and preferences
 
-The gear at the right of VibePad's navigation opens **Settings**. Set the water
+The gear at the right of VibePad's navigation opens **Settings**. Valid changes save automatically; invalid fields show a reason and keep the last valid settings. Set the water
 reading delay there, mute the city, adjust volume, or turn robot speech off.
 Sound and narration start disabled. Wind, spray, construction, and occasional sirens are synthesized locally when enabled.
 The browser starts its AudioWorklet after the first click or keypress. Preferences
@@ -211,13 +221,25 @@ On desktop, **Tab → Terminal** opens a persistent shell in the current checkou
 It uses Alacritty's terminal emulator and a real PTY, including cursor movement,
 alternate screens, UTF-8, resizing, clipboard paste and Ctrl+C. **Ctrl+Tab** puts
 away the tablet while the shell keeps running; plain Tab and Esc go to the shell.
+**F6** switches keyboard focus between the shell and tablet controls.
 Shell commands run in the inspected repository and may change it. Git history
 and comparison controls only read it. If Git is missing, install it and restart
 the app; the tablet shows installation guidance rather than closing the app.
 
+Without a mouse, **arrows** turn the camera in flight. Near a wall, **Up/Down**
+scrolls and **Left/Right** changes its face; hold **Shift** for free look. **K**
+uses the selected tool: tap to toggle water or hold to paint.
+
+**Alt+0** opens repository selection. **Shift+F10** opens the actions menu.
+
+In VibePad, **Alt+1…6** selects a tab in its displayed order. Arrow keys move
+focus, **Enter/Space** activates a control, and **Esc** goes back or closes the
+panel. **Tab** puts VibePad away; **Shift+Tab** moves focus. Text fields and the
+terminal keep their editing keys. **Cmd/Ctrl+P** opens Find in VibePad.
+
 ## Touch controls
 
-The browser shows a movement stick and action buttons on devices with a coarse
+The browser shows separate movement and look sticks and icon buttons on devices with a coarse
 pointer. Drag the city to look around. Near a readable wall, swipe vertically to
 scroll and sideways to cycle source, diff, and blame. Moving the joystick
 leaves the wall.

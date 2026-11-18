@@ -70,28 +70,31 @@ impl Terminal {
                 ..default()
             })
             .with_children(|tools| {
-                native_panel::button::<Action, Self>(
+                let copy = native_panel::button::<Action, Self>(
                     tools,
                     "Copy screen",
                     native_panel::INK,
                     Action::Copy,
                 );
-                native_panel::button::<Action, Self>(
+                tools.commands().entity(copy).insert(TabIndex(40));
+                let paste = native_panel::button::<Action, Self>(
                     tools,
                     "Paste",
                     native_panel::INK,
                     Action::Paste,
                 );
-                native_panel::button::<Action, Self>(
+                tools.commands().entity(paste).insert(TabIndex(41));
+                let restart = native_panel::button::<Action, Self>(
                     tools,
                     "Restart shell",
                     native_panel::INK,
                     Action::Restart,
                 );
+                tools.commands().entity(restart).insert(TabIndex(42));
             });
         native_panel::text(
             parent,
-            "Ctrl+Tab puts away VibePad. Tab, Esc and Ctrl+C go to the shell.",
+            "F6 switches shell / controls. Ctrl+Tab puts away VibePad. Tab, Esc and Ctrl+C go to the shell.",
             native_panel::INK,
         );
         parent.spawn((
@@ -206,7 +209,8 @@ pub(super) fn update(
             .read()
             .filter(|event| event.state == ButtonState::Pressed)
         {
-            if command
+            if event.key_code == KeyCode::F6
+                || command
                 || control && shift && matches!(event.key_code, KeyCode::KeyC | KeyCode::KeyV)
                 || control && event.key_code == KeyCode::Tab
             {

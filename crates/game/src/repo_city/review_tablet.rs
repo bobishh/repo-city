@@ -27,6 +27,7 @@ pub(super) struct Tablet {
     dates_requested: bool,
     bounds: [String; 3],
     inputs: Option<[Entity; 3]>,
+    settings_status: Option<Entity>,
     mode: reading::Mode,
     block_kind: reading::BlockKind,
     auto_advance: bool,
@@ -187,7 +188,6 @@ enum Action {
     Mode(reading::Mode),
     Block(reading::BlockKind),
     AutoAdvance,
-    Save,
     GitShow(usize),
     GitPage(usize),
     GitBack,
@@ -448,6 +448,25 @@ pub(super) fn update(
         .take()
         .or_else(|| find_file.then_some(Action::Switch(Page::Search)))
         .or_else(|| {
+            if !tablet.is_open()
+                || terminal_page
+                || !keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight])
+            {
+                return None;
+            }
+            [
+                KeyCode::Digit1,
+                KeyCode::Digit2,
+                KeyCode::Digit3,
+                KeyCode::Digit4,
+                KeyCode::Digit5,
+                KeyCode::Digit6,
+            ]
+            .iter()
+            .position(|key| keys.just_pressed(*key))
+            .map(|index| Action::Switch(Page::NAVIGATION[index].0))
+        })
+        .or_else(|| {
             help.then_some(if tablet.view == Page::Help {
                 Action::Close
             } else {
@@ -461,6 +480,16 @@ pub(super) fn update(
     let was_open = tablet.panel.is_some();
     let mut redraw = !was_open;
     if let Some(panel) = tablet.panel {
+        if tablet.view == Page::Settings {
+            let previous = tablet.bounds.clone();
+            tablet.capture_bounds(&fields);
+            if previous != tablet.bounds {
+                tablet.save_reading(&mut reading);
+                if let Some(status) = tablet.settings_status {
+                    commands.entity(status).insert(Text::new(&tablet.status));
+                }
+            }
+        }
         let mut same_comparison =
             tablet
                 .scope
@@ -619,28 +648,6 @@ pub(super) fn update(
                 tablet.status.clear();
                 redraw = true;
             }
-            Some(Action::Save) => {
-                tablet.capture_bounds(&fields);
-                tablet.status = match reading::Settings::with_inputs(
-                    tablet.mode,
-                    &tablet.bounds[0],
-                    &tablet.bounds[1],
-                    &tablet.bounds[2],
-                )
-                .and_then(|mut next| {
-                    next.block_kind = tablet.block_kind;
-                    next.auto_advance = tablet.auto_advance;
-                    next.save()?;
-                    Ok(next)
-                }) {
-                    Ok(next) => {
-                        *reading = next;
-                        "Saved.".into()
-                    }
-                    Err(error) => error,
-                };
-                redraw = true;
-            }
             Some(Action::Ambience | Action::Speech | Action::Volume(_) | Action::Voice) => {
                 if let Some(audio) = audio.as_deref_mut() {
                     let previous = audio.clone();
@@ -670,6 +677,12 @@ pub(super) fn update(
                 }
             }
             _ => {}
+        }
+        if matches!(
+            action,
+            Some(Action::Mode(_) | Action::Block(_) | Action::AutoAdvance)
+        ) {
+            tablet.save_reading(&mut reading);
         }
         redraw |= tablet.view == Page::Files && repo.is_changed();
         review.blocked = true;
@@ -819,9 +832,6 @@ pub(super) fn update(
     if !redraw {
         return;
     }
-    if let Some(panel) = tablet.panel {
-        native_panel::close(&mut commands, panel, &mut focus, &parents);
-    }
     let files = if tablet.view == Page::Files {
         changed_files(&repo.0, &progress, &live, &tablet.times, tablet.viewed_only)
     } else {
@@ -845,6 +855,27 @@ pub(super) fn update(
 }
 
 impl Tablet {
+    fn save_reading(&mut self, reading: &mut reading::Settings) {
+        self.status = match reading::Settings::with_inputs(
+            self.mode,
+            &self.bounds[0],
+            &self.bounds[1],
+            &self.bounds[2],
+        )
+        .and_then(|mut next| {
+            next.block_kind = self.block_kind;
+            next.auto_advance = self.auto_advance;
+            next.save()?;
+            Ok(next)
+        }) {
+            Ok(next) => {
+                *reading = next;
+                "Saved automatically.".into()
+            }
+            Err(error) => error,
+        };
+    }
+
     fn capture_bounds(&mut self, fields: &Query<&EditableText>) {
         if let Some(inputs) = self.inputs {
             for (field, value) in inputs.into_iter().zip(&mut self.bounds) {
@@ -928,7 +959,12 @@ fn draw(
         Page::Search => "Find a file",
         Page::Terminal => "Terminal",
     };
-    let panel = native_panel::tablet(commands, title);
+    let panel = if let Some(panel) = tablet.panel {
+        native_panel::refresh_tablet(commands, panel, title);
+        panel
+    } else {
+        native_panel::tablet(commands, title)
+    };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -1317,6 +1353,31 @@ fn draw_git(parent: &mut ChildSpawnerCommands, history: Option<&History>, tab: &
         });
 }
 
+fn settings_card(parent: &mut ChildSpawnerCommands, title: &str) -> Entity {
+    let card = parent
+        .spawn((
+            Name::new(title.to_owned()),
+            Node {
+                width: percent(100.),
+                padding: UiRect::all(px(18.)),
+                row_gap: px(12.),
+                flex_direction: FlexDirection::Column,
+                border: UiRect::all(px(1.)),
+                ..default()
+            },
+            BackgroundColor(Color::srgb_u8(10, 32, 40)),
+            BorderColor::all(Color::srgb_u8(39, 71, 78)),
+        ))
+        .id();
+    parent.commands().entity(card).with_child((
+        Text::new(title),
+        TextFont::from_font_size(18.),
+        TextColor(native_panel::INK),
+        bevy::picking::Pickable::IGNORE,
+    ));
+    card
+}
+
 fn draw_settings(
     parent: &mut ChildSpawnerCommands,
     tablet: &mut Tablet,
@@ -1324,59 +1385,71 @@ fn draw_settings(
     audio: Option<&city_audio::Settings>,
 ) -> Entity {
     let mut first = None;
-    parent.spawn(Node {
-        width: percent(100.),
-        max_width: px(620.),
-        flex_direction: FlexDirection::Column,
-        row_gap: px(8.),
-        ..default()
-    }).with_children(|form| {
-        if let Some(audio) = audio {
-            native_panel::text(form, "Sound", native_panel::INK);
-            form.spawn(Node { column_gap: px(6.), ..default() }).with_children(|row| {
-                add_button(row, if audio.ambience { "City sounds: on" } else { "City sounds: off" }, Action::Ambience, tab);
-                add_button(row, if audio.speech { "Robot voice: on" } else { "Robot voice: off" }, Action::Speech, tab);
-                for (label, volume) in [("Quiet", 0.18), ("Normal", 0.4), ("Mute", 0.)] {
-                    let entity = add_button(row, label, Action::Volume(volume), tab);
-                    if (audio.volume - volume).abs() < 0.01 {
-                        row.commands().entity(entity).insert(BackgroundColor(Color::srgb_u8(23, 79, 87)));
-                    }
-                }
+    let mut inputs = Vec::new();
+    parent.spawn((FileRows, ScrollPosition::default(), Node { width: percent(100.), min_height: px(0.), flex_grow: 1., flex_direction: FlexDirection::Column, row_gap: px(16.), overflow: Overflow::scroll_y(), ..default() })).with_children(|body| {
+        body.spawn(Node { width: percent(100.), flex_wrap: FlexWrap::Wrap, column_gap: px(20.), row_gap: px(20.), align_items: AlignItems::Start, ..default() }).with_children(|columns| {
+            columns.spawn(Node { flex_basis: px(540.), flex_grow: 1.2, min_width: px(320.), flex_direction: FlexDirection::Column, ..default() }).with_children(|column| {
+                let card = settings_card(column, "Reading");
+                column.commands().entity(card).with_children(|form| {
+                    native_panel::text(form, "Reveal", native_panel::INK);
+                    form.spawn(Node { column_gap: px(6.), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|row| {
+                        for (label, mode) in [("Delayed", reading::Mode::Delayed), ("Immediate", reading::Mode::Immediate)] {
+                            let entity = add_button(row, label, Action::Mode(mode), tab);
+                            if mode == tablet.mode { row.commands().entity(entity).insert(BackgroundColor(Color::srgb_u8(23, 79, 87))); first = Some(entity); }
+                        }
+                    });
+                    native_panel::text(form, "Block", native_panel::INK);
+                    form.spawn(Node { column_gap: px(6.), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|row| {
+                        for (label, kind) in [("Fixed lines", reading::BlockKind::Lines), ("Whole function", reading::BlockKind::Function)] {
+                            let entity = add_button(row, label, Action::Block(kind), tab);
+                            if kind == tablet.block_kind { row.commands().entity(entity).insert(BackgroundColor(Color::srgb_u8(23, 79, 87))); }
+                        }
+                    });
+                    let input = native_panel::input(form, "Lines per wash block", &tablet.bounds[0], *tab, false); *tab += 1; inputs.push(input);
+                    native_panel::text(form, "Used for fixed blocks and when a function boundary is unavailable.", native_panel::INK);
+                    add_button(form, if tablet.auto_advance { "Auto-advance: on" } else { "Auto-advance: off" }, Action::AutoAdvance, tab);
+                    form.spawn(Node { column_gap: px(12.), width: percent(100.), ..default() }).with_children(|limits| {
+                        for (index, label) in [(1, "Minimum delay (seconds)"), (2, "Maximum delay (seconds)")] {
+                            limits.spawn(Node { flex_basis: percent(50.), flex_grow: 1., min_width: px(0.), flex_direction: FlexDirection::Column, row_gap: px(6.), ..default() }).with_children(|field| {
+                                inputs.push(native_panel::input(field, label, &tablet.bounds[index], *tab, false)); *tab += 1;
+                            });
+                        }
+                    });
+                    native_panel::text(form, "Leave a limit blank to use the calculated time. Limits and block size are independent.", native_panel::INK);
+                    let status = form.spawn((Text::new(if tablet.status.is_empty() { "Changes save automatically." } else { &tablet.status }), native_panel::panel_font(), TextColor(native_panel::INK), Node { min_height: px(24.), ..default() })).id();
+                    tablet.settings_status = Some(status);
+                });
             });
-            add_button(form, &format!("Voice: {}", audio.voice), Action::Voice, tab);
-            native_panel::text(form, "Robot reads the current readable block from start to end. Water is muted and city sounds are quieter during speech. Speech stays on this Mac.", native_panel::INK);
-        }
-        native_panel::text(form, "Water", native_panel::INK);
-        form.spawn(Node { column_gap: px(6.), ..default() }).with_children(|row| {
-            for (label, mode) in [("Delayed", reading::Mode::Delayed), ("Immediate", reading::Mode::Immediate)] {
-                let entity = add_button(row, label, Action::Mode(mode), tab);
-                if mode == tablet.mode {
-                    row.commands().entity(entity).insert(BackgroundColor(Color::srgb_u8(23, 79, 87)));
-                    first = Some(entity);
+            columns.spawn(Node { flex_basis: px(420.), flex_grow: 1., min_width: px(300.), flex_direction: FlexDirection::Column, row_gap: px(20.), ..default() }).with_children(|column| {
+                if let Some(audio) = audio {
+                    let card = settings_card(column, "Sound");
+                    column.commands().entity(card).with_children(|form| {
+                        form.spawn(Node { column_gap: px(6.), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|row| {
+                            add_button(row, if audio.ambience { "City sounds: on" } else { "City sounds: off" }, Action::Ambience, tab);
+                            add_button(row, if audio.speech { "Robot voice: on" } else { "Robot voice: off" }, Action::Speech, tab);
+                        });
+                        native_panel::text(form, "Volume", native_panel::INK);
+                        form.spawn(Node { column_gap: px(6.), ..default() }).with_children(|row| {
+                            for (label, volume) in [("Quiet", 0.18), ("Normal", 0.4), ("Mute", 0.)] {
+                                let entity = add_button(row, label, Action::Volume(volume), tab);
+                                if (audio.volume - volume).abs() < 0.01 { row.commands().entity(entity).insert(BackgroundColor(Color::srgb_u8(23, 79, 87))); }
+                            }
+                        });
+                        add_button(form, &format!("System voice: {}", audio.voice), Action::Voice, tab);
+                        native_panel::text(form, "Reads the visible block from start to end. Water is muted during speech; other city sounds become quieter.", native_panel::INK);
+                    });
                 }
-            }
-        });
-        form.spawn(Node { column_gap: px(6.), ..default() }).with_children(|row| {
-            for (label, kind) in [("Fixed lines", reading::BlockKind::Lines), ("Whole function", reading::BlockKind::Function)] {
-                let entity = add_button(row, label, Action::Block(kind), tab);
-                if kind == tablet.block_kind { row.commands().entity(entity).insert(BackgroundColor(Color::srgb_u8(23, 79, 87))); }
-            }
-            add_button(row, if tablet.auto_advance { "Auto-advance: on" } else { "Auto-advance: off" }, Action::AutoAdvance, tab);
-        });
-        tablet.inputs = Some(std::array::from_fn(|index| {
-            let label = ["Lines per wash block", "Minimum delay (seconds)", "Maximum delay (seconds)"][index];
-            let input = native_panel::input(form, label, &tablet.bounds[index], *tab, false);
-            *tab += 1;
-            input
-        }));
-        native_panel::text(form, "Block size and time limits are independent. Without limits: seconds = effective non-whitespace characters × 60 / (238 × 4.6). Consecutive copies of a character count once. Whole function uses syntax boundaries, or fixed lines when unavailable. Auto-advance scrolls downward after a block clears. Default: 6 (a preset, not a measured optimum).", native_panel::INK);
-        native_panel::text(form, "Brysbaert’s 2019 rate describes English nonfiction, not code comprehension. This length-adjusted estimate is approximate. Leave either delay blank to remove that limit.", native_panel::INK);
-        native_panel::text(form, if tablet.status.is_empty() { " " } else { &tablet.status }, native_panel::INK);
-        form.spawn(Node { column_gap: px(8.), ..default() }).with_children(|actions| {
-            add_button(actions, "Save settings", Action::Save, tab);
+                let card = settings_card(column, "Reading estimate");
+                column.commands().entity(card).with_children(|note| {
+                    native_panel::text(note, "seconds = characters × 60 / (238 × 4.6)", native_panel::INK);
+                    native_panel::text(note, "Counts non-whitespace characters; consecutive copies count once. Six lines is a configurable preset, not a measured optimum.", native_panel::INK);
+                    native_panel::text(note, "Brysbaert (2019) measured English nonfiction, not code comprehension. This length-adjusted estimate is an approximation.", native_panel::INK);
+                });
+            });
         });
     });
-    first.expect("a water mode is selected")
+    tablet.inputs = Some(inputs.try_into().expect("three reading inputs"));
+    first.expect("a reading mode is selected")
 }
 
 fn draw_connections(
@@ -1520,6 +1593,7 @@ mod tests {
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
             .reset(KeyCode::Tab);
+        let screen_root = app.world().resource::<Tablet>().panel;
         app.world_mut().resource_mut::<Tablet>().action = Some(Action::Switch(Page::Settings));
         app.update();
         assert_eq!(
@@ -1527,6 +1601,11 @@ mod tests {
             Some("settings")
         );
         assert!(app.world().resource::<Tablet>().inputs.is_some());
+        assert_eq!(
+            app.world().resource::<Tablet>().panel,
+            screen_root,
+            "switching pages must preserve the physical screen's UI root"
+        );
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::Tab);

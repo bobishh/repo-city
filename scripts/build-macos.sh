@@ -2,11 +2,11 @@
 set -euo pipefail
 project_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$project_dir"
-cargo build -p repo-city --bin repo-city "$@"
+cargo build -p repo-city --bin vibe-city "$@"
 target_dir="${CARGO_TARGET_DIR:-$project_dir/target}"
 bundle="$project_dir/dist/Vibe City.app"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
-cp "$target_dir/debug/repo-city" "$bundle/Contents/MacOS/repo-city"
+cp "$target_dir/debug/vibe-city" "$bundle/Contents/MacOS/repo-city"
 cp "$project_dir/assets/RepoCity.icns" "$bundle/Contents/Resources/RepoCity.icns"
 licenses="$bundle/Contents/Resources/licenses"
 mkdir -p "$licenses"

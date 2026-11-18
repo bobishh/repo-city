@@ -1021,6 +1021,12 @@ pub(super) fn open_repository(
     let Ok((mut window, mut cursor)) = windows.single_mut() else {
         return;
     };
+    if !terminal.as_ref().is_some_and(|terminal| terminal.active)
+        && keys.just_pressed(KeyCode::Digit0)
+        && keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight])
+    {
+        picker.requested = Some(PickerAction::Menu);
+    }
     let shortcut = !terminal.is_some_and(|terminal| terminal.active)
         && keys.just_pressed(KeyCode::KeyO)
         && keys.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight]);

@@ -148,14 +148,19 @@ fn browser_tour_completed() {
 #[cfg(not(target_arch = "wasm32"))]
 const NAVIGATION: &[(&str, &str)] = &[
     ("W A S D", "Fly"),
+    ("Arrows", "Look around; Shift+Arrows near a wall"),
     ("Space / Ctrl", "Change altitude"),
     ("Shift", "Fly faster"),
     ("E", "Fly to aimed wall"),
     ("M", "Cycle district, project, and return"),
     ("Cmd+O", "Open local repository"),
+    ("Alt+0", "Open repository menu"),
+    ("Shift+F10", "Open actions menu"),
     ("Cmd+P", "Find a file"),
     ("P", "Preview aimed text or image"),
     ("Tab", "Open or put away VibePad"),
+    ("Alt+1–6", "Select a VibePad tab"),
+    ("Arrows / Enter", "Move through controls and activate"),
     ("Ctrl+O / Ctrl+I", "Previous or next building"),
     ("L", "Fly to the last changed file"),
 ];
@@ -175,6 +180,7 @@ const READING: &[(&str, &str)] = &[
 #[cfg(not(target_arch = "wasm32"))]
 const REVIEW: &[(&str, &str)] = &[
     ("0", "Water tool"),
+    ("K", "Use water or hold to paint"),
     ("1–9", "Select a paint"),
     ("Cmd+scroll", "Cycle tools"),
     ("U", "Edit paints and templates"),

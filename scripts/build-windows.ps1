@@ -10,12 +10,12 @@ Push-Location $ProjectDirectory
 try {
     if ($Target -notmatch "-windows-") { throw "Select a Windows Rust target." }
     if (-not $SkipBuild) {
-        & cargo build --locked -p repo-city --bin repo-city --target $Target --profile $BuildProfile
+        & cargo build --locked -p repo-city --bin vibe-city --target $Target --profile $BuildProfile
         if ($LASTEXITCODE -ne 0) { throw "Windows build failed." }
     }
     $TargetDirectory = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $ProjectDirectory "target" }
     $ProfileDirectory = if ($BuildProfile -eq "dev") { "debug" } else { $BuildProfile }
-    $Binary = Join-Path $TargetDirectory "$Target/$ProfileDirectory/repo-city.exe"
+    $Binary = Join-Path $TargetDirectory "$Target/$ProfileDirectory/vibe-city.exe"
     if (-not (Test-Path $Binary -PathType Leaf)) { throw "Missing Windows executable: $Binary" }
     if (-not $OutputDirectory) { $OutputDirectory = Join-Path $ProjectDirectory "dist" }
     $Name = "VibeCity-$Target"

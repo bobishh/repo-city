@@ -989,7 +989,8 @@ pub(super) fn controls(
             explorer.highlighted.len()
         }
     };
-    let cycle = keys.just_pressed(KeyCode::ArrowLeft) || keys.just_pressed(KeyCode::ArrowRight);
+    let cycle = !keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight])
+        && (keys.just_pressed(KeyCode::ArrowLeft) || keys.just_pressed(KeyCode::ArrowRight));
     let toggle = if cycle
         && listing
             .close_face(
@@ -1066,13 +1067,32 @@ pub(super) fn controls(
     }
     let step = f32::from(keys.just_pressed(KeyCode::PageUp))
         - f32::from(keys.just_pressed(KeyCode::PageDown));
-    let scroll = if review_notes::command_scroll(&keys) {
-        0.
-    } else if wheel.unit == bevy::input::mouse::MouseScrollUnit::Pixel {
-        wheel.delta.y / 40.
+    let arrow_scroll = if listing
+        .close_face(
+            file,
+            &camera,
+            &explorer,
+            windows
+                .single()
+                .map_or(1., |w| w.width() / w.height().max(1.)),
+        )
+        .is_some()
+        && !keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight])
+    {
+        (f32::from(keys.pressed(KeyCode::ArrowUp)) - f32::from(keys.pressed(KeyCode::ArrowDown)))
+            * time.delta_secs()
+            * 10.
     } else {
-        wheel.delta.y
+        0.
     };
+    let scroll = arrow_scroll
+        + if review_notes::command_scroll(&keys) {
+            0.
+        } else if wheel.unit == bevy::input::mouse::MouseScrollUnit::Pixel {
+            wheel.delta.y / 40.
+        } else {
+            wheel.delta.y
+        };
     if keys.just_pressed(KeyCode::Home) {
         listing.scroll_remaining = 0.;
         let y = size.y / 2.;

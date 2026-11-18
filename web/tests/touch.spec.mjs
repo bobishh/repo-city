@@ -1,12 +1,26 @@
 import { test, expect } from "@playwright/test";
 
-test("touch flight controls reset movement for VibePad and backgrounding", async ({ browser }) => {
+test("touch flight controls reset movement for VibePad and backgrounding", async ({ browser }, testInfo) => {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const page = await context.newPage();
   await page.route("**/touch-fixture", route => route.fulfill({ contentType: "text/html", body: `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><main><canvas id="game" width="390" height="600"></canvas><dialog><button id="put-away">Put away</button></dialog></main><script type="module">import {createTouchControls} from '/touch.mjs'; globalThis.touch = createTouchControls({canvas: document.querySelector('canvas')}); document.querySelector('#put-away').onclick=()=>document.querySelector('dialog').close();</script>` }));
   await page.goto("/touch-fixture");
   const stick = page.getByRole("button", { name: "Move joystick" });
   await expect(stick).toBeVisible();
+  const lookStick = page.getByRole("button", { name: "Look joystick" });
+  await expect(lookStick).toBeVisible();
+  expect(await lookStick.evaluate(element => getComputedStyle(element).borderRadius)).toBe("50%");
+  const lookBox = await lookStick.boundingBox();
+  expect(lookBox.x + lookBox.width).toBeLessThanOrEqual(390);
+  await page.mouse.move(lookBox.x + 56, lookBox.y + 56); await page.mouse.down();
+  await page.mouse.move(lookBox.x + 90, lookBox.y + 40);
+  await page.waitForTimeout(50);
+  expect(JSON.parse(await page.evaluate(() => touch.take())).aim[0]).toBeGreaterThan(0);
+  await page.waitForTimeout(50);
+  expect(JSON.parse(await page.evaluate(() => touch.take())).aim[0]).toBeGreaterThan(0);
+  await page.mouse.up();
+  expect(JSON.parse(await page.evaluate(() => touch.take())).aim).toEqual([0, 0]);
+  await page.screenshot({ path: testInfo.outputPath("touch-controls.png") });
   const box = await stick.boundingBox();
   await page.mouse.move(box.x + 45, box.y + 45); await page.mouse.down(); await page.mouse.move(box.x + 45, box.y + 10);
   expect(JSON.parse(await page.evaluate(() => touch.take())).move[1]).toBeGreaterThan(0.7);
@@ -25,7 +39,7 @@ test("touch flight controls reset movement for VibePad and backgrounding", async
   expect((await swipe(80, 200)).pulses).toEqual(["ArrowRight"]);
   expect((await swipe(240, 200)).pulses).toEqual(["ArrowLeft"]);
   await canvas.evaluate(element => element.removeAttribute("data-touch-reading"));
-  expect((await swipe(240, 200)).look).toEqual([80, 0]);
+  expect((await swipe(240, 200)).look).toEqual([160, 0]);
   await cdp.detach();
   await page.getByRole("button", { name: "Open VibePad" }).tap();
   expect(JSON.parse(await page.evaluate(() => touch.take())).pulses).toEqual(["Tab"]);

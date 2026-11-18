@@ -23,10 +23,15 @@ pub(super) struct Display {
     view: Entity,
     shield: Entity,
     target: NormalizedRenderTarget,
+    image: Handle<Image>,
+    pub(super) size: UVec2,
 }
 
 #[derive(Component)]
 pub(super) struct Screen;
+
+#[derive(Resource, Default)]
+pub(super) struct TouchScroll(pub f32);
 
 pub(super) fn spawn(
     commands: &mut Commands,
@@ -109,11 +114,14 @@ pub(super) fn spawn(
     ));
     let shield = spawn_shield(commands);
     commands.spawn(POINTER);
+    commands.insert_resource(TouchScroll::default());
     commands.insert_resource(Display {
         ui,
         view,
         shield,
-        target: NormalizedRenderTarget::Image(image.into()),
+        target: NormalizedRenderTarget::Image(image.clone().into()),
+        image,
+        size: SIZE,
     });
 }
 
@@ -200,24 +208,48 @@ pub(super) fn pointer(
     mut events: MessageReader<WindowEvent>,
     mut inputs: MessageWriter<PointerInput>,
     mut last: Local<Option<Vec2>>,
+    mut touch: Local<Option<(u64, Vec2, Vec2, bool)>>,
+    mut scrolling: Option<ResMut<TouchScroll>>,
 ) {
     let Some(display) = display else { return };
-    let position = (|| {
-        if !review.tablet_open {
-            return None;
-        }
+    let project = |point: Vec2| {
         let (camera, view) = cameras.get(display.view).ok()?;
-        let ray = camera
-            .viewport_to_world(view, window.single().ok()?.cursor_position()?)
-            .ok()?;
+        let ray = camera.viewport_to_world(view, point).ok()?;
         let screen = screen.single().ok()?.affine().inverse();
         project_pointer(
             screen.transform_point3(ray.origin),
             screen.transform_vector3(*ray.direction),
         )
+        .map(|point| point * display.size.as_vec2() / SIZE.as_vec2())
+    };
+    if !review.tablet_open && touch.take().is_some() {
+        let location = Location {
+            target: display.target.clone(),
+            position: Vec2::splat(-1.),
+        };
+        inputs.write(PointerInput::new(
+            POINTER,
+            location.clone(),
+            PointerAction::Cancel,
+        ));
+        inputs.write(PointerInput::new(
+            POINTER,
+            location,
+            PointerAction::Release(PointerButton::Primary),
+        ));
+    }
+    let position = (|| {
+        if !review.tablet_open {
+            return None;
+        }
+        #[cfg(target_arch = "wasm32")]
+        if let Some((_, _, point, _)) = *touch {
+            return Some(point);
+        }
+        project(window.single().ok()?.cursor_position()?)
     })();
     let outside = Vec2::splat(-1.);
-    let location = Location {
+    let mut location = Location {
         target: display.target.clone(),
         position: position.unwrap_or(outside),
     };
@@ -232,11 +264,103 @@ pub(super) fn pointer(
         ));
     }
     for event in events.read() {
+        // Window resources are updated after First. Consume ordered motion events here so
+        // a move and press delivered in one frame hit the current control, not the old one.
+        if let WindowEvent::CursorMoved(event) = event
+            && review.tablet_open
+            && touch.is_none()
+        {
+            location.position = project(event.position).unwrap_or(outside);
+            let previous = last.replace(location.position).unwrap_or(outside);
+            if previous != location.position {
+                inputs.write(PointerInput::new(
+                    POINTER,
+                    location.clone(),
+                    PointerAction::Move {
+                        delta: location.position - previous,
+                    },
+                ));
+            }
+        }
+        if let WindowEvent::TouchInput(event) = event
+            && review.tablet_open
+        {
+            use bevy::input::touch::TouchPhase;
+            let point = project(event.position);
+            let location = Location {
+                target: display.target.clone(),
+                position: point.unwrap_or(outside),
+            };
+            match event.phase {
+                TouchPhase::Started if touch.is_none() && point.is_some() => {
+                    let point = point.unwrap();
+                    *touch = Some((event.id, point, point, false));
+                    inputs.write(PointerInput::new(
+                        POINTER,
+                        location.clone(),
+                        PointerAction::Move { delta: Vec2::ZERO },
+                    ));
+                    inputs.write(PointerInput::new(
+                        POINTER,
+                        location,
+                        PointerAction::Press(PointerButton::Primary),
+                    ));
+                }
+                TouchPhase::Moved => {
+                    if let Some((id, start, previous, dragged)) = touch.as_mut()
+                        && *id == event.id
+                        && let Some(point) = point
+                    {
+                        let delta = point - *previous;
+                        if !*dragged && point.distance(*start) > 8. {
+                            *dragged = true;
+                            inputs.write(PointerInput::new(
+                                POINTER,
+                                location.clone(),
+                                PointerAction::Cancel,
+                            ));
+                        }
+                        if *dragged {
+                            if let Some(scroll) = scrolling.as_mut() {
+                                scroll.0 -= delta.y;
+                            }
+                        } else {
+                            inputs.write(PointerInput::new(
+                                POINTER,
+                                location,
+                                PointerAction::Move { delta },
+                            ));
+                        }
+                        *previous = point;
+                    }
+                }
+                TouchPhase::Ended | TouchPhase::Canceled => {
+                    if let Some((id, _, _, dragged)) = *touch
+                        && id == event.id
+                    {
+                        if event.phase == TouchPhase::Canceled && !dragged {
+                            inputs.write(PointerInput::new(
+                                POINTER,
+                                location.clone(),
+                                PointerAction::Cancel,
+                            ));
+                        }
+                        inputs.write(PointerInput::new(
+                            POINTER,
+                            location.clone(),
+                            PointerAction::Release(PointerButton::Primary),
+                        ));
+                        *touch = None;
+                    }
+                }
+                _ => {}
+            }
+        }
         if let WindowEvent::MouseButtonInput(event) = event
             && event.button == MouseButton::Left
         {
             let action = match event.state {
-                ButtonState::Pressed if position.is_some() => {
+                ButtonState::Pressed if location.position != outside => {
                     PointerAction::Press(PointerButton::Primary)
                 }
                 ButtonState::Released if review.tablet_open => {
@@ -246,6 +370,36 @@ pub(super) fn pointer(
             };
             inputs.write(PointerInput::new(POINTER, location.clone(), action));
         }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(super) fn resize(
+    display: Option<ResMut<Display>>,
+    window: Query<&Window, With<PrimaryWindow>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let Some(mut display) = display else {
+        return;
+    };
+    let viewport = window.single().map_or(Vec2::new(1440., 900.), |window| {
+        Vec2::new(window.width(), window.height().max(1.))
+    });
+    let pose = android::tablet_pose(1., viewport.x / viewport.y);
+    // Size text in CSS pixels independently of whether flight controls are blocked by the pad.
+    let width = android::tablet_corners(&pose, viewport).map_or(SIZE.x, |corners| {
+        (corners[2] - corners[0]).round().clamp(320., 1440.) as u32
+    });
+    let size = UVec2::new(width, width * SIZE.y / SIZE.x);
+    if display.size != size
+        && let Some(mut image) = images.get_mut(&display.image)
+    {
+        image.resize(bevy::render::render_resource::Extent3d {
+            width: size.x,
+            height: size.y,
+            depth_or_array_layers: 1,
+        });
+        display.size = size;
     }
 }
 

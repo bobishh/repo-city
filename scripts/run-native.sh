@@ -5,4 +5,4 @@ repository_path="${1:-$project_dir}"
 if [[ $# -gt 0 ]]; then shift; fi
 repository_path="$(cd "$repository_path" && pwd)"
 cd "$project_dir"
-exec cargo run -p repo-city --bin repo-city -- --repo "$repository_path" "$@"
+exec cargo run -p repo-city --bin vibe-city -- --repo "$repository_path" "$@"

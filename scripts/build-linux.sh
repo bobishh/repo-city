@@ -6,12 +6,12 @@ target="${CARGO_BUILD_TARGET:-$(rustc -vV | sed -n 's/^host: //p')}"
 case "$target" in *-linux-*) ;; *) printf 'Select a Linux Rust target with CARGO_BUILD_TARGET.\n' >&2; exit 1 ;; esac
 profile="${VIBE_CITY_BUILD_PROFILE:-release}"
 if [[ "${VIBE_CITY_SKIP_BUILD:-0}" != 1 ]]; then
-    cargo build --locked -p repo-city --bin repo-city --target "$target" --profile "$profile"
+    cargo build --locked -p repo-city --bin vibe-city --target "$target" --profile "$profile"
 fi
 profile_dir="$profile"
 [[ "$profile" != dev ]] || profile_dir=debug
 target_dir="${CARGO_TARGET_DIR:-$project_dir/target}"
-binary="$target_dir/$target/$profile_dir/repo-city"
+binary="$target_dir/$target/$profile_dir/vibe-city"
 [[ -x "$binary" ]] || { printf 'Missing Linux executable: %s\n' "$binary" >&2; exit 1; }
 output="${VIBE_CITY_OUTPUT_DIR:-$project_dir/dist}"
 mkdir -p "$output"
@@ -26,10 +26,6 @@ cp web/assets/apple-touch-icon.png "$bundle/vibe-city.png"
 cat > "$bundle/vibe-city" <<'LAUNCHER'
 #!/usr/bin/env sh
 set -eu
-if ! command -v git >/dev/null 2>&1; then
-    printf 'Vibe City needs Git. Install git with your distribution package manager.\n' >&2
-    exit 1
-fi
 bundle_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 exec "$bundle_dir/vibe-city-bin" "$@"
 LAUNCHER

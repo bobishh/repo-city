@@ -19,7 +19,7 @@ pub(crate) struct Picker {
     rgb: [u8; 3],
 }
 
-pub(super) fn parse_hex(text: &str) -> Option<[u8; 3]> {
+pub(crate) fn parse_hex(text: &str) -> Option<[u8; 3]> {
     let text = text.trim().strip_prefix('#').unwrap_or(text.trim());
     if text.len() != 6 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
@@ -50,7 +50,7 @@ fn marker(parent: &mut ChildSpawnerCommands, full_height: bool) -> Entity {
         .id()
 }
 
-pub(super) fn spawn(parent: &mut ChildSpawnerCommands, hex: Entity, value: [u8; 3]) {
+pub(crate) fn spawn(parent: &mut ChildSpawnerCommands, hex: Entity, value: [u8; 3]) {
     let [r, g, b] = value;
     let hsv = Hsva::from(Srgba::rgb_u8(r, g, b));
     let mut hue_marker = Entity::PLACEHOLDER;
@@ -130,7 +130,12 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands, hex: Entity, value: [u8; 
 pub(crate) fn update(
     mouse: Res<ButtonInput<MouseButton>>,
     mut pickers: Query<&mut Picker>,
-    cursor: Query<&RelativeCursorPosition>,
+    pointers: Query<(
+        &bevy::picking::pointer::PointerId,
+        &bevy::picking::pointer::PointerLocation,
+    )>,
+    layout: Query<(&UiGlobalTransform, &ComputedNode)>,
+    touches: Res<bevy::input::touch::Touches>,
     mut fields: Query<&mut EditableText>,
     mut backgrounds: Query<&mut BackgroundColor>,
     mut markers: Query<&mut Node>,
@@ -148,21 +153,30 @@ pub(crate) fn update(
         picker.hsv = Hsva::from(Srgba::rgb_u8(r, g, b));
         picker.rgb = value;
     }
-    if mouse.just_pressed(MouseButton::Left) {
-        picker.active = [picker.hue, picker.field].into_iter().find(|&part| {
-            cursor
-                .get(part)
-                .is_ok_and(RelativeCursorPosition::cursor_over)
-        });
+    let position = pointers.iter().find_map(|(id, location)| {
+        matches!(id, bevy::picking::pointer::PointerId::Custom(_))
+            .then_some(location.location.as_ref())
+            .flatten()
+            .map(|location| location.position)
+    });
+    let point_in = |entity| {
+        let point = position?;
+        let (transform, node) = layout.get(entity).ok()?;
+        let transform: bevy::math::Affine2 = transform.into();
+        let point = transform.inverse().transform_point2(point) / node.size() + Vec2::splat(0.5);
+        (point.cmpge(Vec2::ZERO).all() && point.cmple(Vec2::ONE).all()).then_some(point)
+    };
+    if mouse.just_pressed(MouseButton::Left) || touches.any_just_pressed() {
+        picker.active = [picker.hue, picker.field]
+            .into_iter()
+            .find(|&part| point_in(part).is_some());
     }
-    if !mouse.pressed(MouseButton::Left) {
+    if !mouse.pressed(MouseButton::Left) && touches.iter().next().is_none() {
         picker.active = None;
     }
     if let Some(part) = picker.active
-        && let Ok(point) = cursor.get(part)
-        && let Some(point) = point.normalized
+        && let Some(point) = point_in(part)
     {
-        let point = (point + Vec2::splat(0.5)).clamp(Vec2::ZERO, Vec2::ONE);
         if part == picker.hue {
             picker.hsv.hue = point.x * 360.;
         } else {
