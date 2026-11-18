@@ -1,4 +1,5 @@
-//! Native city atmosphere and short, local quotations of the source in view.
+//! Native city atmosphere, generative radio and local narration of visible code.
+mod radio;
 mod speech;
 mod synthesis;
 
@@ -38,6 +39,40 @@ pub(super) struct Settings {
     pub speech: bool,
     pub volume: f32,
     pub voice: String,
+    pub radio: Station,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Station {
+    #[default]
+    Off,
+    SpaceTrance,
+    Techno,
+}
+
+impl Station {
+    pub(super) fn next(self) -> Self {
+        match self {
+            Self::Off => Self::SpaceTrance,
+            Self::SpaceTrance => Self::Techno,
+            Self::Techno => Self::Off,
+        }
+    }
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::SpaceTrance => "Space trance",
+            Self::Techno => "Techno",
+        }
+    }
+    fn code(self) -> f32 {
+        match self {
+            Self::Off => 0.,
+            Self::SpaceTrance => 1.,
+            Self::Techno => 2.,
+        }
+    }
 }
 
 impl Default for Settings {
@@ -47,6 +82,7 @@ impl Default for Settings {
             speech: false,
             volume: 0.18,
             voice: "Daniel".into(),
+            radio: Station::Off,
         }
     }
 }
@@ -82,7 +118,7 @@ impl Settings {
 }
 
 #[derive(Default)]
-struct Controls([AtomicU32; 6]);
+struct Controls([AtomicU32; 8]);
 
 impl Controls {
     fn store(&self, levels: Levels) {
@@ -93,12 +129,14 @@ impl Controls {
             levels.works,
             levels.siren,
             levels.pan,
+            levels.music,
+            levels.radio,
         ]) {
             field.store(value.to_bits(), Ordering::Relaxed);
         }
     }
     fn load(&self) -> Levels {
-        let [master, wind, spray, works, siren, pan] =
+        let [master, wind, spray, works, siren, pan, music, radio] =
             std::array::from_fn(|index| f32::from_bits(self.0[index].load(Ordering::Relaxed)));
         Levels {
             master,
@@ -107,6 +145,8 @@ impl Controls {
             works,
             siren,
             pan,
+            music,
+            radio,
         }
     }
 }
@@ -249,6 +289,12 @@ fn update(
         works: if changed { 0.8 } else { 0.12 },
         siren: 0.5,
         pan: camera.forward().x,
+        music: if active {
+            settings.volume * if runtime.voice.busy() { 0.12 } else { 1. }
+        } else {
+            0.
+        },
+        radio: settings.radio.code(),
     });
     let enabled = active && settings.speech && settings.volume > 0. && !review.blocked;
     if enabled != runtime.speech_enabled {

@@ -2,6 +2,24 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { tokenize } from "./syntax-worker.mjs";
 
+test("Lean and languages outside the old allowlist load real grammars with valid UTF-8 ranges", async () => {
+  for (const [language, source] of [
+    ["lean4", '/- λ 🪐 -/\r\nimport Mathlib\r\ntheorem city : 1 + 1 = 2 := by decide\r\n'],
+    ["haskell", 'module City where\ncity = "λ"'],
+    ["clojure", '(defn city [] "λ")'],
+    ["lua", 'local city = "λ"\nreturn city'],
+    ["nix", '{ city = "λ"; }'],
+  ]) {
+    const spans = await tokenize(language, source);
+    assert.ok(spans.length > 0, `${language} should be highlighted`);
+    const bytes = Buffer.from(source);
+    for (let i = 0; i < spans.length; i += 3) {
+      assert.ok(spans[i] < spans[i + 1] && spans[i + 1] <= bytes.length);
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(spans[i], spans[i + 1]));
+    }
+  }
+});
+
 test("Rust colors real tokens across lines and measures ranges in UTF-8", async () => {
   const source = '/* 😀\nλ */\nfn main() { let s = "λ🛸"; let n = 12; }';
   const spans = await tokenize("rust", source);
@@ -59,14 +77,16 @@ test("file extensions request asynchronous syntax work including existing mjs al
     postMessage(message) { messages.push(message); }
   };
   try {
-    const cache = createSyntaxCache();
     for (const [path, language] of [
-      ["src/main.PY", "python"], ["types.pyi", "python"], ["run.sh", "bash"],
-      [".bashrc", "bash"], ["city.css", "css"], ["index.html", "html"],
-      ["config.yaml", "yaml"], ["config.yml", "yaml"], ["README.md", "markdown"],
-      ["notes.markdown", "markdown"], ["syntax-worker.mjs", "javascript"],
-      ["config.cjs", "javascript"],
+      ["src/main.PY", "source.python"], ["types.pyi", "source.python"], ["run.sh", "source.shell"],
+      [".bashrc", "source.shell"], ["city.css", "source.css"], ["index.html", "text.html.basic"],
+      ["config.yaml", "source.yaml"], ["config.yml", "source.yaml"], ["README.md", "text.md"],
+      ["notes.markdown", "text.md"], ["syntax-worker.mjs", "source.js"],
+      ["config.cjs", "source.js"], ["Mathlib/Basic.lean", "source.lean4"],
+      ["Dockerfile", "source.dockerfile"], ["Makefile", "source.makefile"],
+      ["build.hs", "source.haskell"], ["schema.sql", "source.sql"],
     ]) {
+      const cache = createSyntaxCache();
       assert.equal(cache.spans(path, `source for ${path}`).length, 0, "source stays readable while pending");
       assert.equal(messages.at(-1)?.language, language, path);
     }

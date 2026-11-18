@@ -11,15 +11,21 @@ cp assets/fonts/FiraMono-LICENSE assets/fonts/NotoEmoji-LICENSE web/assets/OFL-C
 cp web/index.html web/style.css web/app.mjs web/github.mjs web/analytics.mjs web/syntax.mjs web/github-picker.mjs web/pointer.mjs web/touch.mjs web/progress.mjs web/review.mjs web/pr-review.mjs web/tablet.mjs web/tablet-view.mjs web/audio.mjs web/audio-worklet.mjs "$output/"
 rm -f "$output/github-markdown.css" "$output/github-markdown-LICENSE.txt"
 # Keep the worker and each language out of the initial game download.
+node web/build-syntax.mjs
 rm -rf "$output/syntax-chunks"
-web/node_modules/.bin/esbuild web/syntax-worker.mjs --bundle --format=esm --splitting \
+rm -rf "$output/syntax-licenses" "$output/syntax-source"
+web/node_modules/.bin/esbuild web/syntax-worker.mjs web/syntax.mjs web/audio-worklet.mjs --bundle --format=esm --splitting \
   --minify --legal-comments=linked --target=chrome122 --out-extension:.js=.mjs \
   --chunk-names='syntax-chunks/[name]-[hash]' --outdir="$output"
 mkdir -p "$output/syntax-licenses"
-for package in @shikijs/{core,primitive,langs,engine-javascript} oniguruma-to-es oniguruma-parser regex regex-recursion regex-utilities; do
-  cp "web/node_modules/$package/LICENSE" "$output/syntax-licenses/${package##*/}.txt"
-done
-cp web/node_modules/@shikijs/vscode-textmate/LICENSE.md "$output/syntax-licenses/vscode-textmate.txt"
+mkdir -p "$output/syntax" "$output/syntax-source"
+cp web/node_modules/vscode-oniguruma/release/onig.wasm "$output/syntax/"
+cp web/node_modules/@wooorm/starry-night/license "$output/syntax-licenses/starry-night-MIT.txt"
+cp web/node_modules/@wooorm/starry-night/notice "$output/syntax-licenses/GRAMMAR-NOTICES.txt"
+cp licenses/linguist-MIT.txt "$output/syntax-licenses/"
+cp web/node_modules/vscode-oniguruma/LICENSE.txt "$output/syntax-licenses/vscode-oniguruma.txt"
+cp web/node_modules/vscode-textmate/LICENSE.md "$output/syntax-licenses/vscode-textmate.txt"
+cp web/node_modules/@wooorm/starry-night/lang/*.js "$output/syntax-source/"
 python3 - "$output/analytics-config.mjs" <<'PYCODE'
 from pathlib import Path
 import json

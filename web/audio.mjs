@@ -1,5 +1,5 @@
 const preferenceKey = "repo-city-audio-v1";
-const defaults = { ambience: false, speech: false, volume: 0.18, voice: "Daniel" };
+const defaults = { ambience: false, speech: false, volume: 0.18, voice: "Daniel", radio: "off" };
 const clamp = (value, min, max) => Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : min;
 
 function validated(next, previous = defaults) {
@@ -18,6 +18,10 @@ function validated(next, previous = defaults) {
     if (next.voice !== undefined) {
       if (typeof next.voice !== "string" || next.voice.length > 200) throw new Error("Choose a local voice.");
       value.voice = next.voice;
+    }
+    if (next.radio !== undefined) {
+      if (!["off", "space_trance", "techno"].includes(next.radio)) throw new Error("Choose a radio station.");
+      value.radio = next.radio;
     }
     return value;
   }
@@ -51,6 +55,7 @@ export function createCityAudio({ browser = globalThis, active = () => true, onO
   const now = () => browser.performance?.now() ?? Date.now();
   const visible = () => document?.visibilityState !== "hidden";
   const playing = () => { try { return visible() && Boolean(active()); } catch { return false; } };
+  const musicOrAmbience = () => preferences.ambience || preferences.radio !== "off";
   const localVoice = () => {
     try { return chooseLocalVoice(speech?.getVoices() ?? [], preferences.voice); } catch { return undefined; }
   };
@@ -63,27 +68,31 @@ export function createCityAudio({ browser = globalThis, active = () => true, onO
 
   function refresh() {
     if (disposed) return;
-    const audible = playing() && preferences.ambience && preferences.volume > 0;
+    const audible = playing() && musicOrAmbience() && preferences.volume > 0;
     if (gain) {
       gain.gain.cancelScheduledValues(context.currentTime);
       gain.gain.setTargetAtTime(audible ? preferences.volume * (currentUtterance ? 0.12 : 1) : 0, context.currentTime, 0.025);
     }
     if (node) node.port.postMessage({
-      wind: clamp(activity.wind ?? 0.2, 0, 1), spray: activity.blocked || currentUtterance ? 0 : clamp(activity.spray ?? 0, 0, 1) * 0.18,
-      works: activity.changed ? 0.8 : 0.12, siren: 0.5, pan: clamp(activity.pan ?? 0, -1, 1),
+      wind: preferences.ambience ? clamp(activity.wind ?? 0.2, 0, 1) : 0,
+      spray: !preferences.ambience || activity.blocked || currentUtterance ? 0 : clamp(activity.spray ?? 0, 0, 1) * 0.18,
+      works: preferences.ambience ? activity.changed ? 0.8 : 0.12 : 0,
+      siren: preferences.ambience ? 0.5 : 0, pan: clamp(activity.pan ?? 0, -1, 1),
+      radio: preferences.radio === "space_trance" ? 1 : preferences.radio === "techno" ? 2 : 0,
+      music: preferences.radio === "off" ? 0 : 1,
     });
     // Suspending an inaudible graph avoids background synthesis and autoplay surprises.
     if (audible && suspendTimer) { browser.clearTimeout(suspendTimer); suspendTimer = undefined; }
     if (context?.state === "running" && !audible && !suspendTimer) suspendTimer = browser.setTimeout(() => {
       suspendTimer = undefined;
-      if (!playing() || !preferences.ambience || preferences.volume === 0) context.suspend().catch(() => {});
+      if (!playing() || !musicOrAmbience() || preferences.volume === 0) context.suspend().catch(() => {});
     }, 240);
     else if (context?.state === "suspended" && audible && unlocked) context.resume().catch(() => {});
     if (!playing() || activity.silenceSpeech || !preferences.speech || preferences.volume === 0) cancelSpeech();
   }
 
   function start() {
-    if (!supported || disposed || !preferences.ambience || preferences.volume === 0) return;
+    if (!supported || disposed || !musicOrAmbience() || preferences.volume === 0) return;
     try {
       context ??= new Context();
       // Resume synchronously inside the trusted gesture, before loading the worklet.
@@ -140,7 +149,7 @@ export function createCityAudio({ browser = globalThis, active = () => true, onO
     updateSettings(next) {
       preferences = validated(next, preferences);
       try { browser.localStorage?.setItem(preferenceKey, JSON.stringify(preferences)); } catch { /* Keep session preferences. */ }
-      if (unlocked && preferences.ambience && preferences.volume > 0) start();
+      if (unlocked && musicOrAmbience() && preferences.volume > 0) start();
       refresh();
       return api.settings();
     },

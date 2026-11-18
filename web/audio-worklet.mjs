@@ -1,14 +1,19 @@
 // Procedural city sounds run on the audio rendering thread, independently of the UI.
+import { RadioSynth } from "./radio.mjs";
 export class CitySynth {
   constructor(seed = 0xc17a) {
     this.random = seed || 1;
     this.frame = this.low = this.air = this.breeze = this.impact = this.impactTarget = this.thudPhase = this.phase = 0;
     this.wind = this.spray = this.works = this.siren = this.pan = 0;
+    this.radio = new RadioSynth(seed);
+    this.music = 0;
   }
   render(left, right, levels = {}, rate = 48000) {
     const smooth = 1 - Math.exp(-1 / (rate * 0.05));
     const wind = levels.wind ?? 0, spray = levels.spray ?? 0, works = levels.works ?? 0;
     const siren = levels.siren ?? 0, pan = levels.pan ?? 0;
+    const music = levels.music ?? 0;
+    const station = levels.radio === 1 || levels.radio === 2 ? levels.radio : 0;
     const constructionCycle = Math.round(rate * 31), impactCycle = Math.round(rate * 0.49);
     for (let index = 0; index < left.length; index++) {
       this.wind += (wind - this.wind) * smooth;
@@ -16,6 +21,8 @@ export class CitySynth {
       this.works += (works - this.works) * smooth;
       this.siren += (siren - this.siren) * smooth;
       this.pan += (pan - this.pan) * smooth;
+      this.music += (music - this.music) * smooth;
+      this.radio.tick(station, rate);
       this.random ^= this.random << 13; this.random ^= this.random >>> 17; this.random ^= this.random << 5;
       const white = (this.random >>> 0) / 4294967295 * 2 - 1;
       this.low += (white - this.low) * 0.008;
@@ -32,8 +39,8 @@ export class CitySynth {
       const mixed = this.breeze * 0.9 * this.wind + (this.air - this.low) * 0.085 * this.spray +
         this.impact * (Math.sin(Math.PI * 2 * this.thudPhase) * 0.045 + this.air * 0.025) * this.works +
         Math.sin(Math.PI * 2 * this.phase) * envelope * 0.015 * this.siren;
-      left[index] = Math.max(-1, Math.min(1, mixed * (1 - this.pan * 0.4)));
-      right[index] = Math.max(-1, Math.min(1, mixed * (1 + this.pan * 0.4)));
+      left[index] = Math.max(-1, Math.min(1, mixed * (1 - this.pan * 0.4) + this.radio.left * this.music));
+      right[index] = Math.max(-1, Math.min(1, mixed * (1 + this.pan * 0.4) + this.radio.right * this.music));
       this.frame++;
     }
   }

@@ -199,6 +199,7 @@ enum Action {
     Ambience,
     Speech,
     Voice,
+    Radio,
     Volume(f32),
     Close,
 }
@@ -648,12 +649,19 @@ pub(super) fn update(
                 tablet.status.clear();
                 redraw = true;
             }
-            Some(Action::Ambience | Action::Speech | Action::Volume(_) | Action::Voice) => {
+            Some(
+                Action::Ambience
+                | Action::Speech
+                | Action::Volume(_)
+                | Action::Voice
+                | Action::Radio,
+            ) => {
                 if let Some(audio) = audio.as_deref_mut() {
                     let previous = audio.clone();
                     match action {
                         Some(Action::Ambience) => audio.ambience = !audio.ambience,
                         Some(Action::Speech) => audio.speech = !audio.speech,
+                        Some(Action::Radio) => audio.radio = audio.radio.next(),
                         Some(Action::Voice) => {
                             audio.voice = match audio.voice.as_str() {
                                 "Daniel" => "Rishi",
@@ -1436,7 +1444,8 @@ fn draw_settings(
                             }
                         });
                         add_button(form, &format!("System voice: {}", audio.voice), Action::Voice, tab);
-                        native_panel::text(form, "Reads the visible block from start to end. Water is muted during speech; other city sounds become quieter.", native_panel::INK);
+                        add_button(form, &format!("Radio: {}", audio.radio.label()), Action::Radio, tab);
+                        native_panel::text(form, "Reads the visible block from start to end. Water is muted; ambience and radio become quieter during speech. Radio music is synthesized on this device.", native_panel::INK);
                     });
                 }
                 let card = settings_card(column, "Reading estimate");

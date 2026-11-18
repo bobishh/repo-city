@@ -373,10 +373,15 @@ type FolderSelection = Mutex<mpsc::Receiver<Option<PathBuf>>>;
 fn choose_folder(current: &Path) -> Result<FolderSelection, String> {
     use block2::RcBlock;
     use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
+    use objc2_app_kit::{NSApplication, NSModalResponseOK, NSOpenPanel};
     use objc2_foundation::{NSString, NSURL};
 
     let main = MainThreadMarker::new().ok_or("Folder picker needs the macOS main thread.")?;
+    let application = NSApplication::sharedApplication(main);
+    let owner = application
+        .mainWindow()
+        .or_else(|| application.keyWindow())
+        .ok_or("Could not find the repository window.")?;
     let panel = NSOpenPanel::openPanel(main);
     panel.setCanChooseFiles(false);
     panel.setCanChooseDirectories(true);
@@ -387,14 +392,20 @@ fn choose_folder(current: &Path) -> Result<FolderSelection, String> {
     }
     let (send, receive) = mpsc::sync_channel(1);
     let opened = panel.clone();
-    panel.beginWithCompletionHandler(&RcBlock::new(move |response| {
-        let selected = if response == NSModalResponseOK {
-            opened.URL().and_then(|url| url.to_file_path())
-        } else {
-            None
-        };
-        let _ = send.try_send(selected);
-    }));
+    let parent = owner.clone();
+    panel.beginSheetModalForWindow_completionHandler(
+        &parent,
+        &RcBlock::new(move |response| {
+            let selected = if response == NSModalResponseOK {
+                opened.URL().and_then(|url| url.to_file_path())
+            } else {
+                None
+            };
+            let _ = send.try_send(selected);
+            opened.orderOut(None);
+            owner.makeKeyAndOrderFront(None);
+        }),
+    );
     Ok(Mutex::new(receive))
 }
 
@@ -1315,17 +1326,16 @@ pub(super) fn open_repository(
             _ => {}
         }
     }
-    let action = picker
-        .requested
-        .take()
-        .or((window.focused && shortcut).then_some(PickerAction::Folder));
+    if window.focused && shortcut {
+        picker.requested = Some(PickerAction::Folder);
+    }
     if !opened
         && picker.folder.is_none()
         && picker.view.is_none()
         && picker.pending.is_none()
         && picker.local.is_none()
         && !review.blocked
-        && let Some(action) = action
+        && let Some(action) = picker.requested.take()
     {
         if let Ok(mut pilot) = pilot.single_mut() {
             pilot.captured = false;
@@ -1443,6 +1453,65 @@ mod tests {
             (name == "XDG_CONFIG_HOME").then(|| "/reviewer/config".into())
         });
         assert_eq!(directory, Some(PathBuf::from("/reviewer/config/Repo City")));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn local_picker_request_survives_a_blocked_menu_close() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = App::new();
+        app.insert_resource(RepositoryPicker::new(String::new()))
+            .insert_resource(Repo(empty()))
+            .insert_resource(WorldSet::load(None).unwrap())
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<InputFocus>()
+            .init_resource::<AccumulatedMouseScroll>()
+            .init_resource::<Clipboard>()
+            .init_resource::<review_notes::Review>()
+            .init_resource::<live_worktree::Live>()
+            .add_systems(Update, open_repository);
+        app.world_mut()
+            .spawn((Window::default(), CursorOptions::default(), PrimaryWindow));
+        app.world_mut()
+            .resource_mut::<Repo>()
+            .0
+            .files
+            .push(repo_world::File {
+                path: "src/main.rs".into(),
+                before: None,
+                after: None,
+                change: repo_world::Change::Unchanged,
+                position: [0., 0.],
+            });
+        // Given the menu still contributes to the shared input blocker this frame.
+        app.world_mut()
+            .resource_mut::<review_notes::Review>()
+            .blocked = true;
+        app.world_mut()
+            .run_system_once(
+                |mut commands: Commands, mut picker: ResMut<RepositoryPicker>| {
+                    picker.view = Some(draw_menu(&mut commands));
+                    picker.action = Some(PanelAction::Choose(PickerAction::Revision));
+                },
+            )
+            .unwrap();
+        // When a menu choice closes the menu, keep its request until controls unblock.
+        app.update();
+        assert!(matches!(
+            app.world().resource::<RepositoryPicker>().requested,
+            Some(PickerAction::Revision)
+        ));
+        app.world_mut()
+            .resource_mut::<review_notes::Review>()
+            .blocked = false;
+        app.update();
+        // Then the requested picker opens instead of silently discarding the click.
+        let picker = app.world().resource::<RepositoryPicker>();
+        assert!(picker.requested.is_none());
+        assert!(matches!(
+            picker.view,
+            Some(RepositoryView::Revisions { .. })
+        ));
     }
 
     #[cfg(not(target_arch = "wasm32"))]

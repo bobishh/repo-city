@@ -3,14 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "pretest": "node build-syntax.mjs",
     "test": "node --test *.test.mjs",
     "test:browser": "playwright test"
   },
   "devDependencies": {
     "@playwright/test": "1.65.1",
-    "@shikijs/core": "4.6.0",
-    "@shikijs/engine-javascript": "4.6.0",
-    "@shikijs/langs": "4.6.0",
+    "@wooorm/starry-night": "3.11.0",
     "esbuild": "0.28.2"
   }
 }

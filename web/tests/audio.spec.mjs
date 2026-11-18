@@ -6,9 +6,14 @@ test.beforeAll(async () => {
   const { createServer } = await import("node:http");
   server = createServer(async (request, response) => {
     const url = new URL(request.url, "http://localhost");
-    if (["/audio.mjs", "/audio-worklet.mjs"].includes(url.pathname)) {
+    if (["/audio.mjs", "/audio-worklet.mjs", "/radio.mjs"].includes(url.pathname)) {
       response.writeHead(200, { "Content-Type": "text/javascript" });
       response.end(await readFile(new URL(`..${url.pathname}`, import.meta.url), "utf8"));
+      return;
+    }
+    if (url.pathname === "/assets/audio/radio-score.json") {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(await readFile(new URL("../../assets/audio/radio-score.json", import.meta.url), "utf8"));
       return;
     }
     response.writeHead(200, { "Content-Type": "text/html" });
@@ -73,6 +78,22 @@ test("unsupported WebAudio leaves the city interactive", async ({ page, context 
   expect(await page.evaluate(() => audio.available().state)).toBe("unsupported");
   await page.getByRole("button", { name: "Open repository picker" }).click();
   expect(await page.evaluate(() => window.pickerOpen)).toBe(true);
+});
+
+test("radio synthesizes a real signal with ambience off and mutes cleanly", async ({ page }) => {
+  await page.goto(origin);
+  await page.waitForFunction(() => Boolean(window.audio));
+  expect(await page.evaluate(() => audio.settings().radio)).toBe("off");
+  await page.evaluate(() => audio.updateSettings({ radio: "space_trance" }));
+  expect(await page.evaluate(() => audio.available().state)).toBe("locked");
+  await page.getByRole("button", { name: "Start city" }).click();
+  await expect.poll(() => page.evaluate(() => audio.available())).toMatchObject({ state: "running", error: "" });
+  await expect.poll(() => page.evaluate(() => signal())).toBeGreaterThan(0.001);
+  expect(await page.evaluate(() => audio.settings().ambience)).toBe(false);
+  await page.evaluate(() => audio.updateSettings({ radio: "techno" }));
+  await expect.poll(() => page.evaluate(() => signal())).toBeGreaterThan(0.001);
+  await page.evaluate(() => audio.updateSettings({ radio: "off" }));
+  await expect.poll(() => page.evaluate(() => signal())).toBeLessThan(0.00001);
 });
 
 test("visibility changes silence the real audio graph and resume it after returning", async ({ page, context }) => {

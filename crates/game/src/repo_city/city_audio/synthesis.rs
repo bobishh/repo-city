@@ -1,6 +1,7 @@
 //! Bounded procedural city sounds. The audio callback performs no allocation or locking.
 
 const RATE: f32 = 44_100.;
+use super::radio::Radio;
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct Levels {
@@ -10,6 +11,8 @@ pub(super) struct Levels {
     pub works: f32,
     pub siren: f32,
     pub pan: f32,
+    pub music: f32,
+    pub radio: f32,
 }
 
 pub(super) struct Synth {
@@ -23,6 +26,7 @@ pub(super) struct Synth {
     thud_phase: f32,
     phase: f32,
     levels: Levels,
+    radio: Radio,
 }
 
 impl Synth {
@@ -38,6 +42,7 @@ impl Synth {
             thud_phase: 0.,
             phase: 0.,
             levels: Levels::default(),
+            radio: Radio::new(seed),
         }
     }
 
@@ -49,6 +54,7 @@ impl Synth {
         smooth(&mut self.levels.works, target.works);
         smooth(&mut self.levels.siren, target.siren);
         smooth(&mut self.levels.pan, target.pan);
+        smooth(&mut self.levels.music, target.music);
         self.random ^= self.random << 13;
         self.random ^= self.random >> 17;
         self.random ^= self.random << 5;
@@ -85,9 +91,10 @@ impl Synth {
         self.frame = self.frame.wrapping_add(1);
         let mixed = (wind + spray + works + siren) * self.levels.master;
         let pan = self.levels.pan.clamp(-1., 1.);
+        let music = self.radio.frame(target.radio as u8);
         [
-            (mixed * (1. - 0.4 * pan)).clamp(-1., 1.),
-            (mixed * (1. + 0.4 * pan)).clamp(-1., 1.),
+            (mixed * (1. - 0.4 * pan) + music[0] * self.levels.music).clamp(-1., 1.),
+            (mixed * (1. + 0.4 * pan) + music[1] * self.levels.music).clamp(-1., 1.),
         ]
     }
 }
@@ -108,6 +115,7 @@ mod tests {
             works: 1.,
             siren: 1.,
             pan: 0.6,
+            ..Levels::default()
         };
         let mut previous = [0.; 2];
         let mut largest = 0_f32;
@@ -137,6 +145,7 @@ mod tests {
             works: 1.,
             siren: 1.,
             pan: -0.6,
+            ..Levels::default()
         };
         let mut first = Synth::new(123);
         let mut second = Synth::new(123);

@@ -1,11 +1,23 @@
-const languages = new Map(Object.entries({
-  rs: "rust", go: "go", js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "jsx",
-  ts: "typescript", tsx: "tsx", rb: "ruby", rake: "ruby", ex: "elixir", exs: "elixir",
-  elm: "elm", toml: "toml", json: "json",
-  py: "python", pyi: "python", pyw: "python", sh: "bash", bash: "bash", bashrc: "bash",
-  css: "css", html: "html", htm: "html", yaml: "yaml", yml: "yaml",
-  md: "markdown", markdown: "markdown",
-}));
+import { catalog } from "./.generated/syntax-catalog.mjs";
+
+export function languageForPath(path, source = "") {
+  const name = path.split(/[\\/]/).at(-1).toLowerCase();
+  if (Object.hasOwn(catalog.filenames, name)) return catalog.filenames[name];
+  for (let dot = name.indexOf("."); dot >= 0; dot = name.indexOf(".", dot + 1)) {
+    const extension = name.slice(dot);
+    if (Object.hasOwn(catalog.names, extension.slice(1))) return catalog.names[extension.slice(1)];
+    if (Object.hasOwn(catalog.extensions, extension)) return catalog.extensions[extension];
+  }
+  const alias = name.split(".").at(-1);
+  if (Object.hasOwn(catalog.names, alias)) return catalog.names[alias];
+  if (source.startsWith("#!")) {
+    for (const token of source.split(/[\r\n]/, 1)[0].slice(2).trim().split(/\s+/)) {
+      const interpreter = token.split("/").at(-1).toLowerCase();
+      if (Object.hasOwn(catalog.interpreters, interpreter)) return catalog.interpreters[interpreter];
+    }
+  }
+}
+
 const empty = new Uint32Array();
 const CACHE_ENTRIES = 12;
 
@@ -24,7 +36,7 @@ export function createSyntaxCache() {
   return {
     version: () => version,
     spans(path, source) {
-      const language = languages.get(path.split(".").at(-1)?.toLowerCase());
+      const language = languageForPath(path, source);
       if (!language || !source || failed) return empty;
       const key = language + "\0" + source;
       const existing = cache.get(key);

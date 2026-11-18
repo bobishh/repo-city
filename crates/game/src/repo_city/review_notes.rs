@@ -342,7 +342,7 @@ impl Review {
             }
             #[cfg(not(target_arch = "wasm32"))]
             if self.local_states.get(&note.id) == Some(&native::LocalState::Addressed) {
-                native::mark_worktree_note(&self.scope, &note.id, native::LocalState::Unread)?;
+                native::mark_local_note(&self.scope, &note.id, native::LocalState::Unread)?;
                 self.local_states.remove(&note.id);
             }
             return Ok(note);

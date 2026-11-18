@@ -81,7 +81,7 @@ fn states_in(db: &Connection, scope: &str) -> Result<HashMap<String, LocalState>
     Ok(result)
 }
 
-pub(super) fn mark_worktree_note(scope: &str, id: &str, state: LocalState) -> Result<(), String> {
+pub(super) fn mark_local_note(scope: &str, id: &str, state: LocalState) -> Result<(), String> {
     mark_in(&open()?, scope, id, state)
 }
 
@@ -94,8 +94,8 @@ fn mark_in(db: &Connection, scope: &str, id: &str, state: LocalState) -> Result<
         )
         .map_err(|error| error.to_string())?;
     let note = serde_json::from_str::<Note>(&payload).map_err(|error| error.to_string())?;
-    if !is_worktree_note(&note) {
-        return Err("The note must belong to this local worktree.".into());
+    if !is_local_note(&note) {
+        return Err("The note must be a private local annotation.".into());
     }
     db.execute(
         "INSERT INTO note_states VALUES (?1, ?2, ?3)
@@ -106,13 +106,16 @@ fn mark_in(db: &Connection, scope: &str, id: &str, state: LocalState) -> Result<
     Ok(())
 }
 
-fn is_worktree_note(note: &Note) -> bool {
-    note.revision.starts_with("worktree:") && !note.remote && note.published.is_none()
+pub(super) fn is_local_note(note: &Note) -> bool {
+    !note.remote && note.published.is_none()
 }
 
-pub(super) fn worktree_notes(scope: &str) -> Result<Vec<(Note, LocalState)>, String> {
-    let db = open()?;
-    let states = states_in(&db, scope)?;
+pub(super) fn local_notes(scope: &str) -> Result<Vec<(Note, LocalState)>, String> {
+    notes_in(&open()?, scope)
+}
+
+fn notes_in(db: &Connection, scope: &str) -> Result<Vec<(Note, LocalState)>, String> {
+    let states = states_in(db, scope)?;
     let mut query = db
         .prepare("SELECT payload FROM review WHERE scope = ?1 AND id != 'palette' ORDER BY id")
         .map_err(|error| error.to_string())?;
@@ -124,7 +127,7 @@ pub(super) fn worktree_notes(scope: &str) -> Result<Vec<(Note, LocalState)>, Str
     for payload in payloads {
         let payload = payload.map_err(|error| error.to_string())?;
         if let Ok(note) = serde_json::from_str::<Note>(&payload)
-            && is_worktree_note(&note)
+            && is_local_note(&note)
         {
             let key =
                 serde_json::to_string(&note.duplicate_key()).map_err(|error| error.to_string())?;
@@ -230,6 +233,61 @@ pub(super) fn save_notes(scope: &str, notes: &[Note]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_commit_notes_are_listed_and_addressed_without_touching_remote_notes() {
+        // Given a checkout with notes on a commit, a worktree, and GitHub discussions.
+        let db = Connection::open_in_memory().unwrap();
+        initialize(&db).unwrap();
+        let committed = Note {
+            id: "commit-note".into(),
+            revision: "c9f6281fe853f3fe34546039440b38e16bc734d4".into(),
+            baseline: Some("base".into()),
+            anchor: Anchor {
+                path: "src/file.rs".into(),
+                before: false,
+                start: 1,
+                end: 2,
+            },
+            preset: defaults()[0].clone().unwrap(),
+            text: "Explain the invariant.".into(),
+            published: None,
+            remote: false,
+            resolved: None,
+            attention: false,
+        };
+        let mut live = committed.clone();
+        live.id = "live-note".into();
+        live.revision = "worktree:base".into();
+        let mut remote = committed.clone();
+        remote.id = "remote-note".into();
+        remote.remote = true;
+        let mut published = committed.clone();
+        published.id = "published-note".into();
+        published.published = Some("123".into());
+        for note in [&committed, &live, &remote, &published] {
+            db.execute(
+                "INSERT INTO review VALUES (?1, ?2, ?3)",
+                params!["checkout", note.id, serde_json::to_string(note).unwrap()],
+            )
+            .unwrap();
+        }
+        // When MCP reads local notes, both local snapshot kinds remain available.
+        let notes = notes_in(&db, "checkout").unwrap();
+        assert_eq!(notes.len(), 2);
+        assert!(notes.iter().any(|(note, _)| note.id == committed.id));
+        assert!(notes_in(&db, "another-checkout").unwrap().is_empty());
+        // Then status updates apply to the commit note, never a remote discussion.
+        mark_in(&db, "checkout", &committed.id, LocalState::Addressed).unwrap();
+        assert!(
+            notes_in(&db, "checkout")
+                .unwrap()
+                .iter()
+                .any(|(note, state)| note.id == committed.id && *state == LocalState::Addressed)
+        );
+        assert!(mark_in(&db, "checkout", &remote.id, LocalState::Read).is_err());
+        assert!(mark_in(&db, "checkout", &published.id, LocalState::Read).is_err());
+    }
 
     #[test]
     fn state_changes_are_scoped_idempotent_and_keep_the_note() {

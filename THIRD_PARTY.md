@@ -7,9 +7,17 @@ the desktop and browser interfaces and code walls. The unmodified font and its S
 License 1.1 come from [Google Fonts revision 8b0a1d0](https://github.com/google/fonts/tree/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/notoemoji).
 See `assets/fonts/NotoEmoji-LICENSE`.
 
-The browser syntax worker bundles Shiki and its TextMate grammars, plus the
-JavaScript regex engine and its dependencies. The web build publishes their
-license notices under `syntax-licenses/`.
+The browser syntax worker uses [Starry Night 3.11.0](https://github.com/wooorm/starry-night)
+with separately loaded TextMate grammars and vscode-oniguruma 2.0.1. The web build
+publishes their licenses and complete grammar notices under `syntax-licenses/`.
+Unmodified grammar modules are available under `syntax-source/`; the complete
+[pinned package source](https://registry.npmjs.org/@wooorm/starry-night/-/starry-night-3.11.0.tgz)
+includes their original repository links and individual license terms.
+
+Filename and interpreter detection metadata in `web/syntax-language-map.json`
+comes from GitHub Linguist revision `14ac04abe3e3722e42c52489b377d9d4118fc8b6`.
+The local projection keeps only names, scopes, extensions, filenames and interpreters;
+see `licenses/linguist-MIT.txt`.
 
 Caveat (`web/assets/caveat-latin-wght.woff2`) is licensed under the SIL Open Font License 1.1.
 Copyright 2014 The Caveat Project Authors. See `web/assets/OFL-Caveat.txt`.

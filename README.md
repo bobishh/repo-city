@@ -200,6 +200,10 @@ language and content identity.
 The gear at the right of VibePad's navigation opens **Settings**. Valid changes save automatically; invalid fields show a reason and keep the last valid settings. Set the water
 reading delay there, mute the city, adjust volume, or turn robot speech off.
 Sound and narration start disabled. Wind, spray, construction, and occasional sirens are synthesized locally when enabled.
+Choose **Radio** in Sound settings for **Space trance** or **Techno**. It synthesizes
+drums, bass, chords, arpeggios and echo locally, with evolving phrases and no external
+music service. Radio starts off and works independently of city ambience. Both become
+quieter during narration.
 The browser starts its AudioWorklet after the first click or keypress. Preferences
 persist on the device; opening the repository picker or hiding the page silences it.
 The robot reads the current readable block from start to end, in source order.
@@ -294,7 +298,7 @@ choose **Fly to next mention**. Click the city to capture the cursor and
 press **J** once the camera reaches the marked lines.
 **Mark as viewed** adds an eyes reaction from your GitHub account, without changing
 the comment text, and restores
-the thread's usual color when you have marked its mentions viewed. Local worktree
+the thread's usual color when you have marked its mentions viewed. Local checkout
 notes use the same button to save their viewed status for MCP without a GitHub reaction.
 
 For local stack traces, draft editing, builds, and deployment, see
@@ -303,8 +307,8 @@ For local stack traces, draft editing, builds, and deployment, see
 ### Share local review notes with an MCP client
 
 Run the native binary with `--notes-mcp --repo /absolute/path/to/checkout`
-as a stdio MCP server. `list_notes` reads local worktree notes for that
-checkout. `mark_note` sets a note to `unread`, `read`, or `addressed`.
+as a stdio MCP server. `list_notes` reads private local notes from both commits and live worktrees in that
+checkout. Each note includes its revision and comparison base. `mark_note` sets a note to `unread`, `read`, or `addressed`.
 `get_focus` returns the current file, wall side, camera, and the source lines
 that are visible and readable. `list_notes` includes the same focus context.
 Context expires after six seconds; diff and blame currently report their side

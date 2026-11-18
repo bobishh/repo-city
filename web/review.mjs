@@ -244,6 +244,14 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     volume.disabled = !available.supported;
     volume.addEventListener("input", () => apply({ volume: Number(volume.value) / 100 }));
     section.append(...controls, field("Volume", volume), feedback);
+    const radio = make("select");
+    for (const [value, label] of [["off", "Off"], ["space_trance", "Space trance"], ["techno", "Techno"]]) {
+      radio.append(make("option", label, { value }));
+    }
+    radio.value = preferences.radio ?? "off";
+    radio.disabled = !available.supported;
+    radio.addEventListener("change", () => apply({ radio: radio.value }));
+    section.append(field("Radio", radio));
     if (!available.supported) feedback.textContent = "This browser cannot synthesize city audio.";
     else if (available.error) feedback.textContent = available.error;
     else if (!available.speech) feedback.textContent = "Robot speech needs an installed local browser voice.";
@@ -255,7 +263,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       voice.addEventListener("change", () => apply({ voice: voice.value }));
       section.append(field("Voice", voice));
     }
-    section.append(make("p", "Reads the current block from start to end. Water is muted and ambience is quieter during speech."));
+    section.append(make("p", "Reads the current block from start to end. Water is muted; ambience and radio become quieter during speech. Radio music is synthesized on this device."));
     return section;
   }
 

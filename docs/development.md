@@ -35,9 +35,10 @@ comparison in the current browser profile or desktop installation.
 
 The city uses directory paths and file metadata to position buildings.
 Source loads on demand. The native app uses Tree-sitter to highlight Rust,
-JavaScript, TypeScript, Ruby, Elixir, and Elm. The browser loads TextMate
-grammars in a Web Worker and also supports TOML and JSON. Other file types
-show plain text. Native function extraction and its structural measurements
+JavaScript, TypeScript, Ruby, Elixir, and Elm. The browser loads the complete
+pinned Starry Night TextMate catalog in a Web Worker, including Lean 4. Grammars
+and their dependencies load separately when needed. Unknown formats show plain
+text. Native function extraction and its structural measurements
 cover supported languages. The city streams up to 5,000 nearby buildings while search covers the full
 comparison. UTF-8 source inspection is limited to 1 MiB per file. Binaries and symlinks keep their positions
 in the city.
@@ -111,10 +112,14 @@ thread viewing. The Worker accepts review writes only from the site origin
 with a valid user session, and checks that the comment still targets the
 current PR head and an available GitHub diff range.
 
-Browser syntax uses separately served Shiki grammars. Loading a Go file
-downloads the Go grammar on demand; the game WASM does not contain it.
-GitHub uses Linguist to choose its own grammars. Repo City pins its grammar
-assets and serves them from the same origin as the game.
+Browser syntax uses separately served Starry Night grammars. `web/build-syntax.mjs`
+generates the complete lazy-loader catalog from the pinned package during tests
+and builds. Loading a Lean file downloads its grammar and required dependencies;
+the game WASM does not contain them. Filename/interpreter metadata comes from the
+pinned Linguist projection in `web/syntax-language-map.json`. Ambiguous extensions
+prefer common grammars and `.lean` defaults to Lean 4. These are deterministic
+rules, rather than GitHub's statistical language classifier. Assets, Oniguruma
+WASM, source modules and license notices are served from the game origin.
 
 The optional web telemetry records coarse tour actions (start, complete,
 skip) and a successful GitHub connection. It sends no GitHub handle,

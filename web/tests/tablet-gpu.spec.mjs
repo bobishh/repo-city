@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { gpuSelect } from "./gpu-tablet.mjs";
 
 const state = page => page.evaluate(() => globalThis.repoCity?.readTablet());
 const text = view => JSON.stringify(view?.nodes ?? []);
@@ -82,4 +83,17 @@ test("GPU tablet renders help and autosaved settings, then finds a file with key
   await page.keyboard.press("h", { delay: 180 });
   await expect.poll(async () => (await state(page))?.open).toBe(false);
   expect(faults).toEqual([]);
+});
+
+test("radio station saves from GPU settings while city ambience remains off", async ({ page }) => {
+  await repository(page);
+  await page.keyboard.press("h", { delay: 180 });
+  await clickControl(page, "Settings");
+  const radio = page.locator("#review-dialog").getByLabel("Radio");
+  await expect(radio).toHaveValue("off");
+  await gpuSelect(page, radio, "space_trance");
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("repo-city-audio-v1"))))
+    .toMatchObject({ ambience: false, radio: "space_trance" });
+  await gpuSelect(page, radio, "off");
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("repo-city-audio-v1"))).then(value => value.radio)).toBe("off");
 });

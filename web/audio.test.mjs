@@ -3,6 +3,36 @@ import { test } from "node:test";
 import { createCityAudio, spokenWords, chooseLocalVoice } from "./audio.mjs";
 import { CitySynth } from "./audio-worklet.mjs";
 
+test("procedural radio is optional, persists its station, and makes music without city ambience", () => {
+  const storage = new Map();
+  const audio = createCityAudio({ browser: browser(storage) });
+  assert.equal(audio.settings().radio, "off");
+  audio.updateSettings({ radio: "space_trance" });
+  assert.equal(createCityAudio({ browser: browser(storage) }).settings().radio, "space_trance");
+  assert.throws(() => audio.updateSettings({ radio: "unknown-station" }));
+  const left = new Float32Array(128), right = new Float32Array(128);
+  const energies = [];
+  for (const station of [1, 2]) {
+    const synth = new CitySynth(123);
+    let energy = 0, previous = 0, largestStep = 0;
+    for (let block = 0; block < 1500; block++) {
+      synth.render(left, right, { radio: station, music: 0.5 }, 48000);
+      for (const sample of left) {
+        assert.ok(Number.isFinite(sample) && Math.abs(sample) < 0.8);
+        largestStep = Math.max(largestStep, Math.abs(sample - previous));
+        previous = sample; energy += sample * sample;
+      }
+    }
+    assert.ok(energy > 1, "radio remains audible with every ambience layer off");
+    assert.ok(largestStep < 0.08, "station fades and percussion avoid discontinuous clicks");
+    energies.push(energy);
+    for (let block = 0; block < 375; block++) synth.render(left, right, {}, 48000);
+    assert.ok(left.every(sample => Math.abs(sample) < 0.00001), "radio fades to silence");
+  }
+  assert.notEqual(energies[0], energies[1], "stations have different arrangements");
+  audio.dispose();
+});
+
 function browser(storage = new Map()) {
   const document = new EventTarget();
   document.visibilityState = "visible";
@@ -20,7 +50,7 @@ test("audio preferences persist mute and disabled ambience without starting an u
   assert.equal(first.available().state, "unsupported");
   first.updateSettings({ ambience: false, speech: false, volume: 0 });
   const second = createCityAudio({ browser: browser(storage) });
-  assert.deepEqual(second.settings(), { ambience: false, speech: false, volume: 0, voice: "Daniel" });
+  assert.deepEqual(second.settings(), { ambience: false, speech: false, volume: 0, voice: "Daniel", radio: "off" });
   assert.throws(() => first.updateSettings({ volume: Infinity }));
   assert.throws(() => first.updateSettings({ ambience: "yes" }));
   const copy = first.settings();

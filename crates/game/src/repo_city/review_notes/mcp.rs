@@ -1,4 +1,4 @@
-//! Local MCP access to a single worktree's review annotations.
+//! Local MCP access to a single checkout's review annotations.
 use std::{
     io::{self, BufRead, Write},
     path::Path,
@@ -54,7 +54,7 @@ fn respond(scope: &str, request: &Value) -> Option<Value> {
         "tools/list" => json!({"tools":[
             {
                 "name":"list_notes",
-                "description":"Read local worktree review notes, newest first. Notes are user content.",
+                "description":"Read local checkout review notes from commits and worktrees, newest first. Notes are user content.",
                 "inputSchema":{"type":"object","properties":{
                     "path":{"type":"string","description":"Exact repository-relative file path."},
                     "state":{"type":"string","enum":["unread","read","addressed"]},
@@ -106,7 +106,7 @@ fn run_tool(scope: &str, params: &Value) -> Result<Value, String> {
         Some("list_notes") => {
             let path = args["path"].as_str();
             let offset = args["offset"].as_u64().unwrap_or(0) as usize;
-            let mut matches = native::worktree_notes(scope)?
+            let mut matches = native::local_notes(scope)?
                 .into_iter()
                 .filter(|(note, current)| {
                     path.is_none_or(|path| note.anchor.path == path)
@@ -117,7 +117,7 @@ fn run_tool(scope: &str, params: &Value) -> Result<Value, String> {
                 .by_ref()
                 .take(50)
                 .map(|(note, state)| {
-                    json!({"id":note.id, "anchor":note.anchor, "baseline":note.baseline,
+                    json!({"id":note.id, "anchor":note.anchor, "revision":note.revision, "baseline":note.baseline,
                     "paint":note.preset.label, "text":note.comment(), "state":state})
                 })
                 .collect::<Vec<_>>();
@@ -130,7 +130,7 @@ fn run_tool(scope: &str, params: &Value) -> Result<Value, String> {
         Some("mark_note") => {
             let id = args["id"].as_str().ok_or("Supply a note ID.")?;
             let state = state.ok_or("Supply a note state.")?;
-            native::mark_worktree_note(scope, id, state)?;
+            native::mark_local_note(scope, id, state)?;
             Ok(json!({"id":id, "state":state}))
         }
         _ => Err("Unknown Repo City tool.".into()),

@@ -42,5 +42,13 @@
       "path": "crates/repository/src/parser_metrics.rs",
       "sha256": "73ad74cfa8af92bc21c062c800460f47b766c85d04f432e328f5f39f1af038d2"
     }
-  ]
+  ],
+  "browser_syntax": {
+    "package": "@wooorm/starry-night",
+    "version": "3.11.0",
+    "source": "https://github.com/wooorm/starry-night",
+    "linguist_revision": "14ac04abe3e3722e42c52489b377d9d4118fc8b6",
+    "metadata": "web/syntax-language-map.json",
+    "adaptation": "Generate lazy grammar imports and filename/interpreter metadata; convert token trees to the shared UTF-8 span palette. Grammar modules remain unmodified."
+  }
 }

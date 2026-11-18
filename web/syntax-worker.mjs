@@ -1,74 +1,70 @@
-import { createHighlighterCore } from "@shikijs/core";
-import { createJavaScriptRegexEngine } from "@shikijs/engine-javascript";
+import { createStarryNight } from "@wooorm/starry-night";
+import { catalog } from "./.generated/syntax-catalog.mjs";
+import { loaders } from "./.generated/syntax-loaders.mjs";
 
-const grammars = {
-  rust: () => import("@shikijs/langs/rust"),
-  go: () => import("@shikijs/langs/go"),
-  javascript: () => import("@shikijs/langs/javascript"),
-  typescript: () => import("@shikijs/langs/typescript"),
-  tsx: () => import("@shikijs/langs/tsx"),
-  jsx: () => import("@shikijs/langs/jsx"),
-  ruby: () => import("@shikijs/langs/ruby"),
-  elixir: () => import("@shikijs/langs/elixir"),
-  elm: () => import("@shikijs/langs/elm"),
-  toml: () => import("@shikijs/langs/toml"),
-  json: () => import("@shikijs/langs/json"),
-  python: () => import("@shikijs/langs/python"),
-  bash: () => import("@shikijs/langs/bash"),
-  css: () => import("@shikijs/langs/css"),
-  html: () => import("@shikijs/langs/html"),
-  yaml: () => import("@shikijs/langs/yaml"),
-  markdown: () => import("@shikijs/langs/markdown"),
-};
-
-// Tags for Rust's shared palette. Diff backgrounds are selected independently.
-const scopes = [
-  "keyword, storage, constant.language",
-  "string, markup.inline.raw, markup.underline.link",
-  "comment",
-  "constant.numeric",
-  "entity.name.type, support.type, support.class, entity.name.tag, entity.name.section",
-  "entity.name.function, support.function",
-];
-const tag = index => `#${(index + 1).toString().padStart(6, "0")}`;
-const kinds = new Map(scopes.map((_, index) => [tag(index), index + 1]));
-const theme = {
-  name: "repo-city",
-  type: "dark",
-  colors: { "editor.foreground": "#ffffff", "editor.background": "#000000" },
-  tokenColors: scopes.map((scope, index) => ({ scope, settings: { foreground: tag(index) } })),
-};
-
-let core;
-const loaded = new Map();
 const encoder = new TextEncoder();
+const loading = new Map();
+
+async function highlighter(scope) {
+  if (!loading.has(scope)) loading.set(scope, (async () => {
+    const grammars = [], seen = new Set();
+    async function collect(scope) {
+      if (seen.has(scope) || !Object.hasOwn(loaders, scope)) return;
+      seen.add(scope);
+      const { default: grammar } = await loaders[scope]();
+      grammars.push(grammar);
+      await Promise.all((grammar.dependencies ?? []).map(collect));
+    }
+    await collect(scope);
+    // register() rebuilds Starry Night's registry without retaining its WASM URL.
+    // Keep one lazy engine per root grammar so every fetch stays on this origin.
+    return createStarryNight(grammars, {
+      getOnigurumaUrlFetch: () => new URL("./syntax/onig.wasm", import.meta.url),
+    });
+  })());
+  return loading.get(scope);
+}
+
+function color(classes, text, inherited) {
+  if (inherited === 2 || inherited === 3) return inherited;
+  if (classes.includes("pl-c")) return 3;
+  if (classes.some(name => ["pl-s", "pl-pds", "pl-sr"].includes(name))) return 2;
+  if (classes.includes("pl-k")) return 1;
+  if (classes.includes("pl-en") || classes.includes("pl-e")) return 6;
+  if (classes.includes("pl-c1")) {
+    if (/^(true|false|nil|null|undefined|self|Self)$/.test(text)) return 1;
+    return /^[+-]?(?:[0-9]|\.[0-9])/.test(text) ? 4 : 5;
+  }
+  if (classes.some(name => ["pl-ent", "pl-smi", "pl-v", "pl-mh"].includes(name))) return 5;
+  return inherited;
+}
 
 export async function tokenize(language, source) {
-  if (!Object.hasOwn(grammars, language)) return new Uint32Array();
-  core ??= createHighlighterCore({ themes: [theme], langs: [], engine: createJavaScriptRegexEngine() });
-  const highlighter = await core;
-  if (!loaded.has(language)) loaded.set(language, highlighter.loadLanguage(grammars[language]()));
-  await loaded.get(language);
-  const input = source.replace(/\r\n?/g, match => match.length === 2 ? "\n" : " ");
-  const tokens = highlighter.codeToTokensBase(input, { lang: language, theme: theme.name });
-  const rawLines = source.split("\n");
+  const name = language.toLowerCase();
+  const scope = Object.hasOwn(loaders, language) ? language
+    : Object.hasOwn(catalog.names, name) ? catalog.names[name] : undefined;
+  if (!scope) return new Uint32Array();
+  const engine = await highlighter(scope);
   const spans = [];
   let byte = 0;
-  for (const [line, row] of tokens.entries()) {
-    for (const token of row) {
-      const end = byte + encoder.encode(token.content).length;
-      const kind = kinds.get(token.color?.toLowerCase());
+  function visit(node, inherited = 0, classes = []) {
+    if (node.type === "text") {
+      const end = byte + encoder.encode(node.value).length;
+      const kind = color(classes, node.value, inherited);
       if (kind && byte < end) spans.push(byte, end, kind);
       byte = end;
+      return;
     }
-    byte += rawLines[line]?.endsWith("\r") ? 2 : 1;
+    const next = node.properties?.className ?? [];
+    const kind = color(next, "", inherited);
+    for (const child of node.children ?? []) visit(child, kind, next);
   }
+  visit(engine.highlight(source, scope));
   return Uint32Array.from(spans);
 }
 
 if (typeof self !== "undefined" && typeof document === "undefined") {
   self.onmessage = async ({ data: { id, language, source } }) => {
-    // Failure leaves the readable, uncolored source on the facade.
     const spans = await tokenize(language, source).catch(() => new Uint32Array());
     self.postMessage({ id, spans }, [spans.buffer]);
   };

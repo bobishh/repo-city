@@ -398,7 +398,7 @@ fn draw(
                                     "Original discussion"
                                 } else if note.published.is_some() || note.remote {
                                     "Published"
-                                } else if repo.is_worktree() {
+                                } else if picker.is_none_or(|picker| picker.github.is_none()) {
                                     "Saved locally"
                                 } else {
                                     "Draft"
@@ -459,9 +459,8 @@ fn draw(
                                             Action::CopyNote(index),
                                             index as i32 * 4 + 1,
                                         );
-                                        if repo.is_worktree()
-                                            && !note.remote
-                                            && note.published.is_none()
+                                        if picker.is_none_or(|picker| picker.github.is_none())
+                                            && native::is_local_note(note)
                                             && review.local_states.get(&note.id).is_none_or(
                                                 |state| *state == native::LocalState::Unread,
                                             )
@@ -826,13 +825,12 @@ pub(crate) fn update(
                 redraw = true;
             }
             Action::MarkViewed(index) => {
-                if let Some(note) = review
-                    .notes
-                    .get(index)
-                    .filter(|note| repo.is_worktree() && !note.remote && note.published.is_none())
-                {
+                if let Some(note) = review.notes.get(index).filter(|note| {
+                    picker.as_ref().is_none_or(|picker| picker.github.is_none())
+                        && native::is_local_note(note)
+                }) {
                     let id = note.id.clone();
-                    match native::mark_worktree_note(&review.scope, &id, native::LocalState::Read) {
+                    match native::mark_local_note(&review.scope, &id, native::LocalState::Read) {
                         Ok(()) => {
                             review.local_states.insert(id, native::LocalState::Read);
                             ui.status_job = None;
@@ -1076,7 +1074,7 @@ pub(crate) fn update(
             message = "Auto-publish off. Drafts saved locally.".into();
         }
     }
-    if repo.is_worktree()
+    if picker.as_ref().is_none_or(|picker| picker.github.is_none())
         && !review.notes.is_empty()
         && ui.refresh_local_states(&mut review, time.elapsed_secs())
     {
