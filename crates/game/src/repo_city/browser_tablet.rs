@@ -75,6 +75,7 @@ pub(super) fn update(
     view: Query<(&Transform, &Visibility), With<android::ViewTablet>>,
     mut camera: Query<&mut Camera, With<android::TabletCamera>>,
     window: Query<&Window, With<PrimaryWindow>>,
+    mut ui_scale: ResMut<UiScale>,
 ) {
     let Ok((pose, visibility)) = view.single() else {
         return;
@@ -86,6 +87,18 @@ pub(super) fn update(
     let viewport = window.single().map_or(Vec2::ONE, |window| {
         Vec2::new(window.width(), window.height())
     });
+    if let Some(canvas) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id("repo-city"))
+    {
+        let width = canvas.client_width();
+        if width > 0 {
+            let next = (viewport.x / width as f32).clamp(0.5, 4.);
+            if ui_scale.0 != next {
+                ui_scale.0 = next;
+            }
+        }
+    }
     let corners = visible
         .then(|| android::tablet_corners(pose, viewport))
         .flatten();

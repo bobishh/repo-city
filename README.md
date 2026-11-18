@@ -4,6 +4,8 @@ Repo City opens a GitHub repository or pull request as a 3D city in your browser
 form districts. Each file has walls for its source, diff, and blame. Open a
 GitHub pull request to see what it changes in the context of the whole codebase.
 
+Licensed under **MIT OR Apache-2.0**; choose either license.
+
 [Explore Repo City’s own code in your browser](https://repo-city.meta-uber-engineer.dev/?repo=bobishh%2Frepo-city&ref=4ad0303336c2acf0ea785c596dbc0b5d53d55bfe&base=a035f34156d434e22142a6104b812f3bb6f13b36).
 The demo opens at `crates/repository/src/syntax.rs`. Press **G** to see its
 diff, or press **P** to find another file.
@@ -58,49 +60,73 @@ The desktop application is called **Vibe City** and is developed separately.
 | Wash or paint lines | **0** equips water. Click close to a source wall to start or stop water. Code appears while you aim at the block. In VibePad **Settings**, choose **Immediate** to save the reveal right away or **Delayed** to wait for the reading estimate. **1–9** equip paints; drag from one readable line to another on the same side of the file. |
 | Edit paints and notes | **U** opens paints. **1–9** select a paint. **J** opens the note you are aiming at or the review list. |
 | Find text on the current wall | **/** or **Find in file** in the actions menu. **Enter** keeps results; **N** and **Shift+N** visit matches. |
-| Turn to the diff or blame wall | **G** for diff, **B** for blame. Sign in with GitHub for line attribution in the browser. |
+| Turn to the diff or blame wall | **G** for diff, **B** for blame. Up close, **Left/Right** cycles source, diff and blame. Sign in with GitHub for line attribution in the browser. |
 | Follow a file’s changes | **C** starts the review. Scroll up or press **W** for the next stop. Scroll down or press **S** for the previous stop. **Q** returns to the diff wall. |
-| Open controls | **H** opens VibePad Help. Choose **Start tour** to practice flying and washing source. |
+| Open controls | **H** opens and puts away VibePad Help. Choose **Start tour** to practice flying and washing source. |
 
 **Lines per wash block** sets how many displayed rows clear together (default:
 6). Set it to 1 to clear individual rows. This setting is independent of the
 delay bounds. Wrapped continuations count as displayed rows; the original
 source line is saved as read only after all its continuations are cleared.
+Reading a close diff, blame wall, or hunk stop uses the same timer and reveals only its visible source lines on the correct comparison side. Flying past or looking away does not complete a block.
 While washing, code is visible immediately. Leaving an unfinished block covers
 it again. A ring around the tool-colored reticle shrinks as the delay expires.
 
-Delayed mode estimates seconds as `non-whitespace characters × 60 / (238 × 4.6)`
-for the selected block. A minimum or maximum delay clamps that result; clear
+Delayed mode estimates seconds as `effective non-whitespace characters × 60 / (238 × 4.6)`
+for the selected block. Consecutive copies of a character count once; this
+repetition discount is a UI heuristic, separate from the cited prose rate. A minimum or maximum delay clamps that result; clear
 either field to remove that bound. The initial bounds remain 3 and 6 seconds.
 The length-adjusted [Brysbaert English nonfiction rate](https://doi.org/10.1016/j.jml.2019.104047)
 is an approximation, not a measured code-comprehension speed. Six rows is a
-configurable preset, not a research-backed optimum. The Mac stores `mode`,
-`block_lines`, `min_seconds`, and `max_seconds` in
-`~/Library/Application Support/Repo City/reading.json`. A `null` bound has no limit.
+configurable preset, not a research-backed optimum. Preferences are stored on this device. A `null` bound has no limit.
 
-Reach the end of a Markdown preview to reveal the file's source wall.
+Reach the end of a Markdown or plain-text preview to reveal the file's source wall.
 Repo City saves revealed lines and reviewed files in your browser. The same repository and comparison restore those marks. Press **V** to
 toggle the selected file’s review mark. To start over on the open comparison,
 choose **Reset progress** in the repository dialog.
 
-The city shows the percentage of files visited and changed files whose diff
-you opened. In the browser, a pull request or branch update keeps visits to
+The HUD shows counts and progress bars for visited files and changed files
+whose diff you opened. In the browser, a pull request or branch update keeps visits to
 unchanged file contents and diffs.
 
 ## VibePad and sound
 
-**Tab** opens the handheld tablet. Files, comments and Help share its screen;
+**Tab** opens the handheld tablet. Files, file search, Git history, comments and Help share its screen;
 the gear opens reading and sound preferences. **Tab** or **Esc** puts it away.
 The screen follows the 3D case and hands, including on Retina displays.
 
-City ambience is synthesized in an AudioWorklet after the first click or keypress.
+Sound and narration start disabled. When enabled, city ambience is synthesized
+in an AudioWorklet after the first click or keypress.
 Mute, volume and robot speech preferences are saved on this device. Speech uses
-an installed local browser voice when available. Leaving a code block lets the
-current phrase finish; hiding the page, opening the repository picker or muting
+an installed local browser voice when available; the default prefers a clear
+male voice such as Daniel. Choose another voice in Settings. The robot reads
+the current readable block in source order. Water is muted and city sounds are
+quieter during speech. Leaving a code block lets the current utterance finish; hiding the page, opening the repository picker or muting
 stops audio. No remote speech service receives code.
 
 Long source lines wrap without changing file contents or comment line numbers.
 A line counts as read after all of its wrapped fragments have been read.
+
+## Search, history and touch controls
+
+**Cmd+P** or **Ctrl+P** opens file search inside VibePad. Choose a result to put
+away the tablet and fly to its building. Aim at a file and press plain **P** to
+preview Markdown, plain text/code, or a PNG, JPEG or WebP image.
+
+In **Git**, browse commits and inspect their patches. Choose **Before** and
+**After**, then **Compare selected commits** to open those exact snapshots,
+without substituting their merge base. The browser has no local terminal.
+
+**Z** collapses the aimed block and **X** expands it. Native syntax boundaries
+can identify whole functions; the browser currently falls back to the configured
+line block size. **Reading block**, **Lines per wash block**, and **Auto-advance**
+in Settings control washing independently of its optional delay bounds. When
+water is on, Auto-advance moves down to the next unread block after completion.
+
+On a touch device, use the movement stick, drag the city to look, and swipe vertically at a source wall to scroll code.
+Up, Down and Fast control flight; altitude buttons hide while reading. **Pad** opens VibePad; its top-right cross puts it away.
+Movement resets when touch ends, a menu opens, or the page loses focus. A
+WebGPU-capable browser and GPU are required. Landscape offers more reading space.
 
 ## Leave review notes
 
@@ -108,20 +134,6 @@ Wash the source or use the readable diff wall. Pick a paint with **U** and
 drag over lines to color them and save a draft with that paint's reusable
 prompt. Each draft keeps its original file, revision, and line range.
 Change a paint's name, color, spray text, or reusable prompt in **Paints**.
-
-The Mac app saves notes and palettes in SQLite. Press **J** while aiming at a
-marked line to open its comment in VibePad. Away from a mark, **J** opens all
-comments on the current comparison. **All comments** returns to that list.
-Use **Edit** to add details or export a note.
-Comment previews render Markdown in VibePad.
-When you open a GitHub pull request, **J** also lists its review comments.
-Choose **Fly to lines** to see an anchored comment on its building, or
-**Open on GitHub** to read the full thread. In the **M** overview, gold pins
-mark buildings with comments on the current comparison.
-In an open pull request, **Publish all** sends the current drafts to GitHub
-with write access. Turn on **Auto-publish** to send new marks as you make them.
-This setting turns off when you open another comparison. GitHub sign-in uses
-the macOS Keychain to restore the session.
 
 In the browser, sign in with GitHub to save drafts for a pull request in
 IndexedDB. Press **J** while aiming at a note to open it. Existing public

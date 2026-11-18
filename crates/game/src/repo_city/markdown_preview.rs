@@ -4,14 +4,24 @@ use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use super::*;
 
 pub(super) fn is_markdown(path: &str) -> bool {
-    PathBuf::from(path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| {
-            ["md", "markdown", "mdown", "mkd"]
-                .iter()
-                .any(|kind| ext.eq_ignore_ascii_case(kind))
-        })
+    file_preview::format(path) == Some(file_preview::Format::Markdown)
+}
+
+pub(super) fn document_html(path: &str, source: &str) -> String {
+    if is_markdown(path) {
+        return markdown_html(source);
+    }
+    let mut html = String::new();
+    pulldown_cmark::html::push_html(
+        &mut html,
+        [
+            Event::Start(Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Indented)),
+            Event::Text(source.into()),
+            Event::End(TagEnd::CodeBlock),
+        ]
+        .into_iter(),
+    );
+    html
 }
 
 fn events(source: &str) -> impl Iterator<Item = Event<'_>> {
@@ -71,6 +81,57 @@ extern "C" {
     pub(super) fn open_browser(path: &str, before: bool);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn register(app: &mut App) {
+    use bevy::asset::io::embedded::EmbeddedAssetRegistry;
+    use bevy_markup::prelude::{FontFaces, FontFamilies, GenericFamily};
+
+    app.add_plugins(bevy_markup::BevyMarkupPlugin);
+    app.world_mut()
+        .resource_mut::<FontFamilies>()
+        .insert("Markdown Sans", FontFaces::new(FontSource::sans_serif()))
+        .insert("Markdown Mono", FontFaces::new(FontSource::monospace()))
+        .set_generic(GenericFamily::SansSerif, "Markdown Sans")
+        .set_generic(GenericFamily::Monospace, "Markdown Mono");
+    let registry = app.world().resource::<EmbeddedAssetRegistry>();
+    registry.insert_asset(
+        PathBuf::new(),
+        std::path::Path::new("repo-city/markdown.html"),
+        include_bytes!("markdown_preview.html"),
+    );
+    registry.insert_asset(
+        PathBuf::new(),
+        std::path::Path::new("repo-city/markdown.css"),
+        include_bytes!("markdown_preview.css"),
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn draw(parent: &mut ChildSpawnerCommands, document: String) -> Entity {
+    use bevy_markup::prelude::{HtmlStylesheet, HtmlUi, TemplateContext};
+    let mut node = parent.spawn(Node {
+        width: percent(100.),
+        flex_shrink: 0.,
+        ..default()
+    });
+    let entity = node.id();
+    node.commands().queue(move |world: &mut World| {
+        let Some(assets) = world.get_resource::<AssetServer>() else {
+            return;
+        };
+        let template = assets.load("embedded://repo-city/markdown.html");
+        let style = assets.load("embedded://repo-city/markdown.css");
+        if let Ok(mut entity) = world.get_entity_mut(entity) {
+            entity.insert((
+                HtmlUi::new(template),
+                HtmlStylesheet(style),
+                TemplateContext::new().with("document", &document),
+            ));
+        }
+    });
+    entity
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct ReadDocument {
     pub path: String,
@@ -87,7 +148,10 @@ impl ReadDocument {
             &file.after
         };
         self.path == file.path
-            && is_markdown(&file.path)
+            && matches!(
+                file_preview::format(&file.path),
+                Some(file_preview::Format::Markdown | file_preview::Format::Text)
+            )
             && (1..=1024 * 1024).contains(&self.rows)
             && blob
                 .as_ref()

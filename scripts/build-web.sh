@@ -8,7 +8,7 @@ mkdir -p "$output/game" "$output/assets"
 mkdir -p "$output/licenses"
 cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY.md licenses/pulldown-cmark-MIT.txt "$output/licenses/"
 cp assets/fonts/FiraMono-LICENSE assets/fonts/NotoEmoji-LICENSE web/assets/OFL-Caveat.txt "$output/licenses/"
-cp web/index.html web/style.css web/app.mjs web/github.mjs web/analytics.mjs web/syntax.mjs web/github-picker.mjs web/pointer.mjs web/progress.mjs web/review.mjs web/pr-review.mjs web/tablet.mjs web/audio.mjs web/audio-worklet.mjs "$output/"
+cp web/index.html web/style.css web/app.mjs web/github.mjs web/analytics.mjs web/syntax.mjs web/github-picker.mjs web/pointer.mjs web/touch.mjs web/progress.mjs web/review.mjs web/pr-review.mjs web/tablet.mjs web/audio.mjs web/audio-worklet.mjs "$output/"
 cp web/node_modules/github-markdown-css/github-markdown-dark.css "$output/github-markdown.css"
 cp web/node_modules/github-markdown-css/license "$output/github-markdown-LICENSE.txt"
 # Keep the worker and each language out of the initial game download.

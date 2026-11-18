@@ -25,3 +25,8 @@ Copyright 2015 Google Inc. See `licenses/pulldown-cmark-MIT.txt`.
 The repository cover (`web/assets/start-screen.webp`) and facade texture
 (`assets/city/facade-print.png`) are original artwork created for this project.
 They are distributed under the project's MIT or Apache-2.0 license.
+
+Touch flight controls adapt Feed the Poor's `web/src/touch.ts` at revision
+`beabe03f5aef648717fa175693cb9a76c953d9d5` (MIT OR Apache-2.0).
+The local adaptation adds altitude, boost, water/paint actions and VibePad
+navigation to the movement stick and drag-to-look controls.

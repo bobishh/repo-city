@@ -174,8 +174,8 @@ form button:focus-visible, form summary:focus-visible, form a:focus-visible { ou
 :is(#review-dialog, #vibepad-closing-screen)[data-tablet][open] {
   position: fixed;
   inset: 0 auto auto 0;
-  width: 1440px;
-  height: 909px;
+  width: var(--tablet-width, 1440px);
+  height: var(--tablet-height, 909px);
   max-width: none;
   max-height: none;
   margin: 0;
@@ -198,6 +198,8 @@ form button:focus-visible, form summary:focus-visible, form a:focus-visible { ou
 #review-dialog[data-tablet] .review-changed-files { max-height: none; }
 #review-dialog[data-tablet] .markdown-preview { max-width: none; }
 .review-reading { max-width: 42rem; }
+.plain-file-preview { white-space: pre-wrap; overflow-wrap: anywhere; }
+.file-image-preview { display: block; max-width: 100%; max-height: 70vh; object-fit: contain; margin: auto; }
 .review-controls { display: grid; grid-template-columns: max-content 1fr; gap: 8px 14px; }
 .review-controls dt { color: #a8f7e4; }
 .review-controls dd { margin: 0; }
@@ -208,3 +210,25 @@ form button:focus-visible, form summary:focus-visible, form a:focus-visible { ou
 .review-audio legend { color: #9df4e3; }
 .review-audio input[type="range"] { width: 100%; padding: 0; accent-color: #91fbdf; }
 .audio-status { min-height: 1.5em; margin: 6px 0 0; color: #b0c9ce; }
+
+#touch-controls[hidden] { display: none; }
+#touch-controls { position: fixed; inset: auto 0 max(16px, env(safe-area-inset-bottom)); z-index: 8; pointer-events: none; padding: 0 max(16px, env(safe-area-inset-left)); display: flex; align-items: end; justify-content: space-between; gap: 12px; }
+#touch-controls button { pointer-events: auto; touch-action: none; user-select: none; min-width: 48px; min-height: 48px; padding: 8px; font-size: 14px; background: #071c24df; border: 1px solid #55978e; }
+#move-stick { --x: 0px; --y: 0px; position: relative; width: 120px; height: 120px; flex: 0 0 120px; color: #a6d8d1; padding-top: 82px !important; }
+#move-stick span { position: absolute; width: 42px; height: 42px; left: 38px; top: 28px; background: #41b5a4aa; border: 1px solid #a6eadf; transform: translate(var(--x), var(--y)); }
+.touch-actions { display: grid; grid-template-columns: repeat(3, minmax(48px, 1fr)); gap: 6px; }
+.touch-altitude { display: grid; grid-template-columns: repeat(2, 48px); gap: 6px; }
+canvas[data-touch-controls] { touch-action: none; }
+@media (max-width: 600px) { #touch-controls { padding-inline: 8px; gap: 6px; } #move-stick { width: 96px; flex-basis: 96px; } #move-stick span { left: 26px; } .touch-actions { grid-template-columns: repeat(2, 48px); } }
+.vibepad-put-away { display: none; }
+@media (pointer: coarse) { .vibepad-put-away { display: inline-block; min-width: 48px; min-height: 48px; } }
+
+@media (pointer: coarse) {
+  :is(#review-dialog, #vibepad-closing-screen)[data-tablet][open] { padding: 12px; font-size: 16px; }
+  .vibepad-bar { gap: 8px; } .vibepad-bar h2 { font-size: 18px; overflow-wrap: anywhere; }
+  .vibepad-tabs { flex-wrap: wrap; gap: 4px; margin-block: 6px; }
+  .vibepad-tabs button { font-size: 13px; padding: 6px; min-height: 36px; }
+  .vibepad-settings, .vibepad-put-away { flex: none; width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
+}
+
+:root:has(canvas[data-touch-reading]) #touch-controls button:is([data-action="Space"], [data-action="ControlLeft"]) { display: none; }

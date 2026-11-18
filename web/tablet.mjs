@@ -63,7 +63,11 @@ export function createTablet(dialog, canvas) {
       return true;
     },
     project(corners, width, height) {
-      const matrix = screenTransform(screenCorners(corners, width, height, canvas.getBoundingClientRect()));
+      const projected = screenCorners(corners, width, height, canvas.getBoundingClientRect());
+      const touch = globalThis.matchMedia?.("(pointer: coarse)").matches;
+      const logicalWidth = touch && projected.length === 8 ? Math.max(360, Math.min(1440, Math.hypot(projected[2] - projected[0], projected[3] - projected[1]))) : 1440;
+      const logicalHeight = logicalWidth * 909 / 1440;
+      const matrix = screenTransform(projected, logicalWidth, logicalHeight);
       if (!matrix) {
         delete dialog.dataset.projected;
         removeSnapshot();
@@ -71,6 +75,8 @@ export function createTablet(dialog, canvas) {
       }
       const surface = visible() ? dialog : closingScreen;
       if (surface) {
+        surface.style.setProperty("--tablet-width", `${logicalWidth}px`);
+        surface.style.setProperty("--tablet-height", `${logicalHeight}px`);
         surface.style.transform = `matrix3d(${matrix.join(",")})`;
         surface.dataset.projected = "";
       }

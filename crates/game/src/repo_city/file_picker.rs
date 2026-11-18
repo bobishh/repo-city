@@ -113,15 +113,6 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
         ))
         .with_children(|ui| {
             ui.spawn((
-                button(
-                    &format!("Files  {SHORTCUT}"),
-                    font,
-                    ink,
-                    AlignSelf::FlexStart,
-                ),
-                observe(|_: On<Activate>, mut picker: ResMut<FilePicker>| picker.toggle()),
-            ));
-            ui.spawn((
                 PickerPanel,
                 Node {
                     display: Display::None,
@@ -212,6 +203,13 @@ pub(super) fn button(
     )
 }
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = openFileSearch)]
+    fn browser_search();
+}
+
 pub(super) fn update(
     keys: Res<ButtonInput<KeyCode>>,
     mut events: MessageReader<KeyboardInput>,
@@ -270,7 +268,7 @@ pub(super) fn update(
             .0
             .files
             .get(index)
-            .filter(|file| focus.includes(file) && markdown_preview::is_markdown(&file.path))
+            .filter(|file| focus.includes(file) && file_preview::format(&file.path).is_some())
     {
         let before = file.after.is_none()
             || explorer
@@ -287,7 +285,7 @@ pub(super) fn update(
     }
     let shortcut = keys.just_pressed(KeyCode::KeyP)
         && if cfg!(target_arch = "wasm32") {
-            !command && !picker.open
+            !picker.open
         } else {
             command
         };
@@ -297,6 +295,14 @@ pub(super) fn update(
         let _ = events
             .read()
             .find(|event| event.state.is_pressed() && event.key_code == KeyCode::KeyP);
+    }
+    #[cfg(target_arch = "wasm32")]
+    if picker.open {
+        browser_search();
+        picker.open = false;
+        picker.suppress_input = true;
+        events.clear();
+        return;
     }
     if !picker.open {
         events.clear();

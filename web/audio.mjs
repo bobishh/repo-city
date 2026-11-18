@@ -1,5 +1,5 @@
 const preferenceKey = "repo-city-audio-v1";
-const defaults = { ambience: true, speech: true, volume: 0.18 };
+const defaults = { ambience: false, speech: false, volume: 0.18, voice: "Daniel" };
 const clamp = (value, min, max) => Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : min;
 
 function validated(next, previous = defaults) {
@@ -15,6 +15,10 @@ function validated(next, previous = defaults) {
       if (!Number.isFinite(next.volume) || next.volume < 0 || next.volume > 1) throw new Error("Volume must be between 0 and 1.");
       value.volume = next.volume;
     }
+    if (next.voice !== undefined) {
+      if (typeof next.voice !== "string" || next.voice.length > 200) throw new Error("Choose a local voice.");
+      value.voice = next.voice;
+    }
     return value;
   }
   return { ...previous };
@@ -26,10 +30,11 @@ export function spokenWords(text) {
     .replace(/[^\p{L}\p{N}\s]/gu, " ").trim().split(/\s+/u);
 }
 
-export function chooseLocalVoice(voices) {
+export function chooseLocalVoice(voices, preferred = "Daniel") {
   const local = voices.filter(voice => voice.localService === true);
   const clear = voice => !/Albert|Zarvox|Trinoids|Whisper|Bells|Boing|Bubbles|Cellos|Bad News|Good News|Hysterical|Organ/i.test(voice.name);
-  return local.find(voice => /Samantha/i.test(voice.name)) ??
+  return local.find(voice => voice.name === preferred && clear(voice)) ??
+    local.find(voice => /^(Daniel|Alex|David|George|Rishi|Microsoft David|Microsoft George)\b/i.test(voice.name) && clear(voice)) ??
     local.find(voice => voice.default && /^en\b/i.test(voice.lang) && clear(voice)) ??
     local.find(voice => /^en\b/i.test(voice.lang) && clear(voice)) ?? local.find(voice => voice.default && clear(voice));
 }
@@ -41,13 +46,13 @@ export function createCityAudio({ browser = globalThis, active = () => true, onO
   let preferences = { ...defaults };
   try { preferences = validated(JSON.parse(browser.localStorage?.getItem(preferenceKey) ?? "null")); } catch { /* Session defaults remain usable. */ }
   let context, gain, node, loading, suspendTimer, error = "", unlocked = false, disposed = false;
-  let activity = {}, focus, currentUtterance, readingStarted = 0, nextQuote = 0;
+  let activity = {}, focus, currentUtterance, spokenFocus = false;
   const speech = browser.speechSynthesis;
   const now = () => browser.performance?.now() ?? Date.now();
   const visible = () => document?.visibilityState !== "hidden";
   const playing = () => { try { return visible() && Boolean(active()); } catch { return false; } };
   const localVoice = () => {
-    try { return chooseLocalVoice(speech?.getVoices() ?? []); } catch { return undefined; }
+    try { return chooseLocalVoice(speech?.getVoices() ?? [], preferences.voice); } catch { return undefined; }
   };
 
   function cancelSpeech() {
@@ -61,10 +66,10 @@ export function createCityAudio({ browser = globalThis, active = () => true, onO
     const audible = playing() && preferences.ambience && preferences.volume > 0;
     if (gain) {
       gain.gain.cancelScheduledValues(context.currentTime);
-      gain.gain.setTargetAtTime(audible ? preferences.volume : 0, context.currentTime, 0.025);
+      gain.gain.setTargetAtTime(audible ? preferences.volume * (currentUtterance ? 0.12 : 1) : 0, context.currentTime, 0.025);
     }
     if (node) node.port.postMessage({
-      wind: clamp(activity.wind ?? 0.2, 0, 1), spray: activity.blocked ? 0 : clamp(activity.spray ?? 0, 0, 1),
+      wind: clamp(activity.wind ?? 0.2, 0, 1), spray: activity.blocked || currentUtterance ? 0 : clamp(activity.spray ?? 0, 0, 1) * 0.18,
       works: activity.changed ? 0.8 : 0.12, siren: 0.5, pan: clamp(activity.pan ?? 0, -1, 1),
     });
     // Suspending an inaudible graph avoids background synthesis and autoplay surprises.
@@ -106,26 +111,19 @@ export function createCityAudio({ browser = globalThis, active = () => true, onO
     if (!unlocked || !playing() || activity.silenceSpeech || !preferences.speech || preferences.volume === 0) { cancelSpeech(); return; }
     const next = activity.focus;
     if (activity.blocked || !localVoice() || !next?.id || typeof next.text !== "string" || !Number.isFinite(next.seconds) || next.seconds <= 0) { focus = undefined; return; }
-    if (focus?.id !== next.id) {
-      focus = next;
-      readingStarted = now();
-      nextQuote = readingStarted + Math.min(4.5, Math.max(1.5, next.seconds * 0.3)) * 1000;
-    }
-    const elapsed = (now() - readingStarted) / 1000;
-    if (now() < nextQuote || elapsed > next.seconds || speech.speaking || speech.pending) return;
-    nextQuote = now() + (9 + Math.random() * 8) * 1000;
-    const words = spokenWords(next.text);
-    if (!words[0]) return;
-    const position = Math.min(words.length - 1, Math.floor(elapsed / next.seconds * words.length));
-    const text = words.slice(position, position + 3 + Math.floor(Math.random() * 4)).join(" ");
+    if (focus?.id !== next.id) { focus = next; spokenFocus = false; }
+    if (spokenFocus || speech.speaking || speech.pending || currentUtterance) return;
+    const text = spokenWords(next.text).join(" ");
+    if (!text.trim()) return;
     try {
       const utterance = new browser.SpeechSynthesisUtterance(text);
       utterance.voice = localVoice();
-      utterance.volume = preferences.volume;
+      utterance.volume = Math.min(1, preferences.volume * 2);
       utterance.rate = 0.95;
       utterance.pitch = 1;
-      currentUtterance = utterance;
-      utterance.onend = utterance.onerror = () => { if (currentUtterance === utterance) currentUtterance = undefined; };
+      currentUtterance = utterance; spokenFocus = true;
+      refresh();
+      utterance.onend = utterance.onerror = () => { if (currentUtterance === utterance) { currentUtterance = undefined; refresh(); } };
       speech.speak(utterance);
     } catch { currentUtterance = undefined; /* Ambient sound continues if the local speech engine fails. */ }
   }
@@ -138,6 +136,7 @@ export function createCityAudio({ browser = globalThis, active = () => true, onO
   browser.addEventListener?.("pagehide", unload);
   const api = {
     settings: () => ({ ...preferences }),
+    voices: () => { try { return (speech?.getVoices() ?? []).filter(voice => voice.localService).map(({ name, lang }) => ({ name, lang })); } catch { return []; } },
     updateSettings(next) {
       preferences = validated(next, preferences);
       try { browser.localStorage?.setItem(preferenceKey, JSON.stringify(preferences)); } catch { /* Keep session preferences. */ }

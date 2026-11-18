@@ -108,7 +108,7 @@ export async function loadLibrary(login, request) {
   };
 }
 
-export async function loadGitHub(input, ref, base, request = fetch) {
+export async function loadGitHub(input, ref, base, request = fetch, { exactBase = false } = {}) {
   const pull = parsePullRequest(input);
   const name = pull?.name ?? parseRepository(input);
   const read = async (path, repository = name) =>
@@ -133,7 +133,7 @@ export async function loadGitHub(input, ref, base, request = fetch) {
     if (!revision) throw new Error("This repository has no default branch.");
     head = await read(`/commits/${encodeURIComponent(revision)}`);
     baseline = base?.trim()
-      ? await compare(base.trim(), head.sha)
+      ? (exactBase ? await read(`/commits/${encodeURIComponent(base.trim())}`) : await compare(base.trim(), head.sha))
       : head.parents[0];
   }
 
@@ -274,4 +274,30 @@ export async function loadGitHub(input, ref, base, request = fetch) {
       return Uint8Array.from(atob(blob.content), char => char.charCodeAt(0));
     },
   };
+}
+
+export async function loadCommitHistory(input, revision, page = 1, request = fetch) {
+  const repository = parseRepository(input);
+  if (!Number.isSafeInteger(page) || page < 1) throw new Error("Invalid history page.");
+  const query = new URLSearchParams({ sha: revision, per_page: "100", page: String(page) });
+  const rows = await (await readGitHub(request, `/repos/${repository}/commits?${query}`)).json();
+  if (!Array.isArray(rows)) throw new Error("GitHub commit history is unavailable.");
+  return rows.filter(row => /^[a-f\d]{40,64}$/i.test(row.sha)).map(row => ({
+    id: row.sha, summary: String(row.commit?.message ?? "").split("\n")[0],
+    author: row.commit?.author?.name ?? "Unknown", date: row.commit?.author?.date ?? "",
+  }));
+}
+
+export async function loadCommitDetails(input, id, request = fetch) {
+  const repository = parseRepository(input);
+  if (!/^(?:[a-f\d]{40}|[a-f\d]{64})$/i.test(id)) throw new Error("Invalid commit identifier.");
+  let text = "";
+  for (let page = 1;; page++) {
+    const response = await readGitHub(request, `/repos/${repository}/commits/${id}?per_page=100&page=${page}`);
+    const commit = await response.json();
+    if (page === 1) text = `${commit.sha}\n${commit.commit?.author?.name ?? ""} · ${commit.commit?.author?.date ?? ""}\n\n${commit.commit?.message ?? ""}\n`;
+    for (const file of commit.files ?? []) text += `\n${file.filename}\n${file.patch ?? "Patch unavailable (binary or omitted by GitHub)."}\n`;
+    if (text.length > 2 * 1024 * 1024) return text.slice(0, 2 * 1024 * 1024) + "\n[Commit preview truncated.]";
+    if (!response.headers.get("Link")?.includes('rel="next"')) return text;
+  }
 }

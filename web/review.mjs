@@ -1,3 +1,4 @@
+import { loadCommitHistory, loadCommitDetails } from "./github.mjs";
 import { createTablet } from "./tablet.mjs";
 import { githubAccount, githubRequest, githubSignIn } from "./github-picker.mjs";
 import { readCommentText, replacementLimit } from "./pr-review.mjs";
@@ -30,11 +31,11 @@ const mentions = (body, login) =>
     .some(([, , name]) => name.toLowerCase() === login.toLowerCase());
 const uuid = () => crypto.randomUUID();
 
-export function createReview({ canvas, release, onClose, onTour, audio }) {
+export function createReview({ canvas, release, onClose, onTour, audio, onCompare = () => {} }) {
   const dialog = document.querySelector("#review-dialog");
   const tablet = createTablet(dialog, canvas);
   const settingsKey = "repo-city-reading-v1";
-  let reading = { mode: "delayed", block_lines: 6, min_seconds: 3, max_seconds: 6 };
+  let reading = { mode: "delayed", block_lines: 6, block_kind: "function", auto_advance: true, min_seconds: 3, max_seconds: 6 };
   try {
     if (localStorage.getItem("repo-city-wash-mode") === "immediate") reading.mode = "immediate";
     const previous = JSON.parse(localStorage.getItem(settingsKey));
@@ -46,12 +47,17 @@ export function createReview({ canvas, release, onClose, onTour, audio }) {
   let renderMarkdown;
   let markdownRead;
   let readingEnd;
+  let previewUrl;
+  let historySelection = { before: null, after: null };
+  let historyPage = 1;
   const repaint = () => { version++; };
   let defaults = [];
 
   dialog.addEventListener("close", () => {
     if (dialog.open) return;
     readingEnd?.disconnect();
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = undefined;
     delete dialog.dataset.tablet;
     onClose();
   });
@@ -78,10 +84,14 @@ export function createReview({ canvas, release, onClose, onTour, audio }) {
       gear.setAttribute("aria-label", "Settings");
       gear.title = "Settings";
       gear.setAttribute("aria-pressed", String(dialog.dataset.view === "settings"));
-      bar.append(heading, gear);
+      const putAway = button("×", dismissTablet);
+      putAway.className = "vibepad-put-away"; putAway.setAttribute("aria-label", "Put away VibePad");
+      bar.append(heading, gear, putAway);
       const tabs = make("nav", undefined, { "aria-label": "VibePad", class: "vibepad-tabs" });
       for (const [label, page, open] of [
         ["Files", "changed-files", changedFiles],
+        ["Find", "file-search", fileSearch],
+        ["Git", "git-history", gitHistory],
         ["Comments", "notes", () => { notesPanel(); show(); }],
         ["Help", "help", help],
       ]) {
@@ -124,17 +134,33 @@ export function createReview({ canvas, release, onClose, onTour, audio }) {
     return container;
   }
 
-  function previewMarkdown(path, load) {
-    dialog.dataset.view = "markdown";
+  function previewMarkdown(path, load, kind = "markdown") {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = undefined;
+    dialog.dataset.view = kind;
     dialog.dataset.tablet = "";
     view(path);
     const content = make("article", "Loading document…", { class: "markdown-preview markdown-body", "aria-live": "polite" });
     dialog.append(content);
     show();
-    void load().then(({ text, mark }) => {
-      if (!content.isConnected) return;
+    void load().then(({ text, mark, bytes, format }) => {
+      if (!dialog.open || !content.isConnected) return;
+      if (kind === "image") {
+        const image = make("img", undefined, { alt: path, class: "file-image-preview" });
+        image.addEventListener("load", () => {
+          if (image.naturalWidth > 8192 || image.naturalHeight > 8192 || image.naturalWidth * image.naturalHeight > 16 * 1024 * 1024) content.textContent = "Image exceeds preview limits (8192 pixels per side, 16 megapixels total).";
+        });
+        image.addEventListener("error", () => { content.textContent = "Image data is invalid or unsupported."; });
+        const type = format === "jpg" || format === "jpeg" ? "jpeg" : format;
+        previewUrl = URL.createObjectURL(new Blob([bytes], { type: `image/${type}` }));
+        image.src = previewUrl;
+        content.replaceChildren(image);
+        return;
+      }
       if (!text.trim()) { content.textContent = "Empty document."; return; }
-      markdown(text, content);
+      if (kind === "text") {
+        content.replaceChildren(make("pre", text, { class: "plain-file-preview" }));
+      } else markdown(text, content);
       const end = make("div", undefined, { class: "markdown-end", "aria-hidden": "true" });
       content.append(end);
       readingEnd = new IntersectionObserver(entries => {
@@ -152,14 +178,18 @@ export function createReview({ canvas, release, onClose, onTour, audio }) {
   function help() {
     dialog.dataset.view = "help";
     dialog.dataset.tablet = "";
-    view("Take a quick tour");
+    view("Help");
     dialog.append(make("p", "Click the Repo City logo to open the repository picker."));
     const controls = make("dl", undefined, { class: "review-controls" });
     for (const [keys, purpose] of [
       ["WASD / Space / Ctrl", "Fly and change altitude"],
       ["E / M", "Fly to the aimed wall or switch overview"],
-      ["Tab / P", "Browse changes, preview Markdown at an aimed building, or find a file"],
+      ["Tab / Cmd+P / P", "Open VibePad, find a file, or preview the aimed file"],
+      ["Z / X", "Collapse or expand the aimed code block"],
+      ["H", "Open or put away Help"],
       ["F / G / B", "Filter changed files, open diff, or open blame"],
+      ["Left / Right", "Cycle source, diff and blame at a close wall"],
+      ["Touch swipe", "Up/down reads along the wall; sideways turns to another face. The joystick flies away."],
       ["Scroll", "Read along a wall or move between review stops"],
       ["0 / 1–9 / U", "Select water, select paint, or edit paints"],
       ["C / J", "Follow changed lines or open review comments"],
@@ -213,6 +243,15 @@ export function createReview({ canvas, release, onClose, onTour, audio }) {
     if (!available.supported) feedback.textContent = "This browser cannot synthesize city audio.";
     else if (available.error) feedback.textContent = available.error;
     else if (!available.speech) feedback.textContent = "Robot speech needs an installed local browser voice.";
+    const voices = audio?.voices?.() ?? [];
+    if (voices.length) {
+      const voice = make("select");
+      for (const entry of voices) voice.append(make("option", `${entry.name} (${entry.lang})`, { value: entry.name }));
+      voice.value = voices.some(entry => entry.name === preferences.voice) ? preferences.voice : "";
+      voice.addEventListener("change", () => apply({ voice: voice.value }));
+      section.append(field("Voice", voice));
+    }
+    section.append(make("p", "Reads the current block from start to end. Water is muted and ambience is quieter during speech."));
     return section;
   }
 
@@ -227,13 +266,17 @@ export function createReview({ canvas, release, onClose, onTour, audio }) {
       mode.append(make("option", value === "delayed" ? "Delayed" : "Immediate", { value }));
     }
     mode.value = reading.mode;
+    const kind = make("select");
+    for (const [value, label] of [["function", "Whole function"], ["lines", "Fixed lines"]]) kind.append(make("option", label, { value }));
+    kind.value = reading.block_kind ?? "function";
+    const auto = make("input", undefined, { type: "checkbox" }); auto.checked = reading.auto_advance ?? true;
     const block = make("input", undefined, { type: "number", min: "1", step: "1", value: reading.block_lines });
     const bound = value => make("input", undefined, { type: "text", inputmode: "decimal", value: value ?? "", placeholder: "No limit" });
     const min = bound(reading.min_seconds), max = bound(reading.max_seconds);
     const status = make("p", "", { class: "review-status", role: "status" });
     form.noValidate = true;
-    form.append(field("Water", mode), field("Lines per wash block", block), field("Minimum delay (seconds)", min), field("Maximum delay (seconds)", max),
-      make("p", "Block size and time limits are independent. With no limits, seconds = non-whitespace characters × 60 / (238 × 4.6). Wrapped rows count separately. Use 1 for individual lines or larger blocks for reading in chunks. The default is 6; it is a preset, not a measured optimum."),
+    form.append(field("Water", mode), field("Reading block", kind), field("Auto-advance downward", auto), field("Lines per wash block", block), field("Minimum delay (seconds)", min), field("Maximum delay (seconds)", max),
+      make("p", "Block size and time limits are independent. With no limits, seconds = effective non-whitespace characters × 60 / (238 × 4.6). Consecutive copies of a character count once. Whole function uses syntax boundaries when available and otherwise uses fixed lines. Auto-advance scrolls to the next unread block. The default is 6; it is a preset, not a measured optimum."),
       make("p", "Brysbaert’s 2019 estimate describes English nonfiction, not code comprehension. We use its length-adjusted rate as an approximation. Leave either delay blank to remove that limit."),
       status);
     const row = make("div", undefined, { class: "dialog-actions" });
@@ -242,7 +285,7 @@ export function createReview({ canvas, release, onClose, onTour, audio }) {
     form.addEventListener("submit", event => {
       event.preventDefault();
       const seconds = input => input.value.trim() === "" ? null : Number(input.value);
-      const next = { mode: mode.value, block_lines: Number(block.value), min_seconds: seconds(min), max_seconds: seconds(max) };
+      const next = { mode: mode.value, block_kind: kind.value, auto_advance: auto.checked, block_lines: Number(block.value), min_seconds: seconds(min), max_seconds: seconds(max) };
       const error = readingError(next);
       if (error) { status.textContent = error; return; }
       reading = next;
@@ -303,6 +346,7 @@ export function createReview({ canvas, release, onClose, onTour, audio }) {
       } catch { data.status = "Couldn't carry progress from the previous review."; }
     }
     session = data;
+    historySelection = { before: data.review?.baseline ?? null, after: data.review?.revision ?? null }; historyPage = 1;
     destination = undefined;
     selected = 0;
     pendingSlot = 0;
@@ -517,6 +561,76 @@ export function createReview({ canvas, release, onClose, onTour, audio }) {
     dialog.append(field("Name", name), field("Spray text", spray), field("Reusable prompt", prompt),
       field("Color", pigment), field("Slot", slot), preview, status);
     actions(button("Cancel", paintsPanel), save);
+  }
+
+  async function gitHistory(page = historyPage) {
+    if (!session) return;
+    const data = session;
+    historyPage = typeof page === "number" ? page : historyPage;
+    dialog.dataset.view = "git-history"; dialog.dataset.tablet = "";
+    view("Git history");
+    const selection = make("p", "", { class: "review-status" });
+    const tools = make("div", undefined, { class: "dialog-actions" });
+    const compare = button("Compare selected commits", async () => {
+      if (!historySelection.before || !historySelection.after) return;
+      compare.disabled = true; feedback.textContent = "Loading selected commits…";
+      try { await onCompare(data.review.repository, historySelection.before, historySelection.after); }
+      catch (error) { if (current()) { feedback.textContent = error.message; compare.disabled = false; } }
+    });
+    const feedback = make("p", "Loading commit history…", { role: "status" });
+    const list = make("div", undefined, { class: "review-changed-files" });
+    const current = () => session === data && dialog.open && dialog.dataset.view === "git-history" && list.isConnected;
+    function selected() {
+      selection.textContent = `Before ${historySelection.before?.slice(0, 8) ?? "—"} → After ${historySelection.after?.slice(0, 8) ?? "—"}`;
+      compare.disabled = !historySelection.before || !historySelection.after;
+    }
+    selected(); tools.append(compare, button("Refresh", () => gitHistory()));
+    if (historyPage > 1) tools.append(button("Newer", () => gitHistory(historyPage - 1)));
+    dialog.append(selection, tools, feedback, list); show();
+    try {
+      const rows = await loadCommitHistory(data.review.repository, data.review.revision, historyPage, githubRequest);
+      if (!current()) return;
+      feedback.textContent = rows.length ? `Page ${historyPage}` : "No commits in this history.";
+      for (const commit of rows) {
+        const row = make("article");
+        const show = button(`${commit.id.slice(0, 8)} · ${commit.date.slice(0, 10)} · ${commit.author}\n${commit.summary}`, async () => {
+          list.replaceChildren(make("p", "Loading commit…"));
+          const back = button("Back to log", () => gitHistory()); tools.append(back);
+          try { const text = await loadCommitDetails(data.review.repository, commit.id, githubRequest);
+            if (current()) list.replaceChildren(make("pre", text, { class: "plain-file-preview" }));
+          } catch (error) { if (current()) list.replaceChildren(make("p", error.message)); }
+        });
+        const actions = make("div", undefined, { class: "dialog-actions" });
+        for (const side of ["before", "after"]) actions.append(button(side === "before" ? "Before" : "After", () => { historySelection[side] = commit.id; selected(); }));
+        row.append(show, actions); list.append(row);
+      }
+      if (rows.length === 100) tools.append(button("Older", () => gitHistory(historyPage + 1)));
+    } catch (error) { if (current()) feedback.textContent = error.message; }
+  }
+
+  function fileSearch() {
+    if (!session) return;
+    const data = session;
+    const paths = [...new Set([...Object.keys(data.snapshot.before), ...Object.keys(data.snapshot.after)])].sort();
+    dialog.dataset.view = "file-search"; dialog.dataset.tablet = "";
+    view("Find a file");
+    const input = make("input", undefined, { type: "search", placeholder: "File name or path", "aria-label": "File name or path", autocomplete: "off" });
+    const status = make("p", "", { role: "status" }), list = make("div", undefined, { class: "review-changed-files" });
+    let matches = [];
+    const choose = path => { fileDestination = path; close(); };
+    function render() {
+      const query = input.value.trim().toLowerCase();
+      const rank = path => { const name = path.split("/").at(-1).toLowerCase(), value = path.toLowerCase();
+        if (!query || name === query) return 0; if (name.startsWith(query)) return 1; if (name.includes(query)) return 2;
+        if (value.includes(query)) return 3; let index = 0; for (const char of value) if (char === query[index]) index++; return index === query.length ? 4 : 5;
+      };
+      matches = paths.map(path => [rank(path), path]).filter(([score]) => score < 5).sort((a, b) => a[0] - b[0] || a[1].localeCompare(b[1])).map(([, path]) => path);
+      status.textContent = matches.length ? `${matches.length} files${matches.length > 100 ? "; first 100 shown" : ""}` : "No matching files.";
+      list.replaceChildren(...matches.slice(0, 100).map(path => button(path, () => choose(path))));
+    }
+    input.addEventListener("input", render);
+    input.addEventListener("keydown", event => { if (event.key === "Enter" && matches[0]) { event.preventDefault(); choose(matches[0]); } else if (event.key === "ArrowDown") { event.preventDefault(); list.querySelector("button")?.focus(); } });
+    dialog.append(input, status, list); render(); show(); input.focus({ preventScroll: true });
   }
 
   function changedFiles() {
@@ -942,7 +1056,7 @@ export function createReview({ canvas, release, onClose, onTour, audio }) {
     show();
   }
   return {
-    load, version: () => version, snapshot, add, panel, changedFiles, help, previewMarkdown, dismissTablet,
+    load, version: () => version, snapshot, add, panel, changedFiles, fileSearch, help, helpVisible: () => dialog.open && dialog.dataset.view === "help", previewMarkdown, dismissTablet,
     setMarkdown(renderer) { renderMarkdown = renderer; },
     takeMarkdownRead() {
       const mark = markdownRead;

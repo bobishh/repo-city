@@ -105,7 +105,7 @@ test("shows the guide once and keeps it available from the help button", async (
   await page.goto("/");
   await expect(page.getByRole("link", { name: "Source on GitHub" })).toHaveAttribute("href", "https://github.com/bobishh/repo-city");
   await expect(page.getByRole("link", { name: "Build for Mac" })).toHaveCount(0);
-  const guide = page.getByRole("dialog", { name: "Take a quick tour" });
+  const guide = page.getByRole("dialog", { name: "Help" });
   const help = page.getByRole("button", { name: "How to use Repo City" });
   await expect(guide).toBeHidden();
   await expect(help).toBeHidden();
@@ -283,7 +283,7 @@ test("opens a public repository and fetches source after the WASM city starts", 
   await page.keyboard.press("KeyM", { delay: 180 });
   await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
   await page.keyboard.press("KeyH", { delay: 180 });
-  const mapHelp = page.getByRole("dialog", { name: "Take a quick tour" });
+  const mapHelp = page.getByRole("dialog", { name: "Help" });
   await expect(mapHelp).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(mapHelp).toBeHidden();
@@ -374,7 +374,7 @@ test("reports missing repositories and keeps the form usable", async ({ page }) 
   await expect(page.getByRole("status")).toHaveText("Repository, revision, or file not found. Private repositories need GitHub access.");
   await expect(page.getByRole("button", { name: "Open city" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Repo City", exact: true })).toBeVisible();
-  await expect(page.getByRole("dialog", { name: "Take a quick tour" })).toBeHidden();
+  await expect(page.getByRole("dialog", { name: "Help" })).toBeHidden();
   await expect(page.getByRole("button", { name: "How to use Repo City" })).toBeHidden();
 });
 
@@ -1030,4 +1030,109 @@ test("publishes a painted preset in one action and still supports suggestions", 
   expect(await page.evaluate(() => JSON.parse(globalThis.repoCity.reviewRead()).notes
     .find(note => note.id === "github-13").attention)).toBe(false);
   expect(reactionAttempts).toBe(2);
+});
+
+test("VibePad owns file search, plain previews, help toggle and exact commit comparison", async ({ page }) => {
+  await emulatePointerLock(page);
+  await page.addInitScript(() => localStorage.setItem("repo-city-guide-v1", "seen"));
+  const source = "literal <script>not HTML</script> & text\nsecond line\n";
+  await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
+  await page.route("https://api.github.com/**", route => {
+    const url = new URL(route.request().url()), path = url.pathname;
+    if (path === "/repos/owner/tools") return route.fulfill({ json: { default_branch: "main" } });
+    if (path === "/repos/owner/tools/commits") return route.fulfill({ json: [
+      { sha: after, commit: { message: "New commit", author: { name: "Writer", date: "2026-11-18T12:00:00Z" } } },
+      { sha: before, commit: { message: "Old commit", author: { name: "Writer", date: "2026-11-17T12:00:00Z" } } },
+    ] });
+    if (path.includes("/commits/")) return route.fulfill({ json: { sha: path.endsWith(before) ? before : after, parents: [], commit: { message: "Commit detail", author: { name: "Writer" } }, files: [{ filename: "notes.txt", patch: "@@ -1 +1 @@\n-old\n+new" }] } });
+    if (path.includes("/git/trees/")) return route.fulfill({ json: { tree: [{ path: "notes.txt", type: "blob", mode: "100644", sha: after, size: source.length }] } });
+    return route.fulfill({ json: { size: source.length, encoding: "base64", content: Buffer.from(source).toString("base64") } });
+  });
+  await page.goto("/?repo=owner%2Ftools");
+  await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+  const canvas = page.locator("canvas"); await canvas.focus();
+  await expect(canvas).toBeFocused();
+  await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
+  await page.keyboard.press("h"); await expect(page.getByRole("dialog", { name: "Help" })).toBeVisible();
+  await page.keyboard.press("h"); await expect(page.locator("#review-dialog")).toBeHidden();
+  await page.keyboard.press("Meta+p");
+  const search = page.getByRole("dialog", { name: "Find a file" }); await expect(search).toBeVisible();
+  await search.getByRole("searchbox").fill("missing"); await expect(search.getByRole("status")).toHaveText("No matching files.");
+  await search.getByRole("searchbox").fill("notes"); await search.getByRole("button", { name: "notes.txt", exact: true }).click();
+  await expect(search).toBeHidden();
+  await expect(canvas).toBeFocused();
+  await page.waitForTimeout(1200);
+  await canvas.evaluate(element => element.requestPointerLock()); await page.keyboard.press("KeyP", { delay: 180 });
+  const preview = page.getByRole("dialog", { name: "notes.txt" }); await expect(preview.locator("pre")).toHaveText(source);
+  await expect(preview.locator("script")).toHaveCount(0);
+  await page.keyboard.press("Tab"); await expect(preview).toBeHidden();
+  await page.keyboard.press("Tab"); await page.getByRole("button", { name: "Git", exact: true }).click();
+  const log = page.getByRole("dialog", { name: "Git history" });
+  await expect(log.getByText("New commit", { exact: false })).toBeVisible();
+  await log.locator("article").filter({ hasText: "Old commit" }).getByRole("button", { name: "Before", exact: true }).click();
+  await log.locator("article").filter({ hasText: "New commit" }).getByRole("button", { name: "After", exact: true }).click();
+  await log.locator("article").filter({ hasText: "New commit" }).getByRole("button").first().click();
+  await expect(log.locator("pre")).toContainText("+new");
+  await log.getByRole("button", { name: "Compare selected commits" }).click();
+  await expect(log).toBeHidden(); await expect(page).toHaveURL(/exact=1/);
+  expect(new URL(page.url()).searchParams.get("base")).toBe(before);
+});
+
+test("mobile Pad button opens and puts away the projected tablet", async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true });
+  const page = await context.newPage();
+  await page.addInitScript(() => localStorage.setItem("repo-city-guide-v1", "seen"));
+  await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
+  await page.route("https://api.github.com/**", route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/repos/owner/mobile") return route.fulfill({ json: { default_branch: "main" } });
+    if (path.includes("/commits/")) return route.fulfill({ json: { sha: after, parents: [] } });
+    if (path.includes("/git/trees/")) return route.fulfill({ json: { tree: [{ path: "main.rs", type: "blob", mode: "100644", sha: after, size: 13 }] } });
+    return route.fulfill({ json: { encoding: "base64", content: Buffer.from("fn main() {}\n").toString("base64"), size: 13 } });
+  });
+  await page.goto("/?repo=owner%2Fmobile");
+  await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+  await page.getByRole("button", { name: "Open VibePad", exact: true }).tap();
+  const pad = page.getByRole("dialog", { name: "Changed files" }); await expect(pad).toBeVisible();
+  await expect(pad).toHaveAttribute("data-projected", "");
+  const bounds = await pad.boundingBox(); expect(bounds.x).toBeGreaterThanOrEqual(0); expect(bounds.x + bounds.width).toBeLessThanOrEqual(845);
+  await pad.getByRole("button", { name: "Put away VibePad" }).tap();
+  await expect(pad).toBeHidden(); await expect(page.getByRole("button", { name: "Open VibePad", exact: true })).toBeVisible();
+  await context.close();
+});
+
+test("P previews image data and keeps corrupt images inside VibePad", async ({ page }) => {
+  await emulatePointerLock(page);
+  await page.addInitScript(() => localStorage.setItem("repo-city-guide-v1", "seen"));
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP1sAAAAASUVORK5CYII=", "base64");
+  const images = { [after]: png, [before]: Buffer.from("broken PNG") };
+  await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
+  await page.route("https://api.github.com/**", route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/repos/owner/images") return route.fulfill({ json: { default_branch: "main" } });
+    if (path.includes("/commits/")) return route.fulfill({ json: { sha: after, parents: [] } });
+    if (path.includes("/git/trees/")) return route.fulfill({ json: { tree: [
+      { path: "image.png", type: "blob", mode: "100644", sha: after, size: png.length },
+      { path: "broken.png", type: "blob", mode: "100644", sha: before, size: 10 },
+    ] } });
+    const bytes = images[path.split("/").pop()];
+    return route.fulfill({ json: { size: bytes.length, encoding: "base64", content: bytes.toString("base64") } });
+  });
+  await page.goto("/?repo=owner%2Fimages");
+  await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+  for (const name of ["image.png", "broken.png"]) {
+    await page.keyboard.press("Meta+p");
+    const search = page.getByRole("dialog", { name: "Find a file" });
+    await search.getByRole("button", { name, exact: true }).click();
+    await expect(search).toBeHidden();
+    await page.waitForTimeout(1200);
+    await page.locator("canvas").evaluate(element => element.requestPointerLock());
+    await page.keyboard.press("KeyP", { delay: 180 });
+    const preview = page.getByRole("dialog", { name, exact: true });
+    if (name === "image.png") {
+      await expect(preview.getByRole("img", { name })).toBeVisible();
+      await expect.poll(() => preview.getByRole("img").evaluate(image => image.naturalWidth)).toBe(1);
+    } else await expect(preview).toContainText("Image data is invalid or unsupported.");
+    await page.keyboard.press("Tab"); await expect(preview).toBeHidden();
+  }
 });

@@ -20,7 +20,7 @@ test("audio preferences persist mute and disabled ambience without starting an u
   assert.equal(first.available().state, "unsupported");
   first.updateSettings({ ambience: false, speech: false, volume: 0 });
   const second = createCityAudio({ browser: browser(storage) });
-  assert.deepEqual(second.settings(), { ambience: false, speech: false, volume: 0 });
+  assert.deepEqual(second.settings(), { ambience: false, speech: false, volume: 0, voice: "Daniel" });
   assert.throws(() => first.updateSettings({ volume: Infinity }));
   assert.throws(() => first.updateSettings({ ambience: "yes" }));
   const copy = first.settings();
@@ -96,6 +96,7 @@ test("leaving a readable block finishes its phrase; mute still cancels it immedi
     cancel() { cancelled++; this.speaking = false; },
   };
   const audio = createCityAudio({ browser: host });
+  audio.updateSettings({ speech: true });
   const gesture = new Event("pointerdown");
   Object.defineProperty(gesture, "isTrusted", { value: true });
   host.document.dispatchEvent(gesture);
@@ -124,4 +125,26 @@ test("leaving a readable block finishes its phrase; mute still cancels it immedi
   audio.activity({ focus: null });
   assert.equal(spoken.length, 2);
   audio.dispose();
+});
+
+ test("narration reads every word once and prefers a clear male local voice", () => {
+  const male = { name: "Daniel", lang: "en-GB", localService: true };
+  assert.equal(chooseLocalVoice([{ name: "Samantha", lang: "en-US", localService: true }, male]), male);
+  const host = browser(), spoken = [];
+  host.SpeechSynthesisUtterance = class { constructor(text) { this.text = text; } };
+  host.speechSynthesis = { speaking: false, pending: false, getVoices: () => [male], speak(value) { spoken.push(value); this.speaking = true; }, cancel() {} };
+  const audio = createCityAudio({ browser: host });
+  audio.updateSettings({ speech: true });
+  const gesture = new Event("pointerdown"); Object.defineProperty(gesture, "isTrusted", { value: true }); host.document.dispatchEvent(gesture);
+  const focus = { id: "block", text: "first_word thenSecond final", seconds: 1 };
+  audio.activity({ focus });
+  assert.equal(spoken[0].text, "first word then Second final");
+  host.speechSynthesis.speaking = false; spoken[0].onend();
+  audio.activity({ focus }); assert.equal(spoken.length, 1);
+  audio.dispose();
+});
+
+test("fresh profiles start with ambience and narration disabled", () => {
+  const audio = createCityAudio({ browser: browser() });
+  assert.equal(audio.settings().ambience, false); assert.equal(audio.settings().speech, false); audio.dispose();
 });

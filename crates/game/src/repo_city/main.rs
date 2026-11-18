@@ -6,6 +6,8 @@ mod blame;
 mod browser_audio;
 #[cfg(target_arch = "wasm32")]
 mod browser_tablet;
+#[cfg(target_arch = "wasm32")]
+mod browser_touch;
 mod city_menu;
 mod city_navigation;
 mod city_stream;
@@ -14,6 +16,7 @@ mod comparison_scene;
 mod district;
 mod file_facade;
 mod file_picker;
+mod file_preview;
 #[cfg(not(target_arch = "wasm32"))]
 mod github_choices;
 mod guide;
@@ -279,6 +282,10 @@ struct BottomHud;
 #[derive(Component)]
 struct StatusHud;
 #[derive(Component)]
+struct ProgressLabel(bool);
+#[derive(Component)]
+struct ProgressGauge(bool);
+#[derive(Component)]
 struct ReviewToast;
 #[derive(Component)]
 struct TargetLabel;
@@ -509,7 +516,12 @@ fn main() {
             (file_facade::lower_unchanged, file_picker::update).chain(),
             flight,
             (file_facade::keep_beams_clear, targeting).chain(),
-            (city_menu::update, listing::find::update).chain(),
+            (
+                city_menu::update,
+                listing::fold_controls,
+                listing::find::update,
+            )
+                .chain(),
             (
                 review_notes::update,
                 review_notes::panels,
@@ -533,7 +545,7 @@ fn main() {
             listing::controls
                 .run_if(city_menu::gameplay_enabled)
                 .run_if(listing::find::movement_enabled),
-            listing::wash_stream,
+            (listing::exposure::update, listing::wash_stream).chain(),
             (
                 guide::advance,
                 listing::paint_notes,
@@ -599,7 +611,12 @@ fn main() {
     #[cfg(not(target_arch = "wasm32"))]
     app.insert_resource(reading::Settings::load());
     #[cfg(target_arch = "wasm32")]
-    app.add_systems(Update, reading::apply.before(listing::wash_stream))
+    app.init_resource::<browser_touch::Touch>()
+        .add_systems(
+            Update,
+            browser_touch::update.before(file_facade::lower_unchanged),
+        )
+        .add_systems(Update, reading::apply.before(listing::wash_stream))
         .add_systems(Update, browser_tablet::update.after(android::show_tablet))
         .add_systems(Update, browser_audio::update.after(listing::draw));
     app.add_systems(Startup, district::setup);
@@ -951,33 +968,58 @@ fn setup(
         bevy::picking::hover::Hovered::default(),
         bevy::ui_widgets::observe(live_worktree::request_focus),
     ));
-    commands.spawn((
-        Text::new(""),
-        ui_font(if cfg!(target_arch = "wasm32") {
-            13.
-        } else {
-            17.
-        }),
-        TextColor(color(set.ink)),
-        BackgroundColor(Color::srgba(0.01, 0.02, 0.03, 0.91)),
-        Node {
-            position_type: PositionType::Absolute,
-            right: px(24.),
-            top: px(if cfg!(target_arch = "wasm32") {
-                65.
-            } else {
-                20.
-            }),
-            max_width: px(if cfg!(target_arch = "wasm32") {
-                460.
-            } else {
-                320.
-            }),
-            padding: UiRect::all(px(14.)),
-            ..default()
-        },
-        StatusHud,
-    ));
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                right: px(24.),
+                top: px(20.),
+                width: px(260.),
+                padding: UiRect::all(px(12.)),
+                row_gap: px(6.),
+                flex_direction: FlexDirection::Column,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.01, 0.02, 0.03, 0.72)),
+            bevy::picking::Pickable::IGNORE,
+        ))
+        .with_children(|hud| {
+            hud.spawn((
+                StatusHud,
+                Text::new(""),
+                ui_font(13.),
+                TextColor(color(set.ink)),
+            ));
+            for diff in [false, true] {
+                hud.spawn((
+                    ProgressLabel(diff),
+                    Text::new(""),
+                    ui_font(21.),
+                    TextColor(color(set.ink)),
+                ));
+                hud.spawn((
+                    Node {
+                        width: percent(100.),
+                        height: px(4.),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb_u8(31, 49, 60)),
+                ))
+                .with_child((
+                    ProgressGauge(diff),
+                    Node {
+                        height: percent(100.),
+                        width: percent(0.),
+                        ..default()
+                    },
+                    BackgroundColor(if diff {
+                        Color::srgb_u8(250, 190, 104)
+                    } else {
+                        Color::srgb_u8(100, 230, 196)
+                    }),
+                ));
+            }
+        });
     #[cfg(not(target_arch = "wasm32"))]
     commands
         .spawn((
@@ -1371,6 +1413,7 @@ fn flight(
         Res<repository_picker::RepositoryPicker>,
     >,
     #[cfg(target_arch = "wasm32")] mut previous_pointer_ui: Local<Option<(bool, bool)>>,
+    #[cfg(target_arch = "wasm32")] touch: Res<browser_touch::Touch>,
 ) {
     let Ok((mut camera, mut pilot)) = camera.single_mut() else {
         return;
@@ -1414,6 +1457,10 @@ fn flight(
                 pilot.captured = false;
             }
         }
+    }
+    #[cfg(target_arch = "wasm32")]
+    if touch.enabled && !pointer_ui_open && !map_open && !menu_open {
+        pilot.captured = true;
     }
     let focused = window.focused || (cfg!(target_arch = "wasm32") && pilot.captured);
     #[cfg(not(target_arch = "wasm32"))]
@@ -1467,10 +1514,13 @@ fn flight(
         return;
     }
     // This frame may contain movement from before the capture click.
-    if was_captured && pilot.captured && motion.delta != Vec2::ZERO {
+    let look = motion.delta;
+    #[cfg(target_arch = "wasm32")]
+    let look = look + Vec2::from_array(touch.look);
+    if was_captured && pilot.captured && look != Vec2::ZERO {
         let (yaw, pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
-        let yaw = yaw - motion.delta.x * 0.0025;
-        let pitch = (pitch - motion.delta.y * 0.0025).clamp(-MAX_LOOK_PITCH, MAX_LOOK_PITCH);
+        let yaw = yaw - look.x * 0.0025;
+        let pitch = (pitch - look.y * 0.0025).clamp(-MAX_LOOK_PITCH, MAX_LOOK_PITCH);
         camera.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.);
     }
     if navigation.guides_camera() {
@@ -1491,6 +1541,11 @@ fn flight(
             axis(KeyCode::KeyW, KeyCode::KeyS),
             0.,
         );
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        direction += camera.forward().as_vec3() * touch.r#move[1].clamp(-1., 1.)
+            + camera.right().as_vec3() * touch.r#move[0].clamp(-1., 1.);
     }
     let speed = flight_speed(
         camera.translation.y,
@@ -1814,7 +1869,7 @@ fn interaction(
         };
         explorer.rebuild = true;
     }
-    if keys.just_pressed(KeyCode::KeyX) {
+    if keys.just_pressed(KeyCode::KeyX) && explorer.anchored {
         explorer.detach_selection(&repo.0);
     }
     if keys.just_pressed(KeyCode::KeyR) {
@@ -2067,6 +2122,7 @@ fn hud(
         Res<live_worktree::Live>,
     ),
     mut label: Query<(&mut Text, &mut TextColor, &mut Node), With<TargetLabel>>,
+    mut gauges: Query<(&ProgressGauge, &mut Node), (Without<Text>, Without<TargetLabel>)>,
     mut texts: Query<
         (
             &mut Text,
@@ -2075,6 +2131,7 @@ fn hud(
             Has<BottomHud>,
             Has<StatusHud>,
             Has<ReviewToast>,
+            Option<&ProgressLabel>,
         ),
         Without<TargetLabel>,
     >,
@@ -2135,7 +2192,36 @@ fn hud(
             node.display = Display::None;
         }
     }
-    for (mut text, mut node, top, bottom, status, toast) in &mut texts {
+    let (city, diffs, total_diffs) = progress.visited_counts();
+    for (gauge, mut node) in &mut gauges {
+        let (done, total) = if gauge.0 {
+            (diffs, total_diffs)
+        } else {
+            (city, repo.0.files.len())
+        };
+        let width = percent(if total == 0 {
+            0.
+        } else {
+            100. * done as f32 / total as f32
+        });
+        if node.width != width {
+            node.width = width;
+        }
+    }
+    for (mut text, mut node, top, bottom, status, toast, counter) in &mut texts {
+        if let Some(counter) = counter {
+            let value = if counter.0 {
+                if total_diffs == 0 {
+                    "Diff —".into()
+                } else {
+                    format!("Diff {diffs}/{total_diffs}")
+                }
+            } else {
+                format!("City {city}/{}", repo.0.files.len())
+            };
+            text.set_if_neq(Text::new(value));
+            continue;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if top || status || bottom || toast {
             let (review, time, live) = &native;
@@ -2157,30 +2243,11 @@ fn hud(
                     name
                 }
             } else if status {
-                let (city, diffs, total_diffs) = progress.visited_counts();
-                let progress = if total_diffs == 0 {
-                    format!("City {city}/{}", repo.0.files.len())
-                } else {
-                    format!(
-                        "City {city}/{} · Diffs {diffs}/{total_diffs}",
-                        repo.0.files.len()
-                    )
-                };
-                if let Some(level) = navigation.overview_level() {
-                    let title = match level {
-                        city_navigation::Overview::District => "District overview",
-                        city_navigation::Overview::Project => "Project overview",
-                    };
-                    format!("{title}\n{progress}")
-                } else {
-                    let filename = file.path.rsplit('/').next().unwrap_or(&file.path);
-                    let side = if explorer.before { "Before" } else { "After" };
-                    let (read, lines) = listing.counts(&explorer);
-                    let reading = navigation
-                        .route_status()
-                        .unwrap_or_else(|| format!("{read}/{lines} lines revealed"));
-                    format!("{filename} · {side}\n{reading}\n{progress}")
-                }
+                file.path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&file.path)
+                    .to_owned()
             } else if toast {
                 review
                     .feedback
@@ -2214,102 +2281,31 @@ fn hud(
         #[cfg(target_arch = "wasm32")]
         let _ = (&mut node, toast);
         let value = if top {
-            format!(
-                "{}\n{} files · {} districts · {} → {}",
-                repo.0.root.to_string_lossy(),
-                repo.0.files.len(),
-                repo.0.districts.len(),
-                repo.0.baseline.as_ref().map_or("empty", |s| &s[..8]),
-                if repo.0.is_worktree() {
-                    "WORKTREE"
-                } else {
-                    &repo.0.revision[..8]
-                }
-            )
+            repo.0.root.to_string_lossy().into_owned()
         } else if bottom {
             if navigation.overview() {
                 navigation.prompt(&explorer)
-            } else if tour.active() {
-                String::new()
             } else {
-                navigation.prompt(&explorer)
+                String::new()
             }
-        } else if status && listing::Listing::visible(&explorer, &navigation) {
-            let (opened, total) = listing.counts(&explorer);
-            let anatomy = explorer
-                .anatomy
-                .as_ref()
-                .filter(|anatomy| !anatomy.callables.is_empty());
-            let metrics = anatomy.map_or_else(String::new, |anatomy| {
-                let branches = anatomy
-                    .callables
-                    .iter()
-                    .filter_map(|callable| callable.decision_count)
-                    .max();
-                let longest = anatomy
-                    .callables
-                    .iter()
-                    .filter_map(|callable| callable.body_line_span)
-                    .max();
-                format!(
-                    "\n{} functions · peak branches {} · longest body {} lines",
-                    anatomy.callables.len(),
-                    branches.map_or("—".into(), |value| value.to_string()),
-                    longest.map_or("—".into(), |value| value.to_string())
-                )
-            });
-            format!(
-                "{}\n{:?} · {}\n{opened} / {total} lines revealed · {} / {} files reviewed\n{}{metrics}\n{}",
-                file.path,
-                file.change,
-                if explorer.before { "BEFORE" } else { "AFTER" },
-                explorer.reviewed.len(),
-                repo.0.files.len(),
-                progress.exploration_label(repo.0.files.len()),
-                explorer.notice
-            )
         } else if status {
-            let count = explorer.anatomy.as_ref().map_or(0, |a| a.callables.len());
-            let title = explorer
-                .function
-                .and_then(|i| explorer.anatomy.as_ref()?.callables.get(i))
-                .map(|c| c.display_name.as_ref().unwrap_or(&c.name).as_str())
-                .unwrap_or("whole file");
-            format!(
-                "{}\n{:?}  ·  {}{}\n{} functions · {} lines · page {}\n{}\n\n{}\n\n{} / {} files reviewed\n{}{}",
-                file.path,
-                file.change,
-                if explorer.before { "BEFORE" } else { "AFTER" },
-                if explorer.dirty {
-                    " / PRIVATE DRAFT"
-                } else {
-                    ""
-                },
-                count,
-                explorer.source.lines().count(),
-                explorer.page + 1,
-                title,
-                explorer.notice,
-                explorer.reviewed.len(),
-                repo.0.files.len(),
-                progress.exploration_label(repo.0.files.len()),
-                format!(
-                    "\n{} hunks · {}",
-                    explorer.comparison.as_ref().map_or(0, |c| c.hunks.len()),
-                    navigation
-                        .route_status()
-                        .unwrap_or_else(|| match explorer.comparison_mode {
-                            1 => "TWO BUILDINGS",
-                            2 => "GHOST OVERLAY",
-                            _ if explorer.anchored => "SOURCE WALL",
-                            _ => "EXPLORING CITY",
-                        }
-                        .into())
-                )
-            )
+            file.path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&file.path)
+                .to_owned()
         } else {
             continue;
         };
+        let display = if value.is_empty() {
+            Display::None
+        } else {
+            Display::Flex
+        };
+        if node.display != display {
+            node.display = display;
+        }
+
         if text.0 != value {
             text.0 = value;
         }

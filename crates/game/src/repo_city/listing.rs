@@ -8,6 +8,7 @@ use std::{
 use super::*;
 
 mod cover;
+pub(super) mod exposure;
 pub(super) mod find;
 pub(super) mod layout;
 mod paint;
@@ -136,6 +137,8 @@ pub(super) struct Listing {
     viewing: Option<Face>,
     destination: Option<Face>,
     wash_preview: Option<WashPreview>,
+    observed: Option<WashPreview>,
+    observed_kind: u8,
     water_on: bool,
     blame: super::blame::Blame,
     turn: Option<(f32, Transform, Transform)>,
@@ -411,6 +414,28 @@ impl Listing {
         explorer.comparison_mode == 0 && !explorer.anchored && !navigation.guides_camera()
     }
 
+    pub(super) fn close_face(
+        &self,
+        file: &repo_world::File,
+        camera: &Transform,
+        explorer: &Explorer,
+        aspect: f32,
+    ) -> Option<Face> {
+        let face = Face::at_camera(file, block_size(file), camera, DETAIL_RAY_REACH)?;
+        let count = match face {
+            Face::Source => explorer.source_layout.len(),
+            Face::Diff => self.diff_lines.len(),
+            Face::Blame => explorer.highlighted.len(),
+        };
+        if count == 0 {
+            return None;
+        }
+        let side = WallSide::new(file, count, face, block_size(file));
+        side.detail_distance(camera, aspect, true)?;
+        side.ray_hit(camera, 0.12, side.detail_range())?;
+        Some(face)
+    }
+
     pub(super) fn visible_face(&self) -> Option<Face> {
         self.rendered.and(self.viewing)
     }
@@ -473,9 +498,43 @@ impl Listing {
             .collect()
     }
 
+    /// Narration follows a stable reading block, rather than a changing viewport edge.
+    pub(super) fn reading_source_fragments<'a>(
+        &self,
+        file: &repo_world::File,
+        camera: &Transform,
+        explorer: &'a Explorer,
+        aspect: f32,
+        settings: reading::Settings,
+    ) -> Vec<(usize, &'a str)> {
+        let Some(visible) = self.visible_source_display_rows(file, camera, explorer, aspect) else {
+            return Vec::new();
+        };
+        let side = WallSide::new(
+            file,
+            explorer.source_layout.len(),
+            Face::Source,
+            block_size(file),
+        );
+        let row = side
+            .wall
+            .row(side.look_height(camera), explorer.source_layout.len());
+        if !visible.contains(&row) {
+            return Vec::new();
+        }
+        settings
+            .block(explorer, row)
+            .filter(|&row| self.source_display_row_is_readable(explorer, row))
+            .map(|row| {
+                let line = &explorer.source_layout.rows[row];
+                (line.number, line.text.as_str())
+            })
+            .collect()
+    }
+
     /// A visible row may still be covered; only revealed or actively washed rows can be read.
     pub(super) fn source_row_is_readable(&self, explorer: &Explorer, row: usize) -> bool {
-        if row >= explorer.highlighted.len() {
+        if row >= explorer.highlighted.len() || explorer.source_layout.visual_rows(row).is_empty() {
             return false;
         }
         explorer
@@ -644,6 +703,7 @@ impl Listing {
     fn wash_fraction_remaining(&self) -> Option<f32> {
         self.wash_preview
             .as_ref()
+            .or(self.observed.as_ref())
             .filter(|preview| preview.seconds > 0.)
             .map(|preview| (1. - preview.elapsed / preview.seconds).clamp(0., 1.))
     }
@@ -656,7 +716,7 @@ impl Listing {
         delta: f32,
         settings: reading::Settings,
     ) -> Option<progress::Mark> {
-        let rows = settings.rows(row, explorer.source_layout.len());
+        let rows = settings.block(explorer, row);
         if rows.is_empty()
             || rows
                 .clone()
@@ -712,10 +772,11 @@ impl Listing {
             .source_layout
             .canonical_range(range)
             .filter(|&line| {
-                explorer
-                    .source_layout
-                    .visual_rows(line)
-                    .all(|row| self.source_display_row_is_readable(explorer, row))
+                !explorer.source_layout.visual_rows(line).is_empty()
+                    && explorer
+                        .source_layout
+                        .visual_rows(line)
+                        .all(|row| self.source_display_row_is_readable(explorer, row))
             })
             .collect::<Vec<_>>();
         let range = *completed.first()?..completed.last()? + 1;
@@ -807,6 +868,85 @@ impl Listing {
     }
 }
 
+pub(super) fn fold_controls(
+    keys: Res<ButtonInput<KeyCode>>,
+    repo: Res<Repo>,
+    mut explorer: ResMut<Explorer>,
+    mut listing: ResMut<Listing>,
+    navigation: Res<city_navigation::Navigation>,
+    review: Res<review_notes::Review>,
+    picker: Res<file_picker::FilePicker>,
+    settings: Res<reading::Settings>,
+    mut camera: Query<&mut Transform, PlayerCamera>,
+) {
+    if review.blocked
+        || picker.is_open()
+        || !Listing::visible(&explorer, &navigation)
+        || keys.any_pressed([
+            KeyCode::SuperLeft,
+            KeyCode::SuperRight,
+            KeyCode::ControlLeft,
+            KeyCode::ControlRight,
+            KeyCode::AltLeft,
+            KeyCode::AltRight,
+        ])
+    {
+        return;
+    }
+    let fold = keys.just_pressed(KeyCode::KeyZ);
+    let expand = keys.just_pressed(KeyCode::KeyX);
+    let find = keys.just_pressed(KeyCode::Slash);
+    if !fold && !expand && !find {
+        return;
+    }
+    let Some(file) = repo.0.files.get(explorer.selected) else {
+        return;
+    };
+    let Ok(mut camera) = camera.single_mut() else {
+        return;
+    };
+    if listing.viewing != Some(Face::Source) {
+        return;
+    }
+    let count = explorer.source_layout.len();
+    if count == 0 {
+        return;
+    }
+    let side = WallSide::new(file, count, Face::Source, block_size(file));
+    let row = side.wall.row(side.look_height(&camera), count);
+    let canonical = explorer.source_layout.rows[row].number - 1;
+    let range = reading::callable_at(&explorer, row).unwrap_or_else(|| {
+        explorer
+            .source_layout
+            .canonical_range(settings.rows(row, count))
+    });
+    let lines = explorer.highlighted.clone();
+    let changed = if find {
+        explorer.source_layout.unfold_all(&lines)
+    } else if fold {
+        explorer.source_layout.fold(&lines, range)
+    } else {
+        explorer.source_layout.unfold(&lines, canonical)
+    };
+    if changed {
+        listing.stop_water();
+        listing.partial_source.clear();
+        listing.scroll_remaining = 0.;
+        let side = WallSide::new(
+            file,
+            explorer.source_layout.len(),
+            Face::Source,
+            block_size(file),
+        );
+        let row = explorer
+            .source_layout
+            .visual_rows(canonical)
+            .start
+            .min(explorer.source_layout.len().saturating_sub(1));
+        camera.translation.y += side.wall.y(row as f32 + 0.5) - side.look_height(&camera);
+    }
+}
+
 pub(super) fn controls(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
@@ -849,7 +989,32 @@ pub(super) fn controls(
             explorer.highlighted.len()
         }
     };
-    let toggle = if keys.just_pressed(KeyCode::KeyG) {
+    let cycle = keys.just_pressed(KeyCode::ArrowLeft) || keys.just_pressed(KeyCode::ArrowRight);
+    let toggle = if cycle
+        && listing
+            .close_face(
+                file,
+                &camera,
+                &explorer,
+                windows
+                    .single()
+                    .map_or(1., |window| window.width() / window.height().max(1.)),
+            )
+            .is_some()
+    {
+        let current = listing.destination.unwrap_or(active);
+        let faces = [Face::Source, Face::Diff, Face::Blame];
+        let index = faces.iter().position(|&face| face == current).unwrap_or(0);
+        Some(
+            faces[(index
+                + if keys.just_pressed(KeyCode::ArrowRight) {
+                    1
+                } else {
+                    2
+                })
+                % 3],
+        )
+    } else if keys.just_pressed(KeyCode::KeyG) {
         Some(Face::Diff)
     } else if keys.just_pressed(KeyCode::KeyB) {
         Some(Face::Blame)
@@ -857,7 +1022,7 @@ pub(super) fn controls(
         None
     };
     if let Some(selected) = toggle {
-        let destination = if listing.destination.unwrap_or(active) == selected {
+        let destination = if !cycle && listing.destination.unwrap_or(active) == selected {
             Face::Source
         } else {
             selected
@@ -1030,8 +1195,26 @@ pub(super) fn wash_stream(
     listing.water_on = true;
     review.washing = true;
     let row = side.wall.row(hit.y, count);
+    let block = settings.block(&explorer, row);
+    let unfinished = block
+        .clone()
+        .any(|row| !listing.source_display_row_committed(&explorer, row));
     if let Some(mark) = listing.advance_wash(&explorer, file, row, time.delta_secs(), *settings) {
         progress.mark(mark, true);
+    }
+    if settings.auto_advance
+        && unfinished
+        && block.end < count
+        && block
+            .clone()
+            .all(|row| listing.source_display_row_committed(&explorer, row))
+    {
+        let next =
+            (block.end..count).find(|&row| !listing.source_display_row_committed(&explorer, row));
+        if let Some(next) = next {
+            let y = side.look_height(camera);
+            listing.scroll_remaining = side.wall.y(next as f32 + 0.5) - y;
+        }
     }
     if review.nozzle >= 0.85 {
         physics::spray_stream(
@@ -1625,6 +1808,7 @@ pub(super) fn draw(
         dt: time.as_ref().map_or(1. / 60., |time| time.delta_secs()),
     };
     if changed {
+        listing.observed = None;
         if listing.rendered_layout != explorer.source_layout.revision() {
             listing.partial_source.retain(|&(file, before, _)| {
                 file != explorer.selected || before != explorer.before
@@ -2358,7 +2542,7 @@ mod tests {
         assert_eq!(unloaded.translation.xz(), loaded.translation.xz());
     }
 
-    fn fixture_file() -> repo_world::File {
+    pub(super) fn fixture_file() -> repo_world::File {
         repo_world::File {
             path: "test.rs".into(),
             before: None,
