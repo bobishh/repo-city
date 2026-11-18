@@ -221,6 +221,22 @@ test("opens a public repository and fetches source after the WASM city starts", 
     await cdp.detach();
   }
   expect(faults).toEqual([]);
+  // The overview uses a free cursor without blocking the normal Help shortcut.
+  await page.mouse.move(640, 400);
+  await canvas.focus();
+  await page.keyboard.press("KeyM", { delay: 180 });
+  await expect(canvas).toHaveAttribute("data-overview", "");
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await page.keyboard.press("KeyM", { delay: 180 });
+  await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
+  await page.keyboard.press("KeyH", { delay: 180 });
+  const mapHelp = page.getByRole("dialog", { name: "Take a quick tour" });
+  await expect(mapHelp).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(mapHelp).toBeHidden();
+  await canvas.focus();
+  await page.keyboard.press("KeyM", { delay: 180 });
+  await expect(canvas).not.toHaveAttribute("data-overview", "");
   await page.getByRole("button", { name: "Repo City", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Open repository" });
   await expect(dialog).toBeVisible();

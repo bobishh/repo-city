@@ -153,6 +153,7 @@ pub(super) struct Navigation {
     redraw: bool,
     broken: HashSet<usize>,
     overview: Option<(Overview, Transform)>,
+    district_from_project: bool,
     history: History,
     review_line: Option<(usize, f32)>,
     pub overview_requested: bool,
@@ -218,8 +219,10 @@ impl Navigation {
     }
 
     fn cycle_overview(&mut self, camera: Transform) -> (Option<Overview>, Transform) {
+        let from_project = std::mem::take(&mut self.district_from_project);
         let (level, origin) = match self.overview.take() {
             None => (Some(Overview::District), camera),
+            Some((Overview::District, origin)) if from_project => (None, origin),
             Some((Overview::District, origin)) => (Some(Overview::Project), origin),
             Some((Overview::Project, origin)) => (None, origin),
         };
@@ -267,6 +270,20 @@ impl Navigation {
     }
 
     pub(super) fn prompt(&self, explorer: &Explorer) -> String {
+        if let Some((level, _)) = self.overview {
+            return match level {
+                Overview::Project => {
+                    "Click a district to approach its files · M returns to your previous view"
+                }
+                Overview::District if self.district_from_project => {
+                    "Click a building to read its code · M returns to your previous view"
+                }
+                Overview::District => {
+                    "Click a building to read its code · M shows the whole project"
+                }
+            }
+            .into();
+        }
         if self.hop.is_some() && self.route.is_none() {
             return "Flying to destination · Esc to cancel".into();
         }
@@ -533,6 +550,20 @@ pub(super) fn navigate(
         return;
     }
 
+    if navigation.overview_level() == Some(Overview::Project)
+        && (pilot.map_click || keys.just_pressed(KeyCode::KeyE))
+        && let Some(district) = nearest
+            .district
+            .and_then(|index| repo.0.districts.get(index))
+    {
+        let origin = navigation.overview.expect("project overview").1;
+        navigation.overview = Some((Overview::District, origin));
+        navigation.district_from_project = true;
+        let aspect = window.width() / window.height().max(1.);
+        navigation.overview_hop(*camera, district_view(district, aspect));
+        return;
+    }
+
     let history_destination = history_direction(&keys).and_then(|direction| {
         while let Some(path) = navigation.history.step(direction) {
             if let Some(index) = repo
@@ -698,7 +729,7 @@ pub(super) fn navigate(
         return;
     }
     let next_changed = keys.just_pressed(KeyCode::KeyN) && !search.owns_next();
-    let distant_shot = (pilot.shot && !listing.water_on())
+    let distant_shot = ((pilot.shot || pilot.map_click) && !listing.water_on())
         .then_some(nearest.file)
         .flatten()
         .filter(|aim| {
@@ -805,6 +836,23 @@ pub(super) fn draw(
     mut gizmos: Gizmos,
     nearest: Res<Nearest>,
 ) {
+    if navigation.overview_level() == Some(Overview::Project)
+        && let Some(district) = nearest
+            .district
+            .and_then(|index| repo.0.districts.get(index))
+    {
+        let [x, z] = district.position;
+        let [width, depth] = district.size;
+        let corners = [
+            Vec3::new(x, 0.3, z),
+            Vec3::new(x + width, 0.3, z),
+            Vec3::new(x + width, 0.3, z + depth),
+            Vec3::new(x, 0.3, z + depth),
+        ];
+        for edge in 0..4 {
+            gizmos.line(corners[edge], corners[(edge + 1) % 4], color(set.accent));
+        }
+    }
     if !navigation.guides_camera()
         && !explorer.anchored
         && explorer.comparison_mode == 0
@@ -1010,6 +1058,124 @@ pub(super) fn shoot_reviewed_platform(
 mod tests {
     use super::*;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_overview_click_reaches_an_unloaded_district_and_keeps_return_view() {
+        let mut repo = repository_picker::empty();
+        repo.files = ["near/current.rs", "far/target.rs"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, path)| repo_world::File {
+                path: path.into(),
+                before: None,
+                after: None,
+                change: Change::Unchanged,
+                position: [5010. * index as f32, 5010. * index as f32],
+            })
+            .collect();
+        repo.districts = ["near", "far"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| repo_world::District {
+                name: name.into(),
+                position: [5000. * index as f32, 5000. * index as f32],
+                size: [20., 20.],
+            })
+            .collect();
+        let origin = Transform::from_xyz(10., 3., 30.);
+        let mut navigation = Navigation::default();
+        navigation.cycle_overview(origin);
+        navigation.cycle_overview(origin);
+        let mut app = App::new();
+        app.insert_resource(Repo(repo))
+            .insert_resource(Explorer::new(0))
+            .insert_resource(navigation)
+            .init_resource::<Nearest>()
+            .init_resource::<Time>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<AccumulatedMouseScroll>()
+            .init_resource::<AccumulatedMouseMotion>()
+            .init_resource::<file_facade::ChangesOnly>()
+            .init_resource::<city_menu::Menu>()
+            .init_resource::<file_picker::FilePicker>()
+            .init_resource::<listing::Listing>()
+            .init_resource::<listing::find::Search>()
+            .init_resource::<progress::Progress>()
+            .init_resource::<review_notes::Review>()
+            .add_systems(Update, (flight, targeting, navigate).chain());
+        let mut window = Window::default();
+        window.set_cursor_position(Some(Vec2::new(640., 360.)));
+        app.world_mut()
+            .spawn((window, PrimaryWindow, CursorOptions::default()));
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Transform::from_xyz(5010., 2500., 5010.).looking_to(Vec3::NEG_Y, Vec3::Z),
+                Pilot {
+                    captured: true,
+                    ..default()
+                },
+            ))
+            .id();
+        app.update();
+        assert_eq!(app.world().resource::<Nearest>().district, Some(1));
+        assert!(!app.world().get::<Pilot>(camera).unwrap().captured);
+        assert_eq!(
+            app.world_mut().query::<&Facade>().iter(app.world()).count(),
+            0
+        );
+        let map_pose = *app.world().get::<Transform>(camera).unwrap();
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation
+            .x = 9000.;
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+        assert_eq!(app.world().resource::<Nearest>().district, None);
+        assert_eq!(
+            app.world().resource::<Navigation>().overview_level(),
+            Some(Overview::Project)
+        );
+        assert!(!app.world().resource::<Navigation>().is_flying());
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() = map_pose;
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .reset(MouseButton::Left);
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+        let navigation = app.world().resource::<Navigation>();
+        assert_eq!(navigation.overview_level(), Some(Overview::District));
+        assert_eq!(navigation.overview.unwrap().1, origin);
+        assert!(navigation.hop.as_ref().unwrap().end.translation.x > 5000.);
+        assert_eq!(app.world().resource::<Explorer>().selected, 0);
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .reset(MouseButton::Left);
+        app.world_mut()
+            .resource_mut::<Navigation>()
+            .overview_requested = true;
+        app.update();
+        let navigation = app.world().resource::<Navigation>();
+        assert!(!navigation.overview());
+        assert_eq!(navigation.hop.as_ref().unwrap().end, origin);
+        app.world_mut().resource_mut::<Navigation>().hop = None;
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+        let pilot = app.world().get::<Pilot>(camera).unwrap();
+        assert!(pilot.captured);
+        assert!(!pilot.map_click);
+        assert!(!pilot.shot);
+    }
+
     #[test]
     fn overview_cycles_through_district_and_project_and_preserves_origin() {
         let origin = Transform::from_xyz(10., 20., 30.);
@@ -1181,6 +1347,26 @@ mod tests {
         let hop = app.world().resource::<Navigation>().hop.as_ref().unwrap();
         assert!(hop.end.translation.x > aim.x);
         assert!(hop.end.forward().dot(Vec3::NEG_X) > 0.99);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset(KeyCode::KeyE);
+        let origin = *app.world().get::<Transform>(camera).unwrap();
+        {
+            let mut navigation = app.world_mut().resource_mut::<Navigation>();
+            navigation.hop = None;
+            navigation.overview = Some((Overview::District, origin));
+        }
+        {
+            let mut pilot = app.world_mut().get_mut::<Pilot>(camera).unwrap();
+            pilot.captured = false;
+            pilot.shot = false;
+            pilot.map_click = true;
+        }
+        app.update();
+        assert_eq!(app.world().resource::<Explorer>().selected, 1);
+        assert!(!app.world().resource::<Navigation>().overview());
+        assert!(app.world().resource::<Navigation>().is_flying());
+        assert!(!app.world().get::<Pilot>(camera).unwrap().captured);
     }
 
     #[test]

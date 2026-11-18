@@ -242,8 +242,45 @@ pub fn source(
     )
 }
 
+/// Match the title's physical aspect and glyph scale to its source wall.
+pub(super) fn heading(title: &str, tint: [f32; 3], aspect: f32, glyph_scale: f32) -> Image {
+    let width = LISTING_WIDTH;
+    let height = (width as f32 * aspect).ceil().max(1.) as u32;
+    let scale = Vec2::new(
+        glyph_scale,
+        glyph_scale * height as f32 / (width as f32 * aspect),
+    );
+    let mut canvas = Canvas {
+        pixels: vec![0; (width * height * 4) as usize],
+        width,
+        height,
+        context: ScaleContext::new(),
+    };
+    canvas.band(0, height, [9, 17, 23]);
+    canvas.scaled_text(
+        title,
+        HEADING_LEFT,
+        height as f32 / 2. + 7. * scale.y,
+        20.,
+        scale,
+        |_| tint,
+    );
+    Image::new(
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        canvas.pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    )
+}
+
 pub(super) const LISTING_WIDTH: u32 = 1536;
 pub(super) const LISTING_ROW_PIXELS: u32 = 27;
+pub(super) const HEADING_LEFT: f32 = 32.;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Coverage {
@@ -511,6 +548,62 @@ pub(super) fn listing_with_notes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn heading_ink_clears_the_physical_file_stripe_at_every_glyph_scale() {
+        let file = repo_world::File {
+            path: "math.mjs".into(),
+            before: None,
+            after: None,
+            change: repo_world::Change::Unchanged,
+            position: [0., 0.],
+        };
+        let size = Vec3::splat(14.);
+        let stripe =
+            crate::file_facade::transform(&file, size, crate::file_facade::Part::Stripe(1.));
+        let stripe_end = stripe.scale.x / size.x * LISTING_WIDTH as f32;
+        for (aspect, scale) in [(0.0264, 1.), (0.0145, 0.826), (0.008, 0.455)] {
+            let image = heading("math.mjs / 4 rows", [0.5, 0.95, 0.85], aspect, scale);
+            let width = image.width() as usize;
+            let first_ink = image
+                .data
+                .as_ref()
+                .unwrap()
+                .chunks_exact(4)
+                .enumerate()
+                .filter(|(_, pixel)| pixel[1] > 100)
+                .map(|(pixel, _)| pixel % width)
+                .min()
+                .unwrap();
+            assert!(
+                first_ink as f32 > stripe_end,
+                "heading starts at {first_ink}px behind the stripe ending at {stripe_end:.1}px"
+            );
+        }
+    }
+
+    #[test]
+    fn headings_fit_short_and_tall_wall_aspects_without_clipping_glyphs() {
+        for (aspect, scale) in [(0.0264, 1.), (0.0145, 0.826), (0.008, 0.455)] {
+            let image = heading("math.mjs / 4 rows", [0.5, 0.95, 0.85], aspect, scale);
+            let width = image.width() as usize;
+            let height = image.height() as usize;
+            let rows = image
+                .data
+                .as_ref()
+                .unwrap()
+                .chunks_exact(width * 4)
+                .enumerate()
+                .filter(|(_, pixels)| pixels.chunks_exact(4).any(|pixel| pixel[1] > 100))
+                .map(|(row, _)| row)
+                .collect::<Vec<_>>();
+            assert!(!rows.is_empty(), "header text must be visible");
+            assert!(
+                *rows.first().unwrap() > 0 && *rows.last().unwrap() + 1 < height,
+                "header glyphs must have room above ascenders and below descenders"
+            );
+        }
+    }
 
     #[test]
     fn distant_comments_color_their_row_and_widen_the_gutter_mark() {

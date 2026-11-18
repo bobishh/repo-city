@@ -34,12 +34,14 @@ fn texture_row_height(width: f32) -> f32 {
 }
 
 pub(super) fn block_size(file: &repo_world::File) -> Vec3 {
-    let estimated = file
-        .after
+    size_from_rows(estimated_rows(file))
+}
+
+fn estimated_rows(file: &repo_world::File) -> usize {
+    file.after
         .as_ref()
         .or(file.before.as_ref())
-        .map_or(1, |blob| (blob.size as usize / 40).max(1));
-    size_from_rows(estimated)
+        .map_or(1, |blob| (blob.size / 40).max(1))
 }
 
 fn size_from_rows(rows: usize) -> Vec3 {
@@ -942,9 +944,15 @@ impl WallSide {
             Face::Diff => (x + size.x / 2. + PANEL_OFFSET, z, size.z),
             Face::Blame => (x - size.x / 2. - PANEL_OFFSET, z, size.z),
         };
-        let heading_height = width * HEADING_RATIO;
-        let mut wall = Wall::new(count, size.y - heading_height);
-        wall.row_height = wall.row_height.min(texture_row_height(width) * 1.5);
+        // Fill nominal short files; keep sparse content within the existing row-height cap.
+        let row_limit =
+            (texture_row_height(width) * 1.5).max(size.y / (estimated_rows(file) as f32 + 1.));
+        let row_height = (size.y / (count.max(1) as f32 + 1.)).min(row_limit);
+        let heading_height = row_height;
+        let wall = Wall {
+            top: size.y - heading_height,
+            row_height,
+        };
         Self {
             top: Vec3::new(x, wall.top, z),
             wall,
@@ -1072,8 +1080,10 @@ impl WallSide {
     }
 
     fn view(&self, y: f32) -> Transform {
-        let target = self.top.with_y(y);
-        let eye = target + self.normal() * (self.width * 0.84).max(0.18);
+        // Keep the left gutter in view when compressed rows require a closer approach.
+        let leading = self.width * (1. - self.glyph_scale().x) / 2.;
+        let target = self.top.with_y(y) - Vec3::Y.cross(self.normal()) * leading;
+        let eye = target + self.normal() * (self.width * 0.84 * self.glyph_scale().x).max(0.18);
         // Clear district curbs when framing a very short file near the ground.
         Transform::from_translation(eye.with_y(eye.y.max(1.))).looking_at(target, Vec3::Y)
     }
@@ -1177,6 +1187,9 @@ impl Layer {
         if self == Self::Preview {
             // Behind the readable tiles, still outside the building shell.
             pose.translation -= side.normal() * (side.wall.row_height * 0.08).clamp(0.003, 0.018);
+        } else if self == Self::Heading {
+            // Keep the title in front of the roof rim's vertical fascia.
+            pose.translation += side.normal() * 0.003;
         }
         pose
     }
@@ -1251,7 +1264,12 @@ impl WallRender<'_, '_, '_> {
     }
 
     fn header(&mut self, side: &WallSide, title: &str, tint: [f32; 3]) -> Tile {
-        let image = code_texture::render(title, &[], tint, 1280, 64);
+        let image = code_texture::heading(
+            title,
+            tint,
+            side.heading_height / side.width,
+            side.glyph_scale().x,
+        );
         let height = side.heading_height;
         self.plane(
             side,
@@ -1844,6 +1862,93 @@ pub(super) fn smoke_blame_ready(listing: &Listing, count: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn four_line_file() -> (repo_world::File, Explorer) {
+        let source = "// Math helpers\nexport function add(a, b) {\n  return a + b;\n}\n";
+        let mut file = fixture_file();
+        file.path = "math.mjs".into();
+        file.after = Some(repo_world::Blob {
+            id: String::new(),
+            size: source.len(),
+            mode: "100644".into(),
+        });
+        let mut explorer = Explorer::new(0);
+        explorer.highlighted = syntax::highlight(&file.path, source);
+        (file, explorer)
+    }
+
+    #[test]
+    fn four_line_source_reserves_a_single_row_for_its_heading() {
+        let (file, explorer) = four_line_file();
+        let side = WallSide::new(
+            &file,
+            explorer.highlighted.len(),
+            Face::Source,
+            block_size(&file),
+        );
+        assert!(
+            side.heading_height <= side.wall.row_height * 1.01,
+            "the heading must not consume more height than a source row"
+        );
+    }
+
+    #[test]
+    fn source_heading_sits_in_front_of_the_roof_rim() {
+        let (file, explorer) = four_line_file();
+        let size = block_size(&file);
+        let rim = file_facade::transform(&file, size, file_facade::Part::Roof);
+        for (face, extent) in [
+            (Face::Source, rim.scale.z),
+            (Face::Diff, rim.scale.x),
+            (Face::Blame, rim.scale.x),
+        ] {
+            let side = WallSide::new(&file, explorer.highlighted.len(), face, size);
+            let heading = Layer::Heading.pose(&side, side.top.y + side.heading_height / 2.);
+            let heading_depth = (heading.translation - rim.translation).dot(side.normal());
+            assert!(
+                heading_depth > extent / 2. + 0.001,
+                "the roof fascia must not cover a readable heading on {face:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn four_line_approach_keeps_body_glyphs_readable_when_metadata_underestimates_rows() {
+        let (file, explorer) = four_line_file();
+        let size = block_size(&file);
+        let side = WallSide::new(&file, explorer.highlighted.len(), Face::Source, size);
+        let camera =
+            Listing::default().arrival_view(&explorer, &file, size, None, Vec3::new(0., 5., 30.));
+        let nominal_glyph =
+            side.width * side.glyph_scale().x * 20. / code_texture::LISTING_WIDTH as f32;
+        let point = side.top.with_y(side.wall.y(0.5));
+        let screen_y = |point: Vec3| {
+            let local = camera.compute_affine().inverse().transform_point3(point);
+            local.y / -local.z / std::f32::consts::FRAC_PI_8.tan() * 1080. / 2.
+        };
+        let pixels = (screen_y(point + Vec3::Y * nominal_glyph / 2.)
+            - screen_y(point - Vec3::Y * nominal_glyph / 2.))
+        .abs();
+        assert!(
+            pixels >= 18.,
+            "approached source glyph is only {pixels:.1} screen pixels tall"
+        );
+        let across = Vec3::Y.cross(side.normal());
+        let heading_start = side.top
+            + Vec3::Y * side.heading_height / 2.
+            + across
+                * (-side.width / 2.
+                    + side.width * code_texture::HEADING_LEFT / code_texture::LISTING_WIDTH as f32);
+        let local = camera
+            .compute_affine()
+            .inverse()
+            .transform_point3(heading_start);
+        let heading_x = 864. + local.x / -local.z / std::f32::consts::FRAC_PI_8.tan() * 1080. / 2.;
+        assert!(
+            heading_x >= 8.,
+            "approach clips the header at {heading_x:.1}px"
+        );
+    }
 
     #[test]
     fn source_arrival_keeps_the_original_building_dimensions_when_rows_load() {

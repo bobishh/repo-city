@@ -51,7 +51,7 @@ The desktop application is called **Vibe City** and is developed separately.
 | Fly | **WASD**, **Space** and **Ctrl** for altitude, **Shift** to boost |
 | Capture or release the cursor | Click the scene to capture. **Esc** releases. |
 | Use the actions menu | Right-click to open or close it. Scroll or use the arrow keys to highlight an action. Click or press **Enter** to select it. |
-| See the city from above | Press **M** to cycle through the district, the project, and your original view. Fly freely after each move. |
+| See the city from above | Press **M** to cycle through the district, the project, and your original view. The cursor stays free in overview. Point at a district in the project map to see its path, then click to approach its files. Click a building in the district view to read its code. After entering a district from the project map, **M** returns to your original view. You can fly freely after each move. |
 | Return to a building | **Ctrl+O** goes back in jump history and **Ctrl+I** goes forward. |
 | Browse changes | **Tab** opens and puts away VibePad. **Viewed** limits the list to changes you visited. Select a file to fly there. **Shift+Tab** moves focus inside VibePad. |
 | Approach a wall | Far away, left-click a building to fly to its nearest covered lines or the top of its source wall. Press **E** to fly to the aimed face. Scroll to move along the wall. |
