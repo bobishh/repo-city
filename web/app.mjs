@@ -5,6 +5,7 @@ import { createSyntaxCache } from "./syntax.mjs";
 import { createCityAudio } from "./audio.mjs";
 import { focusRepositoryPicker, githubAccount, githubReady, githubRequest, refreshRepositoryPicker } from "./github-picker.mjs";
 import { setupPointer } from "./pointer.mjs";
+import { createTouchControls } from "./touch.mjs";
 import { createReview } from "./review.mjs";
 import { readProgress, rememberExploration, writeProgress } from "./progress.mjs";
 
@@ -37,8 +38,10 @@ let active;
 let running = false;
 const audio = createCityAudio({ active: () => running && !dialog.open && !canvas.hidden });
 const releasePointer = setupPointer(canvas, dialog);
+const touch = createTouchControls({ canvas, onPad: () => review.changedFiles() });
 const review = createReview({
   audio, canvas, release: releasePointer, onClose: focusCanvas,
+  onCompare: (repository, before, after) => openRepository(repository, after, before, true),
   onTour(started) {
     tourCommand = ((tourCommand & ~1) + 2) | Number(started);
     activeTourEntry = started ? (tourEntry ?? "help") : null;
@@ -58,9 +61,17 @@ function focusCanvas() {
   if (running && !document.querySelector("dialog[open]")) canvas.focus({ preventScroll: true });
 }
 
-document.addEventListener("keydown", event => {
+window.addEventListener("keydown", event => {
   const locked = document.pointerLockElement === canvas;
   const plain = !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey;
+  if (event.code === "KeyP" && (event.metaKey || event.ctrlKey) && !event.altKey && running && !dialog.open) {
+    event.preventDefault(); event.stopPropagation(); if (!event.repeat) review.fileSearch(); return;
+  }
+  if (event.code === "KeyH" && plain && review.helpVisible() && !/^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) {
+    event.preventDefault(); event.stopPropagation();
+    if (!event.repeat) review.dismissTablet();
+    return;
+  }
   if (event.code === "Tab" && plain && review.tabletVisible()) {
     event.preventDefault();
     event.stopPropagation();
@@ -155,7 +166,7 @@ function queryFor(repo, ref, base) {
   return query;
 }
 
-async function openRepository(repo, ref, base) {
+async function openRepository(repo, ref, base, exactBase = false) {
   if (submit.disabled) return;
   const started = performance.now();
   const pull = parsePullRequest(repo);
@@ -167,7 +178,7 @@ async function openRepository(repo, ref, base) {
     const firstOpen = !running;
     if (firstOpen) {
       const [repository, engine] = await Promise.all([
-        loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest),
+        loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest, { exactBase }),
         import("./game/repo_city.js"),
       ]);
       const graphics = await navigator.gpu?.requestAdapter();
@@ -187,6 +198,8 @@ async function openRepository(repo, ref, base) {
         reviewSlot: review.takeSlot,
         reviewDestination: review.takeDestination,
         takeFileDestination: review.takeFileDestination,
+        takeTouchInput: touch.take,
+        openFileSearch: review.fileSearch,
         canFilterChanges: () => active.canFilterChanges,
         takeChangesOnlyRequest() {
           const requested = changesOnlyRequested;
@@ -202,13 +215,19 @@ async function openRepository(repo, ref, base) {
           const { repository } = active;
           const snapshot = JSON.parse(repository.snapshot);
           const blob = snapshot[before ? "before" : "after"][path];
+          const image = /\.(png|jpe?g|webp)$/i.test(path);
+          const markdown = /\.(md|markdown|mdown|mkd)$/i.test(path);
           review.previewMarkdown(path, async () => {
             if (!blob || blob.mode === "120000") throw new Error("No readable source in this snapshot.");
+            if (image) {
+              if (blob.size > 16 * 1024 * 1024) throw new Error("Image exceeds the 16 MiB preview limit.");
+              return { bytes: await repository.blob(blob.id), format: path.split(".").pop().toLowerCase() };
+            }
             if (blob.size > 1024 * 1024) throw new Error("Source exceeds the 1 MiB inspection limit.");
             const text = new TextDecoder("utf-8", { fatal: true }).decode(await repository.blob(blob.id));
             const rows = text.split("\n").length - Number(!text || text.endsWith("\n"));
             return { text, mark: { path, blob: blob.id, before, rows } };
-          });
+          }, image ? "image" : markdown ? "markdown" : "text");
         },
         takeMarkdownRead: review.takeMarkdownRead,
         takeReadingSettings: review.takeReadingSettings,
@@ -275,9 +294,12 @@ async function openRepository(repo, ref, base) {
       startControls.hidden = true;
       help.hidden = false;
     } else {
-      await stageRepository(await loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest), ref, base);
+      await stageRepository(await loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest, { exactBase }), ref, base);
     }
-    history.replaceState(null, "", `?${queryFor(repo, ref, base)}`);
+    const query = queryFor(repo, ref, base);
+    if (exactBase) query.set("exact", "1");
+    history.replaceState(null, "", `?${query}`);
+    if (exactBase) review.dismissTablet();
     status.textContent = "";
     if (dialog.open) dialog.close();
     if (active.progressError) {
@@ -336,4 +358,4 @@ if (parameters.get("github") === "connected") {
   history.replaceState(null, "", clean);
   void githubReady().then(() => { if (githubAccount()?.login) analytics.githubConnected(); });
 }
-if (initial && !parameters.has("picker")) openRepository(initial, parameters.get("ref"), parameters.get("base"));
+if (initial && !parameters.has("picker")) openRepository(initial, parameters.get("ref"), parameters.get("base"), parameters.get("exact") === "1");

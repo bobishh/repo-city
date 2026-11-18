@@ -1,6 +1,8 @@
 //! Immutable repository inventory and lazy source loading. No checkout or source writes.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod blame;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod history;
 
 pub mod anatomy;
 pub mod comparison;
@@ -101,7 +103,16 @@ fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
         .arg(root)
         .args(args)
         .output()
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                history::command_error(error)
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                error.to_string()
+            }
+        })?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }

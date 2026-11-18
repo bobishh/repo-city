@@ -51,7 +51,7 @@ impl FilePicker {
     }
 }
 
-fn rank(path: &str, query: &str) -> Option<usize> {
+pub(super) fn rank(path: &str, query: &str) -> Option<usize> {
     let path = path.to_lowercase();
     let name = path.rsplit('/').next().unwrap_or(&path);
     if query.is_empty() || name == query {
@@ -112,16 +112,6 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
             },
         ))
         .with_children(|ui| {
-            #[cfg(target_arch = "wasm32")]
-            ui.spawn((
-                button(
-                    &format!("Files  {SHORTCUT}"),
-                    font,
-                    ink,
-                    AlignSelf::FlexStart,
-                ),
-                observe(|_: On<Activate>, mut picker: ResMut<FilePicker>| picker.toggle()),
-            ));
             ui.spawn((
                 PickerPanel,
                 Node {
@@ -213,10 +203,18 @@ pub(super) fn button(
     )
 }
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = openFileSearch)]
+    fn browser_search();
+}
+
 pub(super) fn update(
     keys: Res<ButtonInput<KeyCode>>,
     mut events: MessageReader<KeyboardInput>,
     mut picker: ResMut<FilePicker>,
+    #[cfg(not(target_arch = "wasm32"))] mut tablet: Option<ResMut<review_tablet::Tablet>>,
     search: Res<listing::find::Search>,
     review: Option<Res<review_notes::Review>>,
     #[cfg(not(target_arch = "wasm32"))] repository: Option<
@@ -297,7 +295,14 @@ pub(super) fn update(
     }
     let shortcut = keys.just_pressed(KeyCode::KeyP)
         && if cfg!(target_arch = "wasm32") {
-            !command && !picker.open
+            (!command
+                || keys.any_pressed([
+                    KeyCode::SuperLeft,
+                    KeyCode::SuperRight,
+                    KeyCode::ControlLeft,
+                    KeyCode::ControlRight,
+                ]))
+                && !picker.open
         } else {
             command
         };
@@ -307,6 +312,24 @@ pub(super) fn update(
         let _ = events
             .read()
             .find(|event| event.state.is_pressed() && event.key_code == KeyCode::KeyP);
+    }
+    if picker.open {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(tablet) = tablet.as_deref_mut() {
+            tablet.open_page(review_tablet::Page::Search);
+            picker.open = false;
+            picker.suppress_input = false;
+            events.clear();
+            return;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            browser_search();
+            picker.open = false;
+            picker.suppress_input = true;
+            events.clear();
+            return;
+        }
     }
     if !picker.open {
         events.clear();
@@ -449,11 +472,7 @@ pub(super) fn update(
 }
 
 fn previewable(path: &str) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    if image_preview::supported(path) {
-        return true;
-    }
-    markdown_preview::is_markdown(path)
+    file_preview::format(path).is_some()
 }
 
 #[cfg(test)]

@@ -44,62 +44,19 @@ fn spoken_identifier(text: &str) -> String {
 
 #[derive(Default)]
 pub(super) struct Reading {
-    words: Vec<(usize, String)>,
-    characters: usize,
-    seconds: f32,
-    elapsed: f32,
-    next: f32,
-    random: u32,
+    text: Option<String>,
 }
 
 impl Reading {
-    pub fn start(text: &str, seconds: f32, seed: u32) -> Self {
-        let mut characters = 0;
-        let words = text
-            .split_whitespace()
-            .filter_map(|word| {
-                let position = characters;
-                characters += word.chars().count();
-                let word = spoken_identifier(word);
-                (!word.is_empty()).then_some((position, word))
-            })
-            .collect();
-        let mut reading = Self {
-            words,
-            characters,
-            seconds,
-            random: seed.max(1),
-            ..Self::default()
-        };
-        reading.next = (seconds * 0.3).clamp(1.5, 4.5);
-        reading
+    pub fn start(text: &str, _seconds: f32, _seed: u32) -> Self {
+        let text = spoken_identifier(text);
+        Self {
+            text: (!text.is_empty()).then_some(text),
+        }
     }
 
-    pub fn tick(&mut self, delta: f32) -> Option<String> {
-        self.elapsed += delta.max(0.);
-        if self.elapsed < self.next
-            || self.seconds <= 0.
-            || self.elapsed > self.seconds
-            || self.words.is_empty()
-        {
-            return None;
-        }
-        self.random ^= self.random << 13;
-        self.random ^= self.random >> 17;
-        self.random ^= self.random << 5;
-        self.next = self.elapsed + 9. + (self.random % 9) as f32;
-        let position = (self.elapsed / self.seconds * self.characters as f32) as usize;
-        let first = self
-            .words
-            .partition_point(|(offset, _)| *offset < position)
-            .min(self.words.len() - 1);
-        let count = 3 + self.random as usize % 4;
-        let text = self.words[first..(first + count).min(self.words.len())]
-            .iter()
-            .map(|(_, word)| word.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        Some(text)
+    pub fn tick(&mut self, _delta: f32) -> Option<String> {
+        self.text.take()
     }
 }
 
@@ -109,6 +66,8 @@ struct Request {
     revision: u64,
     text: Option<String>,
     volume: f32,
+    voice: String,
+    busy: bool,
     shutdown: bool,
     error: Option<String>,
 }
@@ -135,8 +94,14 @@ impl Voice {
         }
     }
 
-    pub fn speak(&self, text: String, volume: f32) {
+    pub fn speak(&self, text: String, volume: f32, voice: &str) {
+        if let Ok(mut request) = self.0.0.lock() {
+            request.voice = voice.to_owned();
+        }
         self.request(Some(text), volume);
+    }
+    pub fn busy(&self) -> bool {
+        self.0.0.lock().is_ok_and(|request| request.busy)
     }
     pub fn stop(&self) {
         self.request(None, 0.);
@@ -147,6 +112,7 @@ impl Voice {
         // The worker never holds this lock while starting, waiting for, or stopping speech.
         if let Ok(mut request) = lock.lock() {
             request.revision = request.revision.wrapping_add(1);
+            request.busy = text.is_some();
             request.text = text;
             request.volume = volume.clamp(0., 1.);
             wake.notify_one();
@@ -199,8 +165,8 @@ fn system_voice() -> Option<String> {
         .ok()?;
     String::from_utf8_lossy(&voices.stdout)
         .lines()
-        .any(|line| line.split_whitespace().next() == Some("Samantha"))
-        .then(|| "Samantha".to_owned())
+        .any(|line| line.split_whitespace().next() == Some("Daniel"))
+        .then(|| "Daniel".to_owned())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -265,7 +231,7 @@ fn run(shared: Shared) {
         }
         let next = if request.revision != revision {
             revision = request.revision;
-            Some((request.text.take(), request.volume))
+            Some((request.text.take(), request.volume, request.voice.clone()))
         } else {
             None
         };
@@ -275,22 +241,30 @@ fn run(shared: Shared) {
             .and_then(|child| child.try_wait().ok().flatten())
         {
             child = None;
+            if let Ok(mut request) = lock.lock() {
+                request.busy = next.as_ref().is_some_and(|next| next.0.is_some());
+            }
             if !status.success()
                 && let Ok(mut request) = lock.lock()
             {
                 request.error = Some("The system robot voice could not speak this excerpt.".into());
             }
         }
-        if let Some((text, volume)) = next
+        if let Some((text, volume, selected)) = next
             && let Err(error) = apply_request(&mut child, text.as_deref(), |text| {
                 speak(
                     text,
                     volume,
-                    voice.get_or_insert_with(system_voice).as_deref(),
+                    if ["Daniel", "Rishi", "Samantha"].contains(&selected.as_str()) {
+                        Some(selected.as_str())
+                    } else {
+                        voice.get_or_insert_with(system_voice).as_deref()
+                    },
                 )
             })
             && let Ok(mut request) = lock.lock()
         {
+            request.busy = false;
             request.error = Some(error);
         }
     }
@@ -327,22 +301,13 @@ mod tests {
     }
 
     #[test]
-    fn reading_quotations_advance_and_stop_at_the_visible_block_end() {
-        let text = (0..100)
-            .map(|word| format!("w{word:03}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let mut first = Reading::start(&text, 100., 19);
-        let mut second = Reading::start(&text, 100., 19);
-        let excerpt = first.tick(10.).unwrap();
-        assert_eq!(Some(excerpt.clone()), second.tick(10.));
-        assert!(excerpt.starts_with("w010"), "{excerpt}");
-        let later = first.tick(20.).unwrap();
-        assert!(later.starts_with("w030"), "{later}");
-        assert_eq!(first.tick(100.), None);
-        // A new focus restarts its own position and does not retain the old text.
-        let mut next = Reading::start("new words for another file", 12., 1);
-        assert!(!next.tick(4.).unwrap().contains("w030"));
+    fn narration_reads_the_whole_block_in_order_exactly_once() {
+        let mut reading = Reading::start("first_word thenSecond final", 1., 19);
+        assert_eq!(
+            reading.tick(0.).as_deref(),
+            Some("first word then Second final")
+        );
+        assert_eq!(reading.tick(100.), None);
     }
 
     #[test]

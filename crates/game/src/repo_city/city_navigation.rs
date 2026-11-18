@@ -247,6 +247,24 @@ impl Navigation {
         Ok(Self { trace, ..default() })
     }
 
+    pub(super) fn reading_rows(
+        &self,
+        repo: &Repository,
+        selected: usize,
+        camera: &Transform,
+    ) -> Option<std::ops::Range<usize>> {
+        if self.is_flying() {
+            return None;
+        }
+        let route = self.route.as_ref()?;
+        let Stop::Review { row, count, .. } = route.stops[route.current] else {
+            return None;
+        };
+        let center = stop_position(route, route.current, repo, selected) + Vec3::Y * 3.;
+        reading::panel_in_focus(camera, center, Vec2::new(15.8, 4.3), 20.)
+            .then_some(row..row + count)
+    }
+
     pub(super) fn guides_camera(&self) -> bool {
         self.is_flying() || self.route.is_some()
     }
@@ -479,6 +497,10 @@ pub(super) fn navigate(
         navigation.review_line = Some((destination.anchor.start, time.elapsed_secs() + 10.));
     }
     if let Some((line, deadline)) = navigation.review_line {
+        let highlighted = explorer.highlighted.clone();
+        explorer
+            .source_layout
+            .unfold(&highlighted, line.saturating_sub(1));
         let file = &repo.0.files[explorer.selected];
         if let Some(end) = listing::Listing::review_line_view(&explorer, file, line) {
             navigation.review_line = None;

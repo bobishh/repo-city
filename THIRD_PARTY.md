@@ -46,3 +46,16 @@ and `licenses/bevy-markup-APACHE.txt`.
 The repository cover (`web/assets/start-screen.webp`) and facade texture
 (`assets/city/facade-print.png`) are original artwork created for this project.
 They are distributed under the project's MIT or Apache-2.0 license.
+
+## Native terminal
+
+VibePad uses Alacritty's terminal state machine and portable-pty directly.
+No Zed terminal wrapper code is included.
+
+- alacritty_terminal 0.26.0: Apache-2.0. See `licenses/alacritty-terminal-APACHE.txt`.
+- portable-pty 0.9.0: MIT. See `licenses/portable-pty-MIT.txt`.
+
+Touch flight controls adapt Feed the Poor's `web/src/touch.ts` at revision
+`beabe03f5aef648717fa175693cb9a76c953d9d5`. The local adaptation adds altitude,
+boost, water/paint actions, and VibePad navigation to the existing movement stick
+and drag-to-look controls.

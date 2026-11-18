@@ -5,6 +5,8 @@ files become buildings with source, diff, and blame walls. Review uncommitted
 changes without switching branches, mark lines with reusable review paints,
 and share local notes and your current code context with an MCP client.
 
+Licensed under **MIT OR Apache-2.0**; choose either license.
+
 ![VibePad shows sound and reading settings inside the handheld screen](docs/vibe-city.png)
 
 The browser version is [Repo City](https://repo-city.meta-uber-engineer.dev/).
@@ -121,7 +123,7 @@ The first city visit offers a controls tour. Open **H** to take it again.
 | Action | Control |
 | --- | --- |
 | Find a file by name or path | **P** in the browser, **⌘P** on Mac |
-| Preview Markdown or an image | Aim at its building and press **P**. VibePad renders Markdown and PNG, JPEG, or WebP images. |
+| Preview a document or image | Aim at its building and press **P**. VibePad renders Markdown, plain text and code, and PNG, JPEG, or WebP images. |
 | Fly | **WASD**, **Space** and **Ctrl** for altitude, **Shift** to boost |
 | Capture or release the cursor | Click the scene to capture. **Esc** releases. |
 | Use the actions menu | Right-click to open or close it. Scroll or use the arrow keys to highlight an action. Click or press **Enter** to select it. |
@@ -132,35 +134,41 @@ The first city visit offers a controls tour. Open **H** to take it again.
 | Wash or paint lines | **0** equips water. Click close to a source wall to start or stop water. Code appears while you aim at the block. In VibePad **Settings**, choose **Immediate** to save the reveal right away or **Delayed** to wait for the reading estimate. **1–9** equip paints; drag from one readable line to another on the same side of the file. |
 | Edit paints and notes | **U** opens paints; **⌘ + scroll** cycles tools on Mac. **J** opens the note you are aiming at or the review list. |
 | Find text on the current wall | **/** or **Find in file** in the actions menu. **Enter** keeps results; **N** and **Shift+N** visit matches. |
-| Turn to the diff or blame wall | **G** for diff, **B** for blame. Sign in with GitHub for line attribution in the browser. |
+| Turn to the diff or blame wall | **G** for diff, **B** for blame. Up close, **Left/Right** cycles source, diff and blame. Sign in with GitHub for line attribution in the browser. |
 | Follow a file’s changes | **C** starts the review. Scroll up or press **W** for the next stop. Scroll down or press **S** for the previous stop. **Q** returns to the diff wall. |
-| Open controls | **H** opens VibePad Help. Choose **Start tour** to practice flying and washing source. |
+| Fold a code block | **Z** collapses the aimed function; **X** expands it. Fixed-line blocks are used when syntax boundaries are unavailable. |
+| Open controls | **H** opens and puts away VibePad Help. Choose **Start tour** to practice flying and washing source. |
 
-**Lines per wash block** sets how many displayed rows clear together (default:
-6). Set it to 1 to clear individual rows. This setting is independent of the
+**Reading block** chooses whole functions where syntax boundaries are available,
+or fixed-line blocks. **Lines per wash block** sets the fallback/fixed block size
+(default: 6). Set it to 1 to clear individual rows. **Auto-advance** smoothly
+scrolls downward to the next unread block while water remains on. This setting is independent of the
 delay bounds. Wrapped continuations count as displayed rows; the original
 source line is saved as read only after all its continuations are cleared.
+Reading a close diff, blame wall, or hunk stop uses the same timer and reveals only its visible source lines on the correct comparison side. Flying past or looking away does not complete a block.
 While washing, code is visible immediately. Leaving an unfinished block covers
 it again. A ring around the tool-colored reticle shrinks as the delay expires.
 
-Delayed mode estimates seconds as `non-whitespace characters × 60 / (238 × 4.6)`
-for the selected block. A minimum or maximum delay clamps that result; clear
+Delayed mode estimates seconds as `effective non-whitespace characters × 60 / (238 × 4.6)`
+for the selected block. Consecutive copies of one character count once, so a
+decorative separator does not create a long delay. This repetition discount is
+an interface heuristic, separate from the cited prose reading rate. A minimum or maximum delay clamps that result; clear
 either field to remove that bound. The initial bounds remain 3 and 6 seconds.
 The length-adjusted [Brysbaert English nonfiction rate](https://doi.org/10.1016/j.jml.2019.104047)
 is an approximation, not a measured code-comprehension speed. Six rows is a
 configurable preset, not a research-backed optimum. The Mac stores `mode`,
-`block_lines`, `min_seconds`, and `max_seconds` in
+`block_lines`, `block_kind`, `auto_advance`, `min_seconds`, and `max_seconds` in
 `~/Library/Application Support/Repo City/reading.json`. A `null` bound has no limit.
 
-Reach the end of a Markdown preview to reveal the file's source wall.
+Reach the end of a Markdown or text preview to reveal the file's source wall.
 Repo City saves revealed lines and reviewed files in your browser or on your
 Mac. The same repository and comparison restore those marks. Press **V** to
 toggle the selected file’s review mark. To start over on the open comparison,
 choose **Reset progress** in the browser’s repository dialog or the Mac
 **Files** menu.
 
-The city shows the percentage of files visited and changed files whose diff
-you opened. In the browser, a pull request or branch update keeps visits to
+The city shows counts and progress bars for visited files and changed files
+whose diff you opened. In the browser, a pull request or branch update keeps visits to
 unchanged file contents and diffs.
 
 ## Follow file connections
@@ -181,15 +189,42 @@ language and content identity.
 
 The gear at the right of VibePad's navigation opens **Settings**. Set the water
 reading delay there, mute the city, adjust volume, or turn robot speech off.
-Wind, spray, construction, and occasional sirens are synthesized locally.
+Sound and narration start disabled. Wind, spray, construction, and occasional sirens are synthesized locally when enabled.
 The browser starts its AudioWorklet after the first click or keypress. Preferences
 persist on the device; opening the repository picker or hiding the page silences it.
-The browser robot uses an installed local voice when one is available. On macOS,
-the desktop robot prefers Samantha and falls back to the system voice.
-It quotes short, readable fragments from the source wall. The estimated reading
-position is approximate; it does not track your eyes. Leaving a block prevents
-new quotations while the current phrase finishes. Mute or leaving the application
-stops speech immediately.
+The robot reads the current readable block from start to end, in source order.
+Choose an installed local voice in Settings; the default prefers Daniel.
+Water is muted and other city sounds are quieter during speech. Leaving the
+block lets the current utterance finish; mute, opening a menu, or hiding the
+application stops speech. macOS uses system voices; desktop speech is currently
+unavailable on Linux and Windows. Browser voice availability depends on installed
+local voices.
+
+## Git history and terminal
+
+Open **Tab → Git** to browse commits and inspect their patches. Pick **Before**
+and **After**, then **Compare selected commits** to open those exact snapshots
+without checking out either commit. The browser uses GitHub history; it does not
+expose a local terminal.
+
+On desktop, **Tab → Terminal** opens a persistent shell in the current checkout.
+It uses Alacritty's terminal emulator and a real PTY, including cursor movement,
+alternate screens, UTF-8, resizing, clipboard paste and Ctrl+C. **Ctrl+Tab** puts
+away the tablet while the shell keeps running; plain Tab and Esc go to the shell.
+Shell commands run in the inspected repository and may change it. Git history
+and comparison controls only read it. If Git is missing, install it and restart
+the app; the tablet shows installation guidance rather than closing the app.
+
+## Touch controls
+
+The browser shows a movement stick and action buttons on devices with a coarse
+pointer. Drag the city to look around. Near a readable wall, swipe vertically to
+scroll and sideways to cycle source, diff, and blame. Moving the joystick
+leaves the wall.
+Use Up, Down and Fast to fly; altitude buttons hide while reading. **Pad** opens
+VibePad, and the top-right cross puts it away. Controls reset when a menu opens,
+the page loses focus, or a touch is cancelled. A WebGPU-capable browser and GPU
+remain required. Landscape provides more reading space.
 
 ## Leave review notes
 

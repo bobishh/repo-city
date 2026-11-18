@@ -43,6 +43,7 @@ pub(super) fn update(
     review: Res<review_notes::Review>,
     listing: Res<listing::Listing>,
     navigation: Res<city_navigation::Navigation>,
+    reading_settings: Res<reading::Settings>,
     filter: Res<file_facade::ChangesOnly>,
     windows: Query<&Window, With<PrimaryWindow>>,
     camera: Query<&Transform, PlayerCamera>,
@@ -71,22 +72,17 @@ pub(super) fn update(
             .get(explorer.selected)
             .filter(|file| filter.includes(file))
             .and_then(|file| {
-                let rows = listing.visible_source_rows(
-                    file,
-                    camera,
-                    &explorer,
-                    window.width() / window.height().max(1.),
-                )?;
                 let lines = listing
-                    .visible_source_fragments(
+                    .reading_source_fragments(
                         file,
                         camera,
                         &explorer,
                         window.width() / window.height().max(1.),
+                        *reading_settings,
                     )
                     .into_iter()
-                    .take(24)
-                    .map(|(_, text)| text.chars().take(200).collect::<String>())
+                    .take(512)
+                    .map(|(_, text)| text.to_owned())
                     .collect::<Vec<_>>();
                 if lines.is_empty() {
                     return None;
@@ -103,13 +99,11 @@ pub(super) fn update(
                 text.hash(&mut hash);
                 Some(Focus {
                     id: format!(
-                        "{}:{}:{}:{}:{}-{}:{:x}",
+                        "{}:{}:{}:{}:{:x}",
                         repo.0.revision,
                         file.path,
                         explorer.before,
                         explorer.selected,
-                        rows.start,
-                        rows.end,
                         hash.finish()
                     ),
                     text,

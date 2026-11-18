@@ -4,14 +4,24 @@ use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use super::*;
 
 pub(super) fn is_markdown(path: &str) -> bool {
-    PathBuf::from(path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| {
-            ["md", "markdown", "mdown", "mkd"]
-                .iter()
-                .any(|kind| ext.eq_ignore_ascii_case(kind))
-        })
+    file_preview::format(path) == Some(file_preview::Format::Markdown)
+}
+
+pub(super) fn document_html(path: &str, source: &str) -> String {
+    if is_markdown(path) {
+        return markdown_html(source);
+    }
+    let mut html = String::new();
+    pulldown_cmark::html::push_html(
+        &mut html,
+        [
+            Event::Start(Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Indented)),
+            Event::Text(source.into()),
+            Event::End(TagEnd::CodeBlock),
+        ]
+        .into_iter(),
+    );
+    html
 }
 
 fn events(source: &str) -> impl Iterator<Item = Event<'_>> {
@@ -138,7 +148,10 @@ impl ReadDocument {
             &file.after
         };
         self.path == file.path
-            && is_markdown(&file.path)
+            && matches!(
+                file_preview::format(&file.path),
+                Some(file_preview::Format::Markdown | file_preview::Format::Text)
+            )
             && (1..=1024 * 1024).contains(&self.rows)
             && blob
                 .as_ref()

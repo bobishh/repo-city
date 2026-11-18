@@ -1,0 +1,44 @@
+import { test, expect } from "@playwright/test";
+
+test("touch flight controls reset movement for VibePad and backgrounding", async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const page = await context.newPage();
+  await page.route("**/touch-fixture", route => route.fulfill({ contentType: "text/html", body: `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><main><canvas id="game" width="390" height="600"></canvas><dialog><button id="put-away">Put away</button></dialog></main><script type="module">import {createTouchControls} from '/touch.mjs'; globalThis.touch = createTouchControls({canvas: document.querySelector('canvas')}); document.querySelector('#put-away').onclick=()=>document.querySelector('dialog').close();</script>` }));
+  await page.goto("/touch-fixture");
+  const stick = page.getByRole("button", { name: "Move joystick" });
+  await expect(stick).toBeVisible();
+  const box = await stick.boundingBox();
+  await page.mouse.move(box.x + 45, box.y + 45); await page.mouse.down(); await page.mouse.move(box.x + 45, box.y + 10);
+  expect(JSON.parse(await page.evaluate(() => touch.take())).move[1]).toBeGreaterThan(0.7);
+  await page.mouse.up();
+  expect(JSON.parse(await page.evaluate(() => touch.take())).move).toEqual([0, 0]);
+  const canvas = page.locator("canvas");
+  await canvas.evaluate(element => element.setAttribute("data-touch-reading", ""));
+  const cdp = await context.newCDPSession(page);
+  const swipe = async (endX, endY) => {
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: 160, y: 200 }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: endX, y: endY }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    return JSON.parse(await page.evaluate(() => touch.take()));
+  };
+  expect((await swipe(160, 140)).look).toEqual([0, -60]);
+  expect((await swipe(80, 200)).pulses).toEqual(["ArrowRight"]);
+  expect((await swipe(240, 200)).pulses).toEqual(["ArrowLeft"]);
+  await canvas.evaluate(element => element.removeAttribute("data-touch-reading"));
+  expect((await swipe(240, 200)).look).toEqual([80, 0]);
+  await cdp.detach();
+  await page.getByRole("button", { name: "Open VibePad" }).tap();
+  expect(JSON.parse(await page.evaluate(() => touch.take())).pulses).toEqual(["Tab"]);
+  await page.evaluate(() => document.querySelector("dialog").showModal());
+  await expect(stick).toBeHidden();
+  expect(JSON.parse(await page.evaluate(() => touch.take()))).toMatchObject({ enabled: false, move: [0, 0], held: [] });
+  await page.getByRole("button", { name: "Put away" }).tap();
+  await expect(stick).toBeVisible();
+  const up = await page.getByRole("button", { name: "Fly up" }).boundingBox();
+  await page.mouse.move(up.x + 20, up.y + 20); await page.mouse.down();
+  expect(JSON.parse(await page.evaluate(() => touch.take())).held).toContain("Space");
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  expect(JSON.parse(await page.evaluate(() => touch.take())).held).toEqual([]);
+  await page.mouse.up();
+  await context.close();
+});

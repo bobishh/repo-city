@@ -154,8 +154,8 @@ const NAVIGATION: &[(&str, &str)] = &[
     ("M", "Cycle district, project, and return"),
     ("Cmd+O", "Open local repository"),
     ("Cmd+P", "Find a file"),
-    ("P", "Preview an aimed Markdown file"),
-    ("Tab", "Open VibePad"),
+    ("P", "Preview aimed text or image"),
+    ("Tab", "Open or put away VibePad"),
     ("Ctrl+O / Ctrl+I", "Previous or next building"),
     ("L", "Fly to the last changed file"),
 ];
@@ -167,6 +167,8 @@ const READING: &[(&str, &str)] = &[
     ("/", "Find text on the wall"),
     ("N / Shift+N", "Next or previous match"),
     ("G / B", "Open diff or blame"),
+    ("Left / Right", "Cycle source, diff, and blame up close"),
+    ("Z / X", "Collapse or expand the aimed code block"),
     ("F", "Show only changed files"),
 ];
 

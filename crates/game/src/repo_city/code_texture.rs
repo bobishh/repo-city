@@ -49,7 +49,7 @@ fn ink(kind: Kind) -> [f32; 3] {
         Kind::Function => [0.53, 0.73, 1.],
     }
 }
-struct Canvas {
+pub(super) struct Canvas {
     pixels: Vec<u8>,
     width: u32,
     height: u32,
@@ -82,7 +82,44 @@ fn emoji_fallback_rasterizes_eyes_and_other_glyphs() {
 }
 
 impl Canvas {
-    fn text(&mut self, text: &str, x: f32, y: f32, size: f32, color: impl Fn(usize) -> [f32; 3]) {
+    pub(super) fn new(width: u32, height: u32) -> Self {
+        Self {
+            pixels: vec![0; (width * height * 4) as usize],
+            width,
+            height,
+            context: ScaleContext::new(),
+        }
+    }
+    pub(super) fn rect(&mut self, x: u32, y: u32, width: u32, height: u32, color: [u8; 3]) {
+        for row in y..y.saturating_add(height).min(self.height) {
+            for col in x..x.saturating_add(width).min(self.width) {
+                let offset = ((row * self.width + col) * 4) as usize;
+                self.pixels[offset..offset + 4]
+                    .copy_from_slice(&[color[0], color[1], color[2], 255]);
+            }
+        }
+    }
+    pub(super) fn image(self) -> Image {
+        Image::new(
+            Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            self.pixels,
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::default(),
+        )
+    }
+    pub(super) fn text(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        size: f32,
+        color: impl Fn(usize) -> [f32; 3],
+    ) {
         self.scaled_text(text, x, y, size, Vec2::ONE, color);
     }
 

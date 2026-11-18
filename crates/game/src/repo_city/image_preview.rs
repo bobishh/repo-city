@@ -15,11 +15,7 @@ const MAX_PIXELS: u64 = 16 * 1024 * 1024;
 pub(super) struct Request(pub Option<(usize, bool)>);
 
 pub(super) fn supported(path: &str) -> bool {
-    path.rsplit_once('.').is_some_and(|(_, extension)| {
-        ["png", "jpg", "jpeg", "webp"]
-            .iter()
-            .any(|supported| extension.eq_ignore_ascii_case(supported))
-    })
+    file_preview::format(path) == Some(file_preview::Format::Image)
 }
 
 pub(super) struct Preview {

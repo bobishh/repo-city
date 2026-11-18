@@ -237,6 +237,14 @@ impl RepositoryPicker {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn compare_commits(&mut self, root: PathBuf, before: String, after: String) {
+        self.status = "Loading selected commits…".into();
+        self.local = Some(native_github::Job::spawn(move || {
+            load(&root, &after, Some(&before))
+        }));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn open_github(
         &mut self,
         input: &str,
@@ -838,7 +846,10 @@ pub(super) fn spawn(
             },
             BackgroundColor(Color::srgba(0.02, 0.07, 0.09, 0.95)),
             observe(|_: On<Activate>, mut picker: ResMut<RepositoryPicker>| {
-                picker.requested = Some(PickerAction::Menu)
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    picker.requested = Some(PickerAction::Menu);
+                }
             }),
         ))
         .with_children(|ui| {
@@ -1000,13 +1011,18 @@ pub(super) fn open_repository(
         Query<(&mut ScrollPosition, &RelativeCursorPosition), With<RevisionList>>,
         Res<AccumulatedMouseScroll>,
     ),
-    (mut github_render, mut clipboard): (Local<GitHubRender>, ResMut<Clipboard>),
+    (mut github_render, mut clipboard, terminal): (
+        Local<GitHubRender>,
+        ResMut<Clipboard>,
+        Option<Res<terminal::Terminal>>,
+    ),
     review: Res<review_notes::Review>,
 ) {
     let Ok((mut window, mut cursor)) = windows.single_mut() else {
         return;
     };
-    let shortcut = keys.just_pressed(KeyCode::KeyO)
+    let shortcut = !terminal.is_some_and(|terminal| terminal.active)
+        && keys.just_pressed(KeyCode::KeyO)
         && keys.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight]);
     let was_blocked = picker.view.is_some() || picker.folder.is_some();
     let mut opened = false;

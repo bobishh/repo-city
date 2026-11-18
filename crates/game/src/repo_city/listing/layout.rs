@@ -7,15 +7,46 @@ pub(crate) struct SourceLayout {
     pub bytes: Vec<Range<usize>>,
     starts: Vec<usize>,
     revision: u64,
+    folds: Vec<Range<usize>>,
 }
 
 impl SourceLayout {
     pub fn new(lines: &[syntax::Line]) -> Self {
-        let mut result = Self::default();
+        Self::project(lines, Vec::new())
+    }
+
+    fn project(lines: &[syntax::Line], folds: Vec<Range<usize>>) -> Self {
+        let mut result = Self {
+            folds,
+            ..Self::default()
+        };
         let mut advances = HashMap::new();
         let limit = code_texture::LISTING_WIDTH as f32 - 106. - 20.;
-        for line in lines {
+        for (index, line) in lines.iter().enumerate() {
             result.starts.push(result.rows.len());
+            if result
+                .folds
+                .iter()
+                .any(|range| index > range.start && index < range.end)
+            {
+                continue;
+            }
+            let folded = result
+                .folds
+                .iter()
+                .filter(|range| range.start == index)
+                .max_by_key(|range| range.len());
+            let placeholder;
+            let line = if let Some(range) = folded {
+                placeholder = syntax::Line {
+                    number: line.number,
+                    text: format!("{}  … [{} lines]", line.text, range.len()),
+                    spans: line.spans.clone(),
+                };
+                &placeholder
+            } else {
+                line
+            };
             let mut start = 0;
             let mut first_span = 0;
             loop {
@@ -82,6 +113,41 @@ impl SourceLayout {
         self.revision = revision;
     }
 
+    pub fn fold(&mut self, lines: &[syntax::Line], range: Range<usize>) -> bool {
+        if range.len() < 2 || range.end > lines.len() || self.folds.contains(&range) {
+            return false;
+        }
+        let mut folds = self.folds.clone();
+        folds.push(range);
+        self.reproject(lines, folds);
+        true
+    }
+    pub fn unfold(&mut self, lines: &[syntax::Line], row: usize) -> bool {
+        let folds = self
+            .folds
+            .iter()
+            .filter(|range| !range.contains(&row))
+            .cloned()
+            .collect::<Vec<_>>();
+        if folds.len() == self.folds.len() {
+            return false;
+        }
+        self.reproject(lines, folds);
+        true
+    }
+    pub fn unfold_all(&mut self, lines: &[syntax::Line]) -> bool {
+        if self.folds.is_empty() {
+            return false;
+        }
+        self.reproject(lines, Vec::new());
+        true
+    }
+    fn reproject(&mut self, lines: &[syntax::Line], folds: Vec<Range<usize>>) {
+        let revision = self.revision.wrapping_add(1);
+        *self = Self::project(lines, folds);
+        self.revision = revision;
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -136,6 +202,33 @@ impl SourceLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folding_preserves_source_line_identity_and_expanding_restores_all_bytes() {
+        let lines = syntax::highlight(
+            "test.rs",
+            "fn first() {\n  let a = 1;\n  work(a);\n}\nfn next() {}\n",
+        );
+        let mut layout = SourceLayout::new(&lines);
+        assert!(layout.fold(&lines, 0..4));
+        assert_eq!(layout.len(), 2);
+        assert!(layout.rows[0].text.contains("[4 lines]"));
+        assert!(layout.visual_rows(2).is_empty());
+        assert_eq!(layout.rows[1].number, 5);
+        assert_eq!(layout.canonical_range(1..2), 4..5);
+        assert!(layout.unfold(&lines, 0));
+        assert_eq!(
+            layout
+                .rows
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn syntax_spans_and_tail_search_keep_original_utf8_coordinates() {

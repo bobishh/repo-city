@@ -9,6 +9,20 @@ pub fn focus(camera: &mut Transform, repo: &Repository, explorer: &Explorer) {
     *camera = Transform::from_xyz(x, BASE + 8., z + 37.)
         .looking_at(Vec3::new(x, BASE + 7., z + 3.), Vec3::Y);
 }
+pub(super) fn reading_rows(
+    file: &repo_world::File,
+    explorer: &Explorer,
+    camera: &Transform,
+) -> Option<(bool, std::ops::Range<usize>)> {
+    let [x, z] = file.position;
+    [true, false].into_iter().find_map(|before| {
+        let pair_x = x + if before { -7.4 } else { 7.4 };
+        let center = Vec3::new(pair_x, BASE + 6.2, z + 4.);
+        reading::panel_in_focus(camera, center, Vec2::new(13.6, 7.2), 24.)
+            .then_some((before, explorer.page * 23..explorer.page * 23 + 23))
+    })
+}
+
 pub fn controls(
     keys: Res<ButtonInput<KeyCode>>,
     repo: Res<Repo>,

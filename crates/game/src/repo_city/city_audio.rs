@@ -37,14 +37,16 @@ pub(super) struct Settings {
     pub ambience: bool,
     pub speech: bool,
     pub volume: f32,
+    pub voice: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            ambience: true,
-            speech: cfg!(target_os = "macos"),
+            ambience: false,
+            speech: false,
             volume: 0.18,
+            voice: "Daniel".into(),
         }
     }
 }
@@ -205,6 +207,7 @@ fn update(
     review: Res<review_notes::Review>,
     listing: Res<listing::Listing>,
     navigation: Res<city_navigation::Navigation>,
+    reading_settings: Res<reading::Settings>,
     filter: Res<file_facade::ChangesOnly>,
     windows: Query<&Window, With<PrimaryWindow>>,
     camera: Query<&Transform, PlayerCamera>,
@@ -226,13 +229,20 @@ fn update(
         .is_some_and(|file| file.change != Change::Unchanged);
     runtime.controls.store(Levels {
         master: if active && settings.ambience {
-            settings.volume * if review.blocked { 0.35 } else { 1. }
+            settings.volume
+                * if runtime.voice.busy() {
+                    0.12
+                } else if review.blocked {
+                    0.35
+                } else {
+                    1.
+                }
         } else {
             0.
         },
         wind: (0.15 + camera.translation.y.max(0.) / 250. + movement / 120.).clamp(0.15, 1.),
-        spray: if !review.blocked && review.nozzle > 0.1 {
-            review.nozzle
+        spray: if !review.blocked && !runtime.voice.busy() && review.nozzle > 0.1 {
+            review.nozzle * 0.18
         } else {
             0.
         },
@@ -266,11 +276,12 @@ fn update(
         .get(explorer.selected)
         .filter(|file| filter.includes(file))
         .and_then(|file| {
-            let fragments = listing.visible_source_fragments(
+            let fragments = listing.reading_source_fragments(
                 file,
                 camera,
                 &explorer,
                 window.width() / window.height().max(1.),
+                *reading_settings,
             );
             let start = fragments.first()?.0.saturating_sub(1);
             let end = fragments.last()?.0;
@@ -283,10 +294,7 @@ fn update(
         return;
     };
     // Quote only readable fragments on screen, including partial wrapped source lines.
-    let text = fragments
-        .iter()
-        .take(100)
-        .map(|(_, text)| speech::visible_text(text));
+    let text = fragments.iter().take(100).map(|(_, text)| *text);
     if text.clone().next().is_none() {
         if runtime.focus.take().is_some() {
             runtime.reading = speech::Reading::default();
@@ -335,7 +343,11 @@ fn update(
             text_hash,
         });
     }
-    if let Some(text) = runtime.reading.tick(time.delta_secs()) {
-        runtime.voice.speak(text, settings.volume);
+    if !runtime.voice.busy()
+        && let Some(text) = runtime.reading.tick(time.delta_secs())
+    {
+        runtime
+            .voice
+            .speak(text, (settings.volume * 2.).min(1.), &settings.voice);
     }
 }

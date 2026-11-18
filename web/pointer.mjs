@@ -25,7 +25,7 @@ export function setupPointer(canvas, menu) {
     if (event.code === "Escape") release();
   }, true);
   canvas.addEventListener("pointerdown", event => {
-    if (event.button === 0) capture();
+    if (event.button === 0 && event.pointerType !== "touch") capture();
   });
   canvas.addEventListener("contextmenu", event => {
     event.preventDefault();

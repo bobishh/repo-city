@@ -28,10 +28,79 @@ pub(super) struct Tablet {
     bounds: [String; 3],
     inputs: Option<[Entity; 3]>,
     mode: reading::Mode,
+    block_kind: reading::BlockKind,
+    auto_advance: bool,
     status: String,
     document: Option<Document>,
     links_version: u64,
     image: Option<ImageView>,
+    history: Option<History>,
+    search: String,
+    search_input: Option<Entity>,
+    search_list: Option<Entity>,
+    search_results: Vec<usize>,
+}
+
+struct History {
+    root: PathBuf,
+    revision: String,
+    skip: usize,
+    pending: Option<native_github::Job<Vec<repo_world::history::Commit>>>,
+    commits: Result<Vec<repo_world::history::Commit>, String>,
+    showing: Option<native_github::Job<String>>,
+    detail: Option<Result<String, String>>,
+    before: Option<String>,
+    after: Option<String>,
+}
+
+impl History {
+    fn open(repo: &Repository, skip: usize) -> Self {
+        let root = repo.root.clone();
+        let revision = repo.revision.clone();
+        let (path, rev) = (root.clone(), revision.clone());
+        Self {
+            root,
+            revision,
+            skip,
+            pending: Some(native_github::Job::spawn(move || {
+                repo_world::history::commits(&path, &rev, skip)
+            })),
+            commits: Ok(Vec::new()),
+            showing: None,
+            detail: None,
+            before: repo.baseline.clone(),
+            after: (!repo.is_worktree()).then(|| repo.revision.clone()),
+        }
+    }
+    fn show(&mut self, index: usize) {
+        if let Some(commit) = self
+            .commits
+            .as_ref()
+            .ok()
+            .and_then(|commits| commits.get(index))
+        {
+            let root = self.root.clone();
+            let id = commit.id.clone();
+            self.showing = Some(native_github::Job::spawn(move || {
+                repo_world::history::show(&root, &id)
+            }));
+            self.detail = None;
+        }
+    }
+    fn poll(&mut self) -> bool {
+        let mut changed = false;
+        if let Some(result) = self.pending.as_ref().and_then(native_github::Job::take) {
+            self.pending = None;
+            self.commits = result;
+            changed = true;
+        }
+        if let Some(result) = self.showing.as_ref().and_then(native_github::Job::take) {
+            self.showing = None;
+            self.detail = Some(result);
+            changed = true;
+        }
+        changed
+    }
 }
 
 struct ImageView {
@@ -77,7 +146,7 @@ impl Document {
                     blob,
                     rows: source.split_inclusive('\n').count(),
                 };
-                Ok((markdown_preview::markdown_html(&source), read))
+                Ok((markdown_preview::document_html(&file.path, &source), read))
             })),
             ..default()
         })
@@ -93,13 +162,19 @@ pub(super) enum Page {
     Document,
     Connections,
     Image,
+    Git,
+    Search,
+    Terminal,
 }
 
 impl Page {
-    pub(super) const NAVIGATION: [(Self, &'static str); 3] = [
+    pub(super) const NAVIGATION: [(Self, &'static str); 6] = [
         (Self::Files, "Files"),
+        (Self::Search, "Find"),
         (Self::Help, "Help"),
         (Self::Connections, "Connections"),
+        (Self::Git, "Git"),
+        (Self::Terminal, "Terminal"),
     ];
 }
 
@@ -110,11 +185,20 @@ enum Action {
     Page(usize),
     Switch(Page),
     Mode(reading::Mode),
+    Block(reading::BlockKind),
+    AutoAdvance,
     Save,
+    GitShow(usize),
+    GitPage(usize),
+    GitBack,
+    GitBefore(usize),
+    GitAfter(usize),
+    GitCompare,
     StartTour,
     Connection(usize),
     Ambience,
     Speech,
+    Voice,
     Volume(f32),
     Close,
 }
@@ -146,6 +230,9 @@ impl Tablet {
             Page::Settings => "settings",
             Page::Document => "document",
             Page::Image => "image",
+            Page::Git => "git",
+            Page::Search => "search",
+            Page::Terminal => "terminal",
         })
     }
 
@@ -155,6 +242,8 @@ impl Tablet {
                 .map(|value| value.map_or_else(String::new, |value| value.to_string()));
             self.bounds = [reading.block_lines.to_string(), min, max];
             self.mode = reading.mode;
+            self.block_kind = reading.block_kind;
+            self.auto_advance = reading.auto_advance;
             self.status.clear();
         }
         self.view = view;
@@ -314,7 +403,7 @@ pub(super) fn update(
     (
         mut reading,
         mut tour,
-        repository,
+        mut repository,
         fields,
         mut pilot,
         mut cursor,
@@ -325,10 +414,11 @@ pub(super) fn update(
         mut audio,
         mut image_request,
         mut images,
+        mut terminal,
     ): (
         ResMut<reading::Settings>,
         ResMut<guide::Tour>,
-        Res<repository_picker::RepositoryPicker>,
+        ResMut<repository_picker::RepositoryPicker>,
         Query<&EditableText>,
         Query<&mut Pilot, PlayerCamera>,
         Query<&mut CursorOptions, With<PrimaryWindow>>,
@@ -339,17 +429,31 @@ pub(super) fn update(
         Option<ResMut<city_audio::Settings>>,
         Option<ResMut<image_preview::Request>>,
         Option<ResMut<Assets<Image>>>,
+        Option<ResMut<terminal::Terminal>>,
     ),
 ) {
     let editing = focus.get().is_some_and(|entity| fields.contains(entity));
-    let help = keys.just_pressed(KeyCode::KeyH) && unmodified(&keys) && !editing;
-    let action = tablet.action.take().or_else(|| {
-        help.then_some(if tablet.view == Page::Help {
-            Action::Close
-        } else {
-            Action::Switch(Page::Help)
-        })
-    });
+    let terminal_page = tablet.is_open() && tablet.view == Page::Terminal;
+    let help = keys.just_pressed(KeyCode::KeyH) && unmodified(&keys) && !editing && !terminal_page;
+    let find_file = !terminal_page
+        && keys.just_pressed(KeyCode::KeyP)
+        && keys.any_pressed([
+            KeyCode::SuperLeft,
+            KeyCode::SuperRight,
+            KeyCode::ControlLeft,
+            KeyCode::ControlRight,
+        ]);
+    let action = tablet
+        .action
+        .take()
+        .or_else(|| find_file.then_some(Action::Switch(Page::Search)))
+        .or_else(|| {
+            help.then_some(if tablet.view == Page::Help {
+                Action::Close
+            } else {
+                Action::Switch(Page::Help)
+            })
+        });
     let markdown = markdown.as_deref_mut().and_then(|request| request.0.take());
     let image = image_request
         .as_deref_mut()
@@ -357,12 +461,29 @@ pub(super) fn update(
     let was_open = tablet.panel.is_some();
     let mut redraw = !was_open;
     if let Some(panel) = tablet.panel {
-        let same_comparison = tablet
-            .scope
-            .as_ref()
-            .is_some_and(|(root, revision, baseline)| {
-                root == &repo.0.root && revision == &repo.0.revision && baseline == &repo.0.baseline
-            });
+        let mut same_comparison =
+            tablet
+                .scope
+                .as_ref()
+                .is_some_and(|(root, revision, baseline)| {
+                    root == &repo.0.root
+                        && revision == &repo.0.revision
+                        && baseline == &repo.0.baseline
+                });
+        if terminal_page
+            && !same_comparison
+            && tablet
+                .scope
+                .as_ref()
+                .is_some_and(|(root, _, _)| root == &repo.0.root)
+        {
+            tablet.scope = Some((
+                repo.0.root.clone(),
+                repo.0.revision.clone(),
+                repo.0.baseline.clone(),
+            ));
+            same_comparison = true;
+        }
         if same_comparison
             && tablet.view == Page::Document
             && let Some(document) = tablet
@@ -399,8 +520,12 @@ pub(super) fn update(
         if matches!(action, Some(Action::Close | Action::StartTour))
             || destination.is_some()
             || connection
-            || keys.just_pressed(KeyCode::Escape)
-            || plain_tab(&keys)
+            || (!terminal_page && keys.just_pressed(KeyCode::Escape))
+            || (!terminal_page && plain_tab(&keys))
+            || (terminal_page
+                && keys.just_pressed(KeyCode::Tab)
+                && keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]))
+            || (help && tablet.view == Page::Help)
             || !same_comparison
         {
             native_panel::close(&mut commands, panel, &mut focus, &parents);
@@ -421,6 +546,71 @@ pub(super) fn update(
             }
             Some(Action::Switch(page)) if page != tablet.view => {
                 tablet.switch(page, &reading);
+                if page == Page::Git {
+                    tablet.history = Some(History::open(&repo.0, 0));
+                }
+                redraw = true;
+            }
+            Some(Action::GitBefore(index) | Action::GitAfter(index)) => {
+                if let Some(history) = tablet.history.as_mut() {
+                    if let Some(commit) = history
+                        .commits
+                        .as_ref()
+                        .ok()
+                        .and_then(|rows| rows.get(index))
+                    {
+                        if matches!(action, Some(Action::GitBefore(_))) {
+                            history.before = Some(commit.id.clone());
+                        } else {
+                            history.after = Some(commit.id.clone());
+                        }
+                    }
+                }
+                redraw = true;
+            }
+            Some(Action::GitCompare) => {
+                if let Some(history) = tablet.history.as_ref()
+                    && let (Some(before), Some(after)) = (&history.before, &history.after)
+                {
+                    repository.compare_commits(history.root.clone(), before.clone(), after.clone());
+                    tablet.status = "Loading selected commits…".into();
+                    redraw = true;
+                }
+            }
+            Some(Action::GitShow(index)) => {
+                if let Some(history) = tablet.history.as_mut() {
+                    history.show(index);
+                }
+                redraw = true;
+            }
+            Some(Action::GitPage(skip)) => {
+                let selection = tablet
+                    .history
+                    .as_ref()
+                    .map(|history| (history.before.clone(), history.after.clone()));
+                tablet.history = Some(History::open(&repo.0, skip));
+                if let (Some(history), Some((before, after))) = (tablet.history.as_mut(), selection)
+                {
+                    history.before = before;
+                    history.after = after;
+                }
+                redraw = true;
+            }
+            Some(Action::GitBack) => {
+                if let Some(history) = tablet.history.as_mut() {
+                    history.detail = None;
+                    history.showing = None;
+                }
+                redraw = true;
+            }
+            Some(Action::Block(kind)) => {
+                tablet.capture_bounds(&fields);
+                tablet.block_kind = kind;
+                redraw = true;
+            }
+            Some(Action::AutoAdvance) => {
+                tablet.capture_bounds(&fields);
+                tablet.auto_advance = !tablet.auto_advance;
                 redraw = true;
             }
             Some(Action::Mode(mode)) => {
@@ -437,7 +627,9 @@ pub(super) fn update(
                     &tablet.bounds[1],
                     &tablet.bounds[2],
                 )
-                .and_then(|next| {
+                .and_then(|mut next| {
+                    next.block_kind = tablet.block_kind;
+                    next.auto_advance = tablet.auto_advance;
                     next.save()?;
                     Ok(next)
                 }) {
@@ -449,12 +641,20 @@ pub(super) fn update(
                 };
                 redraw = true;
             }
-            Some(Action::Ambience | Action::Speech | Action::Volume(_)) => {
+            Some(Action::Ambience | Action::Speech | Action::Volume(_) | Action::Voice) => {
                 if let Some(audio) = audio.as_deref_mut() {
                     let previous = audio.clone();
                     match action {
                         Some(Action::Ambience) => audio.ambience = !audio.ambience,
                         Some(Action::Speech) => audio.speech = !audio.speech,
+                        Some(Action::Voice) => {
+                            audio.voice = match audio.voice.as_str() {
+                                "Daniel" => "Rishi",
+                                "Rishi" => "Samantha",
+                                _ => "Daniel",
+                            }
+                            .into()
+                        }
                         Some(Action::Volume(volume)) => audio.volume = volume,
                         _ => {}
                     }
@@ -519,6 +719,9 @@ pub(super) fn update(
             repo.0.baseline.clone(),
         ));
         tablet.switch(page, &reading);
+        if page == Page::Git {
+            tablet.history = Some(History::open(&repo.0, 0));
+        }
         if page == Page::Document
             && let Some((index, before)) = markdown
         {
@@ -556,6 +759,9 @@ pub(super) fn update(
         tablet.dates_requested = true;
         tablet.pending = Some(load_times(&repo.0));
     }
+    if let Some(history) = tablet.history.as_mut() {
+        redraw |= history.poll();
+    }
     if let Some(result) = tablet.pending.as_ref().and_then(native_github::Job::take) {
         tablet.pending = None;
         tablet.times = result.unwrap_or_default();
@@ -578,6 +784,30 @@ pub(super) fn update(
                 .ok_or_else(|| "Image rendering is unavailable.".into())
         }));
         redraw |= tablet.view == Page::Image;
+    }
+    if tablet.view == Page::Search && tablet.panel.is_some() {
+        let query = tablet
+            .search_input
+            .and_then(|entity| fields.get(entity).ok())
+            .map(|field| field.value().to_string());
+        if let Some(query) = query.filter(|query| query != &tablet.search) {
+            tablet.search = query;
+            tablet.search_results = search_results(&repo.0, &tablet.search);
+            if let Some(list) = tablet.search_list {
+                commands
+                    .entity(list)
+                    .despawn_children()
+                    .with_children(|parent| {
+                        draw_search_results(parent, &repo.0, &tablet.search_results)
+                    });
+            }
+        }
+        if keys.just_pressed(KeyCode::Enter)
+            && focus.get() == tablet.search_input
+            && let Some(&index) = tablet.search_results.first()
+        {
+            tablet.action = Some(Action::Visit(index));
+        }
     }
     if !redraw {
         if tablet.view == Page::Connections
@@ -607,6 +837,8 @@ pub(super) fn update(
         time.elapsed_secs_f64(),
         links.as_deref(),
         audio.as_deref(),
+        terminal.as_deref_mut(),
+        &repo.0,
     );
     tablet.panel = Some(panel);
     focus.set(first, FocusCause::Navigated);
@@ -624,6 +856,51 @@ impl Tablet {
     }
 }
 
+fn search_results(repo: &Repository, query: &str) -> Vec<usize> {
+    let query = query.trim().to_lowercase();
+    let mut results = repo
+        .files
+        .iter()
+        .enumerate()
+        .filter_map(|(index, file)| {
+            file_picker::rank(&file.path, &query).map(|score| (score, index))
+        })
+        .collect::<Vec<_>>();
+    results.sort_unstable();
+    results.into_iter().map(|(_, index)| index).collect()
+}
+fn draw_search_results(parent: &mut ChildSpawnerCommands, repo: &Repository, results: &[usize]) {
+    native_panel::text(
+        parent,
+        &if results.is_empty() {
+            "No matching files.".into()
+        } else {
+            format!(
+                "{} files{}",
+                results.len(),
+                if results.len() > 100 {
+                    "; first 100 shown"
+                } else {
+                    ""
+                }
+            )
+        },
+        native_panel::INK,
+    );
+    for (row, &index) in results.iter().take(100).enumerate() {
+        let entity = native_panel::button::<Action, Tablet>(
+            parent,
+            &repo.files[index].path,
+            native_panel::INK,
+            Action::Visit(index),
+        );
+        parent
+            .commands()
+            .entity(entity)
+            .insert(TabIndex(100 + row as i32));
+    }
+}
+
 fn draw(
     commands: &mut Commands,
     tablet: &mut Tablet,
@@ -631,6 +908,8 @@ fn draw(
     elapsed: f64,
     links: Option<&file_links::Links>,
     audio: Option<&city_audio::Settings>,
+    mut terminal: Option<&mut terminal::Terminal>,
+    repository: &Repository,
 ) -> (Entity, Entity) {
     let title = match tablet.view {
         Page::Files => "Changed files",
@@ -645,6 +924,9 @@ fn draw(
             .document
             .as_ref()
             .map_or("Markdown", |document| document.path.as_str()),
+        Page::Git => "Git history",
+        Page::Search => "Find a file",
+        Page::Terminal => "Terminal",
     };
     let panel = native_panel::tablet(commands, title);
     let now = SystemTime::now()
@@ -681,6 +963,45 @@ fn draw(
                 });
             });
         match tablet.view {
+            Page::Search => {
+                tablet.search_results = search_results(repository, &tablet.search);
+                let input =
+                    native_panel::input(parent, "File name or path", &tablet.search, tab, false);
+                tablet.search_input = Some(input);
+                first = Some(input);
+                tablet.search_list = Some(
+                    parent
+                        .spawn((
+                            FileRows,
+                            ScrollPosition::default(),
+                            Node {
+                                flex_direction: FlexDirection::Column,
+                                flex_grow: 1.,
+                                min_height: px(0.),
+                                row_gap: px(6.),
+                                overflow: Overflow::scroll_y(),
+                                ..default()
+                            },
+                        ))
+                        .with_children(|parent| {
+                            draw_search_results(parent, repository, &tablet.search_results)
+                        })
+                        .id(),
+                );
+                return;
+            }
+            Page::Git => {
+                draw_git(parent, tablet.history.as_ref(), &mut tab);
+                return;
+            }
+            Page::Terminal => {
+                if let Some(terminal) = terminal.as_deref_mut() {
+                    first = Some(terminal.draw(parent, &repository.root));
+                } else {
+                    native_panel::text(parent, "Terminal unavailable.", native_panel::INK);
+                }
+                return;
+            }
             Page::Document => {
                 draw_document(parent, tablet.document.as_mut());
                 return;
@@ -869,6 +1190,133 @@ fn draw_document(parent: &mut ChildSpawnerCommands, document: Option<&mut Docume
         });
 }
 
+fn draw_git(parent: &mut ChildSpawnerCommands, history: Option<&History>, tab: &mut i32) {
+    let Some(history) = history else {
+        return;
+    };
+    native_panel::text(
+        parent,
+        &format!(
+            "Before {} → After {}",
+            history.before.as_deref().map_or("—", |id| &id[..8]),
+            history.after.as_deref().map_or("—", |id| &id[..8])
+        ),
+        native_panel::INK,
+    );
+    let compare = add_button(parent, "Compare selected commits", Action::GitCompare, tab);
+    if history.before.is_none() || history.after.is_none() {
+        parent
+            .commands()
+            .entity(compare)
+            .insert(bevy::ui::InteractionDisabled);
+    }
+    parent
+        .spawn(Node {
+            column_gap: px(8.),
+            ..default()
+        })
+        .with_children(|tools| {
+            if history.detail.is_some() || history.showing.is_some() {
+                add_button(tools, "Back to log", Action::GitBack, tab);
+            } else {
+                add_button(tools, "Refresh", Action::GitPage(history.skip), tab);
+                let newer = add_button(
+                    tools,
+                    "Newer",
+                    Action::GitPage(history.skip.saturating_sub(100)),
+                    tab,
+                );
+                if history.skip == 0 {
+                    tools
+                        .commands()
+                        .entity(newer)
+                        .insert(bevy::ui::InteractionDisabled);
+                }
+                if history.commits.as_ref().is_ok_and(|rows| rows.len() == 100) {
+                    add_button(tools, "Older", Action::GitPage(history.skip + 100), tab);
+                }
+            }
+        });
+    parent
+        .spawn((
+            FileRows,
+            ScrollPosition::default(),
+            Node {
+                flex_direction: FlexDirection::Column,
+                flex_grow: 1.,
+                min_height: px(0.),
+                row_gap: px(8.),
+                overflow: Overflow::scroll_y(),
+                ..default()
+            },
+        ))
+        .with_children(|body| {
+            if history.pending.is_some() {
+                native_panel::text(body, "Loading commit history…", native_panel::INK);
+            } else if history.showing.is_some() {
+                native_panel::text(body, "Loading commit…", native_panel::INK);
+            } else if let Some(detail) = &history.detail {
+                match detail {
+                    Ok(text) => {
+                        markdown_preview::draw(
+                            body,
+                            markdown_preview::document_html("commit.diff", text),
+                        );
+                    }
+                    Err(error) => native_panel::text(body, error, native_panel::INK),
+                }
+            } else {
+                match &history.commits {
+                    Err(error) => {
+                        native_panel::text(body, "Git is unavailable", native_panel::INK);
+                        native_panel::text(body, error, native_panel::INK);
+                    }
+                    Ok(commits) if commits.is_empty() => {
+                        native_panel::text(body, "No commits in this history.", native_panel::INK)
+                    }
+                    Ok(commits) => {
+                        for (index, commit) in commits.iter().enumerate() {
+                            let label = format!(
+                                "{} · {} · {}\n{}",
+                                &commit.id[..8],
+                                commit.date.get(..10).unwrap_or(&commit.date),
+                                commit.author,
+                                commit.summary
+                            );
+                            add_button(body, &label, Action::GitShow(index), tab);
+                            body.spawn(Node {
+                                column_gap: px(8.),
+                                ..default()
+                            })
+                            .with_children(|row| {
+                                add_button(
+                                    row,
+                                    if history.before.as_deref() == Some(commit.id.as_str()) {
+                                        "Before selected"
+                                    } else {
+                                        "Before"
+                                    },
+                                    Action::GitBefore(index),
+                                    tab,
+                                );
+                                add_button(
+                                    row,
+                                    if history.after.as_deref() == Some(commit.id.as_str()) {
+                                        "After selected"
+                                    } else {
+                                        "After"
+                                    },
+                                    Action::GitAfter(index),
+                                    tab,
+                                );
+                            });
+                        }
+                    }
+                }
+            }
+        });
+}
+
 fn draw_settings(
     parent: &mut ChildSpawnerCommands,
     tablet: &mut Tablet,
@@ -895,7 +1343,8 @@ fn draw_settings(
                     }
                 }
             });
-            native_panel::text(form, "Robot quotes short visible code excerpts. Reading position uses a prose reading estimate, not eye tracking. Speech stays on this Mac.", native_panel::INK);
+            add_button(form, &format!("Voice: {}", audio.voice), Action::Voice, tab);
+            native_panel::text(form, "Robot reads the current readable block from start to end. Water is muted and city sounds are quieter during speech. Speech stays on this Mac.", native_panel::INK);
         }
         native_panel::text(form, "Water", native_panel::INK);
         form.spawn(Node { column_gap: px(6.), ..default() }).with_children(|row| {
@@ -907,13 +1356,20 @@ fn draw_settings(
                 }
             }
         });
+        form.spawn(Node { column_gap: px(6.), ..default() }).with_children(|row| {
+            for (label, kind) in [("Fixed lines", reading::BlockKind::Lines), ("Whole function", reading::BlockKind::Function)] {
+                let entity = add_button(row, label, Action::Block(kind), tab);
+                if kind == tablet.block_kind { row.commands().entity(entity).insert(BackgroundColor(Color::srgb_u8(23, 79, 87))); }
+            }
+            add_button(row, if tablet.auto_advance { "Auto-advance: on" } else { "Auto-advance: off" }, Action::AutoAdvance, tab);
+        });
         tablet.inputs = Some(std::array::from_fn(|index| {
             let label = ["Lines per wash block", "Minimum delay (seconds)", "Maximum delay (seconds)"][index];
             let input = native_panel::input(form, label, &tablet.bounds[index], *tab, false);
             *tab += 1;
             input
         }));
-        native_panel::text(form, "Block size and time limits are independent. Without limits: seconds = non-whitespace characters × 60 / (238 × 4.6). Wrapped rows count separately. Use 1 for individual lines, or more for chunks. Default: 6 (a preset, not a measured optimum).", native_panel::INK);
+        native_panel::text(form, "Block size and time limits are independent. Without limits: seconds = effective non-whitespace characters × 60 / (238 × 4.6). Consecutive copies of a character count once. Whole function uses syntax boundaries, or fixed lines when unavailable. Auto-advance scrolls downward after a block clears. Default: 6 (a preset, not a measured optimum).", native_panel::INK);
         native_panel::text(form, "Brysbaert’s 2019 rate describes English nonfiction, not code comprehension. This length-adjusted estimate is approximate. Leave either delay blank to remove that limit.", native_panel::INK);
         native_panel::text(form, if tablet.status.is_empty() { " " } else { &tablet.status }, native_panel::INK);
         form.spawn(Node { column_gap: px(8.), ..default() }).with_children(|actions| {
