@@ -194,6 +194,22 @@ mod tests {
 #[derive(Component)]
 pub(super) struct ProjectMap;
 
+pub(super) fn district_at_ray(repo: &Repository, origin: Vec3, direction: Vec3) -> Option<usize> {
+    if direction.y.abs() < 0.00001 {
+        return None;
+    }
+    let distance = (-0.15 - origin.y) / direction.y;
+    if distance < 0. || !distance.is_finite() {
+        return None;
+    }
+    let point = (origin + direction * distance).xz();
+    repo.districts.iter().position(|district| {
+        let min = Vec2::from_array(district.position);
+        let max = min + Vec2::from_array(district.size);
+        point.cmpge(min).all() && point.cmplt(max).all()
+    })
+}
+
 pub(super) fn draw_project_map(
     mut commands: Commands,
     repo: Res<Repo>,

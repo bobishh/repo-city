@@ -5,7 +5,7 @@ files become buildings with source, diff, and blame walls. Review uncommitted
 changes without switching branches, mark lines with reusable review paints,
 and share local notes and your current code context with an MCP client.
 
-![Three robots wash and annotate the Vibe City code buildings](assets/vibe-city-splash.png)
+![VibePad shows sound and reading settings inside the handheld screen](docs/vibe-city.png)
 
 The browser version is [Repo City](https://repo-city.meta-uber-engineer.dev/).
 The repositories share history; [Repo City](https://github.com/bobishh/repo-city)
@@ -87,7 +87,7 @@ The first city visit offers a controls tour. Open **H** to take it again.
 | Fly | **WASD**, **Space** and **Ctrl** for altitude, **Shift** to boost |
 | Capture or release the cursor | Click the scene to capture. **Esc** releases. |
 | Use the actions menu | Right-click to open or close it. Scroll or use the arrow keys to highlight an action. Click or press **Enter** to select it. |
-| See the city from above | Press **M** to cycle through the district, the project, and your original view. Fly freely after each move. |
+| See the city from above | Press **M** for the district, then the whole project. On the project map, click a district first, then a building. The cursor stays free in map views. **M** returns to your original view after a district jump. Fly freely after each move. |
 | Return to a building | **Ctrl+O** goes back in jump history and **Ctrl+I** goes forward. |
 | Browse changes | **Tab** opens and puts away VibePad. **Viewed** limits the list to changes you visited. Select a file to fly there. **Shift+Tab** moves focus inside VibePad. |
 | Approach a wall | Far away, left-click a building to fly to its nearest covered lines or the top of its source wall. Press **E** to fly to the aimed face. Scroll to move along the wall. |
@@ -149,7 +149,7 @@ Change a paint's name, color, spray text, or reusable prompt in **Paints**.
 The Mac app saves notes and palettes in SQLite. Press **J** while aiming at a
 marked line to open its comment in VibePad. Away from a mark, **J** opens all
 comments on the current comparison. **All comments** returns to that list.
-Use **Edit** on a note to add details, then **Save edits**. Worktree notes are
+Use **Edit** on a note to add details, then **Save**. Worktree notes are
 saved locally and available through MCP immediately; **Publish** applies only
 to GitHub pull requests. **Copy** copies a note without exporting a file.
 An empty paint slot equips a plain note without a required prompt.
