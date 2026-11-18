@@ -50,5 +50,13 @@
     "linguist_revision": "14ac04abe3e3722e42c52489b377d9d4118fc8b6",
     "metadata": "web/syntax-language-map.json",
     "adaptation": "Generate lazy grammar imports and filename/interpreter metadata; convert token trees to the shared UTF-8 span palette. Grammar modules remain unmodified."
+  },
+  "math_font": {
+    "source": "https://github.com/cormullion/juliamono",
+    "revision": "7b5b7af79de3a14ce0aa19745ef069d42c20f2cb",
+    "version": "0.63",
+    "path": "assets/fonts/JuliaMono-Medium.ttf",
+    "sha256": "e76eae2dd36b03857504bc0aa250e5ab0be1a22b45c408fa40f672999ac4d218",
+    "adaptation": "Unmodified font used as the mathematical Unicode fallback in source textures and tablet text."
   }
 }

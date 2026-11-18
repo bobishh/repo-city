@@ -366,6 +366,7 @@ fn load_times(repo: &Repository) -> native_github::Job<FileTimes> {
 }
 
 #[derive(Component)]
+#[require(tablet_scroll::Area)]
 pub(super) struct FileRows;
 
 pub(super) fn plain_tab(keys: &ButtonInput<KeyCode>) -> bool {

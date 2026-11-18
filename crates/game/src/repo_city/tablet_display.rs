@@ -208,8 +208,9 @@ pub(super) fn pointer(
     mut events: MessageReader<WindowEvent>,
     mut inputs: MessageWriter<PointerInput>,
     mut last: Local<Option<Vec2>>,
-    mut touch: Local<Option<(u64, Vec2, Vec2, bool)>>,
+    mut touch: Local<Option<(u64, Vec2, Vec2, bool, bool)>>,
     mut scrolling: Option<ResMut<TouchScroll>>,
+    scroll_parts: Query<(&UiGlobalTransform, &ComputedNode), With<tablet_scroll::Part>>,
 ) {
     let Some(display) = display else { return };
     let project = |point: Vec2| {
@@ -243,7 +244,7 @@ pub(super) fn pointer(
             return None;
         }
         #[cfg(target_arch = "wasm32")]
-        if let Some((_, _, point, _)) = *touch {
+        if let Some((_, _, point, _, _)) = *touch {
             return Some(point);
         }
         project(window.single().ok()?.cursor_position()?)
@@ -294,7 +295,12 @@ pub(super) fn pointer(
             match event.phase {
                 TouchPhase::Started if touch.is_none() && point.is_some() => {
                     let point = point.unwrap();
-                    *touch = Some((event.id, point, point, false));
+                    let scrollbar = scroll_parts.iter().any(|(transform, node)| {
+                        let transform: bevy::math::Affine2 = transform.into();
+                        let local = transform.inverse().transform_point2(point);
+                        local.abs().cmple(node.size() / 2.).all()
+                    });
+                    *touch = Some((event.id, point, point, false, scrollbar));
                     inputs.write(PointerInput::new(
                         POINTER,
                         location.clone(),
@@ -307,12 +313,12 @@ pub(super) fn pointer(
                     ));
                 }
                 TouchPhase::Moved => {
-                    if let Some((id, start, previous, dragged)) = touch.as_mut()
+                    if let Some((id, start, previous, dragged, scrollbar)) = touch.as_mut()
                         && *id == event.id
                         && let Some(point) = point
                     {
                         let delta = point - *previous;
-                        if !*dragged && point.distance(*start) > 8. {
+                        if !*scrollbar && !*dragged && point.distance(*start) > 8. {
                             *dragged = true;
                             inputs.write(PointerInput::new(
                                 POINTER,
@@ -335,7 +341,7 @@ pub(super) fn pointer(
                     }
                 }
                 TouchPhase::Ended | TouchPhase::Canceled => {
-                    if let Some((id, _, _, dragged)) = *touch
+                    if let Some((id, _, _, dragged, _)) = *touch
                         && id == event.id
                     {
                         if event.phase == TouchPhase::Canceled && !dragged {

@@ -96,7 +96,7 @@ pub(super) fn text(parent: &mut ChildSpawnerCommands, text: &str, ink: Color) {
 
 pub(super) fn panel_font() -> TextFont {
     TextFont {
-        font: FontSource::list([Handle::<Font>::default(), EMOJI_FONT]),
+        font: FontSource::list([Handle::<Font>::default(), MATH_FONT, EMOJI_FONT]),
         ..TextFont::from_font_size(15.)
     }
 }

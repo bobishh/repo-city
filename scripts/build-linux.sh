@@ -21,7 +21,7 @@ bundle="$output/$name"
 mkdir -p "$bundle/licenses"
 cp "$binary" "$bundle/vibe-city-bin"
 cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY.md "$bundle/licenses/"
-cp licenses/*.txt assets/fonts/FiraMono-LICENSE assets/fonts/NotoEmoji-LICENSE "$bundle/licenses/"
+cp licenses/*.txt assets/fonts/*-LICENSE "$bundle/licenses/"
 cp web/assets/apple-touch-icon.png "$bundle/vibe-city.png"
 cat > "$bundle/vibe-city" <<'LAUNCHER'
 #!/usr/bin/env sh

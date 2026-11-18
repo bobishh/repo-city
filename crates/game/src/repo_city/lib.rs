@@ -44,6 +44,7 @@ mod review_tablet;
 #[path = "../shapes.rs"]
 mod shapes;
 mod tablet_display;
+mod tablet_scroll;
 #[cfg(not(target_arch = "wasm32"))]
 mod terminal;
 mod world_set;
@@ -599,6 +600,7 @@ pub fn run() {
             .before(listing::draw)
             .run_if(repository_picker::has_city),
     );
+    tablet_scroll::register(&mut app);
     app.add_plugins(bevy::input_focus::tab_navigation::TabNavigationPlugin)
         .add_systems(
             Update,
@@ -1130,8 +1132,13 @@ fn load_ui_font(fonts: &mut Assets<Font>) {
     fonts
         .insert(EMOJI_FONT.id(), Font::from_bytes(EMOJI_FONT_DATA.to_vec()))
         .expect("emoji fallback font");
+    fonts
+        .insert(MATH_FONT.id(), Font::from_bytes(MATH_FONT_DATA.to_vec()))
+        .expect("math fallback font");
 }
 
+const MATH_FONT_DATA: &[u8] = include_bytes!("../../../../assets/fonts/JuliaMono-Medium.ttf");
+const MATH_FONT: Handle<Font> = bevy::asset::uuid_handle!("66256012-d3ec-4c70-96cd-1fa58cb85c15");
 const EMOJI_FONT_DATA: &[u8] = include_bytes!("../../../../assets/fonts/NotoEmoji.ttf");
 const EMOJI_FONT: Handle<Font> = bevy::asset::uuid_handle!("3b4571e0-061f-44e9-8cbf-771e89a9860d");
 

@@ -62,6 +62,34 @@ fn emoji_font() -> FontRef<'static> {
         .get_or_init(|| FontRef::from_index(super::EMOJI_FONT_DATA, 0).expect("bundled emoji font"))
 }
 
+fn math_font() -> FontRef<'static> {
+    static FONT: std::sync::OnceLock<FontRef<'static>> = std::sync::OnceLock::new();
+    *FONT.get_or_init(|| FontRef::from_index(super::MATH_FONT_DATA, 0).expect("bundled math font"))
+}
+
+#[cfg(test)]
+#[test]
+fn lean_math_symbols_render_as_distinct_glyphs_on_source_walls() {
+    // Given Lean identifiers and operators absent from Fira Mono.
+    let rendered = |text: &str| {
+        let mut canvas = Canvas::new(80, 64);
+        canvas.text(text, 5., 40., 30., |_| [1.; 3]);
+        canvas.pixels
+    };
+    let missing = rendered("\u{10ffff}");
+    // When the wall rasterizes each symbol, none may become the missing-glyph box.
+    for ch in "𝓟ℕℤℚℝℂ∀∃∈∉⊆⊂⟨⟩↦→↔≠≤≥⊢₀₁₂ᵢαβλ".chars()
+    {
+        let pixels = rendered(&ch.to_string());
+        assert!(pixels != missing, "Missing Lean glyph: {ch}");
+        assert!(pixels.iter().any(|&value| value > 0));
+        assert!(
+            (source_advance(ch) - source_advance('A')).abs() < 0.01,
+            "Non-monospace Lean glyph: {ch}"
+        );
+    }
+}
+
 #[cfg(test)]
 #[test]
 fn emoji_fallback_rasterizes_eyes_and_other_glyphs() {
@@ -139,7 +167,7 @@ impl Canvas {
         .unwrap();
         let metrics = font.glyph_metrics(&[]).scale(size);
         let mut scaler = self.context.builder(font).size(size).hint(true).build();
-        let mut emoji_context = None::<ScaleContext>;
+        let mut fallback_context = None::<ScaleContext>;
         let mut render = Render::new(&[Source::Outline]);
         if scale != Vec2::ONE {
             render.transform(Some(swash::zeno::Transform::scale(scale.x, scale.y)));
@@ -158,19 +186,24 @@ impl Canvas {
             }
             let id = font.charmap().map(ch);
             let ink = color(byte);
-            let (glyph, advance) = if id == 0 && emoji_font().charmap().map(ch) != 0 {
-                let emoji = emoji_font();
-                let size = size * 0.85;
-                let id = emoji.charmap().map(ch);
-                let mut emoji_scaler = emoji_context
+            let fallback = if id == 0 && math_font().charmap().map(ch) != 0 {
+                Some((math_font(), size))
+            } else if id == 0 && emoji_font().charmap().map(ch) != 0 {
+                Some((emoji_font(), size * 0.85))
+            } else {
+                None
+            };
+            let (glyph, advance) = if let Some((font, size)) = fallback {
+                let id = font.charmap().map(ch);
+                let mut fallback_scaler = fallback_context
                     .get_or_insert_with(ScaleContext::new)
-                    .builder(emoji)
+                    .builder(font)
                     .size(size)
                     .hint(true)
                     .build();
                 (
-                    render.render(&mut emoji_scaler, id),
-                    emoji.glyph_metrics(&[]).scale(size).advance_width(id),
+                    render.render(&mut fallback_scaler, id),
+                    font.glyph_metrics(&[]).scale(size).advance_width(id),
                 )
             } else {
                 (render.render(&mut scaler, id), metrics.advance_width(id))
@@ -366,6 +399,13 @@ pub(super) fn source_advance(ch: char) -> f32 {
     let metrics = font.glyph_metrics(&[]).scale(20.);
     if ch == '\t' {
         return metrics.advance_width(font.charmap().map(' ')) * 4.;
+    }
+    let math = math_font();
+    if id == 0 && math.charmap().map(ch) != 0 {
+        return math
+            .glyph_metrics(&[])
+            .scale(20.)
+            .advance_width(math.charmap().map(ch));
     }
     let emoji = emoji_font();
     let fallback = emoji.charmap().map(ch);

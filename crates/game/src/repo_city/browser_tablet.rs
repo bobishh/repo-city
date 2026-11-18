@@ -52,6 +52,7 @@ pub(super) struct Label(String);
 #[derive(Component, Clone, Copy)]
 struct Action(u64);
 #[derive(Component)]
+#[require(tablet_scroll::Area)]
 pub(super) struct Body;
 
 #[derive(Resource, Default)]
@@ -653,6 +654,8 @@ pub(super) fn geometry(
     )>,
     focus: Res<InputFocus>,
     entities: Query<&Binding>,
+    scroll_parts: Query<(&tablet_scroll::Part, &UiGlobalTransform, &ComputedNode)>,
+    scroll_areas: Query<(&ScrollPosition, &ComputedNode), With<tablet_scroll::Area>>,
     mut previous: Local<String>,
 ) {
     #[wasm_bindgen]
@@ -690,7 +693,15 @@ pub(super) fn geometry(
         .get()
         .and_then(|entity| entities.get(entity).ok())
         .map(|binding| binding.0.clone());
-    let packet = serde_json::json!({"open":tablet.panel.is_some(),"viewport":[viewport.x,viewport.y],"controls":controls,"focused":focused}).to_string();
+    let scrollbars: Vec<_> = scroll_parts.iter().filter_map(|(part, transform, node)| {
+        let (position, area) = scroll_areas.get(part.area).ok()?;
+        let transform: bevy::math::Affine2 = transform.into();
+        let min = transform.translation - node.size() / 2.;
+        let max = project(min + node.size());
+        let min = project(min);
+        Some(serde_json::json!({"kind":part.kind,"offset":position.y,"range":tablet_scroll::range(area),"bounds":[min.x,min.y,max.x-min.x,max.y-min.y]}))
+    }).collect();
+    let packet = serde_json::json!({"open":tablet.panel.is_some(),"viewport":[viewport.x,viewport.y],"controls":controls,"focused":focused,"scrollbars":scrollbars}).to_string();
     if *previous != packet {
         send_layout(&packet);
         *previous = packet;

@@ -1,9 +1,12 @@
 import { test, expect } from "@playwright/test";
 
-const source = '/- λ and 🪐 stay inside UTF-8 ranges. -/\nimport Mathlib\ntheorem city : 1 + 1 = 2 := by decide\n';
+const source = '/- 𝓟 ℕ ℤ ℚ ℝ ℂ ∀ ∃ ∈ ∉ ⊆ ⊂ ⟨⟩ ↦ → ↔ ≠ ≤ ≥ ⊢ ₀₁₂ αβλ 🪐 -/\nimport Mathlib\ntheorem city : 1 + 1 = 2 := by decide\n';
 
 async function openLean(page, unavailable = false) {
-  await page.addInitScript(() => localStorage.setItem("repo-city-guide-v1", "seen"));
+  await page.addInitScript(() => {
+    localStorage.setItem("repo-city-guide-v1", "seen");
+    localStorage.setItem("repo-city-reading-v1", JSON.stringify({ mode: "immediate", block_lines: 6, block_kind: "fixed", auto_advance: false, min_seconds: null, max_seconds: null }));
+  });
   if (unavailable) await page.route("**/syntax-chunks/source.lean4-*.mjs", route => route.abort());
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
   await page.route("https://api.github.com/**", route => {
@@ -36,6 +39,7 @@ test("Lean source loads its grammar on demand without downloading unrelated lang
   expect(requests.some(url => /syntax-chunks\/source\.python-/.test(url))).toBe(false);
   expect(requests.some(url => url.includes("esm.sh"))).toBe(false);
   expect(faults).toEqual([]);
+  await expect(page.locator("#progress-summary")).toContainText(/[1-9]\d* lines revealed/, { timeout: 20_000 });
   await page.screenshot({ path: info.outputPath("lean-grammar.png") });
 });
 

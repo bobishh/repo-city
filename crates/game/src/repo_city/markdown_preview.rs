@@ -87,11 +87,11 @@ pub(super) fn register(app: &mut App) {
 
     app.add_plugins(bevy_markup::BevyMarkupPlugin);
     #[cfg(target_arch = "wasm32")]
-    let sans = FontSource::list([Handle::<Font>::default(), EMOJI_FONT]);
+    let sans = FontSource::list([Handle::<Font>::default(), MATH_FONT, EMOJI_FONT]);
     #[cfg(not(target_arch = "wasm32"))]
     let sans = FontSource::sans_serif();
     #[cfg(target_arch = "wasm32")]
-    let mono = FontSource::list([Handle::<Font>::default(), EMOJI_FONT]);
+    let mono = FontSource::list([Handle::<Font>::default(), MATH_FONT, EMOJI_FONT]);
     #[cfg(not(target_arch = "wasm32"))]
     let mono = FontSource::monospace();
     app.world_mut()

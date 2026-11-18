@@ -23,7 +23,7 @@ try {
     $Licenses = Join-Path $Bundle "licenses"
     New-Item -ItemType Directory -Force $Licenses | Out-Null
     Copy-Item $Binary (Join-Path $Bundle "VibeCity.exe")
-    Copy-Item LICENSE-MIT, LICENSE-APACHE, THIRD_PARTY.md, licenses/*.txt, assets/fonts/FiraMono-LICENSE, assets/fonts/NotoEmoji-LICENSE $Licenses
+    Copy-Item LICENSE-MIT, LICENSE-APACHE, THIRD_PARTY.md, licenses/*.txt, assets/fonts/*-LICENSE $Licenses
     @'
 Launch VibeCity.exe, then choose Open local repository from the robot logo.
 Enter a checkout path, or run VibeCity.exe --repo C:\path\to\checkout --live.
