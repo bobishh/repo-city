@@ -289,8 +289,6 @@ struct StatusHud;
 #[derive(Component)]
 struct ReviewToast;
 #[derive(Component)]
-struct AimHud;
-#[derive(Component)]
 struct TargetLabel;
 #[derive(Component, Default)]
 struct Pilot {
@@ -1033,18 +1031,7 @@ fn setup(
             },
             bevy::picking::Pickable::IGNORE,
         ));
-    commands.spawn((
-        Text::new("+"),
-        ui_font(24.),
-        TextColor(color(set.ink)),
-        Node {
-            position_type: PositionType::Absolute,
-            left: percent(50.),
-            top: percent(50.),
-            ..default()
-        },
-        AimHud,
-    ));
+    listing::spawn_reticle(&mut commands);
     commands.spawn((
         TargetLabel,
         Text::new(""),
@@ -2113,7 +2100,6 @@ fn hud(
             Has<TopHud>,
             Has<BottomHud>,
             Has<StatusHud>,
-            Has<AimHud>,
             Has<ReviewToast>,
         ),
         Without<TargetLabel>,
@@ -2175,7 +2161,7 @@ fn hud(
             node.display = Display::None;
         }
     }
-    for (mut text, mut node, top, bottom, status, aim, toast) in &mut texts {
+    for (mut text, mut node, top, bottom, status, toast) in &mut texts {
         #[cfg(not(target_arch = "wasm32"))]
         if top || status || bottom || toast {
             let (review, time, live) = &native;
@@ -2347,8 +2333,6 @@ fn hud(
                         .into())
                 )
             )
-        } else if aim {
-            "+".into()
         } else {
             continue;
         };

@@ -14,6 +14,7 @@ pub(super) enum Mode {
 #[serde(default)]
 pub(super) struct Settings {
     pub mode: Mode,
+    pub block_lines: u32,
     pub min_seconds: Option<f32>,
     pub max_seconds: Option<f32>,
 }
@@ -22,6 +23,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             mode: Mode::Delayed,
+            block_lines: 6,
             min_seconds: Some(3.),
             max_seconds: Some(6.),
         }
@@ -36,6 +38,9 @@ impl Settings {
     }
 
     fn validated(self) -> Result<Self, String> {
+        if self.block_lines == 0 {
+            return Err("Lines per wash block must be a positive whole number.".into());
+        }
         if [self.min_seconds, self.max_seconds]
             .into_iter()
             .flatten()
@@ -52,7 +57,12 @@ impl Settings {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn with_bounds(mode: Mode, min: &str, max: &str) -> Result<Self, String> {
+    pub(super) fn with_inputs(
+        mode: Mode,
+        block: &str,
+        min: &str,
+        max: &str,
+    ) -> Result<Self, String> {
         let bound = |text: &str| match text.trim() {
             "" => Ok(None),
             text => text
@@ -62,6 +72,10 @@ impl Settings {
         };
         Self {
             mode,
+            block_lines: block
+                .trim()
+                .parse()
+                .map_err(|_| "Lines per wash block must be a positive whole number.".to_owned())?,
             min_seconds: bound(min)?,
             max_seconds: bound(max)?,
         }
@@ -77,7 +91,6 @@ impl Settings {
         const CHARACTERS_PER_MINUTE: f32 = 238. * 4.6;
         let characters: usize = lines
             .into_iter()
-            .filter(|line| line.chars().any(char::is_alphanumeric))
             .map(|line| line.chars().filter(|c| !c.is_whitespace()).count())
             .sum();
         let estimate = characters as f32 * 60. / CHARACTERS_PER_MINUTE;
@@ -85,6 +98,12 @@ impl Settings {
             self.min_seconds.unwrap_or(0.),
             self.max_seconds.unwrap_or(f32::INFINITY),
         )
+    }
+
+    pub(super) fn rows(self, row: usize, total: usize) -> std::ops::Range<usize> {
+        let size = (self.block_lines as usize).max(1);
+        let start = (row / size * size).min(total);
+        start..start.saturating_add(size).min(total)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -152,6 +171,42 @@ pub(super) fn apply(mut settings: ResMut<Settings>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_size_and_delay_bounds_are_independent_preferences() {
+        let settings =
+            Settings::parse(r#"{"block_lines":1,"min_seconds":null,"max_seconds":null}"#).unwrap();
+        assert_eq!(serde_json::to_value(settings).unwrap()["block_lines"], 1);
+        assert!((settings.seconds(["αβ();"]) - 5. * 60. / (238. * 4.6)).abs() < 0.0001);
+        assert!(settings.seconds(["}"]) > 0.);
+        assert_eq!(settings.seconds(["  \t"]), 0.);
+        assert!(Settings::parse(r#"{"block_lines":0}"#).is_err());
+        assert!(Settings::parse(r#"{"block_lines":1.5}"#).is_err());
+        let six = Settings {
+            block_lines: 6,
+            ..settings
+        };
+        assert_eq!(settings.rows(8, 20), 8..9);
+        assert_eq!(six.rows(8, 20), 6..12);
+        assert_eq!(six.rows(19, 20), 18..20);
+        assert_eq!(
+            settings.seconds(["abc", "def"]),
+            six.seconds(["abc", "def"])
+        );
+        assert_eq!(
+            Settings::parse(r#"{"min_seconds":null,"max_seconds":null}"#)
+                .unwrap()
+                .block_lines,
+            6
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let one = Settings::with_inputs(Mode::Delayed, "1", "", "").unwrap();
+            assert_eq!(one.block_lines, 1);
+            assert!(one.min_seconds.is_none() && one.max_seconds.is_none());
+            assert!(Settings::with_inputs(Mode::Delayed, "0", "", "").is_err());
+        }
+    }
 
     #[test]
     fn delayed_bounds_are_independent_and_blank_uses_the_reading_estimate() {

@@ -34,10 +34,11 @@ export function createReview({ canvas, release, onClose, onTour, audio }) {
   const dialog = document.querySelector("#review-dialog");
   const tablet = createTablet(dialog, canvas);
   const settingsKey = "repo-city-reading-v1";
-  let reading = { mode: "delayed", min_seconds: 3, max_seconds: 6 };
+  let reading = { mode: "delayed", block_lines: 6, min_seconds: 3, max_seconds: 6 };
   try {
     if (localStorage.getItem("repo-city-wash-mode") === "immediate") reading.mode = "immediate";
-    const stored = JSON.parse(localStorage.getItem(settingsKey));
+    const previous = JSON.parse(localStorage.getItem(settingsKey));
+    const stored = previous && { ...reading, ...previous };
     if (stored && !readingError(stored)) reading = stored;
   } catch { /* Use the built-in preferences. */ }
   let readingChanged = true;
@@ -170,6 +171,9 @@ export function createReview({ canvas, release, onClose, onTour, audio }) {
   }
 
   function readingError(values) {
+    if (!Number.isInteger(values.block_lines) || values.block_lines < 1 || values.block_lines > 4294967295) {
+      return "Lines per wash block must be a positive whole number.";
+    }
     if (!["delayed", "immediate"].includes(values.mode) ||
         [values.min_seconds, values.max_seconds].some(value => value !== null &&
           (!Number.isFinite(value) || value < 0 || value > 3.4028234e38))) {
@@ -223,11 +227,14 @@ export function createReview({ canvas, release, onClose, onTour, audio }) {
       mode.append(make("option", value === "delayed" ? "Delayed" : "Immediate", { value }));
     }
     mode.value = reading.mode;
+    const block = make("input", undefined, { type: "number", min: "1", step: "1", value: reading.block_lines });
     const bound = value => make("input", undefined, { type: "text", inputmode: "decimal", value: value ?? "", placeholder: "No limit" });
     const min = bound(reading.min_seconds), max = bound(reading.max_seconds);
     const status = make("p", "", { class: "review-status", role: "status" });
-    form.append(field("Water", mode), field("Minimum delay (seconds)", min), field("Maximum delay (seconds)", max),
-      make("p", "Leave a bound blank to remove that limit. Delayed mode estimates reading time from the amount of code using Brysbaert’s 2019 estimate of 238 words per minute for English nonfiction."),
+    form.noValidate = true;
+    form.append(field("Water", mode), field("Lines per wash block", block), field("Minimum delay (seconds)", min), field("Maximum delay (seconds)", max),
+      make("p", "Block size and time limits are independent. With no limits, seconds = non-whitespace characters × 60 / (238 × 4.6). Wrapped rows count separately. Use 1 for individual lines or larger blocks for reading in chunks. The default is 6; it is a preset, not a measured optimum."),
+      make("p", "Brysbaert’s 2019 estimate describes English nonfiction, not code comprehension. We use its length-adjusted rate as an approximation. Leave either delay blank to remove that limit."),
       status);
     const row = make("div", undefined, { class: "dialog-actions" });
     row.append(make("button", "Save settings", { type: "submit" }));
@@ -235,7 +242,7 @@ export function createReview({ canvas, release, onClose, onTour, audio }) {
     form.addEventListener("submit", event => {
       event.preventDefault();
       const seconds = input => input.value.trim() === "" ? null : Number(input.value);
-      const next = { mode: mode.value, min_seconds: seconds(min), max_seconds: seconds(max) };
+      const next = { mode: mode.value, block_lines: Number(block.value), min_seconds: seconds(min), max_seconds: seconds(max) };
       const error = readingError(next);
       if (error) { status.textContent = error; return; }
       reading = next;
@@ -691,8 +698,8 @@ export function createReview({ canvas, release, onClose, onTour, audio }) {
       if (href) article.append(link("View on GitHub", href));
       const personal = note.personal.find(comment => comment.id === item.id);
       if (personal) {
-        const feedback = make("span", personal.viewed ? "Viewed on GitHub 👀" : "", { role: "status" });
-        const viewed = button("Mark viewed on GitHub 👀", async () => {
+        const feedback = make("span", personal.viewed ? "Viewed on GitHub" : "", { role: "status" });
+        const viewed = button("Mark as viewed", async () => {
           viewed.disabled = true;
           try {
             const response = await fetch(`/github/review/${data.review.repository}/${data.review.pull}/comments/${item.id}/eyes`, {
@@ -708,7 +715,7 @@ export function createReview({ canvas, release, onClose, onTour, audio }) {
             }
             personal.viewed = true;
             if (session === data) repaint();
-            feedback.textContent = "Viewed on GitHub 👀";
+            feedback.textContent = "Viewed on GitHub";
             viewed.remove();
           } catch {
             feedback.textContent = "GitHub did not confirm the reaction. Try again.";
@@ -716,7 +723,7 @@ export function createReview({ canvas, release, onClose, onTour, audio }) {
             viewed.disabled = false;
           }
         });
-        if (!personal.viewed) article.append(" ", viewed);
+        if (!personal.viewed) article.append(make("p", "Adds an eyes reaction on GitHub. The comment text stays unchanged."), viewed);
         article.append(" ", feedback);
       }
       dialog.append(article);

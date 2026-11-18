@@ -136,12 +136,21 @@ The first city visit offers a controls tour. Open **H** to take it again.
 | Follow a file’s changes | **C** starts the review. Scroll up or press **W** for the next stop. Scroll down or press **S** for the previous stop. **Q** returns to the diff wall. |
 | Open controls | **H** opens VibePad Help. Choose **Start tour** to practice flying and washing source. |
 
-Delayed mode starts with a minimum of 3 seconds and a maximum of 6 seconds.
-Clear either setting to remove that bound. Repo City estimates reading time
-from the amount of code using [Brysbaert’s English nonfiction reading rate](https://doi.org/10.1016/j.jml.2019.104047)
-as an approximation. The Mac stores `mode`, `min_seconds`, and `max_seconds`
-in `~/Library/Application Support/Repo City/reading.json`. A `null` bound
-has no limit.
+**Lines per wash block** sets how many displayed rows clear together (default:
+6). Set it to 1 to clear individual rows. This setting is independent of the
+delay bounds. Wrapped continuations count as displayed rows; the original
+source line is saved as read only after all its continuations are cleared.
+While washing, code is visible immediately. Leaving an unfinished block covers
+it again. A ring around the tool-colored reticle shrinks as the delay expires.
+
+Delayed mode estimates seconds as `non-whitespace characters × 60 / (238 × 4.6)`
+for the selected block. A minimum or maximum delay clamps that result; clear
+either field to remove that bound. The initial bounds remain 3 and 6 seconds.
+The length-adjusted [Brysbaert English nonfiction rate](https://doi.org/10.1016/j.jml.2019.104047)
+is an approximation, not a measured code-comprehension speed. Six rows is a
+configurable preset, not a research-backed optimum. The Mac stores `mode`,
+`block_lines`, `min_seconds`, and `max_seconds` in
+`~/Library/Application Support/Repo City/reading.json`. A `null` bound has no limit.
 
 Reach the end of a Markdown preview to reveal the file's source wall.
 Repo City saves revealed lines and reviewed files in your browser or on your
@@ -226,8 +235,10 @@ On a signed-in review, unresolved inline comments that mention your GitHub
 handle are marked in gold until you view them. Open **Review notes** and
 choose **Fly to next mention**. Click the city to capture the cursor and
 press **J** once the camera reaches the marked lines.
-**Mark viewed on GitHub 👀** adds the reaction from your account and restores
-the thread's usual color when you have marked its mentions viewed.
+**Mark as viewed** adds an eyes reaction from your GitHub account, without changing
+the comment text, and restores
+the thread's usual color when you have marked its mentions viewed. Local worktree
+notes use the same button to save their viewed status for MCP without a GitHub reaction.
 
 For local stack traces, draft editing, builds, and deployment, see
 [Development](docs/development.md).

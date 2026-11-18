@@ -29,6 +29,7 @@ pub(super) enum Action {
     OpenTablet(review_tablet::Page),
     Remove(usize),
     CopyNote(usize),
+    MarkViewed(usize),
     Visit(usize),
     OpenDiscussion(usize),
     Publish,
@@ -447,7 +448,7 @@ fn draw(
                                                 "Edit",
                                                 INK,
                                                 Action::EditNote(index),
-                                                index as i32 * 3,
+                                                index as i32 * 4,
                                             );
                                             ui.primary = ui.primary.or(Some(edit));
                                         }
@@ -456,8 +457,23 @@ fn draw(
                                             "Copy",
                                             INK,
                                             Action::CopyNote(index),
-                                            index as i32 * 3 + 1,
+                                            index as i32 * 4 + 1,
                                         );
+                                        if repo.is_worktree()
+                                            && !note.remote
+                                            && note.published.is_none()
+                                            && review.local_states.get(&note.id).is_none_or(
+                                                |state| *state == native::LocalState::Unread,
+                                            )
+                                        {
+                                            tab_button(
+                                                tools,
+                                                "Mark as viewed",
+                                                INK,
+                                                Action::MarkViewed(index),
+                                                index as i32 * 4 + 2,
+                                            );
+                                        }
                                         tools.spawn(Node {
                                             flex_grow: 1.,
                                             ..default()
@@ -468,7 +484,7 @@ fn draw(
                                                 "Fly to lines",
                                                 INK,
                                                 Action::Visit(index),
-                                                index as i32 * 3 + 2,
+                                                index as i32 * 4 + 3,
                                             );
                                             ui.primary = ui.primary.or(Some(visit));
                                         }
@@ -809,6 +825,25 @@ pub(crate) fn update(
                 ui.scroll = 0.;
                 redraw = true;
             }
+            Action::MarkViewed(index) => {
+                if let Some(note) = review
+                    .notes
+                    .get(index)
+                    .filter(|note| repo.is_worktree() && !note.remote && note.published.is_none())
+                {
+                    let id = note.id.clone();
+                    match native::mark_worktree_note(&review.scope, &id, native::LocalState::Read) {
+                        Ok(()) => {
+                            review.local_states.insert(id, native::LocalState::Read);
+                            ui.status_job = None;
+                            ui.status_due = 0.;
+                            message = "Viewed locally.".into();
+                        }
+                        Err(error) => message = error,
+                    }
+                    redraw = true;
+                }
+            }
             Action::EditNote(index) => {
                 if let Some(note) = review.notes.get(index).filter(|note| is_draft(note, repo)) {
                     ui.focused_note = Some(note.id.clone());
@@ -1131,6 +1166,68 @@ mod tests {
         assert_eq!(paint.label, "Note");
         assert_eq!(paint.spray, "Note");
         assert!(paint.prompt.is_empty());
+    }
+
+    #[test]
+    fn local_viewed_status_is_a_separate_action_and_leaves_editable_text_unchanged() {
+        let mut repo = repository_picker::empty();
+        repo.revision = "worktree:test".into();
+        let mut review = Review::default();
+        review.notes.push(Note {
+            id: "viewed-note".into(),
+            revision: repo.revision.clone(),
+            baseline: repo.baseline.clone(),
+            anchor: Anchor {
+                path: "demo.rs".into(),
+                before: false,
+                start: 1,
+                end: 1,
+            },
+            preset: review.palette[0].clone().unwrap(),
+            text: "Explain this condition".into(),
+            published: None,
+            remote: false,
+            resolved: None,
+            attention: false,
+        });
+        review.request = Some(Panel::Notes);
+        let mut app = App::new();
+        app.init_resource::<ReviewUi>()
+            .init_resource::<InputFocus>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .insert_resource(Time::<()>::default())
+            .insert_resource(Explorer::new(0))
+            .insert_resource(Repo(repo))
+            .insert_resource(review)
+            .add_systems(Update, update);
+        app.update();
+        assert!(
+            app.world_mut()
+                .query::<&Action>()
+                .iter(app.world())
+                .any(|action| matches!(action, Action::MarkViewed(0)))
+        );
+        app.world_mut()
+            .resource_mut::<Review>()
+            .local_states
+            .insert("viewed-note".into(), native::LocalState::Read);
+        app.world_mut()
+            .resource_mut::<ReviewUi>()
+            .activate(Action::EditNote(0));
+        app.update();
+        let field = app.world().resource::<ReviewUi>().draft_fields[0].1;
+        assert_eq!(
+            app.world()
+                .get::<EditableText>(field)
+                .unwrap()
+                .value()
+                .to_string(),
+            "Explain this condition"
+        );
+        assert_eq!(
+            app.world().resource::<Review>().notes[0].text,
+            "Explain this condition"
+        );
     }
 
     #[test]

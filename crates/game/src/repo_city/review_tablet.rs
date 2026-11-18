@@ -25,8 +25,8 @@ pub(super) struct Tablet {
     page: usize,
     view: Page,
     dates_requested: bool,
-    bounds: [String; 2],
-    inputs: Option<[Entity; 2]>,
+    bounds: [String; 3],
+    inputs: Option<[Entity; 3]>,
     mode: reading::Mode,
     status: String,
     document: Option<Document>,
@@ -151,8 +151,9 @@ impl Tablet {
 
     fn switch(&mut self, view: Page, reading: &reading::Settings) {
         if view != self.view && view == Page::Settings {
-            self.bounds = [reading.min_seconds, reading.max_seconds]
+            let [min, max] = [reading.min_seconds, reading.max_seconds]
                 .map(|value| value.map_or_else(String::new, |value| value.to_string()));
+            self.bounds = [reading.block_lines.to_string(), min, max];
             self.mode = reading.mode;
             self.status.clear();
         }
@@ -430,10 +431,11 @@ pub(super) fn update(
             }
             Some(Action::Save) => {
                 tablet.capture_bounds(&fields);
-                tablet.status = match reading::Settings::with_bounds(
+                tablet.status = match reading::Settings::with_inputs(
                     tablet.mode,
                     &tablet.bounds[0],
                     &tablet.bounds[1],
+                    &tablet.bounds[2],
                 )
                 .and_then(|next| {
                     next.save()?;
@@ -906,12 +908,13 @@ fn draw_settings(
             }
         });
         tablet.inputs = Some(std::array::from_fn(|index| {
-            let label = ["Minimum delay (seconds)", "Maximum delay (seconds)"][index];
+            let label = ["Lines per wash block", "Minimum delay (seconds)", "Maximum delay (seconds)"][index];
             let input = native_panel::input(form, label, &tablet.bounds[index], *tab, false);
             *tab += 1;
             input
         }));
-        native_panel::text(form, "Leave a bound blank to remove that limit. Delayed mode estimates reading time from the amount of code using Brysbaert’s 2019 estimate of 238 words per minute for English nonfiction.", native_panel::INK);
+        native_panel::text(form, "Block size and time limits are independent. Without limits: seconds = non-whitespace characters × 60 / (238 × 4.6). Wrapped rows count separately. Use 1 for individual lines, or more for chunks. Default: 6 (a preset, not a measured optimum).", native_panel::INK);
+        native_panel::text(form, "Brysbaert’s 2019 rate describes English nonfiction, not code comprehension. This length-adjusted estimate is approximate. Leave either delay blank to remove that limit.", native_panel::INK);
         native_panel::text(form, if tablet.status.is_empty() { " " } else { &tablet.status }, native_panel::INK);
         form.spawn(Node { column_gap: px(8.), ..default() }).with_children(|actions| {
             add_button(actions, "Save settings", Action::Save, tab);

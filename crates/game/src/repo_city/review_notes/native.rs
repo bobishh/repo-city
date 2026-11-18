@@ -41,7 +41,7 @@ impl LocalState {
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Unread => "Unread",
-            Self::Read => "Read",
+            Self::Read => "Viewed",
             Self::Addressed => "Addressed",
         }
     }

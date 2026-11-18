@@ -319,6 +319,7 @@ fn update(
             mode: reading::Mode::Delayed,
             min_seconds: None,
             max_seconds: None,
+            ..default()
         };
         let seconds = reading.seconds(text.clone());
         let joined = text.collect::<Vec<_>>().join("\n");
