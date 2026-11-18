@@ -48,7 +48,7 @@ pub(crate) fn draw(
     };
     let size = super::block_size(file);
     let sides = [
-        (Face::Source, explorer.highlighted.len()),
+        (Face::Source, explorer.source_layout.len()),
         (Face::Diff, listing.diff_lines.len()),
     ];
     if repo.is_changed() || files_by_path.is_empty() {
@@ -140,7 +140,9 @@ pub(crate) fn draw(
             {
                 let row = side.wall.row(hit.y, count);
                 let point = match face {
-                    Face::Source => Some((explorer.before, row + 1)),
+                    Face::Source => {
+                        Some((explorer.before, explorer.source_layout.rows[row].number))
+                    }
                     Face::Diff => listing.diff_lines[row]
                         .0
                         .as_ref()
@@ -166,9 +168,16 @@ pub(crate) fn draw(
                 + side.normal() * 0.05;
             let mut mark = |anchor: &Anchor, tint: Color| {
                 let rows = match face {
-                    Face::Source if anchor.before == explorer.before => {
-                        Some((anchor.start.saturating_sub(1), anchor.end))
-                    }
+                    Face::Source if anchor.before == explorer.before => Some((
+                        explorer
+                            .source_layout
+                            .visual_rows(anchor.start.saturating_sub(1))
+                            .start,
+                        explorer
+                            .source_layout
+                            .visual_rows(anchor.end.saturating_sub(1))
+                            .end,
+                    )),
                     Face::Diff => {
                         let matches = |(line, tag): &(Option<syntax::Line>, Mark)| {
                             (*tag == Mark::Removed) == anchor.before

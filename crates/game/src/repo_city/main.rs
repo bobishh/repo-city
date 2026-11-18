@@ -2,6 +2,10 @@
 #![allow(dead_code)]
 mod android;
 mod blame;
+#[cfg(target_arch = "wasm32")]
+mod browser_audio;
+#[cfg(target_arch = "wasm32")]
+mod browser_tablet;
 #[cfg(not(target_arch = "wasm32"))]
 mod city_audio;
 mod city_menu;
@@ -88,6 +92,7 @@ struct Explorer {
     detached: Option<(String, String, usize)>,
     column: usize,
     highlighted: Vec<syntax::Line>,
+    source_layout: listing::layout::SourceLayout,
     comparison: Option<Comparison>,
     comparison_mode: u8,
     hunk: usize,
@@ -114,6 +119,7 @@ impl Explorer {
             detached: None,
             column: 0,
             highlighted: vec![],
+            source_layout: default(),
             comparison: None,
             comparison_mode: 0,
             hunk: 0,
@@ -166,9 +172,14 @@ impl Explorer {
         }
         self.rebuild = true;
     }
+    fn set_highlighted(&mut self, lines: Vec<syntax::Line>) {
+        self.source_layout.replace(&lines);
+        self.highlighted = lines;
+    }
+
     fn refresh(&mut self, repo: &Repository) {
         let file = &repo.files[self.selected];
-        self.highlighted = syntax::highlight(&file.path, &self.source);
+        self.set_highlighted(syntax::highlight(&file.path, &self.source));
         let old = if file.before.is_none() {
             Ok(String::new())
         } else {
@@ -611,7 +622,9 @@ fn main() {
         app.insert_resource(reading::Settings::load());
     }
     #[cfg(target_arch = "wasm32")]
-    app.add_systems(Update, reading::apply.before(listing::wash_stream));
+    app.add_systems(Update, reading::apply.before(listing::wash_stream))
+        .add_systems(Update, browser_tablet::update.after(android::show_tablet))
+        .add_systems(Update, browser_audio::update.after(listing::draw));
     app.add_systems(Startup, district::setup);
     app.add_systems(
         Update,
@@ -718,7 +731,8 @@ fn browser_refresh(
     if syntax_version != *styling {
         *styling = syntax_version;
         let file = &repo.0.files[explorer.selected];
-        explorer.highlighted = syntax::highlight(&file.path, &explorer.source);
+        let highlighted = syntax::highlight(&file.path, &explorer.source);
+        explorer.set_highlighted(highlighted);
         let dirty = explorer.dirty;
         let displayed = (dirty && !explorer.before).then(|| explorer.source.clone());
         let selected = explorer.selected;
@@ -858,7 +872,6 @@ fn setup(
         &mut commands,
         &mut meshes,
         &mut materials,
-        #[cfg(not(target_arch = "wasm32"))]
         &mut images,
         pilot,
     );
@@ -1184,7 +1197,10 @@ fn spawn_city(
         && !keep_camera
         && let Ok((mut pose, mut pilot)) = camera.single_mut()
     {
-        *pose = listing::view(&repo.0.files[explorer.selected], explorer.highlighted.len());
+        *pose = listing::view(
+            &repo.0.files[explorer.selected],
+            explorer.source_layout.len(),
+        );
         pilot.captured = false;
     }
     if let Some(files) = refreshed_files.as_ref() {

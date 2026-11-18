@@ -1,6 +1,6 @@
 ## 1. Room and access
 
-- [ ] 1.1 Define the pinned comparison key, membership lease, invitation policy, and room message types.
+- [ ] 1.1 Define the pinned comparison key, membership lease, invitation policy, room message types, and configurable resource-budget admission policy. Do not hard-code a participant-count product limit.
 - [ ] 1.2 Add browser creation, account-bound invitation, access verification, join, reconnect, removal, and close. Verify with mocked GitHub accounts that forwarding an invite or losing private PR access does not expose the room.
 - [ ] 1.3 Verify that a fork PR can be opened at the pinned comparison and remains pinned when GitHub reports a newer head.
 
@@ -15,7 +15,10 @@
 ## 3. Voice
 
 - [ ] 3.1 Add authorized WebRTC signaling, relay fallback, microphone permission, push-to-talk, speaker indication, and local mute.
-- [ ] 3.2 Test audio across two independent networks and exercise a four-person room. Test denied microphone permission, focus loss while transmitting, removal, and disconnect with voice active.
+- [ ] 3.2 Test audio across two independent networks. Use two- and four-user rooms as baseline fixtures, then increase members and concurrent talkers independently. Test denied microphone permission, focus loss while transmitting, removal, and disconnect with voice active.
+- [ ] 3.3 Reproduce the design's payload calculations with recorded `N`, `K`, `b`, `r`, and `p`; measure actual wire overhead, endpoint uplink/downlink, service fanout, and client CPU/frame cost for direct mesh, TURN mesh, and an SFU candidate before selecting supported configurations.
+- [ ] 3.4 Collect browser `getStats()` and native equivalents. Establish configurable sampling windows, headroom, quality targets, and operational ceilings from load tests. Verify missing metrics remain unknown, peer bandwidth estimates are not summed as independent uplinks, and audio checks do not depend on video-only statistics.
+- [ ] 3.5 Verify adaptive pose rate and media quality, visible voice-only degradation, and resource-budget rejection/recovery without evicting healthy members or delaying access revocation and line cues.
 
 ## 4. Mac and rollout
 

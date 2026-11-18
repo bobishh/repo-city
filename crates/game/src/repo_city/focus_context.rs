@@ -265,25 +265,40 @@ fn publish(
                 &explorer,
                 window.width() / window.height().max(1.),
             )?;
-            let readable_lines = rows
-                .clone()
-                .filter(|&row| listing.source_row_is_readable(&explorer, row))
+            let fragments = listing.visible_source_fragments(
+                file,
+                camera,
+                &explorer,
+                window.width() / window.height().max(1.),
+            );
+            let mut grouped: Vec<(usize, String)> = Vec::new();
+            for (number, text) in fragments {
+                if let Some((last_number, last_text)) = grouped.last_mut()
+                    && *last_number == number
+                {
+                    last_text.push_str(text);
+                } else {
+                    grouped.push((number, text.to_owned()));
+                }
+            }
+            let omitted = grouped.len() > MAX_LINES;
+            let readable_lines = grouped
+                .into_iter()
                 .take(MAX_LINES)
-                .map(|row| {
-                    let text = &explorer.highlighted[row].text;
+                .map(|(number, text)| {
+                    let whole_line = explorer
+                        .highlighted
+                        .get(number.saturating_sub(1))
+                        .map(|line| line.text.as_str());
                     Line {
-                        number: row + 1,
+                        number,
+                        truncated: whole_line != Some(text.as_str())
+                            || text.chars().count() > MAX_LINE_CHARACTERS,
                         text: text.chars().take(MAX_LINE_CHARACTERS).collect(),
-                        truncated: text.chars().count() > MAX_LINE_CHARACTERS,
                     }
                 })
                 .collect::<Vec<_>>();
-            let text_truncated = readable_lines.iter().any(|line| line.truncated)
-                || rows
-                    .clone()
-                    .filter(|&row| listing.source_row_is_readable(&explorer, row))
-                    .count()
-                    > MAX_LINES;
+            let text_truncated = omitted || readable_lines.iter().any(|line| line.truncated);
             Some(Focus {
                 path: file.path.clone(),
                 before: explorer.before,

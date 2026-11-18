@@ -9,7 +9,8 @@ A Repo City party lets reviewers fly through the same pull request and see which
 - Let reviewers share a specific line range as a separate cue for the group to revisit.
 - Add opt-in push-to-talk with a speaking indicator, individual mute, and host controls to remove a member or close the room.
 - Keep party cues ephemeral. Each reviewer continues to control their own GitHub comments and local drafts.
-- Ship presence and navigation first. Add voice for small parties, then verify that the web and Mac clients can join the same room.
+- Ship presence and navigation first, then voice and Mac interoperability. Derive supported room capacity from measured network, client, and service budgets instead of a fixed account count.
+- Adapt pose traffic and voice quality to connection health. Explain resource limits and keep shared navigation available when voice cannot be sustained.
 
 ## Capabilities
 

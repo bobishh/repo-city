@@ -9,6 +9,7 @@ use super::*;
 
 mod cover;
 pub(super) mod find;
+pub(super) mod layout;
 mod paint;
 pub(super) use cover::Plugin as CoverPlugin;
 pub(super) use paint::draw as paint_notes;
@@ -127,6 +128,7 @@ impl RevealProgress {
 #[derive(Resource, Default)]
 pub(super) struct Listing {
     revealed: HashSet<(usize, bool, usize)>,
+    partial_source: HashSet<(usize, bool, usize)>,
     reveal_progress: HashMap<(usize, bool), RevealProgress>,
     overview_dirty: HashSet<usize>,
     listing_facade: Option<usize>,
@@ -138,6 +140,7 @@ pub(super) struct Listing {
     turn: Option<(f32, Transform, Transform)>,
     scroll_remaining: f32,
     rendered: Option<(usize, bool, usize)>,
+    rendered_layout: u64,
     invalidated: bool,
     recolored: bool,
     source_tiles: Tiles,
@@ -412,16 +415,22 @@ impl Listing {
     }
 
     /// Zero-based rows in the source wall's viewport, excluding hidden or distant walls.
-    pub(super) fn visible_source_rows(
+    fn visible_source_display_rows(
         &self,
         file: &repo_world::File,
         camera: &Transform,
         explorer: &Explorer,
         aspect: f32,
     ) -> Option<Range<usize>> {
-        let count = explorer.highlighted.len();
+        let count = explorer.source_layout.len();
         if count == 0
-            || self.rendered != Some((explorer.selected, explorer.before, count))
+            || self.rendered_layout != explorer.source_layout.revision()
+            || self.rendered
+                != Some((
+                    explorer.selected,
+                    explorer.before,
+                    explorer.highlighted.len(),
+                ))
             || self.viewing != Some(Face::Source)
             || explorer.comparison_mode != 0
             || explorer.anchored
@@ -434,15 +443,69 @@ impl Listing {
         (!rows.is_empty()).then_some(rows)
     }
 
+    pub(super) fn visible_source_rows(
+        &self,
+        file: &repo_world::File,
+        camera: &Transform,
+        explorer: &Explorer,
+        aspect: f32,
+    ) -> Option<Range<usize>> {
+        self.visible_source_display_rows(file, camera, explorer, aspect)
+            .map(|rows| explorer.source_layout.canonical_range(rows))
+    }
+
+    pub(super) fn visible_source_fragments<'a>(
+        &self,
+        file: &repo_world::File,
+        camera: &Transform,
+        explorer: &'a Explorer,
+        aspect: f32,
+    ) -> Vec<(usize, &'a str)> {
+        self.visible_source_display_rows(file, camera, explorer, aspect)
+            .into_iter()
+            .flatten()
+            .filter(|&row| self.source_display_row_is_readable(explorer, row))
+            .map(|row| {
+                let line = &explorer.source_layout.rows[row];
+                (line.number, line.text.as_str())
+            })
+            .collect()
+    }
+
     /// A visible row may still be covered; only revealed or actively washed rows can be read.
     pub(super) fn source_row_is_readable(&self, explorer: &Explorer, row: usize) -> bool {
-        self.revealed
-            .contains(&(explorer.selected, explorer.before, row + 1))
+        if row >= explorer.highlighted.len() {
+            return false;
+        }
+        explorer
+            .source_layout
+            .visual_rows(row)
+            .all(|visual| self.source_display_row_is_readable(explorer, visual))
+    }
+
+    fn source_display_row_is_readable(&self, explorer: &Explorer, row: usize) -> bool {
+        self.source_display_row_committed(explorer, row)
             || self.wash_preview.as_ref().is_some_and(|preview| {
                 preview.file == explorer.selected
                     && preview.before == explorer.before
                     && preview.rows.contains(&row)
             })
+    }
+
+    fn source_display_row_committed(&self, explorer: &Explorer, row: usize) -> bool {
+        let Some(line) = explorer.source_layout.rows.get(row) else {
+            return false;
+        };
+        self.document_revealed(
+            explorer.selected,
+            explorer.before,
+            explorer.highlighted.len(),
+        ) || self
+            .revealed
+            .contains(&(explorer.selected, explorer.before, line.number))
+            || self
+                .partial_source
+                .contains(&(explorer.selected, explorer.before, row))
     }
 
     pub(super) fn arrival_view(
@@ -465,7 +528,11 @@ impl Listing {
         let count = if face == Face::Diff {
             diff_rows(explorer)
         } else {
-            explorer.highlighted.len()
+            if face == Face::Source {
+                explorer.source_layout.len()
+            } else {
+                explorer.highlighted.len()
+            }
         };
         let side = WallSide::new(file, count, face, size);
         let y = if count == 0 {
@@ -475,8 +542,7 @@ impl Listing {
                 surface.map_or(0, |surface| side.wall.row(size.y * surface.height, count));
             let row = if face == Face::Source && self.counts(explorer).0 < count {
                 nearest_unopened(preferred, count, |row| {
-                    self.revealed
-                        .contains(&(explorer.selected, explorer.before, row + 1))
+                    self.source_display_row_is_readable(explorer, row)
                 })
             } else {
                 0
@@ -523,10 +589,11 @@ impl Listing {
                 row += diff_row_width(pair);
             }
         }
-        let count = explorer.highlighted.len();
-        if source_row >= count {
+        let count = explorer.source_layout.len();
+        if source_row >= explorer.highlighted.len() {
             return None;
         }
+        let source_row = explorer.source_layout.visual_rows(source_row).start;
         let side = WallSide::new(file, count, Face::Source, block_size(file));
         Some(side.view(side.wall.y(source_row as f32 + 0.5)))
     }
@@ -539,6 +606,7 @@ impl Listing {
         count: usize,
     ) -> Option<Vec3> {
         if self.viewing != Some(side.face)
+            || self.rendered_layout != explorer.source_layout.revision()
             || self.rendered
                 != Some((
                     explorer.selected,
@@ -584,7 +652,7 @@ impl Listing {
         file: &repo_world::File,
         y: f32,
     ) -> Option<progress::Mark> {
-        let count = explorer.highlighted.len();
+        let count = explorer.source_layout.len();
         if count == 0 {
             return None;
         }
@@ -592,19 +660,37 @@ impl Listing {
             .wall
             .row(y, count);
         let range = tile_rows(row, count);
+        for row in range.clone() {
+            if !self.source_display_row_committed(explorer, row) {
+                self.partial_source
+                    .insert((explorer.selected, explorer.before, row));
+                self.source_tiles.preview_dirty = true;
+            }
+        }
+        let completed = explorer
+            .source_layout
+            .canonical_range(range)
+            .filter(|&line| {
+                explorer
+                    .source_layout
+                    .visual_rows(line)
+                    .all(|row| self.source_display_row_is_readable(explorer, row))
+            })
+            .collect::<Vec<_>>();
+        let range = *completed.first()?..completed.last()? + 1;
         self.reveal(
             explorer.selected,
             explorer.before,
             file,
             range.clone(),
-            count,
+            explorer.highlighted.len(),
         )
         .then(|| progress::Mark::Reveal {
             path: file.path.clone(),
             before: explorer.before,
             start: range.start,
             end: range.end,
-            rows: count,
+            rows: explorer.highlighted.len(),
         })
     }
 
@@ -616,12 +702,7 @@ impl Listing {
         rows: Range<usize>,
         count: usize,
     ) -> bool {
-        if rows.is_empty()
-            || rows.end > count
-            || rows.len() > TILE_ROWS
-            || rows.start % TILE_ROWS != 0
-            || count > 1024 * 1024
-        {
+        if rows.is_empty() || rows.end > count || rows.len() > TILE_ROWS || count > 1024 * 1024 {
             return false;
         }
         let progress = self
@@ -679,6 +760,7 @@ impl Listing {
         self.overview_dirty
             .extend(self.reveal_progress.keys().map(|&(index, _)| index));
         self.revealed.clear();
+        self.partial_source.clear();
         self.reveal_progress.clear();
         self.source_tiles.preview_dirty = true;
     }
@@ -712,7 +794,7 @@ pub(super) fn controls(
     let Ok(mut camera) = camera.single_mut() else {
         return;
     };
-    let source_count = explorer.highlighted.len();
+    let source_count = explorer.source_layout.len();
     let active = Face::at_camera(file, size, &camera, DETAIL_RAY_REACH)
         .or(listing.destination)
         .or(listing.viewing)
@@ -720,8 +802,10 @@ pub(super) fn controls(
     let count_for = |face| {
         if face == Face::Diff {
             diff_rows(&explorer)
-        } else {
+        } else if face == Face::Source {
             source_count
+        } else {
+            explorer.highlighted.len()
         }
     };
     let toggle = if keys.just_pressed(KeyCode::KeyG) {
@@ -743,6 +827,8 @@ pub(super) fn controls(
         let row = from.wall.row(from.look_height(&camera), old_count);
         let source_row = if active == Face::Diff && old_count > 0 {
             projected_row(&explorer, row, false)
+        } else if active == Face::Source && old_count > 0 {
+            explorer.source_layout.rows[row].number - 1
         } else {
             row
         };
@@ -750,6 +836,8 @@ pub(super) fn controls(
         let side = WallSide::new(file, count, destination, size);
         let row = if destination == Face::Diff && count > 0 {
             projected_row(&explorer, source_row, true)
+        } else if destination == Face::Source {
+            explorer.source_layout.visual_rows(source_row).start
         } else {
             source_row
         };
@@ -884,7 +972,7 @@ pub(super) fn wash_stream(
     if !pilot.shot && !listing.water_on {
         return;
     }
-    let count = explorer.highlighted.len();
+    let count = explorer.source_layout.len();
     let file = &repo.0.files[explorer.selected];
     let side = WallSide::new(file, count, Face::Source, block_size(file));
     let Some(hit) = listing
@@ -904,10 +992,10 @@ pub(super) fn wash_stream(
     let rows = tile_rows(row, count);
     let file_index = explorer.selected;
     let before = explorer.before;
-    if listing.document_revealed(file_index, before, count)
+    if listing.document_revealed(file_index, before, explorer.highlighted.len())
         || rows
             .clone()
-            .all(|row| listing.revealed.contains(&(file_index, before, row + 1)))
+            .all(|row| listing.source_display_row_committed(&explorer, row))
     {
         listing.wash_preview = None;
     } else if settings.mode == reading::Mode::Immediate
@@ -919,7 +1007,7 @@ pub(super) fn wash_stream(
             time.delta_secs(),
             || {
                 settings.seconds(
-                    explorer.highlighted[rows]
+                    explorer.source_layout.rows[rows]
                         .iter()
                         .map(|line| line.text.as_str()),
                 )
@@ -1509,7 +1597,8 @@ pub(super) fn draw(
             });
     let count = explorer.highlighted.len();
     let key = visible.then_some((explorer.selected, explorer.before, count));
-    let changed = key != listing.rendered;
+    let changed =
+        key != listing.rendered || listing.rendered_layout != explorer.source_layout.revision();
     let diff_changed = std::mem::take(&mut listing.invalidated) || changed;
     let recolored = std::mem::take(&mut listing.recolored);
     let mut render = WallRender {
@@ -1522,6 +1611,12 @@ pub(super) fn draw(
         dt: time.as_ref().map_or(1. / 60., |time| time.delta_secs()),
     };
     if changed {
+        if listing.rendered_layout != explorer.source_layout.revision() {
+            listing.partial_source.retain(|&(file, before, _)| {
+                file != explorer.selected || before != explorer.before
+            });
+        }
+        listing.rendered_layout = explorer.source_layout.revision();
         listing.rendered = key;
         render.clear(&mut listing.source_tiles);
         render.clear(&mut listing.blame_tiles);
@@ -1592,7 +1687,8 @@ pub(super) fn draw(
 
     let file = &repo.0.files[explorer.selected];
     let size = block_size(file);
-    let source = WallSide::new(file, count, Face::Source, size);
+    let source_count = explorer.source_layout.len();
+    let source = WallSide::new(file, source_count, Face::Source, size);
     let diff_count = listing.diff_lines.len();
     let diff = WallSide::new(file, diff_count, Face::Diff, size);
     let blame = WallSide::new(file, count, Face::Blame, size);
@@ -1621,7 +1717,7 @@ pub(super) fn draw(
         render.header(&diff, &title, set.added);
     }
 
-    let fallback = view(file, count);
+    let fallback = view(file, source_count);
     let camera = camera.single().unwrap_or(&fallback);
     let aspect = windows
         .single()
@@ -1668,6 +1764,7 @@ pub(super) fn draw(
         diff_lines,
         source_marks,
         revealed,
+        partial_source,
         reveal_progress,
         wash_preview,
         preview_marks,
@@ -1679,7 +1776,10 @@ pub(super) fn draw(
         .is_some_and(|coverage| coverage.rows == count && coverage.opened == count);
     let is_revealed =
         |line| fully_revealed || revealed.contains(&(explorer.selected, explorer.before, line));
-    let source_row = |index| (Some(&explorer.highlighted[index]), source_marks[index]);
+    let source_row = |index: usize| {
+        let line = &explorer.source_layout.rows[index];
+        (Some(line), source_marks[line.number - 1])
+    };
     let diff_row = |index: usize| (diff_lines[index].0.as_ref(), diff_lines[index].1);
     let retain = |face, tiles: &Tiles| {
         viewed == Some(face) || (!tiles.resident.is_empty() && near(face, true).is_some())
@@ -1700,8 +1800,8 @@ pub(super) fn draw(
     let source_rows = |rows: Range<usize>| {
         rows.map(|index| {
             (
-                Some(explorer.highlighted[index].clone()),
-                source_marks[index],
+                Some(explorer.source_layout.rows[index].clone()),
+                source_marks[explorer.source_layout.rows[index].number - 1],
             )
         })
         .collect::<Vec<_>>()
@@ -1709,12 +1809,13 @@ pub(super) fn draw(
     let active_wash = wash_preview
         .as_ref()
         .filter(|preview| preview.file == explorer.selected && preview.before == explorer.before);
-    let mask = |rows| {
-        cover::mask(rows, &|line| {
-            is_revealed(line)
-                || active_wash.is_some_and(|preview| preview.rows.contains(&(line - 1)))
-        })
+    let display_revealed = |visual: usize| {
+        let row = visual - 1;
+        is_revealed(explorer.source_layout.rows[row].number)
+            || partial_source.contains(&(explorer.selected, explorer.before, row))
+            || active_wash.is_some_and(|preview| preview.rows.contains(&row))
     };
+    let mask = |rows| cover::mask(rows, &display_revealed);
     let metadata =
         |rows, bits| cover::CoverRows::new(&source_rows(rows), bits, source.glyph_scale());
     let tone = |[r, g, b]: [u8; 3], alpha| {
@@ -1764,14 +1865,14 @@ pub(super) fn draw(
             })
             .map(|(_, paint)| *paint)
     };
-    render.preview(&source, source_tiles, count, || {
+    render.preview(&source, source_tiles, source_count, || {
         code_texture::listing_preview(
-            count,
+            source_count,
             source_row,
-            is_revealed,
+            display_revealed,
             Face::Source,
             source.glyph_scale(),
-            |index| line_paint(explorer.before, index + 1),
+            |index| line_paint(explorer.before, explorer.source_layout.rows[index].number),
         )
     });
     render.preview(&diff, diff_tiles, diff_count, || {
@@ -1795,8 +1896,13 @@ pub(super) fn draw(
             marks.push((anchor, tone(preset.color, 0.58)));
         }
     }
-    let source_paint =
-        |rows| paint::pigments(rows, |index| Some((explorer.before, index + 1)), &marks);
+    let source_paint = |rows| {
+        paint::pigments(
+            rows,
+            |index| Some((explorer.before, explorer.source_layout.rows[index].number)),
+            &marks,
+        )
+    };
     let diff_paint = |rows| {
         paint::pigments(
             rows,
@@ -1817,9 +1923,9 @@ pub(super) fn draw(
             Face::Source if show_source => render.tiles(
                 &source,
                 source_tiles,
-                source.visible_rows(camera, count, aspect),
-                source.wall.row(source.look_height(camera), count),
-                count,
+                source.visible_rows(camera, source_count, aspect),
+                source.wall.row(source.look_height(camera), source_count),
+                source_count,
                 |rows| {
                     code_texture::listing(&source_rows(rows), Face::Source, source.glyph_scale())
                 },
@@ -1852,7 +1958,14 @@ pub(super) fn draw(
                 count,
                 |rows| {
                     code_texture::listing_with_notes(
-                        &source_rows(rows),
+                        &rows
+                            .map(|index| {
+                                (
+                                    Some(explorer.highlighted[index].clone()),
+                                    source_marks[index],
+                                )
+                            })
+                            .collect::<Vec<_>>(),
                         Face::Blame,
                         blame.glyph_scale(),
                         attribution.notes(),
@@ -1909,6 +2022,136 @@ pub(super) fn smoke_blame_ready(listing: &Listing, count: usize) -> bool {
 mod tests {
     use super::*;
 
+    fn wrapped_fixture() -> (repo_world::File, Explorer) {
+        let source = format!("{} TAIL\nlast line\n", "word ".repeat(1000));
+        let mut file = fixture_file();
+        file.path = "notes.md".into();
+        file.after = Some(repo_world::Blob {
+            id: String::new(),
+            size: source.len(),
+            mode: "100644".into(),
+        });
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight(&file.path, &source));
+        (file, explorer)
+    }
+
+    #[test]
+    fn approaching_long_markdown_renders_continuations_and_goto_keeps_source_line_identity() {
+        let (file, explorer) = wrapped_fixture();
+        let logical = explorer.highlighted.len();
+        let visual = explorer.source_layout.len();
+        let last = explorer.source_layout.visual_rows(1).start;
+        let arrival = Listing::review_line_view(&explorer, &file, 2).unwrap();
+        let side = WallSide::new(&file, visual, Face::Source, block_size(&file));
+        assert_eq!(
+            side.wall.row(side.look_height(&arrival), visual),
+            last,
+            "goto must reach the first visual row of canonical source line2"
+        );
+        let mut repo = repository_picker::empty();
+        repo.files.push(file);
+        let mut listing = Listing::default();
+        listing.reveal_document(0, false, logical);
+        let mut app = App::new();
+        app.insert_resource(Repo(repo))
+            .insert_resource(explorer)
+            .insert_resource(listing)
+            .insert_resource(WorldSet::load(None).unwrap())
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<cover::Material>>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<city_navigation::Navigation>()
+            .add_systems(Update, draw);
+        app.update();
+        let listing = app.world().resource::<Listing>();
+        let tile = &listing.source_tiles.resident[&0];
+        let image = app
+            .world()
+            .resource::<Assets<Image>>()
+            .get(&tile.image)
+            .unwrap();
+        assert!(
+            image.height() >= TILE_ROWS as u32 * code_texture::LISTING_ROW_PIXELS,
+            "renderer must use continuation rows instead of clipping the original long row"
+        );
+    }
+
+    #[test]
+    fn washing_a_long_source_line_requires_all_continuations_before_persisting_its_anchor() {
+        let (file, explorer) = wrapped_fixture();
+        let visual = explorer.source_layout.len();
+        let side = WallSide::new(&file, visual, Face::Source, block_size(&file));
+        let mut listing = Listing::default();
+        assert!(
+            listing.wash(&explorer, &file, side.wall.y(0.5)).is_none(),
+            "one visible tile must not mark a much longer logical line as read"
+        );
+        for row in (TILE_ROWS..visual).step_by(TILE_ROWS) {
+            listing.wash(&explorer, &file, side.wall.y(row as f32 + 0.5));
+        }
+        assert_eq!(listing.counts(&explorer), (2, 2));
+        assert!(listing.revealed.contains(&(0, false, 1)));
+        assert!(listing.revealed.contains(&(0, false, 2)));
+        assert_eq!(
+            listing.revealed.len(),
+            2,
+            "visual rows must never become persisted source line numbers"
+        );
+    }
+
+    #[test]
+    fn wrapped_notes_and_out_of_order_washing_keep_canonical_line_numbers() {
+        let (file, explorer) = wrapped_fixture();
+        let layout = &explorer.source_layout;
+        let anchor = review_notes::Anchor {
+            path: file.path.clone(),
+            before: false,
+            start: 1,
+            end: 1,
+        };
+        let color = Vec4::ONE;
+        let paint = paint::pigments(
+            0..TILE_ROWS,
+            |row| Some((false, layout.rows[row].number)),
+            &[(&anchor, color)],
+        );
+        assert!(
+            paint.iter().all(|&tint| tint == color),
+            "all continuations share the note's canonical anchor"
+        );
+        let side = WallSide::new(&file, layout.len(), Face::Source, block_size(&file));
+        let mut listing = Listing::default();
+        let last = layout.len() - 1;
+        let saved = listing
+            .wash(&explorer, &file, side.wall.y(last as f32 + 0.5))
+            .unwrap();
+        let progress::Mark::Reveal {
+            start, end, rows, ..
+        } = saved
+        else {
+            panic!("canonical reveal");
+        };
+        assert_eq!((start, end, rows), (1, 2, 2));
+        let mut restored = Listing::default();
+        assert!(restored.reveal(0, false, &file, start..end, rows));
+        assert_eq!(restored.counts(&explorer), (1, 2));
+        listing.rendered = Some((0, false, 2));
+        listing.rendered_layout = layout.revision();
+        listing.viewing = Some(Face::Source);
+        listing.reveal_document(0, false, 2);
+        let camera = side.view(side.wall.y(24.5));
+        let fragments = listing.visible_source_fragments(&file, &camera, &explorer, 1.6);
+        assert!(!fragments.is_empty());
+        assert!(fragments.iter().all(|(line, _)| *line == 1 || *line == 2));
+        assert!(
+            fragments.iter().map(|(_, text)| text.len()).sum::<usize>()
+                < explorer.highlighted[0].text.len(),
+            "focus must quote onscreen fragments rather than a hidden whole logical line"
+        );
+    }
+
     fn four_line_file() -> (repo_world::File, Explorer) {
         let source = "// Math helpers\nexport function add(a, b) {\n  return a + b;\n}\n";
         let mut file = fixture_file();
@@ -1919,7 +2162,7 @@ mod tests {
             mode: "100644".into(),
         });
         let mut explorer = Explorer::new(0);
-        explorer.highlighted = syntax::highlight(&file.path, source);
+        explorer.set_highlighted(syntax::highlight(&file.path, source));
         (file, explorer)
     }
 
@@ -2000,7 +2243,7 @@ mod tests {
     fn visible_source_context_excludes_hidden_faces_and_unwashed_rows() {
         let file = fixture_with_rows(40);
         let mut explorer = Explorer::new(0);
-        explorer.highlighted = syntax::highlight("test.rs", &"let x = 1;\n".repeat(40));
+        explorer.set_highlighted(syntax::highlight("test.rs", &"let x = 1;\n".repeat(40)));
         let camera = view(&file, 40);
         let mut listing = Listing::default();
         assert_eq!(
@@ -2008,6 +2251,7 @@ mod tests {
             None
         );
         listing.rendered = Some((0, false, 40));
+        listing.rendered_layout = explorer.source_layout.revision();
         listing.viewing = Some(Face::Source);
         let rows = listing
             .visible_source_rows(&file, &camera, &explorer, 1.6)
@@ -2036,7 +2280,7 @@ mod tests {
         let mut repo = repository_picker::empty();
         repo.files.push(file);
         let mut explorer = Explorer::new(0);
-        explorer.highlighted = syntax::highlight("test.rs", &"let x = 1;\n".repeat(40));
+        explorer.set_highlighted(syntax::highlight("test.rs", &"let x = 1;\n".repeat(40)));
         let mut app = App::new();
         app.insert_resource(Repo(repo))
             .insert_resource(explorer)
@@ -2345,7 +2589,7 @@ mod tests {
         repo.files.push(file.clone());
         let mut explorer = Explorer::new(0);
         explorer.before = true;
-        explorer.highlighted = syntax::highlight(&file.path, &"let x = 1;\n".repeat(count));
+        explorer.set_highlighted(syntax::highlight(&file.path, &"let x = 1;\n".repeat(count)));
         let mut images = Assets::default();
         let mut materials = Assets::default();
         let neutral = materials.add(StandardMaterial::default());
@@ -2473,7 +2717,7 @@ mod tests {
         let mut repo = repository_picker::empty();
         repo.files.push(file.clone());
         let mut explorer = Explorer::new(0);
-        explorer.highlighted = syntax::highlight("test.rs", &"let x = 1;\n".repeat(count));
+        explorer.set_highlighted(syntax::highlight("test.rs", &"let x = 1;\n".repeat(count)));
         let mut app = App::new();
         app.add_plugins(bevy::asset::AssetPlugin::default())
             .insert_resource(Repo(repo))
@@ -2575,7 +2819,7 @@ mod tests {
         repo.files.push(file.clone());
         let source = "let x = 1;\n".repeat(count);
         let mut explorer = Explorer::new(0);
-        explorer.highlighted = syntax::highlight(&file.path, &source);
+        explorer.set_highlighted(syntax::highlight(&file.path, &source));
         let before = source.replacen("let x = 1;", "let x = 0;", 1);
         explorer.comparison = Some(Comparison::new(&file.path, &before, &source).unwrap());
         let mut app = App::new();
@@ -2700,7 +2944,7 @@ mod tests {
         let mut repo = repository_picker::empty();
         repo.files.push(file);
         let mut explorer = Explorer::new(0);
-        explorer.highlighted = syntax::highlight("test.rs", &"let x = 1;\n".repeat(80));
+        explorer.set_highlighted(syntax::highlight("test.rs", &"let x = 1;\n".repeat(80)));
         let mut time = Time::<()>::default();
         time.advance_by(std::time::Duration::from_millis(16));
         let mut app = App::new();

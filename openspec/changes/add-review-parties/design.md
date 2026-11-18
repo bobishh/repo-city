@@ -6,7 +6,7 @@ Paket's session at source revision `7027ef350c4428805b2bd8f06f8d24fad57d7688` us
 
 ## Goals / Non-Goals
 
-The first supported party is an invite-only review of one GitHub pull request, with two to four people including the host. Members can see who's present, share their live reading focus, point to a specific line range, and speak on demand.
+The first supported party is an invite-only review of one GitHub pull request. Members can see who's present, share their live reading focus, point to a specific line range, and speak on demand. Supported capacity follows measured network, client, and service budgets; it is not a fixed number of GitHub accounts or a claim of unlimited scale.
 
 Worktree sharing, persistent party history, shared draft editing, voice recording, and user discovery outside the invite picker are outside this proposal.
 
@@ -32,9 +32,39 @@ Using Paket's peer gossip directly would also require a separate service for ide
 
 ### Push-to-talk
 
-Use WebRTC audio with room-authorized signaling and STUN/TURN for the first four-person release. The browser already provides media capture and playback APIs. The Mac implementation must pass an interoperability and microphone permission test before voice becomes available there. Enable the microphone only after the member chooses voice and grants permission. Send audio while push-to-talk is held, and stop the local track on focus loss, leave, removal, or explicit disable. Show who is speaking and let each member mute individual peers. The existing room authority tears down authorized media connections on removal. [W3C WebRTC specification](https://www.w3.org/TR/webrtc/).
+Use WebRTC audio with room-authorized signaling and STUN/TURN. The browser already provides media capture and playback APIs. The Mac implementation must pass an interoperability and microphone permission test before voice becomes available there. Enable the microphone only after the member chooses voice and grants permission. Send audio while push-to-talk is held, and stop the local track on focus loss, leave, removal, or explicit disable. Show who is speaking and let each member mute individual peers. The existing room authority tears down authorized media connections on removal. [W3C WebRTC specification](https://www.w3.org/TR/webrtc/).
 
-A relay can pass encrypted audio in transit. Neither the room nor its media relay stores audio, SDP, ICE candidates, or the contents of review cues after use. If parties outgrow four-person peer audio or direct peers' network visibility proves unacceptable, measure a relay-only setup or a media router before raising the limit.
+Neither the room nor its media relay stores audio, SDP, ICE candidates, or the contents of review cues after use. Evaluate direct peer mesh, TURN-relayed mesh, and an SFU against the capacity model below. TURN addresses reachability; a relay-only ICE policy can avoid sharing direct candidates. It does not remove mesh stream duplication. An SFU forwards media through a server and has a different bandwidth and encryption trust boundary, which must be documented before enabling that topology. [TURN specification](https://www.rfc-editor.org/rfc/rfc8656.html).
+
+### Capacity and connection health
+
+Keep room admission, voice availability, and simultaneous transmission separate. A reviewer can remain in presence and shared navigation when their voice path is unavailable. Record the actual topology and negotiated media parameters before estimating capacity.
+
+For a planning model, let `N` be admitted members, `K` concurrent voice senders, `b` the encoded bitrate of one active audio stream in bits/s, `r` the emitted pose updates per member per second after coalescing, and `p` the encoded bytes per pose update. Let `s_i` be 1 while member `i` transmits and 0 otherwise. The following are payload rates, assuming equal stream bitrates and all-to-all delivery with voice enabled for every member. For presence-only members, use the actual voice-endpoint count instead of `N` in voice calculations; presence still uses the full roster:
+
+| Path | Payload rate |
+| --- | --- |
+| Mesh: one member's voice upload | `s_i (N - 1) b` |
+| Mesh: one member's voice download | `(K - s_i) b` |
+| Mesh: aggregate voice upload across members | `K (N - 1) b` |
+| Mesh: aggregate voice upload when everyone talks | `N (N - 1) b` |
+| Hosted presence: one member's upload | `8 r p` |
+| Hosted presence: one member's download | `8 (N - 1) r p` |
+| Hosted presence: room service ingress / egress | `8 N r p` / `8 N (N - 1) r p` |
+| Candidate SFU: one member's voice upload / download | `s_i b` / `(K - s_i) b` |
+| Candidate SFU: media service ingress / egress | `K b` / `K (N - 1) b` |
+
+The SFU model assumes one upstream stream per talker and forwarding to every other member, without mixing. A TURN-relayed mesh retains the mesh's endpoint upload requirement and adds relay traffic. Actual relay hops, packetization, RTP/SRTP, UDP/IP or TCP/TLS, control traffic, silence behavior, and recovery traffic must be measured without double counting. Idle connections still have transport cost when `K = 0`.
+
+For an explicitly illustrative calculation, choose `N = 10`, `K = 2`, and `b = 24,000 bits/s`. This is an assumed Opus payload bitrate within its supported range, not a protocol default or a measured product setting. Mesh upload is 216 kbit/s per talker; download is 24 kbit/s for a talker and 48 kbit/s for a silent listener. Aggregate voice upload is 432 kbit/s; if all ten talk it is 2.16 Mbit/s. An SFU would instead receive 48 kbit/s and forward 432 kbit/s. These figures exclude transport overhead. [Opus over RTP](https://www.rfc-editor.org/rfc/rfc7587.html#section-3.1).
+
+If the same example assumes `r = 10 updates/s` and `p = 120 bytes`, each member sends 9.6 kbit/s of poses and receives 86.4 kbit/s. The room service receives 96 kbit/s and sends 864 kbit/s. These assumed values describe a reproducible calculation, not chosen defaults. Pose fanout can cost more than speech and must adapt too.
+
+For each member, reserve configurable headroom and account for presence, control traffic, other network use, and measured wire overhead before allocating voice upload `U_i` and download `D_i`. In uniform-bitrate mesh, a member who may transmit needs `(N - 1) b <= U_i`, while receiving needs `(K - s_i) b <= D_i`. For example, the upload-only bound is `N <= 1 + floor(U_i / b)`; it is not sufficient on its own. Check every affected endpoint, service ingress/egress, and client CPU/frame budgets. Full mesh has `N (N - 1) / 2` peer relationships even when few members talk. Measure actual encoder reuse, active decoders, mixing, cryptography, and avatar/presence work rather than assuming an implementation's CPU cost from member count.
+
+Sample browser `RTCPeerConnection.getStats()` over configured windows: derive traffic rates from byte-counter deltas; correlate audio loss, jitter, concealment, RTT, and the selected candidate path. `availableOutgoingBitrate` is a candidate-pair estimate, not the entire uplink; do not add peer estimates as independent capacities. RTP byte counters omit transport headers. Do not use video-only `qualityLimitationReason` as an audio health signal. Treat absent fields as unknown and use native equivalents on Mac. [W3C statistics definitions](https://www.w3.org/TR/webrtc-stats/).
+
+Coalesce pose updates and reduce their rate before allowing queues to grow; keep membership, focus, and line cues prioritized. Adapt negotiated audio quality where supported; `RTCRtpSender.setParameters()` bitrate limits do not guarantee a viable codec or network path. If acceptable voice cannot be sustained, show voice as unavailable while retaining presence when its own budget permits. Evaluate a relay or SFU for the measured failure it solves. Admission or transmission restrictions must show the affected resource and recovery action. Keep measurement windows, headroom, quality targets, and any operational ceilings configurable and backed by reproducible load tests; do not invent universal thresholds. [WebRTC sender parameters](https://www.w3.org/TR/webrtc/#dom-rtcrtpsender-setparameters).
 
 ### Live reading focus and line cues
 
@@ -50,14 +80,15 @@ The existing review flow saves, exports, and publishes under the active reviewer
 - Versions can disagree on where a building is. Negotiate a supported layout version before rendering other members and use semantic anchors for shared jumps.
 - Media routing can fail on restrictive networks. Test relay connectivity on separate networks and keep shared navigation usable if voice fails.
 - A burst of poses can hide joins or slow navigation. Bound work per frame, coalesce movement, and test reliable room events during bursts.
+- A larger roster can exhaust an endpoint or service even with few talkers. Measure both media and presence fanout; do not interpret low voice traffic as spare capacity everywhere.
 
 ## Migration Plan
 
-1. Gate creation and join behind a disabled-by-default release setting. Pilot browser rooms with two and four authenticated users, including a private fork PR with distinct permissions.
+1. Gate creation and join behind a disabled-by-default release setting. Use two- and four-user browser rooms as baseline test fixtures, not membership limits. Increase room size and concurrent talkers under controlled network and CPU conditions, including a private fork PR with distinct permissions.
 2. Enable browser voice for pilot rooms after direct and relayed tests pass. Keep navigation available when voice is unavailable.
 3. Add Mac parity for invites and movement, then enable voice when Mac and browser interoperate. Rollback disables new rooms and closes existing rooms after a grace period. No draft or review data migration is needed.
 
 ## Open Questions
 
-- Choose the room deployment and media relay after comparing existing hosting, operating cost, and results from two independent networks.
+- Choose the room deployment and media topology after comparing existing hosting, operating cost, and direct/relayed results from two independent networks. Establish configurable quality targets and resource budgets from those measurements.
 - Measure the Mac audio adapter for device selection, capture permissions, and cross-platform playback before choosing its implementation.

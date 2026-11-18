@@ -2,6 +2,7 @@ import { loadGitHub, parsePullRequest } from "./github.mjs";
 import { createAnalytics } from "./analytics.mjs";
 import { browserKey } from "./analytics-config.mjs";
 import { createSyntaxCache } from "./syntax.mjs";
+import { createCityAudio } from "./audio.mjs";
 import { focusRepositoryPicker, githubAccount, githubReady, githubRequest, refreshRepositoryPicker } from "./github-picker.mjs";
 import { setupPointer } from "./pointer.mjs";
 import { createReview } from "./review.mjs";
@@ -32,9 +33,12 @@ const progressWarning = document.querySelector("#progress-warning");
 progressWarning.querySelector("button").addEventListener("click", () => { progressWarning.hidden = true; });
 const submit = document.querySelector("#open-city");
 const syntax = createSyntaxCache();
+let active;
+let running = false;
+const audio = createCityAudio({ active: () => running && !dialog.open && !canvas.hidden });
 const releasePointer = setupPointer(canvas, dialog);
 const review = createReview({
-  canvas, release: releasePointer, onClose: focusCanvas,
+  audio, canvas, release: releasePointer, onClose: focusCanvas,
   onTour(started) {
     tourCommand = ((tourCommand & ~1) + 2) | Number(started);
     activeTourEntry = started ? (tourEntry ?? "help") : null;
@@ -43,8 +47,6 @@ const review = createReview({
     try { localStorage.setItem(guideKey, "seen"); } catch { /* Available for this session. */ }
   },
 });
-let active;
-let running = false;
 let sourceVersion = 0;
 let repositoryVersion = 0;
 let progressResetVersion = 0;
@@ -59,7 +61,7 @@ function focusCanvas() {
 document.addEventListener("keydown", event => {
   const locked = document.pointerLockElement === canvas;
   const plain = !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey;
-  if (event.code === "Tab" && plain && review.tablet()) {
+  if (event.code === "Tab" && plain && review.tabletVisible()) {
     event.preventDefault();
     event.stopPropagation();
     if (!event.repeat) review.dismissTablet();
@@ -103,10 +105,11 @@ logo.addEventListener("click", () => {
   close.hidden = false;
   if (form.parentElement !== dialog) dialog.append(form);
   if (!dialog.open) dialog.showModal();
+  audio.refresh();
   focusRepositoryPicker();
 });
 close.addEventListener("click", () => dialog.close());
-dialog.addEventListener("close", focusCanvas);
+dialog.addEventListener("close", () => { audio.refresh(); focusCanvas(); });
 dialog.addEventListener("cancel", event => {
   if (reset.disabled) event.preventDefault();
 });
@@ -192,6 +195,9 @@ async function openRepository(repo, ref, base) {
         },
         reviewModal: review.modal,
         reviewTablet: review.tablet,
+        tabletPose: review.tabletPose,
+        audio,
+        audioActivity: audio.activity,
         previewMarkdown(path, before) {
           const { repository } = active;
           const snapshot = JSON.parse(repository.snapshot);
@@ -282,6 +288,7 @@ async function openRepository(repo, ref, base) {
       progressWarning.hidden = true;
     }
     if (firstOpen) offerFirstTour();
+    audio.refresh();
     focusCanvas();
     analytics.repositoryOpened(true, performance.now() - started, comparing);
   } catch (error) {

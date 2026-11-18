@@ -318,15 +318,24 @@ pub(super) fn settings_file() -> Option<PathBuf> {
     if let Some(directory) = std::env::var_os("VIBE_CITY_CONFIG_DIR") {
         return Some(PathBuf::from(directory).join("last-repository.json"));
     }
-    let home = std::env::var_os("HOME")?;
-    let mut directory = PathBuf::from(home);
-    if cfg!(target_os = "macos") {
-        directory.push("Library/Application Support");
-    } else {
-        directory = std::env::var_os("XDG_CONFIG_HOME")
-            .map_or_else(|| directory.join(".config"), PathBuf::from);
-    }
-    Some(directory.join("Repo City/last-repository.json"))
+    settings_directory(std::env::consts::OS, |name| std::env::var_os(name))
+        .map(|directory| directory.join("last-repository.json"))
+}
+
+fn settings_directory(
+    platform: &str,
+    get: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    let directory = match platform {
+        "windows" => get("APPDATA")
+            .map(PathBuf::from)
+            .or_else(|| get("USERPROFILE").map(|home| PathBuf::from(home).join("AppData/Roaming"))),
+        "macos" => get("HOME").map(|home| PathBuf::from(home).join("Library/Application Support")),
+        _ => get("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| get("HOME").map(|home| PathBuf::from(home).join(".config"))),
+    }?;
+    Some(directory.join("Repo City"))
 }
 
 pub(super) fn last_folder() -> Option<PathBuf> {
@@ -381,15 +390,15 @@ fn choose_folder(current: &Path) -> Result<FolderSelection, String> {
     Ok(Mutex::new(receive))
 }
 
-#[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
-fn choose_folder(_: &Path) -> Result<FolderSelection, String> {
-    Err("Launch with --repo PATH to choose a repository on this platform.".into())
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 enum RepositoryView {
     Menu {
         panel: Entity,
+    },
+    Folder {
+        panel: Entity,
+        input: Entity,
+        status: Entity,
     },
     GitHub {
         panel: Entity,
@@ -409,16 +418,17 @@ enum RepositoryView {
 impl RepositoryView {
     fn panel(&self) -> Entity {
         match self {
-            Self::GitHub { panel, .. } | Self::Revisions { panel, .. } | Self::Menu { panel } => {
-                *panel
-            }
+            Self::GitHub { panel, .. }
+            | Self::Revisions { panel, .. }
+            | Self::Folder { panel, .. }
+            | Self::Menu { panel } => *panel,
         }
     }
     fn input(&self) -> Option<Entity> {
         match self {
             Self::GitHub { input, .. } => *input,
             Self::Menu { .. } => None,
-            Self::Revisions { input, .. } => Some(*input),
+            Self::Revisions { input, .. } | Self::Folder { input, .. } => Some(*input),
         }
     }
 }
@@ -450,6 +460,44 @@ impl native_panel::Actions<PanelAction> for RepositoryPicker {
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Component)]
 pub(super) struct RevisionList;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn draw_folder(commands: &mut Commands, current: &Path) -> RepositoryView {
+    use native_panel::{INK, button, input, panel};
+    let panel = panel(commands, "Open local repository", 495.);
+    let mut field = None;
+    commands.entity(panel).with_children(|parent| {
+        let input = input(
+            parent,
+            "Local Git repository path",
+            &current.to_string_lossy(),
+            0,
+            false,
+        );
+        let status = parent
+            .spawn((
+                Text::new("Enter the checkout directory. Git must be on PATH."),
+                native_panel::panel_font(),
+                TextColor(INK),
+                Node {
+                    min_height: px(44.),
+                    ..default()
+                },
+                Pickable::IGNORE,
+            ))
+            .id();
+        field = Some((input, status));
+        parent.spawn(github_row()).with_children(|row| {
+            button::<_, RepositoryPicker>(row, "Open", INK, PanelAction::Open);
+        });
+    });
+    let (input, status) = field.expect("folder input");
+    RepositoryView::Folder {
+        panel,
+        input,
+        status,
+    }
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn draw_revisions(commands: &mut Commands) -> RepositoryView {
@@ -1208,6 +1256,21 @@ pub(super) fn open_repository(
                     picker.start_github(target, revision, base, None);
                 }
             }
+            PanelAction::Open if matches!(view, RepositoryView::Folder { .. }) => {
+                if input.trim().is_empty() {
+                    picker.status = "Enter the path to a local Git repository.".into();
+                    if let Some(RepositoryView::Folder { status, .. }) = &picker.view {
+                        commands.entity(*status).insert(Text::new(&picker.status));
+                    }
+                } else {
+                    let path = PathBuf::from(input.trim());
+                    picker.status = "Reading repository…".into();
+                    picker.local = Some(native_github::Job::spawn(move || {
+                        load(&path, "WORKTREE", None)
+                    }));
+                    close_view(&mut commands, &mut picker, &mut focus, &parents);
+                }
+            }
             PanelAction::Open | PanelAction::Live | PanelAction::Revision(_) if !github => {
                 let path = repo.0.root.clone();
                 let revision = match action {
@@ -1253,10 +1316,19 @@ pub(super) fn open_repository(
         picker.status.clear();
         match action {
             PickerAction::Menu => picker.view = Some(draw_menu(&mut commands)),
-            PickerAction::Folder => match choose_folder(&repo.0.root) {
-                Ok(folder) => picker.folder = Some(folder),
-                Err(error) => picker.status = error,
-            },
+            PickerAction::Folder => {
+                #[cfg(target_os = "macos")]
+                match choose_folder(&repo.0.root) {
+                    Ok(folder) => picker.folder = Some(folder),
+                    Err(error) => picker.status = error,
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let view = draw_folder(&mut commands, &repo.0.root);
+                    focus.set(view.input().expect("folder input"), FocusCause::Navigated);
+                    picker.view = Some(view);
+                }
+            }
             PickerAction::Revision if repo.0.files.is_empty() || picker.github.is_some() => {
                 picker.status = "Open a local repository to choose a local revision.".into();
             }
@@ -1331,6 +1403,68 @@ pub(super) fn open_repository(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_settings_use_roaming_app_data_without_home() {
+        let directory = settings_directory("windows", |name| {
+            (name == "APPDATA").then(|| "C:/Users/reviewer/AppData/Roaming".into())
+        });
+        assert_eq!(
+            directory,
+            Some(PathBuf::from("C:/Users/reviewer/AppData/Roaming/Repo City"))
+        );
+    }
+
+    #[test]
+    fn linux_settings_accept_xdg_without_home() {
+        let directory = settings_directory("linux", |name| {
+            (name == "XDG_CONFIG_HOME").then(|| "/reviewer/config".into())
+        });
+        assert_eq!(directory, Some(PathBuf::from("/reviewer/config/Repo City")));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn typed_folder_form_keeps_a_blank_path_editable() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = App::new();
+        app.insert_resource(RepositoryPicker::new(String::new()))
+            .insert_resource(Repo(empty()))
+            .insert_resource(WorldSet::load(None).unwrap())
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<InputFocus>()
+            .init_resource::<AccumulatedMouseScroll>()
+            .init_resource::<Clipboard>()
+            .init_resource::<review_notes::Review>()
+            .init_resource::<live_worktree::Live>()
+            .add_systems(Update, open_repository);
+        app.world_mut()
+            .spawn((Window::default(), CursorOptions::default(), PrimaryWindow));
+        app.world_mut()
+            .run_system_once(
+                |mut commands: Commands, mut picker: ResMut<RepositoryPicker>| {
+                    picker.view = Some(draw_folder(&mut commands, Path::new("")));
+                    picker.action = Some(PanelAction::Open);
+                },
+            )
+            .unwrap();
+        app.update();
+        let picker = app.world().resource::<RepositoryPicker>();
+        assert!(
+            picker.local.is_none(),
+            "blank path must not open HEAD of the old repository"
+        );
+        assert!(matches!(picker.view, Some(RepositoryView::Folder { .. })));
+        assert_eq!(picker.status, "Enter the path to a local Git repository.");
+        let message = picker.status.clone();
+        assert!(
+            app.world_mut()
+                .query::<&Text>()
+                .iter(app.world())
+                .any(|text| text.0 == message),
+            "folder validation must be visible inside the form"
+        );
+    }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]

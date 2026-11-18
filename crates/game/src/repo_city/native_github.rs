@@ -619,14 +619,32 @@ pub(super) fn open_discussion(url: &str) -> Result<(), String> {
 }
 
 fn open_github_page(url: &str) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    return Command::new("open")
-        .arg(url)
+    browser_command(std::env::consts::OS, url)?
         .spawn()
         .map(|_| ())
-        .map_err(|error| error.to_string());
-    #[cfg(not(target_os = "macos"))]
-    Err(format!("Open {url} in your browser."))
+        .map_err(|error| format!("Could not open your browser: {error}. Open {url} manually."))
+}
+
+fn browser_command(platform: &str, url: &str) -> Result<Command, String> {
+    let mut command = match platform {
+        "macos" => Command::new("open"),
+        "linux" => Command::new("xdg-open"),
+        "windows" => {
+            let mut command = Command::new("powershell.exe");
+            // Pass the URL as data, never as executable PowerShell source.
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Process -FilePath $env:VIBE_CITY_BROWSER_URL",
+            ]);
+            command.env("VIBE_CITY_BROWSER_URL", url);
+            return Ok(command);
+        }
+        _ => return Err(format!("Open {url} in your browser.")),
+    };
+    command.arg(url);
+    Ok(command)
 }
 
 pub(super) fn finish_sign_in(code: DeviceCode) -> Job<Session> {
@@ -938,6 +956,27 @@ pub(super) fn publish(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_launcher_does_not_interpret_the_url_as_powershell() {
+        let url = "https://github.com/login/device?value=';Write-Output+unexpected";
+        let command = browser_command("windows", url).unwrap();
+        let arguments: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(command.get_program(), "powershell.exe");
+        assert!(!arguments.iter().any(|arg| arg.contains(url)));
+        assert!(
+            command
+                .get_envs()
+                .any(|(name, value)| name == "VIBE_CITY_BROWSER_URL"
+                    && value == Some(std::ffi::OsStr::new(url)))
+        );
+        let linux = browser_command("linux", url).unwrap();
+        assert_eq!(linux.get_program(), "xdg-open");
+        assert_eq!(linux.get_args().next(), Some(std::ffi::OsStr::new(url)));
+    }
     use crate::review_notes::{Anchor, Preset};
 
     #[test]

@@ -2,7 +2,7 @@
 
 ### Requirement: Invite a GitHub account to a review party
 
-Repo City SHALL let a signed-in reviewer start a private party for an open or historical GitHub pull request they can read. The party SHALL admit up to four accounts including the host. Each invitation SHALL be time limited, revocable by the host, and bound to one verified GitHub account ID.
+Repo City SHALL let a signed-in reviewer start a private party for an open or historical GitHub pull request they can read. Admission SHALL follow measured network, client, and room-service budgets rather than a hard-coded account count. Each invitation SHALL be time limited, revocable by the host, and bound to one verified GitHub account ID.
 
 #### Scenario: Invited reviewer joins
 
@@ -14,10 +14,37 @@ Repo City SHALL let a signed-in reviewer start a private party for an open or hi
 - **WHEN** a different account opens an invitation issued to another GitHub account
 - **THEN** Repo City denies entry without showing the party's repository, participants, or presence
 
-#### Scenario: Invitation expires or the party is full
+#### Scenario: Invitation expires or is revoked
 
-- **WHEN** the invitee opens an expired or revoked invitation, or attempts to join a room at capacity
+- **WHEN** the invitee opens an expired or revoked invitation
 - **THEN** Repo City shows the reason and keeps the invitee outside the room
+
+### Requirement: Adapt party traffic to available resources
+
+Repo City SHALL evaluate room admission and voice availability using the deployed topology, member count, concurrent talkers, negotiated media rates, presence fanout, and measured endpoint/service network and CPU budgets. Measurement windows, headroom, quality targets, and operational ceilings SHALL be configurable and justified by reproducible tests. Counts used in test fixtures SHALL NOT become product limits. The service SHALL prioritize membership, focus, and line cues over coalescible poses, adapt traffic to connection health, and distinguish unavailable voice from unavailable party membership.
+
+#### Scenario: Admit another reviewer beyond a baseline fixture size
+
+- **WHEN** an authorized invitee joins a party within its measured resource budgets, including a party larger than the baseline test fixtures
+- **THEN** Repo City admits the reviewer without rejecting the join solely because the fixture's member count was exceeded
+
+#### Scenario: More simultaneous talkers strain a connection
+
+- **WHEN** concurrent voice senders or worsening link conditions exceed an endpoint's configured quality budget
+- **THEN** Repo City coalesces pose traffic and adapts supported media settings while preserving priority room events
+- **AND** if acceptable voice remains unavailable, the affected reviewer sees why and can continue presence and shared navigation when those budgets permit
+
+#### Scenario: A proposed join exceeds a resource budget
+
+- **WHEN** a proposed join would exceed a measured endpoint or service budget after available adaptation
+- **THEN** Repo City explains the affected resource and recovery action, offering presence without voice when feasible or declining the join when presence itself cannot be sustained
+- **AND** existing healthy members retain their session and authorization checks continue
+
+#### Scenario: A client does not report a bandwidth estimate
+
+- **WHEN** a browser or native adapter lacks a requested capacity statistic
+- **THEN** Repo City treats the value as unknown and uses observed traffic, media health, and the configured fallback policy
+- **AND** it does not treat missing data as zero capacity, unlimited capacity, or a fabricated measurement
 
 ### Requirement: Keep participants on a pinned comparison
 

@@ -11,10 +11,10 @@ use bevy::{
 
 use super::*;
 
-pub(super) const LAYER: usize = 8;
-pub(super) const CASE: Vec2 = Vec2::new(1.15, 0.77);
-const SCREEN: Vec2 = Vec2::new(1.03, 0.65);
-const SIZE: UVec2 = UVec2::new(1440, 909);
+pub(super) const LAYER: usize = android::TABLET_LAYER;
+pub(super) const CASE: Vec2 = android::TABLET_CASE;
+const SCREEN: Vec2 = android::TABLET_SCREEN;
+const SIZE: UVec2 = android::TABLET_SIZE;
 const POINTER: PointerId = PointerId::Custom(Uuid::from_u128(0x74ab1e7));
 
 #[derive(Resource)]

@@ -15,6 +15,33 @@ pub(super) fn visible_text(text: &str) -> &str {
     &text[..end]
 }
 
+fn spoken_identifier(text: &str) -> String {
+    let mut spoken = String::new();
+    let mut characters = text.chars().peekable();
+    let mut previous: Option<char> = None;
+    while let Some(character) = characters.next() {
+        if character.is_alphanumeric() {
+            if character.is_uppercase()
+                && previous.is_some_and(|before| {
+                    before.is_lowercase()
+                        || (before.is_uppercase()
+                            && characters.peek().is_some_and(|next| next.is_lowercase()))
+                })
+            {
+                spoken.push(' ');
+            }
+            spoken.push(character);
+            previous = Some(character);
+        } else {
+            if !spoken.ends_with(' ') {
+                spoken.push(' ');
+            }
+            previous = None;
+        }
+    }
+    spoken.trim().to_owned()
+}
+
 #[derive(Default)]
 pub(super) struct Reading {
     words: Vec<(usize, String)>,
@@ -33,18 +60,7 @@ impl Reading {
             .filter_map(|word| {
                 let position = characters;
                 characters += word.chars().count();
-                // Strip speech markup and punctuation; code remains data for the local voice.
-                let word = word
-                    .chars()
-                    .map(|c| {
-                        if c.is_alphanumeric() || c == '_' {
-                            c
-                        } else {
-                            ' '
-                        }
-                    })
-                    .collect::<String>();
-                let word = word.trim().replace('_', " ");
+                let word = spoken_identifier(word);
                 (!word.is_empty()).then_some((position, word))
             })
             .collect();
@@ -162,10 +178,44 @@ fn stop(child: &mut Option<Child>) {
     }
 }
 
+fn apply_request(
+    child: &mut Option<Child>,
+    text: Option<&str>,
+    start: impl FnOnce(&str) -> Result<Child, String>,
+) -> Result<(), String> {
+    match text {
+        None => stop(child),
+        Some(text) if child.is_none() => *child = Some(start(text)?),
+        Some(_) => {} // Keep the current phrase; never queue or replace it.
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
-fn speak(text: &str, volume: f32) -> Result<Child, String> {
-    let mut child = Command::new("/usr/bin/say")
-        .args(["-v", "Zarvox", "-r", "238"])
+fn system_voice() -> Option<String> {
+    let voices = Command::new("/usr/bin/say")
+        .args(["-v", "?"])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&voices.stdout)
+        .lines()
+        .any(|line| line.split_whitespace().next() == Some("Samantha"))
+        .then(|| "Samantha".to_owned())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_voice() -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn speak(text: &str, volume: f32, voice: Option<&str>) -> Result<Child, String> {
+    let mut command = Command::new("/usr/bin/say");
+    if let Some(voice) = voice {
+        command.args(["-v", voice]);
+    }
+    let mut child = command
+        .args(["-r", "175"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -187,13 +237,14 @@ fn speak(text: &str, volume: f32) -> Result<Child, String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn speak(_: &str, _: f32) -> Result<Child, String> {
+fn speak(_: &str, _: f32, _: Option<&str>) -> Result<Child, String> {
     Err("Robot voice is available on macOS.".into())
 }
 
 fn run(shared: Shared) {
-    let mut child = None;
+    let mut child: Option<Child> = None;
     let mut revision = 0;
+    let mut voice: Option<Option<String>> = None;
     loop {
         let (lock, wake) = &*shared;
         let Ok(request) = lock.lock() else { break };
@@ -219,19 +270,6 @@ fn run(shared: Shared) {
             None
         };
         drop(request);
-        if let Some((text, volume)) = next {
-            stop(&mut child);
-            if let Some(text) = text {
-                match speak(&text, volume) {
-                    Ok(spoken) => child = Some(spoken),
-                    Err(error) => {
-                        if let Ok(mut request) = lock.lock() {
-                            request.error = Some(error);
-                        }
-                    }
-                }
-            }
-        }
         if let Some(status) = child
             .as_mut()
             .and_then(|child| child.try_wait().ok().flatten())
@@ -243,6 +281,18 @@ fn run(shared: Shared) {
                 request.error = Some("The system robot voice could not speak this excerpt.".into());
             }
         }
+        if let Some((text, volume)) = next
+            && let Err(error) = apply_request(&mut child, text.as_deref(), |text| {
+                speak(
+                    text,
+                    volume,
+                    voice.get_or_insert_with(system_voice).as_deref(),
+                )
+            })
+            && let Ok(mut request) = lock.lock()
+        {
+            request.error = Some(error);
+        }
     }
     stop(&mut child);
 }
@@ -250,6 +300,31 @@ fn run(shared: Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_quote_keeps_the_current_phrase_alive_but_explicit_stop_cancels_it() {
+        let start = |_: &str| {
+            Command::new("/bin/sleep")
+                .arg("2")
+                .spawn()
+                .map_err(|error| error.to_string())
+        };
+        let mut child = Some(start("first").unwrap());
+        let original = child.as_ref().unwrap().id();
+        apply_request(&mut child, Some("new focus"), start).unwrap();
+        let continued = child.as_ref().unwrap().id() == original;
+        let alive = child.as_mut().unwrap().try_wait().unwrap().is_none();
+        apply_request(&mut child, None, |_| {
+            panic!("stop must not create a new utterance")
+        })
+        .unwrap();
+        assert!(child.is_none());
+        assert!(
+            continued && alive,
+            "Changing focus must leave the same speaking process alive."
+        );
+    }
 
     #[test]
     fn reading_quotations_advance_and_stop_at_the_visible_block_end() {
@@ -268,6 +343,15 @@ mod tests {
         // A new focus restarts its own position and does not retain the old text.
         let mut next = Reading::start("new words for another file", 12., 1);
         assert!(!next.tick(4.).unwrap().contains("w030"));
+    }
+
+    #[test]
+    fn code_identifiers_are_spoken_as_separate_words() {
+        let mut reading = Reading::start("veryLongFunctionName(good_input)", 20., 3);
+        assert_eq!(
+            reading.tick(6.).as_deref(),
+            Some("very Long Function Name good input")
+        );
     }
 
     #[test]

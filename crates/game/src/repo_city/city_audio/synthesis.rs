@@ -17,7 +17,10 @@ pub(super) struct Synth {
     frame: u64,
     low: f32,
     air: f32,
+    breeze: f32,
     impact: f32,
+    impact_target: f32,
+    thud_phase: f32,
     phase: f32,
     levels: Levels,
 }
@@ -29,14 +32,17 @@ impl Synth {
             frame: 0,
             low: 0.,
             air: 0.,
+            breeze: 0.,
             impact: 0.,
+            impact_target: 0.,
+            thud_phase: 0.,
             phase: 0.,
             levels: Levels::default(),
         }
     }
 
     pub fn frame(&mut self, target: Levels) -> [f32; 2] {
-        let smooth = |current: &mut f32, target: f32| *current += (target - *current) * 0.0008;
+        let smooth = |current: &mut f32, target: f32| *current += (target - *current) * 0.0004;
         smooth(&mut self.levels.master, target.master);
         smooth(&mut self.levels.wind, target.wind);
         smooth(&mut self.levels.spray, target.spray);
@@ -48,28 +54,34 @@ impl Synth {
         self.random ^= self.random << 5;
         let white = self.random as f32 / u32::MAX as f32 * 2. - 1.;
         self.low += (white - self.low) * 0.008;
-        self.air += (white - self.air) * 0.14;
-        let wind = self.low * 3.5 * self.levels.wind;
-        let spray = (white - self.air) * 0.17 * self.levels.spray;
-        // Short clusters of muted impacts, separated by long quiet intervals.
-        let cycle = self.frame % (44_100 * 13);
-        if cycle < 44_100 * 3 && cycle % 7_613 == 0 {
-            self.impact = 1.;
+        self.air += (white - self.air) * 0.06;
+        self.breeze += (self.low - self.breeze) * 0.04;
+        // Colored air and band-limited water avoid broadband static at the listener.
+        let wind = self.breeze * 0.9 * self.levels.wind;
+        let spray = (self.air - self.low) * 0.085 * self.levels.spray;
+        // Distant soft thuds: finite attack/release, no instantaneous noise impulses.
+        let cycle = self.frame % (44_100 * 31);
+        if cycle < 44_100 * 2 && cycle % 21_609 == 0 {
+            self.impact_target = 1.;
         }
-        self.impact *= 0.997;
-        let works = self.impact * (self.air * 0.8 + white * 0.05) * self.levels.works;
-        // A passing siren, not a constant alarm. Both oscillators retain phase.
-        let siren_cycle = self.frame % (44_100 * 47);
-        let siren_time = siren_cycle as f32 / RATE;
-        let sweep = (siren_time * 1.7).sin();
-        self.phase = (self.phase + (590. + 170. * sweep) / RATE).fract();
-        let envelope = if siren_time < 7. {
-            (std::f32::consts::PI * siren_time / 7.).sin().max(0.)
+        self.impact_target *= 0.9995;
+        self.impact += (self.impact_target - self.impact) * 0.001;
+        self.thud_phase = (self.thud_phase + 73. / RATE).fract();
+        let works = self.impact
+            * ((std::f32::consts::TAU * self.thud_phase).sin() * 0.045 + self.air * 0.025)
+            * self.levels.works;
+        let siren_time = (self.frame % (44_100 * 97)) as f32 / RATE;
+        self.phase = (self.phase + (510. + 110. * (siren_time * 1.3).sin()) / RATE).fract();
+        let envelope = if siren_time < 5. {
+            (std::f32::consts::PI * siren_time / 5.)
+                .sin()
+                .max(0.)
+                .powi(2)
         } else {
             0.
         };
         let siren =
-            (std::f32::consts::TAU * self.phase).sin() * envelope * 0.065 * self.levels.siren;
+            (std::f32::consts::TAU * self.phase).sin() * envelope * 0.015 * self.levels.siren;
         self.frame = self.frame.wrapping_add(1);
         let mixed = (wind + spray + works + siren) * self.levels.master;
         let pan = self.levels.pan.clamp(-1., 1.);
@@ -86,6 +98,36 @@ mod tests {
 
     // Given a city with every layer enabled, when audio advances for one minute,
     // output stays finite, bounded and deterministic, including abrupt mute changes.
+    #[test]
+    fn audible_layers_stay_below_a_transient_click_budget() {
+        let mut synth = Synth::new(123);
+        let levels = Levels {
+            master: 0.4,
+            wind: 1.,
+            spray: 1.,
+            works: 1.,
+            siren: 1.,
+            pan: 0.6,
+        };
+        let mut previous = [0.; 2];
+        let mut largest = 0_f32;
+        let mut difference_energy = 0_f64;
+        for _ in 0..88_200 {
+            let frame = synth.frame(levels);
+            for channel in 0..2 {
+                let difference = frame[channel] - previous[channel];
+                largest = largest.max(difference.abs());
+                difference_energy += f64::from(difference * difference);
+            }
+            previous = frame;
+        }
+        let rms = (difference_energy / 176_400.).sqrt();
+        assert!(
+            largest < 0.008 && rms < 0.0015,
+            "sample step {largest:.6}, difference RMS {rms:.6}"
+        );
+    }
+
     #[test]
     fn procedural_audio_is_bounded_repeatable_and_mutes() {
         let levels = Levels {

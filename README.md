@@ -55,6 +55,44 @@ The app uses Git to fetch snapshots and the GitHub API for review comments.
 In large repositories the city loads nearby buildings as you fly. File search
 still covers the entire comparison.
 
+### On Linux or Windows
+
+Both desktop ports require Git on `PATH` and a graphics driver supported by
+Bevy: Vulkan on Linux, DirectX 12 or Vulkan on Windows. GitHub access uses the
+app's sign-in flow; `gh` is not required.
+On Linux and Windows, **Open local repository…** opens a path field inside
+the app. Enter the checkout directory, then choose **Open**. You can also pass
+`--repo /path/to/checkout --live` from a terminal.
+
+On Debian or Ubuntu, install the native build dependencies before building:
+
+```sh
+sudo apt install build-essential pkg-config libasound2-dev libudev-dev \
+  libfontconfig-dev libwayland-dev libxkbcommon-dev libx11-dev libxkbcommon-x11-0
+./scripts/build-linux.sh
+```
+
+The script creates `dist/VibeCity-<target>.tar.gz`. Extract it and launch
+`vibe-city`; the package lists its runtime dependencies. Build with Rust 1.98
+or newer. On Windows, install Rust with the MSVC toolchain, Visual Studio C++
+Build Tools, and Git for Windows, then run:
+
+```powershell
+./scripts/build-windows.ps1
+```
+
+Extract the resulting `dist/VibeCity-x86_64-pc-windows-msvc.zip` and launch
+`VibeCity.exe`. The Windows script accepts `-Target`, `-BuildProfile`, and
+`-OutputDirectory`. The Linux script accepts `CARGO_BUILD_TARGET`,
+`VIBE_CITY_BUILD_PROFILE`, and `VIBE_CITY_OUTPUT_DIR`; cross builds need a
+matching C compiler and platform libraries. Both packages include license
+notices. These build scripts do not add CI jobs.
+
+Settings and local notes use `%APPDATA%/Repo City` on Windows and
+`${XDG_CONFIG_HOME:-~/.config}/Repo City` on Linux. System voice speech and
+secure sign-in restoration currently use macOS services; Linux and Windows
+keep the GitHub session for the current app run.
+
 ### In your browser
 
 Open [Repo City](https://repo-city.meta-uber-engineer.dev/) in a browser with
@@ -135,9 +173,14 @@ language and content identity.
 The gear at the right of VibePad's navigation opens **Settings**. Set the water
 reading delay there, mute the city, adjust volume, or turn robot speech off.
 Wind, spray, construction, and occasional sirens are synthesized locally.
-On macOS the robot uses the installed system voice to quote short, readable
-fragments from the source wall. The estimated reading position is approximate;
-it does not track your eyes. Speech stops when the code context changes.
+The browser starts its AudioWorklet after the first click or keypress. Preferences
+persist on the device; opening the repository picker or hiding the page silences it.
+The browser robot uses an installed local voice when one is available. On macOS,
+the desktop robot prefers Samantha and falls back to the system voice.
+It quotes short, readable fragments from the source wall. The estimated reading
+position is approximate; it does not track your eyes. Leaving a block prevents
+new quotations while the current phrase finishes. Mute or leaving the application
+stops speech immediately.
 
 ## Leave review notes
 

@@ -240,11 +240,7 @@ fn update(
         siren: 0.5,
         pan: camera.forward().x,
     });
-    let enabled = active
-        && settings.speech
-        && settings.volume > 0.
-        && !review.blocked
-        && !navigation.is_flying();
+    let enabled = active && settings.speech && settings.volume > 0. && !review.blocked;
     if enabled != runtime.speech_enabled {
         runtime.voice.stop();
         runtime.focus = None;
@@ -259,38 +255,40 @@ fn update(
     if !enabled || runtime.voice_failed {
         return;
     }
+    if navigation.is_flying() {
+        runtime.focus = None;
+        runtime.reading = speech::Reading::default();
+        return;
+    }
     let visible = repo
         .0
         .files
         .get(explorer.selected)
         .filter(|file| filter.includes(file))
         .and_then(|file| {
-            listing
-                .visible_source_rows(
-                    file,
-                    camera,
-                    &explorer,
-                    window.width() / window.height().max(1.),
-                )
-                .map(|rows| (file, rows))
+            let fragments = listing.visible_source_fragments(
+                file,
+                camera,
+                &explorer,
+                window.width() / window.height().max(1.),
+            );
+            let start = fragments.first()?.0.saturating_sub(1);
+            let end = fragments.last()?.0;
+            Some((file, start..end, fragments))
         });
-    let Some((file, rows)) = visible else {
+    let Some((file, rows, fragments)) = visible else {
         if runtime.focus.take().is_some() {
-            runtime.voice.stop();
             runtime.reading = speech::Reading::default();
         }
         return;
     };
-    // A minified line or an enormous viewport must not create unbounded frame work.
-    let rows = rows.start..rows.end.min(rows.start.saturating_add(100));
-    let text = explorer.highlighted[rows.clone()]
+    // Quote only readable fragments on screen, including partial wrapped source lines.
+    let text = fragments
         .iter()
-        .enumerate()
-        .filter(|(offset, _)| listing.source_row_is_readable(&explorer, rows.start + *offset))
-        .map(|(_, line)| speech::visible_text(&line.text));
+        .take(100)
+        .map(|(_, text)| speech::visible_text(text));
     if text.clone().next().is_none() {
         if runtime.focus.take().is_some() {
-            runtime.voice.stop();
             runtime.reading = speech::Reading::default();
         }
         return;
@@ -317,7 +315,6 @@ fn update(
             || focus.text_hash != text_hash
     });
     if changed {
-        runtime.voice.stop();
         let reading = reading::Settings {
             mode: reading::Mode::Delayed,
             min_seconds: None,

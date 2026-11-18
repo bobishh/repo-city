@@ -5,6 +5,48 @@ const after = "b".repeat(40);
 const before = "a".repeat(40);
 const next = "e".repeat(40);
 
+test("keeps VibePad controls inside its screen on a Retina display", async ({ browser }, testInfo) => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 });
+  await context.addInitScript(() => localStorage.setItem("repo-city-guide-v1", "seen"));
+  const page = await context.newPage();
+  const source = "fn main() { println!(\"Hello\"); }\n";
+  try {
+    await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
+    await page.route("https://api.github.com/**", route => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/repos/owner/retina") return route.fulfill({ json: { default_branch: "main" } });
+      if (path.includes("/commits/")) return route.fulfill({ json: { sha: after, parents: [] } });
+      if (path.includes("/git/trees/")) return route.fulfill({ json: { tree: [{ path: "main.rs", type: "blob", mode: "100644", sha: after, size: source.length }] } });
+      return route.fulfill({ json: { size: source.length, encoding: "base64", content: Buffer.from(source).toString("base64") } });
+    });
+    await page.goto("/?repo=owner%2Fretina");
+    await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+    await page.locator("canvas").focus();
+    await page.keyboard.press("Tab");
+    const tablet = page.getByRole("dialog", { name: "Changed files" });
+    await expect.poll(async () => {
+      const rect = await tablet.boundingBox();
+      return Boolean(rect && rect.x >= 0 && rect.y >= 0 && rect.x + rect.width < 1280 && rect.y + rect.height < 800);
+    }).toBe(true);
+    expect((await tablet.getByRole("heading").boundingBox()).height).toBeLessThan(40);
+    await tablet.getByRole("button", { name: "Settings", exact: true }).click();
+    await expect(page.getByRole("checkbox", { name: "City ambience" })).toBeVisible();
+    await expect(page.getByRole("slider", { name: "Volume" })).toBeVisible();
+    const cdp = await context.newCDPSession(page);
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true });
+    await writeFile(testInfo.outputPath("vibepad-retina.png"), Buffer.from(shot.data, "base64"));
+    await cdp.detach();
+    await page.keyboard.press("Escape");
+    await expect(tablet).toBeHidden();
+    await expect(page.locator("canvas")).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("dialog", { name: "Changed files" })).toBeVisible();
+    await expect(page.locator("#vibepad-closing-screen")).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
+
 test("opens a rendered Markdown document from its building with P", async ({ page }) => {
   await emulatePointerLock(page);
   const source = "# Project notes\n\nUse **this** command.\n\n- First step\n\n| Action | Example |\n| --- | --- |\n| Inspect | status |\n\n```sh\ngit status\n```\n\n[Unsafe](javascript:alert%281%29)\n\n" +
@@ -42,7 +84,8 @@ test("opens a rendered Markdown document from its building with P", async ({ pag
   await expect(preview).toBeHidden();
 });
 
-test("shows the guide once and keeps it available from the help button", async ({ page }) => {
+test("shows the guide once and keeps it available from the help button", async ({ page }, testInfo) => {
+  const faults = []; page.on("pageerror", error => faults.push(error.message));
   let releaseTree;
   const pendingTree = new Promise(resolve => { releaseTree = resolve; });
   const source = "fn demo() {}\n";
@@ -88,6 +131,10 @@ test("shows the guide once and keeps it available from the help button", async (
   await expect(guide).toBeHidden();
   await help.click();
   await expect(guide).toBeVisible();
+  const cdpTablet = await page.context().newCDPSession(page);
+  const imageTablet = await cdpTablet.send("Page.captureScreenshot", { format: "png", fromSurface: true });
+  await writeFile(testInfo.outputPath("vibepad-help.png"), Buffer.from(imageTablet.data, "base64"));
+  await cdpTablet.detach();
   await guide.getByRole("button", { name: "Settings" }).click();
   const settings = page.getByRole("dialog", { name: "Settings" });
   await expect(settings).toContainText("Brysbaert");
@@ -111,6 +158,7 @@ test("shows the guide once and keeps it available from the help button", async (
   await guide.getByRole("button", { name: "Start tour" }).click();
   await expect(guide).toBeHidden();
   expect(await page.evaluate(() => globalThis.repoCity.tourCommand() & 1)).toBe(1);
+  expect(faults).toEqual([]);
 });
 
 test.beforeEach(async ({ page }, testInfo) => {
@@ -406,8 +454,19 @@ test("opens a merged pull request from the URL using its fork head and merge bas
   await page.keyboard.press("Tab");
   const tablet = page.getByRole("dialog", { name: "Changed files" });
   await expect(tablet.getByRole("button", { name: "src/pr.rs" })).toBeVisible();
-  await expect(tablet).toHaveCSS("width", `${page.viewportSize().width}px`);
-  await expect(tablet).toHaveCSS("height", `${page.viewportSize().height}px`);
+  await expect(tablet).toHaveAttribute("data-projected", "");
+  await expect(tablet).toHaveCSS("border-top-width", "0px");
+  await expect(tablet).toHaveCSS("width", "1440px");
+  await expect.poll(async () => {
+    const screen = await tablet.boundingBox();
+    return screen.y >= 0 && screen.x >= 0 && screen.x + screen.width < page.viewportSize().width && screen.y + screen.height < page.viewportSize().height;
+  }).toBe(true);
+  const cdpTablet = await page.context().newCDPSession(page);
+  const imageTablet = await cdpTablet.send("Page.captureScreenshot", { format: "png", fromSurface: true });
+  await writeFile(testInfo.outputPath("vibepad-files.png"), Buffer.from(imageTablet.data, "base64"));
+  await cdpTablet.detach();
+  await expect(tablet.getByRole("button", { name: "Settings", exact: true })).toBeVisible();
+  await expect(tablet.locator('nav button', { hasText: "Settings" })).toHaveCount(0);
   await expect(tablet.getByRole("button", { name: "LICENSE" })).toHaveCount(0);
   await tablet.getByRole("button", { name: "Viewed", exact: true }).click();
   await expect(tablet).toContainText("No changed files viewed.");

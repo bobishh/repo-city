@@ -174,7 +174,6 @@ impl Canvas {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn vibepad_wordmark() -> Image {
     let mut canvas = Canvas {
         pixels: vec![0; 256 * 64 * 4],
@@ -316,6 +315,30 @@ pub(super) const LISTING_WIDTH: u32 = 1536;
 pub(super) const LISTING_ROW_PIXELS: u32 = 27;
 pub(super) const HEADING_LEFT: f32 = 32.;
 
+/// Unscaled source advance, shared by fixed-width wrapping and the rasterizer's font choices.
+pub(super) fn source_advance(ch: char) -> f32 {
+    let font = FontRef::from_index(
+        include_bytes!("../../../../assets/fonts/FiraMono-Medium.ttf"),
+        0,
+    )
+    .unwrap();
+    if matches!(ch, '\u{fe0e}' | '\u{fe0f}' | '\u{200d}') {
+        return 0.;
+    }
+    let id = font.charmap().map(ch);
+    let metrics = font.glyph_metrics(&[]).scale(20.);
+    if ch == '\t' {
+        return metrics.advance_width(font.charmap().map(' ')) * 4.;
+    }
+    let emoji = emoji_font();
+    let fallback = emoji.charmap().map(ch);
+    if id == 0 && fallback != 0 {
+        emoji.glyph_metrics(&[]).scale(17.).advance_width(fallback)
+    } else {
+        metrics.advance_width(id)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Coverage {
     Closed,
@@ -400,7 +423,7 @@ pub(super) fn listing_preview<'a>(
     for (y, pixels) in pixels.chunks_exact_mut(WIDTH * 4).enumerate() {
         let index = y * count / height;
         let (line, mark) = row(index);
-        let open = line.is_none_or(|line| revealed(line.number));
+        let open = line.is_none() || revealed(index + 1);
         let coverage = if open {
             Coverage::Open
         } else {

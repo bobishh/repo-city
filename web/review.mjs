@@ -1,3 +1,4 @@
+import { createTablet } from "./tablet.mjs";
 import { githubAccount, githubRequest, githubSignIn } from "./github-picker.mjs";
 import { readCommentText, replacementLimit } from "./pr-review.mjs";
 import { readProgress, writeProgress, readReview, saveReview, deleteReview } from "./progress.mjs";
@@ -29,8 +30,9 @@ const mentions = (body, login) =>
     .some(([, , name]) => name.toLowerCase() === login.toLowerCase());
 const uuid = () => crypto.randomUUID();
 
-export function createReview({ canvas, release, onClose, onTour }) {
+export function createReview({ canvas, release, onClose, onTour, audio }) {
   const dialog = document.querySelector("#review-dialog");
+  const tablet = createTablet(dialog, canvas);
   const settingsKey = "repo-city-reading-v1";
   let reading = { mode: "delayed", min_seconds: 3, max_seconds: 6 };
   try {
@@ -54,7 +56,10 @@ export function createReview({ canvas, release, onClose, onTour }) {
   });
   dialog.addEventListener("cancel", event => {
     if (busy) event.preventDefault();
-    else if (dialog.dataset.view === "help") onTour(false);
+    else {
+      if (dialog.dataset.view === "help") onTour(false);
+      if ("tablet" in dialog.dataset) { event.preventDefault(); close(); }
+    }
   });
   for (const type of ["keydown", "keyup"]) dialog.addEventListener(type, event => event.stopPropagation());
   canvas.addEventListener("wheel", event => {
@@ -63,21 +68,27 @@ export function createReview({ canvas, release, onClose, onTour }) {
 
   function view(title, tag = "h2") {
     readingEnd?.disconnect();
-    dialog.replaceChildren(make(tag, title, { id: "review-title" }));
+    const heading = make(tag, title, { id: "review-title" });
+    dialog.replaceChildren(heading);
     if ("tablet" in dialog.dataset) {
       const bar = make("header", undefined, { class: "vibepad-bar" });
-      const tabs = make("nav", undefined, { "aria-label": "VibePad" });
+      const gear = button("⚙", settings);
+      gear.className = "vibepad-settings";
+      gear.setAttribute("aria-label", "Settings");
+      gear.title = "Settings";
+      gear.setAttribute("aria-pressed", String(dialog.dataset.view === "settings"));
+      bar.append(heading, gear);
+      const tabs = make("nav", undefined, { "aria-label": "VibePad", class: "vibepad-tabs" });
       for (const [label, page, open] of [
         ["Files", "changed-files", changedFiles],
+        ["Comments", "notes", () => { notesPanel(); show(); }],
         ["Help", "help", help],
-        ["Settings", "settings", settings],
       ]) {
         const tab = button(label, open);
         tab.setAttribute("aria-pressed", String(page === dialog.dataset.view));
         tabs.append(tab);
       }
-      bar.append(make("span", "VibePad"), tabs);
-      dialog.prepend(bar);
+      dialog.prepend(bar, tabs);
     }
     return dialog;
   }
@@ -89,17 +100,17 @@ export function createReview({ canvas, release, onClose, onTour }) {
   }
   function show() {
     release();
-    if (!dialog.open) dialog.showModal();
+    if ("tablet" in dialog.dataset) tablet.open();
+    else if (!dialog.open) dialog.showModal();
   }
   function close() {
-    dialog.close();
-    onClose();
+    if (!tablet.close()) dialog.close();
   }
   function dismissTablet() {
-    if (!dialog.open || !("tablet" in dialog.dataset)) return false;
+    if (!tablet.visible()) return false;
     if (!busy) {
       if (dialog.dataset.view === "help") onTour(false);
-      close();
+      tablet.close();
     }
     return true;
   }
@@ -170,10 +181,42 @@ export function createReview({ canvas, release, onClose, onTour }) {
     return "";
   }
 
+  function soundSettings() {
+    const section = make("fieldset", undefined, { class: "review-audio" });
+    section.append(make("legend", "Sound"));
+    const preferences = audio?.settings() ?? { ambience: false, speech: false, volume: 0.18 };
+    const available = audio?.available() ?? { supported: false, speech: false };
+    const feedback = make("p", "", { class: "audio-status" });
+    const controls = [];
+    const apply = next => {
+      try { audio?.updateSettings(next); feedback.textContent = ""; }
+      catch (error) { feedback.textContent = error.message; }
+    };
+    for (const [key, label] of [["ambience", "City ambience"], ["speech", "Robot speech"]]) {
+      const input = make("input", undefined, { type: "checkbox" });
+      input.checked = preferences[key];
+      input.disabled = !available.supported || (key === "speech" && !available.speech);
+      input.addEventListener("change", () => apply({ [key]: input.checked }));
+      const row = make("label", undefined, { class: "review-toggle" });
+      row.append(input, label);
+      controls.push(row);
+    }
+    const volume = make("input", undefined, { type: "range", min: "0", max: "100", step: "1" });
+    volume.value = Math.round(preferences.volume * 100);
+    volume.disabled = !available.supported;
+    volume.addEventListener("input", () => apply({ volume: Number(volume.value) / 100 }));
+    section.append(...controls, field("Volume", volume), feedback);
+    if (!available.supported) feedback.textContent = "This browser cannot synthesize city audio.";
+    else if (available.error) feedback.textContent = available.error;
+    else if (!available.speech) feedback.textContent = "Robot speech needs an installed local browser voice.";
+    return section;
+  }
+
   function settings() {
     dialog.dataset.view = "settings";
     dialog.dataset.tablet = "";
     view("Settings");
+    dialog.append(soundSettings());
     const form = make("form", undefined, { class: "review-reading" });
     const mode = make("select");
     for (const value of ["delayed", "immediate"]) {
@@ -613,7 +656,7 @@ export function createReview({ canvas, release, onClose, onTour }) {
         notesPanel();
       }
     }));
-    if (session.notes.length) controls.unshift(button("Export drafts", () => exportPanel()));
+    if (session.notes.length) controls.unshift(copyButton(session.notes));
     actions(...controls);
   }
 
@@ -622,31 +665,17 @@ export function createReview({ canvas, release, onClose, onTour }) {
     close();
   }
 
-  function exportPanel() {
-    dialog.dataset.view = "export";
-    view("Export review notes");
-    const data = session;
-    const options = data.notes.filter(note => !note.published).map(note => {
-      const input = make("input", undefined, { type: "checkbox", checked: "" });
-      dialog.append(field(`${note.preset.label} · ${pathLabel(note)}`, input));
-      return [input, note];
+  function copyButton(entries) {
+    const control = button("Copy", async () => {
+      try {
+        const text = entries.map(note => `${pathLabel(note)}\n${note.text || note.preset.prompt || note.preset.label}`).join("\n\n");
+        await navigator.clipboard.writeText(text);
+        control.textContent = "Copied";
+      } catch {
+        control.textContent = "Could not copy";
+      }
     });
-    const save = button("Download JSON", () => {
-      const entries = options.filter(([input]) => input.checked).map(([, note]) => note);
-      if (!entries.length) return;
-      const { repository, pull, revision, baseline } = data.review;
-      const url = URL.createObjectURL(new Blob([JSON.stringify({
-        version: 1, repository, pull, prUrl: pull ? `https://github.com/${repository}/pull/${pull}` : null,
-        revision, baseline, notes: entries,
-      }, null, 2)], { type: "application/json" }));
-      Object.assign(document.createElement("a"), { href: url, download: "repo-city-review.json" }).click();
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    });
-    save.disabled = options.length === 0;
-    for (const [input] of options) input.addEventListener("change", () => {
-      save.disabled = !options.some(([candidate]) => candidate.checked);
-    });
-    actions(button("Back", notesPanel), save);
+    return control;
   }
   function threadPanel(note) {
     const data = session;
@@ -821,7 +850,7 @@ export function createReview({ canvas, release, onClose, onTour }) {
       actions(button("Back", notesPanel));
     } else {
       if (data.review.pullState === "open" && !githubAccount()?.login && current(note, data.review)) dialog.append(signIn());
-      actions(button("Back", notesPanel), remove, save, ...(canPublish ? [prepare] : []));
+      actions(button("Back", notesPanel), copyButton([note]), remove, save, ...(canPublish ? [prepare] : []));
     }
   }
 
@@ -895,7 +924,7 @@ export function createReview({ canvas, release, onClose, onTour }) {
     selected = slot;
     const note = kind === '"aimed"' && notes().find(note => note.id === id);
     if (kind === '"paints"') {
-      delete dialog.dataset.tablet;
+      dialog.dataset.tablet = "";
       paintsPanel();
     } else {
       dialog.dataset.tablet = "";
@@ -932,6 +961,8 @@ export function createReview({ canvas, release, onClose, onTour }) {
       return value ? JSON.stringify(value) : "";
     },
     modal: () => Boolean(document.querySelector("dialog[open]")),
-    tablet: () => dialog.open && "tablet" in dialog.dataset,
+    tablet: tablet.raised,
+    tabletVisible: tablet.visible,
+    tabletPose: (corners, width, height) => tablet.project(corners, width, height),
   };
 }
