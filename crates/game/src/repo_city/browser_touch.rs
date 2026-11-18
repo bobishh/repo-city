@@ -15,6 +15,7 @@ pub(super) struct Touch {
     pub enabled: bool,
     pub r#move: [f32; 2],
     pub look: [f32; 2],
+    aim: [f32; 2],
     held: Vec<String>,
     pulses: Vec<String>,
     #[serde(skip)]
@@ -57,6 +58,7 @@ pub(super) fn update(
         .r#move
         .iter()
         .chain(&next.look)
+        .chain(&next.aim)
         .all(|value| value.is_finite())
     {
         next = Touch::default();
@@ -64,6 +66,7 @@ pub(super) fn update(
     if !next.enabled {
         next.r#move = [0.; 2];
         next.look = [0.; 2];
+        next.aim = [0.; 2];
         next.held.clear();
         next.pulses.clear();
     }
@@ -107,6 +110,9 @@ pub(super) fn update(
         wheel.delta.y += next.look[1];
         next.look[1] = 0.;
     }
+    // The look stick rotates freely; only a swipe along readable text scrolls it.
+    next.look[0] += next.aim[0];
+    next.look[1] += next.aim[1];
     for previous in &touch.owned {
         keys.release(*previous);
     }
@@ -123,4 +129,24 @@ pub(super) fn update(
         mouse.release(MouseButton::Left);
     }
     *touch = next;
+}
+
+/// Browser input uses CSS pixels. Keep Bevy's logical window in the same units,
+/// leaving the window backend responsible for the physical render resolution.
+pub(super) fn viewport(mut windows: Query<&mut Window, With<PrimaryWindow>>) {
+    let Some(canvas) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id("repo-city"))
+    else {
+        return;
+    };
+    let (width, height) = (canvas.client_width() as f32, canvas.client_height() as f32);
+    if width <= 0. || height <= 0. {
+        return;
+    }
+    if let Ok(mut window) = windows.single_mut()
+        && ((window.width() - width).abs() > 0.5 || (window.height() - height).abs() > 0.5)
+    {
+        window.resolution.set(width, height);
+    }
 }

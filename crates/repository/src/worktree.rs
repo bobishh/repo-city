@@ -9,6 +9,32 @@ use super::{Blob, Repository, git, resolve_revision, tree};
 
 const TEXT_LIMIT: usize = 1024 * 1024;
 
+fn metadata_identity(metadata: &fs::Metadata) -> String {
+    format!("worktree:{}:{:?}", metadata.len(), metadata.modified().ok())
+}
+
+fn same_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    if !left.is_file()
+        || !right.is_file()
+        || left.len() != right.len()
+        || left.modified().ok() != right.modified().ok()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if left.dev() != right.dev()
+            || left.ino() != right.ino()
+            || left.ctime() != right.ctime()
+            || left.ctime_nsec() != right.ctime_nsec()
+        {
+            return false;
+        }
+    }
+    true
+}
+
 impl Repository {
     pub fn open_worktree(folder: &Path) -> Result<Self, String> {
         let root = git(folder, &["rev-parse", "--show-toplevel"])?;
@@ -105,9 +131,8 @@ fn disk_blob(root: &Path, path: &str, baseline: Option<&Blob>) -> Result<Option<
         #[cfg(not(unix))]
         let mode = baseline.map_or("100644", |blob| blob.mode.as_str());
         if size > TEXT_LIMIT {
-            let modified = metadata.modified().ok();
             return Ok(Some(Blob {
-                id: format!("worktree:{size}:{modified:?}"),
+                id: metadata_identity(&metadata),
                 size,
                 mode: mode.into(),
             }));
@@ -153,10 +178,162 @@ pub(super) fn source(root: &Path, path: &str, blob: &Blob) -> Result<Vec<u8>, St
     Ok(source)
 }
 
+pub(super) fn asset(root: &Path, path: &str, blob: &Blob, limit: usize) -> Result<Vec<u8>, String> {
+    let changed = || "Worktree asset changed while loading.".to_owned();
+    let file = path_in_root(root, path)?;
+    let before = fs::symlink_metadata(&file).map_err(|error| error.to_string())?;
+    if !before.is_file() || before.len() != blob.size as u64 {
+        return Err(changed());
+    }
+    let opened = fs::File::open(&file).map_err(|error| error.to_string())?;
+    if !same_file(
+        &before,
+        &opened.metadata().map_err(|error| error.to_string())?,
+    ) {
+        return Err(changed());
+    }
+    path_in_root(root, path)?;
+    let mut bytes = Vec::new();
+    (&opened)
+        .take((limit + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > limit {
+        return Err("Asset exceeds the 16 MiB preview limit.".into());
+    }
+    let after = fs::symlink_metadata(&file).map_err(|error| error.to_string())?;
+    if !same_file(&before, &after)
+        || !same_file(
+            &before,
+            &opened.metadata().map_err(|error| error.to_string())?,
+        )
+    {
+        return Err(changed());
+    }
+    path_in_root(root, path)?;
+    if metadata_identity(&before) != blob.id
+        && format!("worktree:{:x}", Sha256::digest(&bytes)) != blob.id
+    {
+        return Err(changed());
+    }
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Change;
+
+    struct AssetFixture(PathBuf);
+
+    impl AssetFixture {
+        fn new(name: &str) -> Self {
+            let root = Self(
+                std::env::temp_dir()
+                    .join(format!("vibe-city-assets-{name}-{}", std::process::id())),
+            );
+            fs::create_dir_all(&root.0).unwrap();
+            git(&root.0, &["init", "-q"]).unwrap();
+            fs::write(
+                root.0.join("image.png"),
+                include_bytes!("../../../web/assets/apple-touch-icon.png"),
+            )
+            .unwrap();
+            git(&root.0, &["add", "."]).unwrap();
+            git(
+                &root.0,
+                &[
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "commit",
+                    "-qm",
+                    "Image",
+                ],
+            )
+            .unwrap();
+            root
+        }
+    }
+
+    impl Drop for AssetFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn binary_preview_reads_the_selected_commit_and_worktree_snapshot() {
+        // Given a tracked PNG, preview reads the commit even after disk contents change.
+        let fixture = AssetFixture::new("snapshots");
+        let committed = Repository::open(&fixture.0, "HEAD").unwrap();
+        let original = committed.asset_bytes(0, false).unwrap();
+        assert!(original.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(committed.source(0, false).is_err());
+        fs::write(fixture.0.join("image.png"), b"invalid image bytes").unwrap();
+        let worktree = Repository::open_worktree(&fixture.0).unwrap();
+        assert_eq!(committed.asset_bytes(0, false).unwrap(), original);
+        assert_eq!(worktree.asset_bytes(0, true).unwrap(), original);
+        assert_eq!(
+            worktree.asset_bytes(0, false).unwrap(),
+            b"invalid image bytes"
+        );
+        fs::write(fixture.0.join("image.png"), b"different image bytes").unwrap();
+        assert!(
+            worktree
+                .asset_bytes(0, false)
+                .unwrap_err()
+                .contains("changed while loading")
+        );
+    }
+
+    #[test]
+    fn large_binary_preview_uses_metadata_snapshot_without_changing_text_limits() {
+        let fixture = AssetFixture::new("large");
+        let bytes = vec![42; TEXT_LIMIT + 17];
+        fs::write(fixture.0.join("image.png"), &bytes).unwrap();
+        let worktree = Repository::open_worktree(&fixture.0).unwrap();
+        assert!(worktree.source(0, false).unwrap_err().contains("1 MiB"));
+        assert_eq!(worktree.asset_bytes(0, false).unwrap(), bytes);
+        fs::write(fixture.0.join("image.png"), vec![43; TEXT_LIMIT + 18]).unwrap();
+        assert!(
+            worktree
+                .asset_bytes(0, false)
+                .unwrap_err()
+                .contains("changed while loading")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn binary_preview_never_follows_a_replaced_symlink() {
+        let fixture = AssetFixture::new("symlink");
+        fs::write(fixture.0.join("image.png"), b"worktree image").unwrap();
+        let snapshot = Repository::open_worktree(&fixture.0).unwrap();
+        fs::remove_file(fixture.0.join("image.png")).unwrap();
+        fs::write(fixture.0.join("replacement.png"), b"worktree image").unwrap();
+        std::os::unix::fs::symlink("replacement.png", fixture.0.join("image.png")).unwrap();
+        assert!(snapshot.asset_bytes(0, false).is_err());
+    }
+
+    #[test]
+    fn preview_size_limit_rejects_large_assets_before_reading() {
+        let fixture = AssetFixture::new("oversized");
+        fs::OpenOptions::new()
+            .write(true)
+            .open(fixture.0.join("image.png"))
+            .unwrap()
+            .set_len((crate::ASSET_BYTES_LIMIT + 1) as u64)
+            .unwrap();
+        let snapshot = Repository::open_worktree(&fixture.0).unwrap();
+        assert!(
+            snapshot
+                .asset_bytes(0, false)
+                .unwrap_err()
+                .contains("16 MiB")
+        );
+    }
 
     #[test]
     fn reads_uncommitted_changes_against_head_and_excludes_ignored_files() {

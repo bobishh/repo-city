@@ -81,16 +81,23 @@ extern "C" {
     pub(super) fn open_browser(path: &str, before: bool);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn register(app: &mut App) {
     use bevy::asset::io::embedded::EmbeddedAssetRegistry;
     use bevy_markup::prelude::{FontFaces, FontFamilies, GenericFamily};
 
     app.add_plugins(bevy_markup::BevyMarkupPlugin);
+    #[cfg(target_arch = "wasm32")]
+    let sans = FontSource::list([Handle::<Font>::default(), EMOJI_FONT]);
+    #[cfg(not(target_arch = "wasm32"))]
+    let sans = FontSource::sans_serif();
+    #[cfg(target_arch = "wasm32")]
+    let mono = FontSource::list([Handle::<Font>::default(), EMOJI_FONT]);
+    #[cfg(not(target_arch = "wasm32"))]
+    let mono = FontSource::monospace();
     app.world_mut()
         .resource_mut::<FontFamilies>()
-        .insert("Markdown Sans", FontFaces::new(FontSource::sans_serif()))
-        .insert("Markdown Mono", FontFaces::new(FontSource::monospace()))
+        .insert("Markdown Sans", FontFaces::new(sans))
+        .insert("Markdown Mono", FontFaces::new(mono))
         .set_generic(GenericFamily::SansSerif, "Markdown Sans")
         .set_generic(GenericFamily::Monospace, "Markdown Mono");
     let registry = app.world().resource::<EmbeddedAssetRegistry>();
@@ -106,7 +113,6 @@ pub(super) fn register(app: &mut App) {
     );
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn draw(parent: &mut ChildSpawnerCommands, document: String) -> Entity {
     use bevy_markup::prelude::{HtmlStylesheet, HtmlUi, TemplateContext};
     let mut node = parent.spawn(Node {

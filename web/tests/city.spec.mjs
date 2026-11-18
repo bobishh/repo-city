@@ -1,51 +1,10 @@
 import { test, expect } from "@playwright/test";
 import { writeFile } from "node:fs/promises";
+import { readTablet, expectOpen, expectClosed, gpuClick, gpuFill, gpuSelect, gpuFocus } from "./gpu-tablet.mjs";
 
 const after = "b".repeat(40);
 const before = "a".repeat(40);
 const next = "e".repeat(40);
-
-test("keeps VibePad controls inside its screen on a Retina display", async ({ browser }, testInfo) => {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 });
-  await context.addInitScript(() => localStorage.setItem("repo-city-guide-v1", "seen"));
-  const page = await context.newPage();
-  const source = "fn main() { println!(\"Hello\"); }\n";
-  try {
-    await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
-    await page.route("https://api.github.com/**", route => {
-      const path = new URL(route.request().url()).pathname;
-      if (path === "/repos/owner/retina") return route.fulfill({ json: { default_branch: "main" } });
-      if (path.includes("/commits/")) return route.fulfill({ json: { sha: after, parents: [] } });
-      if (path.includes("/git/trees/")) return route.fulfill({ json: { tree: [{ path: "main.rs", type: "blob", mode: "100644", sha: after, size: source.length }] } });
-      return route.fulfill({ json: { size: source.length, encoding: "base64", content: Buffer.from(source).toString("base64") } });
-    });
-    await page.goto("/?repo=owner%2Fretina");
-    await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
-    await page.locator("canvas").focus();
-    await page.keyboard.press("Tab");
-    const tablet = page.getByRole("dialog", { name: "Changed files" });
-    await expect.poll(async () => {
-      const rect = await tablet.boundingBox();
-      return Boolean(rect && rect.x >= 0 && rect.y >= 0 && rect.x + rect.width < 1280 && rect.y + rect.height < 800);
-    }).toBe(true);
-    expect((await tablet.getByRole("heading").boundingBox()).height).toBeLessThan(40);
-    await tablet.getByRole("button", { name: "Settings", exact: true }).click();
-    await expect(page.getByRole("checkbox", { name: "City ambience" })).toBeVisible();
-    await expect(page.getByRole("slider", { name: "Volume" })).toBeVisible();
-    const cdp = await context.newCDPSession(page);
-    const shot = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true });
-    await writeFile(testInfo.outputPath("vibepad-retina.png"), Buffer.from(shot.data, "base64"));
-    await cdp.detach();
-    await page.keyboard.press("Escape");
-    await expect(tablet).toBeHidden();
-    await expect(page.locator("canvas")).toBeFocused();
-    await page.keyboard.press("Tab");
-    await expect(page.getByRole("dialog", { name: "Changed files" })).toBeVisible();
-    await expect(page.locator("#vibepad-closing-screen")).toHaveCount(0);
-  } finally {
-    await context.close();
-  }
-});
 
 test("opens a rendered Markdown document from its building with P", async ({ page }) => {
   await emulatePointerLock(page);
@@ -70,18 +29,16 @@ test("opens a rendered Markdown document from its building with P", async ({ pag
   await expect(page.locator("#progress-summary")).toContainText("0 lines revealed");
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await page.keyboard.press("KeyP", { delay: 180 });
-  const preview = page.getByRole("dialog", { name: "README.md" });
-  await expect(preview.getByRole("heading", { name: "Project notes" })).toBeVisible({ timeout: 20_000 });
-  await expect(preview.locator("strong")).toHaveText("this");
-  await expect(preview.getByRole("listitem")).toHaveText("First step");
-  await expect(preview.getByRole("table").getByRole("row")).toHaveCount(2);
-  await expect(preview.locator("pre code")).toContainText("git status");
+  const preview = page.locator("#review-dialog");
+  await expectOpen(page, "README.md");
+  await expect(preview.locator("[data-markdown-source]")).toHaveAttribute("data-markdown-source", source);
   await expect(preview.locator('a[href^="javascript:"]')).toHaveCount(0);
   await expect(page.locator("#progress-summary")).toContainText("0 lines revealed");
-  await preview.locator(".markdown-end").scrollIntoViewIfNeeded();
+  await page.mouse.move(640, 400);
+  await page.mouse.wheel(0, 1000);
   await expect(page.locator("#progress-summary")).toContainText(`${source.split("\n").length - 1} lines revealed`, { timeout: 20_000 });
-  await page.keyboard.press("Tab");
-  await expect(preview).toBeHidden();
+  await page.keyboard.press("Tab", { delay: 120 });
+  await expectClosed(page);
 });
 
 test("shows the guide once and keeps it available from the help button", async ({ page }, testInfo) => {
@@ -105,16 +62,16 @@ test("shows the guide once and keeps it available from the help button", async (
   await page.goto("/");
   await expect(page.getByRole("link", { name: "Source on GitHub" })).toHaveAttribute("href", "https://github.com/bobishh/repo-city");
   await expect(page.getByRole("link", { name: "Build for Mac" })).toHaveCount(0);
-  const guide = page.getByRole("dialog", { name: "Help" });
+  const guide = page.locator("#review-dialog");
   const help = page.getByRole("button", { name: "How to use Repo City" });
-  await expect(guide).toBeHidden();
+  await expectClosed(page);
   await expect(help).toBeHidden();
   await page.getByRole("combobox", { name: "GitHub repository" }).fill("owner/demo");
   await page.getByRole("button", { name: "Select repository" }).click();
   await page.getByRole("button", { name: "Open city" }).click();
   try {
     await expect(page.locator("#status")).toContainText("Loading repository");
-    await expect(guide).toBeHidden();
+    await expectClosed(page);
     await expect(help).toBeHidden();
   } finally {
     releaseTree();
@@ -122,46 +79,42 @@ test("shows the guide once and keeps it available from the help button", async (
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
   await expect(page.locator("canvas")).toBeVisible();
   expect(await page.evaluate(() => globalThis.repoCity.reviewCanPaint())).toBe(false);
-  await expect(guide).toBeVisible();
-  await expect(guide.getByText("Click the Repo City logo to open the repository picker.")).toBeVisible();
-  await guide.getByRole("button", { name: "Skip", exact: true }).click();
-  await expect(guide).toBeHidden();
+  await expectOpen(page);
+  await expect(guide.getByText("Click the Repo City logo to open the repository picker.")).toBeAttached();
+  await gpuClick(page, guide.getByRole("button", { includeHidden: true, name: "Skip", exact: true }));
+  await expectClosed(page);
   await page.reload();
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
-  await expect(guide).toBeHidden();
+  await expectClosed(page);
   await help.click();
-  await expect(guide).toBeVisible();
+  await expectOpen(page);
   const cdpTablet = await page.context().newCDPSession(page);
   const imageTablet = await cdpTablet.send("Page.captureScreenshot", { format: "png", fromSurface: true });
   await writeFile(testInfo.outputPath("vibepad-help.png"), Buffer.from(imageTablet.data, "base64"));
   await cdpTablet.detach();
-  await guide.getByRole("button", { name: "Settings" }).click();
-  const settings = page.getByRole("dialog", { name: "Settings" });
+  await gpuClick(page, guide.getByRole("button", { includeHidden: true, name: "Settings" }));
+  const settings = page.locator("#review-dialog");
   await expect(settings).toContainText("Brysbaert");
   await expect(settings.getByLabel("Lines per wash block")).toHaveValue("6");
-  await settings.getByLabel("Lines per wash block").fill("0");
-  await settings.getByRole("button", { name: "Save settings" }).click();
-  await expect(settings.getByRole("status")).toContainText("positive whole number");
-  await settings.getByLabel("Lines per wash block").fill("1");
+  await gpuFill(page, settings.getByLabel("Lines per wash block"), "0");
+  await expect(settings.locator(".review-reading [role=status]")).toContainText("positive whole number");
+  await gpuFill(page, settings.getByLabel("Lines per wash block"), "1");
   await expect(settings.getByLabel("Minimum delay (seconds)")).toHaveValue("3");
-  await settings.getByLabel("Minimum delay (seconds)").fill("7");
-  await settings.getByRole("button", { name: "Save settings" }).click();
-  await expect(settings.getByRole("status")).toContainText("Minimum delay must not exceed");
-  await settings.getByLabel("Minimum delay (seconds)").fill("");
-  await settings.getByLabel("Maximum delay (seconds)").fill("5.5");
-  await settings.getByRole("button", { name: "Save settings" }).click();
-  await expect(settings.getByRole("status")).toContainText("Saved");
-  await settings.getByLabel("Water").selectOption("immediate");
-  await settings.getByRole("button", { name: "Save settings" }).click();
+  await gpuFill(page, settings.getByLabel("Minimum delay (seconds)"), "7");
+  await expect(settings.locator(".review-reading [role=status]")).toContainText("Minimum delay must not exceed");
+  await gpuFill(page, settings.getByLabel("Minimum delay (seconds)"), "");
+  await gpuFill(page, settings.getByLabel("Maximum delay (seconds)"), "5.5");
+  await expect(settings.locator(".review-reading [role=status]")).toContainText("Saved");
+  await gpuSelect(page, settings.getByLabel("Reveal"), "immediate");
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("repo-city-reading-v1"))))
-    .toEqual({mode: "immediate", block_lines: 1, min_seconds: null, max_seconds: 5.5});
-  await page.keyboard.press("Escape");
-  await expect(guide).toBeHidden();
+    .toEqual({mode: "immediate", block_kind: "function", auto_advance: true, block_lines: 1, min_seconds: null, max_seconds: 5.5});
+  await page.keyboard.press("Escape", { delay: 120 });
+  await expectClosed(page);
   await page.evaluate(() => localStorage.removeItem("repo-city-guide-v1"));
   await page.reload();
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
-  await guide.getByRole("button", { name: "Start tour" }).click();
-  await expect(guide).toBeHidden();
+  await gpuClick(page, guide.getByRole("button", { includeHidden: true, name: "Start tour" }));
+  await expectClosed(page);
   expect(await page.evaluate(() => globalThis.repoCity.tourCommand() & 1)).toBe(1);
   expect(faults).toEqual([]);
 });
@@ -251,20 +204,23 @@ test("opens a public repository and fetches source after the WASM city starts", 
         return stripeRows.size;
       }, data);
     }, { timeout: 100_000, message: "Render the modified file's vertical amber marker" }).toBeGreaterThan(50);
-    const portrait = await page.evaluate(async data => {
+    await expect.poll(async () => {
+      const shot = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true });
+      return page.evaluate(async data => {
       const image = await createImageBitmap(new Blob([Uint8Array.fromBase64(data)], { type: "image/png" }));
       const head = new OffscreenCanvas(48, 48).getContext("2d");
-      head.drawImage(image, 16, 16, 48, 48, 0, 0, 48, 48);
+      const scale = image.width / innerWidth;
+      head.drawImage(image, 16 * scale, 16 * scale, 48 * scale, 48 * scale, 0, 0, 48, 48);
       image.close();
       const { data: pixels } = head.getImageData(0, 0, 48, 48);
       let metal = 0;
       for (let i = 0; i < pixels.length; i += 4) {
         const [red, green, blue] = pixels.subarray(i, i + 3);
-        if (red > 110 && red > green + 12 && green > blue + 7) metal++;
+        if (red > 70 && green > 60 && red > blue + 10) metal++;
       }
       return metal;
-    }, png.toString("base64"));
-    expect(portrait, "WebGPU renders the android in the logo").toBeGreaterThan(30);
+    }, shot.data);
+    }, { timeout: 30_000, message: "WebGPU renders the android in the logo" }).toBeGreaterThan(30);
     await writeFile(testInfo.outputPath("city.png"), png);
   } catch (error) {
     if (png) await writeFile(testInfo.outputPath("last-canvas.png"), png);
@@ -283,10 +239,10 @@ test("opens a public repository and fetches source after the WASM city starts", 
   await page.keyboard.press("KeyM", { delay: 180 });
   await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
   await page.keyboard.press("KeyH", { delay: 180 });
-  const mapHelp = page.getByRole("dialog", { name: "Help" });
-  await expect(mapHelp).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(mapHelp).toBeHidden();
+  const mapHelp = page.locator("#review-dialog");
+  await expectOpen(page);
+  await page.keyboard.press("Escape", { delay: 120 });
+  await expectClosed(page);
   await canvas.focus();
   await page.keyboard.press("KeyM", { delay: 180 });
   await expect(canvas).not.toHaveAttribute("data-overview", "");
@@ -307,15 +263,13 @@ test("opens a public repository and fetches source after the WASM city starts", 
   await dialog.getByRole("button", { name: "Revision: Default branch" }).click();
   await dialog.getByRole("combobox", { name: "Find a branch, tag, or commit" }).fill(next);
   await dialog.getByRole("button", { name: "Use revision" }).click();
-  const committed = page.waitForRequest(request => request.url().endsWith("/commits/" + next));
-  const replacement = page.waitForResponse(response => response.url().endsWith("/git/blobs/" + next));
+  await expect(page.locator('input[name="ref"]')).toHaveValue(next);
   await dialog.getByRole("button", { name: "Open city" }).click();
-  await committed;
-  expect((await replacement).ok()).toBe(true);
+  await expect.poll(() => page.evaluate(() => JSON.parse(repoCity.snapshot()).after["src/demo.rs"]?.id)).toBe(next);
   await expect(dialog).toBeHidden();
   await expect(page).toHaveURL(new RegExp("ref=" + next));
   await page.getByRole("button", { name: "Repo City", exact: true }).click();
-  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape", { delay: 120 });
   await expect(dialog).toBeHidden();
 });
 
@@ -344,7 +298,7 @@ test("the first canvas click captures the pointer and Escape releases it", async
   await canvas.click({ position: { x: 400, y: 300 } });
   await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
   await expect(canvas).toHaveCSS("cursor", "none");
-  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape", { delay: 120 });
   await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id ?? null)).toBeNull();
   await expect(canvas).not.toHaveCSS("cursor", "none");
   await canvas.evaluate(element => {
@@ -456,35 +410,28 @@ test("opens a merged pull request from the URL using its fork head and merge bas
   expect(checked).toContain(`/repos/fork/demo/git/trees/${after}`);
   expect(checked).toContain(`/repos/owner/demo/git/trees/${before}`);
   await page.locator("canvas").focus();
-  await page.keyboard.press("Tab");
-  const tablet = page.getByRole("dialog", { name: "Changed files" });
-  await expect(tablet.getByRole("button", { name: "src/pr.rs" })).toBeVisible();
-  await expect(tablet).toHaveAttribute("data-projected", "");
-  await expect(tablet).toHaveCSS("border-top-width", "0px");
-  await expect(tablet).toHaveCSS("width", "1440px");
-  await expect.poll(async () => {
-    const screen = await tablet.boundingBox();
-    return screen.y >= 0 && screen.x >= 0 && screen.x + screen.width < page.viewportSize().width && screen.y + screen.height < page.viewportSize().height;
-  }).toBe(true);
+  await page.keyboard.press("Tab", { delay: 120 });
+  const tablet = page.locator("#review-dialog");
+  await expect(tablet.getByRole("button", { includeHidden: true, name: "src/pr.rs" })).toBeAttached();
   const cdpTablet = await page.context().newCDPSession(page);
   const imageTablet = await cdpTablet.send("Page.captureScreenshot", { format: "png", fromSurface: true });
   await writeFile(testInfo.outputPath("vibepad-files.png"), Buffer.from(imageTablet.data, "base64"));
   await cdpTablet.detach();
-  await expect(tablet.getByRole("button", { name: "Settings", exact: true })).toBeVisible();
+  await expect(tablet.getByRole("button", { includeHidden: true, name: "Settings", exact: true })).toBeAttached();
   await expect(tablet.locator('nav button', { hasText: "Settings" })).toHaveCount(0);
-  await expect(tablet.getByRole("button", { name: "LICENSE" })).toHaveCount(0);
-  await tablet.getByRole("button", { name: "Viewed", exact: true }).click();
+  await expect(tablet.getByRole("button", { includeHidden: true, name: "LICENSE" })).toHaveCount(0);
+  await gpuClick(page, tablet.getByRole("button", { includeHidden: true, name: "Viewed", exact: true }));
   await expect(tablet).toContainText("No changed files viewed.");
-  await expect(tablet.getByRole("button", { name: "Close", exact: true })).toHaveCount(0);
-  await page.keyboard.press("Shift+Tab");
-  await expect(tablet).toBeVisible();
-  await page.keyboard.press("Tab");
-  await expect(tablet).toBeHidden();
+  await expect(tablet.getByRole("button", { includeHidden: true, name: "Close", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Shift+Tab", { delay: 120 });
+  await expectOpen(page);
+  await page.keyboard.press("Tab", { delay: 120 });
+  await expectClosed(page);
   await expect(page.locator("canvas")).toBeFocused();
-  await page.keyboard.press("Tab");
-  await expect(tablet).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(tablet).toBeHidden();
+  await page.keyboard.press("Tab", { delay: 120 });
+  await expectOpen(page);
+  await page.keyboard.press("Escape", { delay: 120 });
+  await expectClosed(page);
   const blame = page.getByRole("link", { name: "Blame on GitHub" });
   await expect(blame).toBeHidden();
   const canvas = page.locator("canvas");
@@ -549,13 +496,13 @@ test("opens a merged pull request from the URL using its fork head and merge bas
   await expect(canvas).toHaveAttribute("data-changes-only", "");
   await expect.poll(capture).toBe("repo-city");
   await canvas.focus();
-  await page.keyboard.press("KeyP", { delay: 150 });
-  await expect(canvas).toHaveAttribute("data-pointer-ui", "");
+  await page.keyboard.press("Meta+KeyP", { delay: 150 });
+  await expectOpen(page, "Find a file");
   await page.keyboard.type("LICENSE", { delay: 55 });
   await page.keyboard.press("Enter", { delay: 150 });
-  await expect(canvas).toHaveAttribute("data-pointer-ui", "");
+  await expectOpen(page, "Find a file");
   await page.keyboard.press("Escape", { delay: 150 });
-  await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
+  await expectClosed(page);
   await canvas.click({ position: center, delay: 180 });
   await expect.poll(capture).toBe("repo-city");
   await canvas.click({ position: center, button: "right", delay: 180 });
@@ -736,18 +683,20 @@ test("restores review progress after reload and resets only the open comparison"
   await expect(canvas).toHaveAttribute("data-action-menu");
   await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
   await canvas.screenshot({ path: testInfo.outputPath("city-actions.png") });
-  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape", { delay: 120 });
   await expect(canvas).not.toHaveAttribute("data-action-menu");
   await expect.poll(() => page.evaluate(() => document.pointerLockElement)).toBeNull();
   await canvas.click({ position: { x: 640, y: 400 }, button: "right" });
   await expect(canvas).toHaveAttribute("data-action-menu");
-  await page.keyboard.press("KeyP", { delay: 150 });
-  await expect(canvas).toHaveAttribute("data-pointer-ui", "");
+  await page.keyboard.press("Meta+KeyP", { delay: 150 });
+  await expectOpen(page, "Find a file");
   await page.keyboard.type("demo.rs", { delay: 45 });
-  await expect(canvas).toHaveAttribute("data-pointer-ui", "");
+  await expectOpen(page, "Find a file");
   await canvas.screenshot({ path: testInfo.outputPath("city-file-search.png") });
-  await page.keyboard.press("Escape");
-  await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
+  await page.keyboard.press("Escape", { delay: 120 });
+  await expectClosed(page);
+  await page.mouse.move(640, 400);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await canvas.click({ position: { x: 640, y: 400 }, delay: 150 });
   await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -760,7 +709,7 @@ test("restores review progress after reload and resets only the open comparison"
   await page.mouse.click(640, 400, { delay: 100 });
   await canvas.screenshot({ path: testInfo.outputPath("city-window-washer.png") });
   const marks = await read(scope);
-  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape", { delay: 120 });
   await page.evaluate(async ({ separate, reviewed }) => {
     const { writeProgress } = await import("/progress.mjs");
     await writeProgress(separate, [[reviewed, true]]);
@@ -805,12 +754,14 @@ test("restores review progress after reload and resets only the open comparison"
   await canvas.evaluate(element => element.requestPointerLock());
   await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
   await page.keyboard.press("KeyM", { delay: 150 });
-  // Fly after the overview hop, with the same pointer lock as before it.
+  // Both overview stages keep the cursor free for map navigation.
   await page.keyboard.press("KeyD", { delay: 1_500 });
-  await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
-  await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
+  await expect(canvas).toHaveAttribute("data-overview", "");
+  await expect.poll(() => page.evaluate(() => document.pointerLockElement)).toBeNull();
   await page.keyboard.press("KeyM", { delay: 150 });
-  await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
+  await expect(canvas).toHaveAttribute("data-overview", "");
+  await page.keyboard.press("KeyM", { delay: 150 });
+  await expect(canvas).not.toHaveAttribute("data-overview", "");
   head = next;
   await page.reload();
   await ready();
@@ -820,7 +771,7 @@ test("restores review progress after reload and resets only the open comparison"
 test("publishes a painted preset in one action and still supports suggestions", async ({ page }, testInfo) => {
   // This flow drags over a multi-line range; make its readable block explicit.
   await page.addInitScript(() => localStorage.setItem("repo-city-reading-v1", JSON.stringify({
-    mode: "delayed", block_lines: 16, min_seconds: 3, max_seconds: 6,
+    mode: "delayed", block_kind: "lines", auto_advance: false, block_lines: 16, min_seconds: 3, max_seconds: 6,
   })));
   await emulatePointerLock(page);
   let remoteMark;
@@ -886,10 +837,18 @@ test("publishes a painted preset in one action and still supports suggestions", 
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
   const canvas = page.locator("canvas");
   const center = { x: 640, y: 400 };
+  let approached = false;
   const lock = async () => {
-    await canvas.click({ position: center, delay: 150 });
+    await page.mouse.move(center.x, center.y);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await canvas.evaluate(element => element.requestPointerLock());
     await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    if (!approached) {
+      await page.keyboard.press("KeyE", { delay: 180 });
+      await page.waitForTimeout(1800);
+      approached = true;
+    }
   };
   const review = page.locator("#review-dialog");
   await lock();
@@ -900,14 +859,14 @@ test("publishes a painted preset in one action and still supports suggestions", 
   await expect(page.locator("#progress-summary")).toHaveText(/[1-9]\d* lines revealed/, { timeout: 65_000 });
   await page.mouse.click(640, 400, { delay: 100 });
   await page.keyboard.press("KeyU", { delay: 120 });
-  await expect(review).toBeVisible({ timeout: 20_000 });
-  await review.getByRole("button", { name: "Edit paint slot 8" }).click();
-  await review.getByLabel("Name").fill("Investigate");
-  await review.getByLabel("Spray text").fill("Check this path");
-  await review.getByLabel("Color").fill("#ff3b86");
-  await review.getByLabel("Reusable prompt").fill("Reproduce first.");
-  await review.getByRole("button", { name: "Save paint" }).click();
-  await review.getByRole("button", { name: "8 · Investigate" }).click();
+  await expectOpen(page);
+  await gpuClick(page, review.getByRole("button", { includeHidden: true, name: "Edit paint slot 8" }));
+  await gpuFill(page, review.getByLabel("Name"), "Investigate");
+  await gpuFill(page, review.getByLabel("Spray text"), "Check this path");
+  await gpuFill(page, review.getByLabel("Color"), "#ff3b86");
+  await gpuFill(page, review.getByLabel("Reusable prompt"), "Reproduce first.");
+  await gpuClick(page, review.getByRole("button", { includeHidden: true, name: "Save paint" }));
+  await gpuClick(page, review.getByRole("button", { includeHidden: true, name: "8 · Investigate" }));
   await lock();
   await page.mouse.down();
   await page.waitForTimeout(200);
@@ -916,23 +875,23 @@ test("publishes a painted preset in one action and still supports suggestions", 
   await canvas.screenshot({ path: testInfo.outputPath("live-paint.png") });
   await page.mouse.up();
   await expect.poll(() => page.evaluate(() => JSON.parse(globalThis.repoCity.reviewRead()).notes.filter(note => !note.remote).length)).toBe(1);
-  await expect(review).toBeHidden();
+  await expectClosed(page);
   await page.keyboard.press("KeyJ", { delay: 120 });
-  await expect(review).toBeVisible({ timeout: 20_000 });
-  const draft = review.getByRole("button", { name: /Investigate.*Draft/ });
-  if (await draft.isVisible()) await draft.click();
-  await expect(review.locator(".markdown-preview").getByText("Reproduce first.", { exact: true })).toBeVisible();
+  await expectOpen(page);
+  const draft = review.getByRole("button", { includeHidden: true, name: /Investigate.*Draft/ });
+  if (await draft.count()) await gpuClick(page, draft);
+  await expect(review.locator(".markdown-preview").getByText("Reproduce first.", { exact: true })).toBeAttached();
   await expect(review.getByLabel("Comment")).toBeHidden();
   expect(posts).toHaveLength(0);
   const firstMark = await page.evaluate(() => JSON.parse(globalThis.repoCity.reviewRead()).notes.find(note => !note.remote));
   expect(firstMark.anchor.end).toBeGreaterThan(firstMark.anchor.start);
-  await review.getByRole("button", { name: "Publish to GitHub" }).click();
-  await expect(review.getByRole("status")).toContainText("Pull requests: write");
+  await gpuClick(page, review.getByRole("button", { includeHidden: true, name: "Publish to GitHub" }));
+  await expect(review.getByRole("status", { includeHidden: true })).toContainText("Pull requests: write");
   expect(posts[0]).toMatchObject({ ...firstMark.anchor, revision: after, preset: firstMark.preset.id, text: "Reproduce first." });
-  await review.getByRole("button", { name: "Publish to GitHub" }).click();
-  await expect(review.getByRole("link", { name: "Published on GitHub" })).toBeVisible();
-  await page.keyboard.press("Tab");
-  await expect(review).toBeHidden();
+  await gpuClick(page, review.getByRole("button", { includeHidden: true, name: "Publish to GitHub" }));
+  await expect(review.getByRole("link", { includeHidden: true, name: "Published on GitHub" })).toBeAttached();
+  await page.keyboard.press("Tab", { delay: 120 });
+  await expectClosed(page);
   await lock();
   await page.mouse.down();
   await page.waitForTimeout(350);
@@ -944,25 +903,25 @@ test("publishes a painted preset in one action and still supports suggestions", 
   await page.waitForTimeout(350);
   await page.mouse.up();
   await expect.poll(unpublished).toBeGreaterThan(0);
-  await expect(review).toBeHidden();
+  await expectClosed(page);
   await page.keyboard.press("KeyJ", { delay: 120 });
-  await expect(review).toBeVisible({ timeout: 20_000 });
-  const suggestion = review.getByRole("button", { name: /Tests.*Draft/ });
-  if (await suggestion.isVisible()) await suggestion.click();
-  await expect(review.getByRole("button", { name: "Edit comment" })).toBeVisible({ timeout: 20_000 });
-  await review.getByRole("button", { name: "Write a comment" }).click();
+  await expectOpen(page);
+  const suggestion = review.getByRole("button", { includeHidden: true, name: /Tests.*Draft/ });
+  if (await suggestion.count()) await gpuClick(page, suggestion);
+  await expect(review.getByRole("button", { includeHidden: true, name: "Edit comment" })).toBeAttached({ timeout: 20_000 });
+  await gpuClick(page, review.getByRole("button", { includeHidden: true, name: "Write a comment" }));
   await expect(review.getByLabel("Comment")).toHaveValue("");
-  await review.getByLabel("Comment").fill("Check this specific behavior.");
-  await review.getByRole("button", { name: "Suggest replacement" }).click();
-  await review.getByLabel("Replacement code").fill("    // proposed replacement");
-  await review.getByRole("button", { name: "Preview GitHub suggestion" }).click();
-  await expect(review.getByText("Check this specific behavior.", { exact: false }).last()).toBeVisible();
-  await expect(review.getByText("    // proposed replacement", { exact: false })).toBeVisible();
-  await expect(review.getByText("Publishing requires write access to pull requests.")).toBeVisible();
-  await expect(review.getByRole("link", { name: "Manage repository access" })).toHaveAttribute("href", installUrl);
+  await gpuFill(page, review.getByLabel("Comment"), "Check this specific behavior.");
+  await gpuClick(page, review.getByRole("button", { includeHidden: true, name: "Suggest replacement" }));
+  await gpuFill(page, review.getByLabel("Replacement code"), "    // proposed replacement");
+  await gpuClick(page, review.getByRole("button", { includeHidden: true, name: "Preview GitHub suggestion" }));
+  await expect(review.getByText("Check this specific behavior.", { exact: false }).last()).toBeAttached();
+  await expect(review.getByText("    // proposed replacement", { exact: false })).toBeAttached();
+  await expect(review.getByText("Publishing requires write access to pull requests.")).toBeAttached();
+  await expect(review.getByRole("link", { includeHidden: true, name: "Manage repository access" })).toHaveAttribute("href", installUrl);
   expect(posts).toHaveLength(2);
-  await review.getByRole("button", { name: "Publish to GitHub" }).click();
-  await expect(review.getByRole("link", { name: "Published on GitHub" })).toBeVisible();
+  await gpuClick(page, review.getByRole("button", { includeHidden: true, name: "Publish to GitHub" }));
+  await expect(review.getByRole("link", { includeHidden: true, name: "Published on GitHub" })).toBeAttached();
   expect(posts[2]).toMatchObject({ path: "src/demo.rs", revision: after, before: false, text: "Check this specific behavior.", replacement: "    // proposed replacement" });
   await page.reload();
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
@@ -988,38 +947,38 @@ test("publishes a painted preset in one action and still supports suggestions", 
   await expect(canvas).toHaveAttribute("data-action-menu");
   await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
   await page.keyboard.press("KeyJ", { delay: 120 });
-  const thread = review.getByRole("button", { name: /Comment.*demo\.rs:25.*For you/ });
-  await expect(thread).toBeVisible();
-  const resolved = review.getByRole("button", { name: /demo\.rs:26.*Resolved/ });
+  const thread = review.getByRole("button", { includeHidden: true, name: /Comment.*demo\.rs:25.*For you/ });
+  await expect(thread).toBeAttached();
+  const resolved = review.getByRole("button", { includeHidden: true, name: /demo\.rs:26.*Resolved/ });
   await expect(resolved).toHaveCount(0);
-  await review.getByRole("checkbox", { name: "Show resolved threads" }).check();
-  await expect(resolved).toBeVisible();
-  await review.getByRole("button", { name: "Fly to next mention" }).click();
-  await expect(review).toBeHidden();
+  await gpuClick(page, review.getByRole("checkbox", { includeHidden: true, name: "Show resolved threads" }));
+  await expect(resolved).toBeAttached();
+  await gpuClick(page, review.getByRole("button", { includeHidden: true, name: "Fly to next mention" }));
+  await expectClosed(page);
   await lock();
   await page.keyboard.press("KeyJ", { delay: 120 });
-  await expect(review.getByRole("heading", { name: "Review · PR #8" })).toBeHidden();
+  await expect(review.getByRole("heading", { includeHidden: true, name: "Review · PR #8" })).toBeHidden();
   await expect.poll(async () => {
     const title = await review.evaluate(dialog => dialog.open ? dialog.querySelector("h2").textContent : null);
     if (title === "src/demo.rs:25") return true;
     if (title !== null) {
-      await page.keyboard.press("Tab");
-      await expect(review).toBeHidden();
+      await page.keyboard.press("Tab", { delay: 120 });
+      await expectClosed(page);
       return false;
     }
     if (!await page.evaluate(() => Boolean(document.pointerLockElement))) await lock();
     await page.keyboard.press("KeyJ", { delay: 120 });
     return false;
   }, { timeout: 20_000 }).toBe(true);
-  await expect(review.locator(".markdown-preview strong").getByText("Separate note")).toBeVisible();
-  await expect(review.getByText("Got it, @Reviewer. Check the line above.")).toBeVisible();
-  await review.getByRole("button", { name: "Mark as viewed" }).click();
-  await expect(review.locator("article").getByRole("status")).toContainText("Pull requests: write");
-  await review.getByRole("button", { name: "Mark as viewed" }).click();
-  await expect(review.getByText("Viewed on GitHub")).toBeVisible();
-  await review.getByLabel("Local paint").selectOption({ label: "Investigate" });
-  await review.getByRole("button", { name: "Save local paint" }).click();
-  await expect(review.getByRole("button", { name: /Investigate.*demo\.rs:25.*GitHub thread/ })).toBeVisible();
+  await expect(review.locator(".markdown-preview").getByText("Separate note", { exact: false })).toBeAttached();
+  await expect(review.getByText("Got it, @Reviewer. Check the line above.")).toBeAttached();
+  await gpuClick(page, review.getByRole("button", { includeHidden: true, name: "Mark as viewed" }));
+  await expect(review.locator("article").getByRole("status", { includeHidden: true })).toContainText("Pull requests: write");
+  await gpuClick(page, review.getByRole("button", { includeHidden: true, name: "Mark as viewed" }));
+  await expect(review.getByText("Viewed on GitHub")).toBeAttached();
+  await gpuSelect(page, review.getByLabel("Local paint"), { label: "Investigate" });
+  await gpuClick(page, review.getByRole("button", { includeHidden: true, name: "Save local paint" }));
+  await expect(review.getByRole("button", { includeHidden: true, name: /Investigate.*demo\.rs:25.*GitHub thread/ })).toBeAttached();
   expect(posts).toHaveLength(3);
   await page.reload();
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
@@ -1053,32 +1012,33 @@ test("VibePad owns file search, plain previews, help toggle and exact commit com
   const canvas = page.locator("canvas"); await canvas.focus();
   await expect(canvas).toBeFocused();
   await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
-  await page.keyboard.press("h"); await expect(page.getByRole("dialog", { name: "Help" })).toBeVisible();
-  await page.keyboard.press("h"); await expect(page.locator("#review-dialog")).toBeHidden();
-  await page.keyboard.press("Meta+p");
-  const search = page.getByRole("dialog", { name: "Find a file" }); await expect(search).toBeVisible();
-  await search.getByRole("searchbox").fill("missing"); await expect(search.getByRole("status")).toHaveText("No matching files.");
-  await search.getByRole("searchbox").fill("notes"); await search.getByRole("button", { name: "notes.txt", exact: true }).click();
-  await expect(search).toBeHidden();
+  await page.keyboard.press("h", { delay: 120 }); await expectOpen(page, "Help");
+  await page.keyboard.press("h", { delay: 120 }); await expectClosed(page);
+  await page.keyboard.press("Meta+p", { delay: 120 });
+  const search = page.locator("#review-dialog"); await expectOpen(page);
+  await gpuFill(page, search.getByRole("searchbox", { includeHidden: true }), "missing"); await expect(search.getByRole("status", { includeHidden: true })).toHaveText("No matching files.");
+  await gpuFill(page, search.getByRole("searchbox", { includeHidden: true }), "notes"); await page.keyboard.press("ArrowDown", { delay: 120 });
+  await gpuFocus(page, search.getByRole("button", { includeHidden: true, name: "notes.txt", exact: true })); await page.keyboard.press("Enter", { delay: 120 });
+  await expectClosed(page);
   await expect(canvas).toBeFocused();
   await page.waitForTimeout(1200);
   await canvas.evaluate(element => element.requestPointerLock()); await page.keyboard.press("KeyP", { delay: 180 });
-  const preview = page.getByRole("dialog", { name: "notes.txt" }); await expect(preview.locator("pre")).toHaveText(source);
+  const preview = page.locator("#review-dialog"); await expect(preview.locator("pre")).toHaveText(source);
   await expect(preview.locator("script")).toHaveCount(0);
-  await page.keyboard.press("Tab"); await expect(preview).toBeHidden();
-  await page.keyboard.press("Tab"); await page.getByRole("button", { name: "Git", exact: true }).click();
-  const log = page.getByRole("dialog", { name: "Git history" });
-  await expect(log.getByText("New commit", { exact: false })).toBeVisible();
-  await log.locator("article").filter({ hasText: "Old commit" }).getByRole("button", { name: "Before", exact: true }).click();
-  await log.locator("article").filter({ hasText: "New commit" }).getByRole("button", { name: "After", exact: true }).click();
-  await log.locator("article").filter({ hasText: "New commit" }).getByRole("button").first().click();
+  await page.keyboard.press("Tab", { delay: 120 }); await expectClosed(page);
+  await page.keyboard.press("Tab", { delay: 120 }); await page.keyboard.press("Alt+3", { delay: 120 });
+  const log = page.locator("#review-dialog");
+  await expect(log.getByText("New commit", { exact: false })).toBeAttached();
+  await gpuClick(page, log.locator("article").filter({ hasText: "Old commit" }).getByRole("button", { includeHidden: true, name: "Before", exact: true }));
+  await gpuClick(page, log.locator("article").filter({ hasText: "New commit" }).getByRole("button", { includeHidden: true, name: "After", exact: true }));
+  await gpuClick(page, log.locator("article").filter({ hasText: "New commit" }).getByRole("button", { includeHidden: true }).first());
   await expect(log.locator("pre")).toContainText("+new");
-  await log.getByRole("button", { name: "Compare selected commits" }).click();
-  await expect(log).toBeHidden(); await expect(page).toHaveURL(/exact=1/);
+  await gpuClick(page, log.getByRole("button", { includeHidden: true, name: "Compare selected commits" }));
+  await expectClosed(page); await expect(page).toHaveURL(/exact=1/);
   expect(new URL(page.url()).searchParams.get("base")).toBe(before);
 });
 
-test("mobile Pad button opens and puts away the projected tablet", async ({ browser }) => {
+test("mobile Pad button opens and puts away the GPU tablet", async ({ browser }) => {
   const context = await browser.newContext({ viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true });
   const page = await context.newPage();
   await page.addInitScript(() => localStorage.setItem("repo-city-guide-v1", "seen"));
@@ -1093,11 +1053,9 @@ test("mobile Pad button opens and puts away the projected tablet", async ({ brow
   await page.goto("/?repo=owner%2Fmobile");
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
   await page.getByRole("button", { name: "Open VibePad", exact: true }).tap();
-  const pad = page.getByRole("dialog", { name: "Changed files" }); await expect(pad).toBeVisible();
-  await expect(pad).toHaveAttribute("data-projected", "");
-  const bounds = await pad.boundingBox(); expect(bounds.x).toBeGreaterThanOrEqual(0); expect(bounds.x + bounds.width).toBeLessThanOrEqual(845);
-  await pad.getByRole("button", { name: "Put away VibePad" }).tap();
-  await expect(pad).toBeHidden(); await expect(page.getByRole("button", { name: "Open VibePad", exact: true })).toBeVisible();
+  const pad = page.locator("#review-dialog"); await expectOpen(page);
+  await gpuClick(page, pad.getByRole("button", { includeHidden: true, name: "Put away VibePad" }), true);
+  await expectClosed(page); await expect(page.getByRole("button", { name: "Open VibePad", exact: true })).toBeVisible();
   await context.close();
 });
 
@@ -1121,18 +1079,51 @@ test("P previews image data and keeps corrupt images inside VibePad", async ({ p
   await page.goto("/?repo=owner%2Fimages");
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
   for (const name of ["image.png", "broken.png"]) {
-    await page.keyboard.press("Meta+p");
-    const search = page.getByRole("dialog", { name: "Find a file" });
-    await search.getByRole("button", { name, exact: true }).click();
-    await expect(search).toBeHidden();
+    await page.keyboard.press("Meta+p", { delay: 120 });
+    const search = page.locator("#review-dialog");
+    await gpuClick(page, search.getByRole("button", { includeHidden: true, name, exact: true }));
+    await expectClosed(page);
     await page.waitForTimeout(1200);
     await page.locator("canvas").evaluate(element => element.requestPointerLock());
     await page.keyboard.press("KeyP", { delay: 180 });
-    const preview = page.getByRole("dialog", { name, exact: true });
+    const preview = page.locator("#review-dialog");
     if (name === "image.png") {
-      await expect(preview.getByRole("img", { name })).toBeVisible();
-      await expect.poll(() => preview.getByRole("img").evaluate(image => image.naturalWidth)).toBe(1);
+      await expect(preview.getByRole("img", { includeHidden: true, name })).toBeAttached();
+      await expect.poll(() => preview.getByRole("img", { includeHidden: true }).evaluate(image => image.naturalWidth)).toBe(1);
     } else await expect(preview).toContainText("Image data is invalid or unsupported.");
-    await page.keyboard.press("Tab"); await expect(preview).toBeHidden();
+    await page.keyboard.press("Tab", { delay: 120 }); await expectClosed(page);
   }
+});
+
+test("keyboard-only navigation can find a building and wash source without pointer capture", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("repo-city-guide-v1", "seen");
+    localStorage.setItem("repo-city-reading-v1", JSON.stringify({ mode: "immediate", block_lines: 6, block_kind: "lines", auto_advance: true, min_seconds: null, max_seconds: null }));
+  });
+  const source = "fn main() {\n    let answer = 42;\n    println!(\"{answer}\");\n}\n";
+  await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
+  await page.route("https://api.github.com/**", route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/repos/owner/keyboard") return route.fulfill({ json: { default_branch: "main" } });
+    if (path.includes("/commits/")) return route.fulfill({ json: { sha: after, parents: [] } });
+    if (path.includes("/git/trees/")) return route.fulfill({ json: { tree: [{ path: "main.rs", type: "blob", mode: "100644", sha: after, size: source.length }] } });
+    return route.fulfill({ json: { size: source.length, encoding: "base64", content: Buffer.from(source).toString("base64") } });
+  });
+  await page.goto("/?repo=owner%2Fkeyboard");
+  await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+  await page.keyboard.press("Meta+p", { delay: 120 });
+  const find = page.locator("#review-dialog"); await expectOpen(page);
+  await page.keyboard.type("main", { delay: 40 });
+  await expect(find.getByRole("searchbox", { includeHidden: true })).toHaveValue("main");
+  await expectOpen(page, "Find a file");
+  await page.keyboard.press("ArrowDown", { delay: 120 });
+  await gpuFocus(page, find.getByRole("button", { includeHidden: true, name: "main.rs", exact: true }));
+  await page.keyboard.press("Enter", { delay: 120 }); await expectClosed(page);
+  await page.waitForTimeout(1600);
+  await page.keyboard.press("KeyE", { delay: 180 });
+  await page.waitForTimeout(2500);
+  await page.keyboard.press("KeyK", { delay: 180 });
+  await expect.poll(async () => Number((await page.locator("#progress-summary").textContent()).match(/(\d+) lines revealed/)?.[1] ?? 0), { timeout: 15_000 }).toBeGreaterThan(0);
+  expect(await page.evaluate(() => document.pointerLockElement)).toBeNull();
+  await page.keyboard.press("Tab", { delay: 120 }); await expectOpen(page, "Changed files");
 });

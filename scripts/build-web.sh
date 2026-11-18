@@ -2,15 +2,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-cargo build --locked -p repo-city --profile web-release --target wasm32-unknown-unknown
+cargo build --locked -p repo-city --bin repo-city --profile web-release --target wasm32-unknown-unknown
 output=web/dist
 mkdir -p "$output/game" "$output/assets"
 mkdir -p "$output/licenses"
-cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY.md licenses/pulldown-cmark-MIT.txt "$output/licenses/"
+cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY.md licenses/pulldown-cmark-MIT.txt licenses/bevy-markup-MIT.txt licenses/bevy-markup-APACHE.txt licenses/MPL-2.0.txt "$output/licenses/"
 cp assets/fonts/FiraMono-LICENSE assets/fonts/NotoEmoji-LICENSE web/assets/OFL-Caveat.txt "$output/licenses/"
-cp web/index.html web/style.css web/app.mjs web/github.mjs web/analytics.mjs web/syntax.mjs web/github-picker.mjs web/pointer.mjs web/touch.mjs web/progress.mjs web/review.mjs web/pr-review.mjs web/tablet.mjs web/audio.mjs web/audio-worklet.mjs "$output/"
-cp web/node_modules/github-markdown-css/github-markdown-dark.css "$output/github-markdown.css"
-cp web/node_modules/github-markdown-css/license "$output/github-markdown-LICENSE.txt"
+cp web/index.html web/style.css web/app.mjs web/github.mjs web/analytics.mjs web/syntax.mjs web/github-picker.mjs web/pointer.mjs web/touch.mjs web/progress.mjs web/review.mjs web/pr-review.mjs web/tablet.mjs web/tablet-view.mjs web/audio.mjs web/audio-worklet.mjs "$output/"
+rm -f "$output/github-markdown.css" "$output/github-markdown-LICENSE.txt"
 # Keep the worker and each language out of the initial game download.
 rm -rf "$output/syntax-chunks"
 web/node_modules/.bin/esbuild web/syntax-worker.mjs --bundle --format=esm --splitting \

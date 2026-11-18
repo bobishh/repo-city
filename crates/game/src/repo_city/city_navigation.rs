@@ -436,7 +436,7 @@ pub(super) fn navigate(
     (time, keys): (Res<Time>, Res<ButtonInput<KeyCode>>),
     wheel: Res<AccumulatedMouseScroll>,
     repo: Res<Repo>,
-    focus: Res<file_facade::ChangesOnly>,
+    mut focus: ResMut<file_facade::ChangesOnly>,
     nearest: Res<Nearest>,
     mut explorer: ResMut<Explorer>,
     mut navigation: ResMut<Navigation>,
@@ -448,6 +448,7 @@ pub(super) fn navigate(
     mut review: Option<ResMut<review_notes::Review>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut camera: Query<(&mut Transform, &Pilot), PlayerCamera>,
+    #[cfg(not(target_arch = "wasm32"))] mut links: Option<ResMut<file_links::Links>>,
 ) {
     if picker.is_open() || listing.turning() {
         return;
@@ -460,6 +461,16 @@ pub(super) fn navigate(
     }
 
     let destination = review_notes::take_destination(review.as_deref_mut());
+    #[cfg(not(target_arch = "wasm32"))]
+    let destination = destination.or_else(|| {
+        let destination = links
+            .as_deref_mut()
+            .and_then(file_links::Links::take_destination);
+        if destination.is_some() {
+            focus.enabled = false;
+        }
+        destination
+    });
     if let Some(destination) = destination
         && destination.revision == repo.0.revision
         && let Some(index) = repo

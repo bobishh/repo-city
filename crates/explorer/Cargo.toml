@@ -4,6 +4,15 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+default-run = "repo-city"
+
+[lib]
+name = "repo_city_core"
+path = "../game/src/repo_city/lib.rs"
+
+[[bin]]
+name = "vibe-city"
+path = "src/vibe_city.rs"
 
 [[bin]]
 name = "repo-city"
@@ -15,8 +24,11 @@ repo-world = { path = "../repository" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 swash = "0.2.10"
-pulldown-cmark = { version = "0.13.6", default-features = false, features = ["html"] }
+bevy_markup = { version = "0.8.0", default-features = false }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+base64 = "0.22"
 avian3d = { version = "0.8", default-features = false, features = ["3d", "parry-f32"] }
+pulldown-cmark = { version = "0.13.6", default-features = false, features = ["html"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
@@ -26,14 +38,20 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["NSS
 security-framework = "3.7"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libc = "0.2"
 base64 = "0.22"
 notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 ureq = { version = "2.12", features = ["json"] }
-bevy = { version = "0.20", default-features = true, features = ["system_clipboard"] }
+bevy = { version = "0.20", default-features = true, features = ["system_clipboard", "jpeg", "webp"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 avian3d = { version = "0.8", default-features = false, features = ["parallel"] }
+bevy_markup = { version = "0.8.0", default-features = false, features = ["system_fonts"] }
+alacritty_terminal = { version = "0.26.0", default-features = false }
+portable-pty = "0.9.0"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3.4", features = ["wasm_js"] }
 wasm-bindgen = "0.2"
-bevy = { version = "0.20", default-features = false, features = ["webgpu"] }
+bevy = { version = "0.20", default-features = false, features = ["webgpu", "bevy_clipboard", "touch"] }
 web-sys = { version = "0.3", features = ["Document", "Element", "Window"] }

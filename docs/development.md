@@ -49,22 +49,8 @@ and hashes for reused code are recorded in
 `rounded_box` mesh for buildings and the Android tool model. The mesh module
 contains only that shared geometry.
 
-## Browser VibePad
-
-The tablet geometry and grip come from [Vibe City revision 4ad153a](https://github.com/bobishh/vibe-city/blob/4ad153a/crates/game/src/repo_city/android.rs).
-The browser adapter projects DOM controls onto that screen; the native adapter
-renders its UI into a texture. Browser projection converts engine coordinates
-to CSS pixels, including Retina scale and canvas offsets.
-
-`listing/layout.rs` owns the mapping between wrapped source rows and canonical
-file lines. Persisted progress and review notes retain canonical addresses.
-Diff and blame keep their existing rows. MCP and speech consume readable
-onscreen fragments rather than hidden continuations.
-
-For local browser verification on a Mac with a display, set
-`REPO_CITY_TEST_GPU=hardware` to use an isolated headed Metal browser. The default
-remains headless SwiftShader for portable runs. The test server never reuses an
-existing server.
+For isolated local runs, set `VIBE_CITY_CONFIG_DIR` to a separate preferences
+directory. This keeps test notes, reading progress, and sound settings separate.
 
 ## Build and test
 
@@ -88,12 +74,18 @@ compiled WASM against GitHub API fixtures.
 
 ## Deploy
 
-[GitHub Actions](../.github/workflows/ci.yml) runs the native and browser
-checks and deploys the tested `browser-build` artifact from `main` to
+[GitHub Actions](../.github/workflows/ci.yml) runs formatting, browser-service
+unit tests and repository-core tests on Linux with a three-minute job limit.
+It does not build desktop packages or publish after a push. Build and verify
+WASM and desktop packages locally from the same release commit.
+
+The Cloudflare Worker serves static assets and the compressed WASM module at
 [repo-city.meta-uber-engineer.dev](https://repo-city.meta-uber-engineer.dev/).
-The Cloudflare Worker serves static assets and the compressed WASM module.
-Set `CLOUDFLARE_API_TOKEN` in the GitHub `production` environment with
-permission to deploy the Worker. Configure the domain in Cloudflare.
+Run Wrangler from `web` after `scripts/build-web.sh` completes. Keep existing
+Worker variables and secrets when uploading a version, then deploy that
+version and compare the live assets with the tested build. The optional
+manual publication workflow accepts a previously uploaded `browser-build`
+Actions artifact; normal local releases use Wrangler directly.
 
 For GitHub sign-in, register a public [GitHub App](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app)
 with callback `https://repo-city.meta-uber-engineer.dev/github/callback`.

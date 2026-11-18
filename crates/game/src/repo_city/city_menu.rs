@@ -272,7 +272,10 @@ pub(super) fn update(
     #[cfg(target_arch = "wasm32")] mut browser_state: Local<(Option<Action>, bool)>,
 ) {
     menu.dismissed = false;
-    let right_click = mouse.just_pressed(MouseButton::Right);
+    let right_click = mouse.just_pressed(MouseButton::Right)
+        || keys.just_pressed(KeyCode::ContextMenu)
+        || (keys.just_pressed(KeyCode::F10)
+            && keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]));
     if review.blocked || search.blocks_controls() || picker.is_open() {
         menu.close();
     } else if navigation.guides_camera() || listing.turning() {

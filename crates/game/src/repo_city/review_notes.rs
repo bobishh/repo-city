@@ -7,15 +7,13 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 
-#[cfg(not(target_arch = "wasm32"))]
-mod color_picker;
+pub(crate) mod color_picker;
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) mod mcp;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
 mod ui;
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) use color_picker::update as update_color_picker;
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) use ui::{ReviewUi, update as panels};
@@ -66,6 +64,7 @@ fn defaults() -> Vec<Option<Preset>> {
             "Explain how this works or document the contract.",
             [191, 148, 255],
         ),
+        ("note", "Note", "Note", "", [255, 126, 141]),
     ]
     .into_iter()
     .map(|(id, label, spray, prompt, color)| {
@@ -77,7 +76,7 @@ fn defaults() -> Vec<Option<Preset>> {
             color,
         })
     })
-    .chain(std::iter::repeat_n(None, 4))
+    .chain(std::iter::repeat_n(None, 3))
     .collect()
 }
 
@@ -626,6 +625,18 @@ fn new_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_note_paint_has_no_required_comment_template() {
+        let palette = defaults();
+        let paint = palette
+            .iter()
+            .flatten()
+            .find(|paint| paint.id == "note")
+            .expect("plain note paint");
+        assert_eq!(paint.label, "Note");
+        assert!(paint.prompt.is_empty());
+    }
 
     #[test]
     fn repaint_extends_the_same_note_and_keeps_edited_text() {

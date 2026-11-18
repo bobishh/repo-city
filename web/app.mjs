@@ -64,6 +64,12 @@ function focusCanvas() {
 window.addEventListener("keydown", event => {
   const locked = document.pointerLockElement === canvas;
   const plain = !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey;
+  if (event.altKey && event.code === "Digit0" && !event.ctrlKey && !event.metaKey) {
+    event.preventDefault(); event.stopPropagation(); review.dismissTablet(); logo.click(); return;
+  }
+  if (event.altKey && !event.ctrlKey && !event.metaKey && /^Digit[1-9]$/.test(event.code) && review.selectTab(Number(event.code.slice(-1)) - 1)) {
+    event.preventDefault(); event.stopPropagation(); return;
+  }
   if (event.code === "KeyP" && (event.metaKey || event.ctrlKey) && !event.altKey && running && !dialog.open) {
     event.preventDefault(); event.stopPropagation(); if (!event.repeat) review.fileSearch(); return;
   }
@@ -72,6 +78,10 @@ window.addEventListener("keydown", event => {
     if (!event.repeat) review.dismissTablet();
     return;
   }
+  if (event.code === "Escape" && review.tabletVisible()) {
+    event.preventDefault(); event.stopPropagation(); review.escapeTablet(); return;
+  }
+  if (event.code === "Tab" && !plain && review.tabletVisible()) event.preventDefault();
   if (event.code === "Tab" && plain && review.tabletVisible()) {
     event.preventDefault();
     event.stopPropagation();
@@ -89,6 +99,7 @@ window.addEventListener("keydown", event => {
     }
     return;
   }
+  if (review.tabletVisible() && (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Space", "Enter", "Backspace"].includes(event.code) || ((event.metaKey || event.ctrlKey) && ["KeyA", "KeyC", "KeyV", "KeyX", "KeyZ"].includes(event.code)))) event.preventDefault();
   if (event.code !== "KeyF" || event.repeat || event.metaKey || event.ctrlKey ||
       event.altKey || (!locked && (event.target !== canvas || canvas.hasAttribute("data-pointer-ui"))) ||
       document.querySelector("dialog[open]") || !active?.canFilterChanges) return;
@@ -208,7 +219,10 @@ async function openRepository(repo, ref, base, exactBase = false) {
         },
         reviewModal: review.modal,
         reviewTablet: review.tablet,
-        tabletPose: review.tabletPose,
+        tabletView: review.tabletView,
+        tabletAction: review.tabletAction,
+        tabletLayout: review.tabletLayout,
+        readTablet: review.readTablet,
         audio,
         audioActivity: audio.activity,
         previewMarkdown(path, before) {
@@ -287,7 +301,6 @@ async function openRepository(repo, ref, base, exactBase = false) {
       };
       canvas.hidden = false;
       await engine.default();
-      review.setMarkdown(engine.markdown_html);
       running = true;
       document.documentElement.dataset.playing = "";
       startScreen.hidden = true;

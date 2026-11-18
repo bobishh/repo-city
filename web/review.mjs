@@ -30,6 +30,9 @@ const mentions = (body, login) =>
   [...body.matchAll(/(^|[^\w@/.-])@([a-z\d-]+)(?![\w/-])/gi)]
     .some(([, , name]) => name.toLowerCase() === login.toLowerCase());
 const uuid = () => crypto.randomUUID();
+const changedPaths = ({ before, after }) => [...new Set([...Object.keys(before), ...Object.keys(after)])].filter(
+  path => before[path]?.id !== after[path]?.id || before[path]?.mode !== after[path]?.mode,
+);
 
 export function createReview({ canvas, release, onClose, onTour, audio, onCompare = () => {} }) {
   const dialog = document.querySelector("#review-dialog");
@@ -44,9 +47,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
   } catch { /* Use the built-in preferences. */ }
   let readingChanged = true;
   let session, version = 0, selected = 0, pendingSlot = -1, busy = false, destination, fileDestination;
-  let renderMarkdown;
   let markdownRead;
-  let readingEnd;
   let previewUrl;
   let historySelection = { before: null, after: null };
   let historyPage = 1;
@@ -55,7 +56,6 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
 
   dialog.addEventListener("close", () => {
     if (dialog.open) return;
-    readingEnd?.disconnect();
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     previewUrl = undefined;
     delete dialog.dataset.tablet;
@@ -68,13 +68,18 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       if ("tablet" in dialog.dataset) { event.preventDefault(); close(); }
     }
   });
+  function selectTab(index) {
+    if (!tablet.visible()) return false;
+    const tab = dialog.querySelectorAll(".vibepad-tabs button")[index];
+    if (!tab) return false;
+    tab.click(); return true;
+  }
   for (const type of ["keydown", "keyup"]) dialog.addEventListener(type, event => event.stopPropagation());
   canvas.addEventListener("wheel", event => {
     if (event.metaKey && document.pointerLockElement === canvas) event.preventDefault();
   }, { passive: false });
 
   function view(title, tag = "h2") {
-    readingEnd?.disconnect();
     const heading = make(tag, title, { id: "review-title" });
     dialog.replaceChildren(heading);
     if ("tablet" in dialog.dataset) {
@@ -104,6 +109,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     return dialog;
   }
   function actions(...children) {
+    children = children.filter(Boolean);
     if (!children.length) return;
     const row = make("div", undefined, { class: "dialog-actions" });
     row.append(...children);
@@ -125,12 +131,12 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     }
     return true;
   }
-  const closeButton = () => button("Close", close);
+  const closeButton = () => "tablet" in dialog.dataset ? null : button("Close", close);
   const signIn = () => make("a", "Sign in with GitHub", { href: githubSignIn() });
 
-  function markdown(text, container = make("div", undefined, { class: "markdown-preview markdown-body" })) {
-    if (renderMarkdown) container.innerHTML = renderMarkdown(text);
-    else container.textContent = text;
+  function markdown(text, container = make("div", undefined, { class: "markdown-preview" })) {
+    container.dataset.markdownSource = text;
+    container.textContent = text;
     return container;
   }
 
@@ -140,7 +146,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     dialog.dataset.view = kind;
     dialog.dataset.tablet = "";
     view(path);
-    const content = make("article", "Loading document…", { class: "markdown-preview markdown-body", "aria-live": "polite" });
+    const content = make("article", "Loading document…", { class: "markdown-preview", "aria-live": "polite" });
     dialog.append(content);
     show();
     void load().then(({ text, mark, bytes, format }) => {
@@ -163,13 +169,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       } else markdown(text, content);
       const end = make("div", undefined, { class: "markdown-end", "aria-hidden": "true" });
       content.append(end);
-      readingEnd = new IntersectionObserver(entries => {
-        if (dialog.open && end.isConnected && entries.some(entry => entry.isIntersecting)) {
-          markdownRead = mark;
-          readingEnd.disconnect();
-        }
-      }, { root: dialog });
-      readingEnd.observe(end);
+      end.addEventListener("tabletread", () => { markdownRead = mark; });
     }).catch(error => {
       if (content.isConnected) content.textContent = error.message;
     });
@@ -183,10 +183,14 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     const controls = make("dl", undefined, { class: "review-controls" });
     for (const [keys, purpose] of [
       ["WASD / Space / Ctrl", "Fly and change altitude"],
+      ["Arrows / Shift+Arrows", "Look around; up close, scroll or turn to another wall. Shift keeps free look."],
+      ["K", "Use water or hold to paint"],
       ["E / M", "Fly to the aimed wall or switch overview"],
       ["Tab / Cmd+P / P", "Open VibePad, find a file, or preview the aimed file"],
       ["Z / X", "Collapse or expand the aimed code block"],
       ["H", "Open or put away Help"],
+      ["Alt+1–5 / Arrows / Enter", "Select a VibePad tab, move through controls, or activate"],
+      ["Ctrl+Tab / Shift+Tab", "Next or previous control, including text fields"],
       ["F / G / B", "Filter changed files, open diff, or open blame"],
       ["Left / Right", "Cycle source, diff and blame at a close wall"],
       ["Touch swipe", "Up/down reads along the wall; sideways turns to another face. The joystick flies away."],
@@ -259,7 +263,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     dialog.dataset.view = "settings";
     dialog.dataset.tablet = "";
     view("Settings");
-    dialog.append(soundSettings());
+    const columns = make("div", undefined, { class: "settings-columns" });
     const form = make("form", undefined, { class: "review-reading" });
     const mode = make("select");
     for (const value of ["delayed", "immediate"]) {
@@ -275,15 +279,19 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     const min = bound(reading.min_seconds), max = bound(reading.max_seconds);
     const status = make("p", "", { class: "review-status", role: "status" });
     form.noValidate = true;
-    form.append(field("Water", mode), field("Reading block", kind), field("Auto-advance downward", auto), field("Lines per wash block", block), field("Minimum delay (seconds)", min), field("Maximum delay (seconds)", max),
-      make("p", "Block size and time limits are independent. With no limits, seconds = effective non-whitespace characters × 60 / (238 × 4.6). Consecutive copies of a character count once. Whole function uses syntax boundaries when available and otherwise uses fixed lines. Auto-advance scrolls to the next unread block. The default is 6; it is a preset, not a measured optimum."),
-      make("p", "Brysbaert’s 2019 estimate describes English nonfiction, not code comprehension. We use its length-adjusted rate as an approximation. Leave either delay blank to remove that limit."),
-      status);
-    const row = make("div", undefined, { class: "dialog-actions" });
-    row.append(make("button", "Save settings", { type: "submit" }));
-    form.append(row);
-    form.addEventListener("submit", event => {
-      event.preventDefault();
+    const limits = make("div", undefined, { class: "reading-limits" });
+    limits.append(field("Minimum delay (seconds)", min), field("Maximum delay (seconds)", max));
+    form.append(make("h3", "Reading"), field("Reveal", mode), field("Reading block", kind), field("Lines per wash block", block),
+      make("p", "Used for fixed blocks and when function boundaries are unavailable."),
+      field("Auto-advance downward", auto), limits,
+      make("p", "Block size and time limits are independent. Leave either limit blank to use the calculated time."), status);
+    status.textContent = "Changes save automatically.";
+    const estimate = make("section", undefined, { class: "reading-estimate" });
+    estimate.append(make("h3", "Reading estimate"), make("code", "seconds = characters × 60 / (238 × 4.6)"),
+      make("p", "Counts non-whitespace characters; consecutive copies count once. Six lines is a configurable preset, not a measured optimum."),
+      make("p", "Brysbaert (2019) measured English nonfiction, not code comprehension. This length-adjusted estimate is an approximation."));
+    const side = make("div", undefined, { class: "settings-side" }); side.append(soundSettings(), estimate);
+    const applyReading = () => {
       const seconds = input => input.value.trim() === "" ? null : Number(input.value);
       const next = { mode: mode.value, block_kind: kind.value, auto_advance: auto.checked, block_lines: Number(block.value), min_seconds: seconds(min), max_seconds: seconds(max) };
       const error = readingError(next);
@@ -292,12 +300,15 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       readingChanged = true;
       try {
         localStorage.setItem(settingsKey, JSON.stringify(reading));
-        status.textContent = "Saved.";
+        status.textContent = "Saved automatically.";
       } catch {
         status.textContent = "Applied for this session. Browser storage is unavailable.";
       }
-    });
-    dialog.append(form);
+    };
+    form.addEventListener("input", applyReading);
+    form.addEventListener("change", applyReading);
+    form.addEventListener("submit", event => { event.preventDefault(); applyReading(); });
+    columns.append(form, side); dialog.append(columns);
     show();
   }
 
@@ -536,7 +547,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     const status = make("p", "", { role: "status", class: "review-status" });
     const save = button("Save paint", async () => {
       const label = name.value.trim();
-      if (!label) { status.textContent = "Give the paint a name."; name.focus(); return; }
+      if (!label) { status.textContent = "Give the paint a name."; tablet.focus(name); return; }
       const data = session;
       const palette = structuredClone(data.palette.length ? data.palette : defaults);
       const dest = Number(slot.value);
@@ -611,10 +622,12 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
   function fileSearch() {
     if (!session) return;
     const data = session;
-    const paths = [...new Set([...Object.keys(data.snapshot.before), ...Object.keys(data.snapshot.after)])].sort();
+    const paths = (canvas.hasAttribute("data-changes-only") ? changedPaths(data.snapshot)
+      : [...new Set([...Object.keys(data.snapshot.before), ...Object.keys(data.snapshot.after)])]).sort();
     dialog.dataset.view = "file-search"; dialog.dataset.tablet = "";
     view("Find a file");
     const input = make("input", undefined, { type: "search", placeholder: "File name or path", "aria-label": "File name or path", autocomplete: "off" });
+    input.autofocus = true;
     const status = make("p", "", { role: "status" }), list = make("div", undefined, { class: "review-changed-files" });
     let matches = [];
     const choose = path => { fileDestination = path; close(); };
@@ -630,16 +643,14 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     }
     input.addEventListener("input", render);
     input.addEventListener("keydown", event => { if (event.key === "Enter" && matches[0]) { event.preventDefault(); choose(matches[0]); } else if (event.key === "ArrowDown") { event.preventDefault(); list.querySelector("button")?.focus(); } });
-    dialog.append(input, status, list); render(); show(); input.focus({ preventScroll: true });
+    dialog.append(input, status, list); render(); show(); tablet.focus(input);
   }
 
   function changedFiles() {
     if (!session) return;
     const data = session;
     const { before, after } = data.snapshot;
-    const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter(
-      path => before[path]?.id !== after[path]?.id || before[path]?.mode !== after[path]?.mode
-    );
+    const changed = changedPaths(data.snapshot);
     dialog.dataset.view = "changed-files";
     dialog.dataset.tablet = "";
     view("Changed files");
@@ -726,7 +737,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
             repaint();
             if (dialog.open && dialog.dataset.view === "notes") {
               notesPanel();
-              dialog.querySelector('input[type="checkbox"]')?.focus();
+              const checkbox = dialog.querySelector('input[type="checkbox"]'); if (checkbox) tablet.focus(checkbox);
             }
           }
         } catch {
@@ -901,20 +912,20 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     const edit = button("Edit comment", () => {
       editing = true;
       refreshEditor();
-      text.focus();
+      tablet.focus(text);
     });
     let editing = !note.published && (suggesting || !note.text.trim());
     const write = button("Write a comment", () => {
       editing = true;
       text.value = "";
       refreshEditor();
-      text.focus();
+      tablet.focus(text);
     });
     const suggest = button("Suggest replacement", () => {
       suggesting = !suggesting;
       if (suggesting) editing = true;
       refreshEditor();
-      if (suggesting) code.focus();
+      if (suggesting) tablet.focus(code);
     });
     const canPublish = allowedDraft() && current(note, session.review) && !note.published;
     const canSuggest = canPublish && !note.anchor.before;
@@ -935,7 +946,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       if (busy) return;
       if (suggesting ? !code.value.length : !text.value.trim()) {
         status.textContent = suggesting ? "Enter the replacement code." : "Write the comment you want to publish.";
-        (suggesting ? code : text).focus();
+        tablet.focus(suggesting ? code : text);
         return;
       }
       if (suggesting) {
@@ -1056,8 +1067,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     show();
   }
   return {
-    load, version: () => version, snapshot, add, panel, changedFiles, fileSearch, help, helpVisible: () => dialog.open && dialog.dataset.view === "help", previewMarkdown, dismissTablet,
-    setMarkdown(renderer) { renderMarkdown = renderer; },
+    selectTab, load, version: () => version, snapshot, add, panel, changedFiles, fileSearch, help, helpVisible: () => dialog.open && dialog.dataset.view === "help", previewMarkdown, dismissTablet,
     takeMarkdownRead() {
       const mark = markdownRead;
       markdownRead = undefined;
@@ -1084,6 +1094,8 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     modal: () => Boolean(document.querySelector("dialog[open]")),
     tablet: tablet.raised,
     tabletVisible: tablet.visible,
-    tabletPose: (corners, width, height) => tablet.project(corners, width, height),
+    tabletView: () => tablet.view(), tabletAction: value => tablet.action(value),
+    tabletLayout: value => tablet.layout(value), readTablet: () => tablet.inspect(),
+    escapeTablet() { return tablet.back() || dismissTablet(); },
   };
 }

@@ -4,7 +4,6 @@ use bevy::{
     clipboard::Clipboard,
     input_focus::{FocusCause, InputFocus, tab_navigation::TabIndex},
     text::EditableText,
-    ui::RelativeCursorPosition,
 };
 
 use super::{native, *};
@@ -25,9 +24,12 @@ pub(super) enum Action {
     Edit(usize),
     Save(usize),
     EditNotes,
+    EditNote(usize),
     AllComments,
+    OpenTablet(review_tablet::Page),
     Remove(usize),
-    Export(usize),
+    CopyNote(usize),
+    MarkViewed(usize),
     Visit(usize),
     OpenDiscussion(usize),
     Publish,
@@ -158,9 +160,9 @@ fn paint_color(preset: &Preset) -> Color {
 fn empty_preset() -> Preset {
     Preset {
         id: new_id(),
-        label: String::new(),
+        label: "Note".into(),
         prompt: String::new(),
-        spray: String::new(),
+        spray: "Note".into(),
         color: [255, 126, 141],
     }
 }
@@ -203,6 +205,49 @@ fn draw(
     };
     ui.panel = Some(panel);
     commands.entity(panel).with_children(|parent| {
+        if !notes_view {
+            parent
+                .spawn(Node {
+                    position_type: PositionType::Absolute,
+                    right: px(8.),
+                    top: px(8.),
+                    ..default()
+                })
+                .with_children(|corner| button(corner, "×", INK, Action::Close));
+        }
+        if notes_view {
+            parent
+                .spawn(Node {
+                    width: percent(100.),
+                    column_gap: px(6.),
+                    flex_wrap: FlexWrap::Wrap,
+                    ..default()
+                })
+                .with_children(|bar| {
+                    for (index, (page, label)) in
+                        review_tablet::Page::NAVIGATION.into_iter().enumerate()
+                    {
+                        tab_button(
+                            bar,
+                            label,
+                            INK,
+                            Action::OpenTablet(page),
+                            -10 + index as i32,
+                        );
+                    }
+                    bar.spawn(Node {
+                        flex_grow: 1.,
+                        ..default()
+                    });
+                    tab_button(
+                        bar,
+                        "⚙",
+                        INK,
+                        Action::OpenTablet(review_tablet::Page::Settings),
+                        -1,
+                    );
+                });
+        }
         match view {
             View::Palette(selected) => {
                 parent
@@ -221,7 +266,7 @@ fn draw(
                             let name = if slot == 0 {
                                 "Water"
                             } else {
-                                preset.map_or("Empty", |paint| paint.label.as_str())
+                                preset.map_or("Note", |paint| paint.label.as_str())
                             };
                             let mark = if slot == *selected { "› " } else { "" };
                             let label = format!("{mark}{slot} · {name}");
@@ -240,7 +285,7 @@ fn draw(
                     if *selected == 0 {
                         "Reveal code."
                     } else {
-                        "Set up a reusable comment for this slot."
+                        "No preset text."
                     },
                     |paint| paint.prompt.as_str(),
                 );
@@ -251,13 +296,16 @@ fn draw(
                         ..default()
                     })
                     .with_children(|actions| {
-                        if *selected == 0 || paint.is_some() {
-                            button(actions, "Equip", INK, Action::Equip(*selected));
-                        }
+                        ui.primary = Some(tab_button(
+                            actions,
+                            "Equip",
+                            INK,
+                            Action::Equip(*selected),
+                            20,
+                        ));
                         if *selected != 0 {
-                            button(actions, "Edit paint", INK, Action::Edit(*selected));
+                            tab_button(actions, "Edit", INK, Action::Edit(*selected), 21);
                         }
-                        button(actions, "Close", INK, Action::Close);
                     });
             }
             View::EditPaint(slot) => {
@@ -284,9 +332,8 @@ fn draw(
                         ..default()
                     })
                     .with_children(|actions| {
-                        tab_button(actions, "Save paint", INK, Action::Save(*slot), 4);
+                        tab_button(actions, "Save", INK, Action::Save(*slot), 4);
                         tab_button(actions, "Back", INK, Action::Select(*slot), 5);
-                        tab_button(actions, "Close", INK, Action::Close, 6);
                     });
             }
             View::Notes { editing } => {
@@ -309,7 +356,6 @@ fn draw(
                             ..default()
                         },
                         ScrollPosition(Vec2::new(0., ui.scroll)),
-                        RelativeCursorPosition::default(),
                     ))
                     .with_children(|list| {
                         if all && let Some(comments) = comments {
@@ -352,6 +398,8 @@ fn draw(
                                     "Original discussion"
                                 } else if note.published.is_some() || note.remote {
                                     "Published"
+                                } else if repo.is_worktree() {
+                                    "Saved locally"
                                 } else {
                                     "Draft"
                                 };
@@ -380,28 +428,63 @@ fn draw(
                                     );
                                     ui.draft_fields.push((index, field));
                                 } else {
-                                    native_panel::text(
+                                    markdown_preview::draw(
                                         card,
-                                        note.comment(),
-                                        Color::srgb_u8(221, 235, 240),
+                                        markdown_preview::markdown_html(note.comment()),
                                     );
                                 }
                                 let can_visit = note.anchor.start > 0
                                     && Review::on_snapshot(note, repo)
                                     && repo.files.iter().any(|file| file.path == note.anchor.path);
-                                if !editing && (can_visit || note.published.is_some()) {
+                                if !editing {
                                     card.spawn(Node {
                                         column_gap: px(6.),
                                         ..default()
                                     })
                                     .with_children(|tools| {
+                                        if is_draft(note, repo) {
+                                            let edit = tab_button(
+                                                tools,
+                                                "Edit",
+                                                INK,
+                                                Action::EditNote(index),
+                                                index as i32 * 4,
+                                            );
+                                            ui.primary = ui.primary.or(Some(edit));
+                                        }
+                                        tab_button(
+                                            tools,
+                                            "Copy",
+                                            INK,
+                                            Action::CopyNote(index),
+                                            index as i32 * 4 + 1,
+                                        );
+                                        if repo.is_worktree()
+                                            && !note.remote
+                                            && note.published.is_none()
+                                            && review.local_states.get(&note.id).is_none_or(
+                                                |state| *state == native::LocalState::Unread,
+                                            )
+                                        {
+                                            tab_button(
+                                                tools,
+                                                "Mark as viewed",
+                                                INK,
+                                                Action::MarkViewed(index),
+                                                index as i32 * 4 + 2,
+                                            );
+                                        }
+                                        tools.spawn(Node {
+                                            flex_grow: 1.,
+                                            ..default()
+                                        });
                                         if can_visit {
                                             let visit = tab_button(
                                                 tools,
                                                 "Fly to lines",
                                                 INK,
                                                 Action::Visit(index),
-                                                index as i32 * 2,
+                                                index as i32 * 4 + 3,
                                             );
                                             ui.primary = ui.primary.or(Some(visit));
                                         }
@@ -411,7 +494,7 @@ fn draw(
                                                 "Open on GitHub",
                                                 INK,
                                                 Action::OpenDiscussion(index),
-                                                index as i32 * 2 + 1,
+                                                1000 + index as i32,
                                             );
                                             ui.primary = ui.primary.or(Some(discussion));
                                         }
@@ -424,9 +507,9 @@ fn draw(
                                     .with_children(|tools| {
                                         tab_button(
                                             tools,
-                                            "Export",
+                                            "Save",
                                             INK,
-                                            Action::Export(index),
+                                            Action::EditNotes,
                                             10_100 + index as i32 * 2,
                                         );
                                         if is_draft(note, repo) {
@@ -469,7 +552,7 @@ fn draw(
                                 .entity(entity)
                                 .insert(BackgroundColor(Color::srgb_u8(27, 71, 67)));
                         }
-                        if draft_count != 0 && !busy {
+                        if draft_count != 0 && !busy && editing && ui.focused_note.is_none() {
                             let edit = tab_button(
                                 actions,
                                 if editing { "Save edits" } else { "Edit" },
@@ -492,8 +575,6 @@ fn draw(
                                 10_002,
                             );
                         }
-                        let close = tab_button(actions, "Close", INK, Action::Close, 10_004);
-                        ui.primary = ui.primary.or(Some(close));
                     });
                 if can_publish
                     && draft_count != 0
@@ -604,18 +685,18 @@ pub(crate) fn update(
     mut feedback: Query<&mut Text, With<Feedback>>,
     repo: Option<Res<Repo>>,
     mut picker: Option<ResMut<repository_picker::RepositoryPicker>>,
-    (guide, mut clipboard, wheel, mut lists, comments, entrances): (
-        Option<Res<guide::Guide>>,
+    (mut tablet, mut clipboard, wheel, mut lists, comments): (
+        Option<ResMut<review_tablet::Tablet>>,
         Option<ResMut<Clipboard>>,
         Option<Res<AccumulatedMouseScroll>>,
-        Query<(&mut ScrollPosition, &RelativeCursorPosition), With<NoteRows>>,
+        Query<&mut ScrollPosition, With<NoteRows>>,
         Option<Res<native_github::PullComments>>,
-        Query<&native_panel::TabletEntrance>,
     ),
 ) {
     let fallback = repository_picker::empty();
     let repo = repo.as_ref().map_or(&fallback, |repo| &repo.0);
     let mut redraw = false;
+    let mut handoff = false;
     if comments
         .as_ref()
         .is_some_and(|comments| comments.is_changed())
@@ -624,10 +705,8 @@ pub(crate) fn update(
         redraw = true;
     }
     let mut message = String::new();
-    if let Ok((mut position, relative)) = lists.single_mut() {
-        if relative.cursor_over()
-            && let Some(wheel) = wheel.as_ref()
-        {
+    if let Ok(mut position) = lists.single_mut() {
+        if let Some(wheel) = wheel.as_ref() {
             let delta = match wheel.unit {
                 bevy::input::mouse::MouseScrollUnit::Line => wheel.delta.y * 34.,
                 bevy::input::mouse::MouseScrollUnit::Pixel => wheel.delta.y,
@@ -723,16 +802,55 @@ pub(crate) fn update(
         });
     }
 
-    let action = ui
-        .action
-        .take()
-        .or_else(|| (was_open && keys.just_pressed(KeyCode::Escape)).then_some(Action::Close));
+    let action = ui.action.take().or_else(|| {
+        let dismiss = keys.just_pressed(KeyCode::Escape)
+            || (matches!(ui.view, Some(View::Notes { .. })) && review_tablet::plain_tab(&keys));
+        (was_open && dismiss).then_some(Action::Close)
+    });
     if let Some(action) = action {
         match action {
+            Action::OpenTablet(page) => match save_edits(&mut review, &ui, &fields) {
+                Ok(()) => {
+                    if let Some(tablet) = tablet.as_deref_mut() {
+                        tablet.open_page(page);
+                        ui.view = None;
+                        handoff = true;
+                        redraw = true;
+                    }
+                }
+                Err(error) => message = error,
+            },
             Action::AllComments => {
                 ui.select_view(Panel::Notes, &review, repo, comments.is_some());
                 ui.scroll = 0.;
                 redraw = true;
+            }
+            Action::MarkViewed(index) => {
+                if let Some(note) = review
+                    .notes
+                    .get(index)
+                    .filter(|note| repo.is_worktree() && !note.remote && note.published.is_none())
+                {
+                    let id = note.id.clone();
+                    match native::mark_worktree_note(&review.scope, &id, native::LocalState::Read) {
+                        Ok(()) => {
+                            review.local_states.insert(id, native::LocalState::Read);
+                            ui.status_job = None;
+                            ui.status_due = 0.;
+                            message = "Viewed locally.".into();
+                        }
+                        Err(error) => message = error,
+                    }
+                    redraw = true;
+                }
+            }
+            Action::EditNote(index) => {
+                if let Some(note) = review.notes.get(index).filter(|note| is_draft(note, repo)) {
+                    ui.focused_note = Some(note.id.clone());
+                    ui.view = Some(View::Notes { editing: true });
+                    ui.message.clear();
+                    redraw = true;
+                }
             }
             Action::Close => match save_edits(&mut review, &ui, &fields) {
                 Ok(()) => {
@@ -768,9 +886,26 @@ pub(crate) fn update(
                 redraw = true;
             }
             Action::Equip(slot) => {
-                review.select(slot);
-                ui.view = None;
-                redraw = true;
+                let mut palette = review.palette.clone();
+                if let Some(paint) = slot.checked_sub(1).and_then(|index| palette.get_mut(index))
+                    && paint.is_none()
+                {
+                    *paint = Some(empty_preset());
+                }
+                let saved = if palette != review.palette {
+                    native::save(&review.scope, "palette", &palette)
+                } else {
+                    Ok(())
+                };
+                match saved {
+                    Ok(()) => {
+                        review.palette = palette;
+                        review.select(slot);
+                        ui.view = None;
+                        redraw = true;
+                    }
+                    Err(error) => message = error,
+                }
             }
             Action::Edit(slot) => {
                 ui.view = Some(View::EditPaint(slot));
@@ -793,7 +928,7 @@ pub(crate) fn update(
             }
             Action::EditNotes
             | Action::Remove(_)
-            | Action::Export(_)
+            | Action::CopyNote(_)
             | Action::Publish
             | Action::AutoPublish => {
                 if let Some(View::Notes { editing }) = ui.view
@@ -804,6 +939,14 @@ pub(crate) fn update(
                         Ok(()) => match action {
                             Action::EditNotes => {
                                 ui.view = Some(View::Notes { editing: !editing });
+                                if editing {
+                                    message = if repo.is_worktree() {
+                                        "Saved locally."
+                                    } else {
+                                        "Draft saved."
+                                    }
+                                    .into();
+                                }
                                 redraw = true;
                             }
                             Action::Remove(index) => {
@@ -819,12 +962,17 @@ pub(crate) fn update(
                                     }
                                 }
                             }
-                            Action::Export(index) => {
-                                if let Some(note) = review.notes.get(index).cloned()
-                                    && let Err(error) = native::export(review.scope.clone(), note)
+                            Action::CopyNote(index) => {
+                                message = match (review.notes.get(index), clipboard.as_deref_mut())
                                 {
-                                    message = error;
-                                }
+                                    (Some(note), Some(clipboard)) => {
+                                        clipboard.set_text(note.comment()).map_or_else(
+                                            |_| "Could not copy the comment.".into(),
+                                            |_| "Copied.".into(),
+                                        )
+                                    }
+                                    _ => "Clipboard is unavailable.".into(),
+                                };
                             }
                             Action::AutoPublish => {
                                 if picker
@@ -942,11 +1090,6 @@ pub(crate) fn update(
         }
     }
     if redraw {
-        let entrance = if let Some(panel) = ui.panel {
-            entrances.get(panel).ok().copied()
-        } else {
-            Some(native_panel::TabletEntrance::default())
-        };
         if let Some(panel) = ui.panel.take() {
             native_panel::close(&mut commands, panel, &mut focus, &parents);
         }
@@ -958,12 +1101,6 @@ pub(crate) fn update(
             picker.as_deref(),
             comments.as_deref(),
         );
-        if matches!(ui.view, Some(View::Notes { .. }))
-            && let Some(panel) = ui.panel
-            && let Some(entrance) = entrance
-        {
-            commands.entity(panel).insert((entrance, entrance.pose()));
-        }
         if let Some(field) = ui
             .fields
             .first()
@@ -975,9 +1112,9 @@ pub(crate) fn update(
         }
     }
     review.tablet_open = matches!(ui.view, Some(View::Notes { .. }));
-    review.blocked = was_open
+    review.blocked = (was_open && !handoff)
         || ui.view.is_some()
-        || guide.as_ref().is_some_and(|guide| guide.is_open())
+        || tablet.as_ref().is_some_and(|tablet| tablet.is_open())
         || picker
             .as_ref()
             .is_some_and(|picker| picker.blocks_controls());
@@ -986,6 +1123,161 @@ pub(crate) fn update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn choosing_a_paint_keeps_the_candidate_until_equip_and_focuses_that_action() {
+        let mut review = Review::default();
+        review.select(4);
+        review.request = Some(Panel::Paints);
+        let mut app = App::new();
+        app.init_resource::<ReviewUi>()
+            .init_resource::<InputFocus>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .insert_resource(Time::<()>::default())
+            .insert_resource(Explorer::new(0))
+            .insert_resource(review)
+            .add_systems(Update, update);
+        app.update();
+        app.world_mut()
+            .resource_mut::<ReviewUi>()
+            .activate(Action::Select(5));
+        app.update();
+        assert_eq!(app.world().resource::<Review>().slot, 4);
+        let focused = app
+            .world()
+            .resource::<InputFocus>()
+            .get()
+            .expect("Equip must have keyboard focus");
+        assert!(matches!(
+            app.world().get::<Action>(focused),
+            Some(Action::Equip(5))
+        ));
+        app.world_mut()
+            .resource_mut::<ReviewUi>()
+            .activate(Action::Equip(5));
+        app.update();
+        assert_eq!(app.world().resource::<Review>().slot, 5);
+        assert!(app.world().resource::<ReviewUi>().view.is_none());
+    }
+
+    #[test]
+    fn an_unconfigured_paint_can_be_used_as_a_plain_note() {
+        let paint = empty_preset();
+        assert_eq!(paint.label, "Note");
+        assert_eq!(paint.spray, "Note");
+        assert!(paint.prompt.is_empty());
+    }
+
+    #[test]
+    fn local_viewed_status_is_a_separate_action_and_leaves_editable_text_unchanged() {
+        let mut repo = repository_picker::empty();
+        repo.revision = "worktree:test".into();
+        let mut review = Review::default();
+        review.notes.push(Note {
+            id: "viewed-note".into(),
+            revision: repo.revision.clone(),
+            baseline: repo.baseline.clone(),
+            anchor: Anchor {
+                path: "demo.rs".into(),
+                before: false,
+                start: 1,
+                end: 1,
+            },
+            preset: review.palette[0].clone().unwrap(),
+            text: "Explain this condition".into(),
+            published: None,
+            remote: false,
+            resolved: None,
+            attention: false,
+        });
+        review.request = Some(Panel::Notes);
+        let mut app = App::new();
+        app.init_resource::<ReviewUi>()
+            .init_resource::<InputFocus>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .insert_resource(Time::<()>::default())
+            .insert_resource(Explorer::new(0))
+            .insert_resource(Repo(repo))
+            .insert_resource(review)
+            .add_systems(Update, update);
+        app.update();
+        assert!(
+            app.world_mut()
+                .query::<&Action>()
+                .iter(app.world())
+                .any(|action| matches!(action, Action::MarkViewed(0)))
+        );
+        app.world_mut()
+            .resource_mut::<Review>()
+            .local_states
+            .insert("viewed-note".into(), native::LocalState::Read);
+        app.world_mut()
+            .resource_mut::<ReviewUi>()
+            .activate(Action::EditNote(0));
+        app.update();
+        let field = app.world().resource::<ReviewUi>().draft_fields[0].1;
+        assert_eq!(
+            app.world()
+                .get::<EditableText>(field)
+                .unwrap()
+                .value()
+                .to_string(),
+            "Explain this condition"
+        );
+        assert_eq!(
+            app.world().resource::<Review>().notes[0].text,
+            "Explain this condition"
+        );
+    }
+
+    #[test]
+    fn editing_one_note_focuses_its_text_and_keeps_its_identity() {
+        let repo = repository_picker::empty();
+        let mut review = Review::default();
+        review.notes.push(Note {
+            id: "editing-note".into(),
+            revision: repo.revision.clone(),
+            baseline: repo.baseline.clone(),
+            anchor: Anchor {
+                path: "demo.rs".into(),
+                before: false,
+                start: 3,
+                end: 7,
+            },
+            preset: review.palette[0].clone().unwrap(),
+            text: "Explain the condition".into(),
+            published: None,
+            remote: false,
+            resolved: None,
+            attention: false,
+        });
+        let mut app = App::new();
+        app.init_resource::<ReviewUi>()
+            .init_resource::<InputFocus>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .insert_resource(Time::<()>::default())
+            .insert_resource(Explorer::new(0))
+            .insert_resource(Repo(repo))
+            .insert_resource(review)
+            .add_systems(Update, update);
+        app.world_mut()
+            .resource_mut::<ReviewUi>()
+            .activate(Action::EditNote(0));
+        app.update();
+        let ui = app.world().resource::<ReviewUi>();
+        assert_eq!(ui.focused_note.as_deref(), Some("editing-note"));
+        assert_eq!(ui.draft_fields.len(), 1);
+        let field = ui.draft_fields[0].1;
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(field));
+        assert_eq!(
+            app.world()
+                .get::<EditableText>(field)
+                .unwrap()
+                .value()
+                .to_string(),
+            "Explain the condition"
+        );
+    }
 
     #[test]
     fn aimed_review_shows_only_the_current_note_and_can_return_to_all() {

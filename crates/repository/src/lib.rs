@@ -1,9 +1,13 @@
 //! Immutable repository inventory and lazy source loading. No checkout or source writes.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod blame;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod history;
 
 pub mod anatomy;
 pub mod comparison;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod links;
 pub mod syntax;
 #[cfg(not(target_arch = "wasm32"))]
 mod worktree;
@@ -51,6 +55,47 @@ pub struct Repository {
     pub files: Vec<File>,
     pub districts: Vec<District>,
 }
+/// Compressed binary preview data. Text inspection keeps its separate 1 MiB limit.
+pub const ASSET_BYTES_LIMIT: usize = 16 * 1024 * 1024;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn asset_blob(root: &Path, id: &str) -> Result<Vec<u8>, String> {
+    use std::{io::Read, process::Stdio};
+    if !matches!(id.len(), 40 | 64) || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("Invalid asset blob ID.".into());
+    }
+    let mut command = Command::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .arg("-C")
+        .arg(root)
+        .args(["cat-file", "blob", id])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    let read = command
+        .stdout
+        .take()
+        .ok_or("Asset reader is unavailable.")?
+        .take((ASSET_BYTES_LIMIT + 1) as u64)
+        .read_to_end(&mut bytes);
+    if read.is_err() || bytes.len() > ASSET_BYTES_LIMIT {
+        let _ = command.kill();
+        let _ = command.wait();
+        return Err(read.err().map_or_else(
+            || "Asset exceeds the 16 MiB preview limit.".into(),
+            |error| error.to_string(),
+        ));
+    }
+    let output = command
+        .wait_with_output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    }
+    Ok(bytes)
+}
 fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let output = Command::new("git")
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -58,7 +103,16 @@ fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
         .arg(root)
         .args(args)
         .output()
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                history::command_error(error)
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                error.to_string()
+            }
+        })?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }
@@ -366,6 +420,29 @@ impl Repository {
             return Err("Binary asset: metadata only".into());
         }
         String::from_utf8(bytes).map_err(|_| "Non-UTF-8 asset: metadata only".into())
+    }
+    /// Read binary preview data from the selected snapshot without following symlinks.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn asset_bytes(&self, index: usize, before: bool) -> Result<Vec<u8>, String> {
+        let file = self.files.get(index).ok_or("Unknown file")?;
+        let blob = if before { &file.before } else { &file.after }
+            .as_ref()
+            .ok_or("File does not exist in this snapshot")?;
+        if blob.mode == "120000" {
+            return Err("Symbolic link: asset is not followed.".into());
+        }
+        if blob.size > ASSET_BYTES_LIMIT {
+            return Err("Asset exceeds the 16 MiB preview limit.".into());
+        }
+        let bytes = if blob.id.starts_with("worktree:") {
+            worktree::asset(&self.root, &file.path, blob, ASSET_BYTES_LIMIT)?
+        } else {
+            asset_blob(&self.root, &blob.id)?
+        };
+        if bytes.len() != blob.size {
+            return Err("Asset size does not match the selected snapshot.".into());
+        }
+        Ok(bytes)
     }
     pub fn anatomy(&self, index: usize, before: bool) -> Result<(String, FileAnatomy), String> {
         let source = self.source(index, before)?;

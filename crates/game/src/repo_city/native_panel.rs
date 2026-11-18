@@ -49,7 +49,7 @@ fn surface(commands: &mut Commands, title: &str, width: f32, tablet: bool) -> En
                 max_height: if tablet { percent(100.) } else { percent(94.) },
                 flex_direction: FlexDirection::Column,
                 row_gap: px(10.),
-                border: UiRect::all(px(if tablet { 16. } else { 1. })),
+                border: UiRect::all(px(if tablet { 0. } else { 1. })),
                 padding: UiRect::all(px(if tablet { 26. } else { 18. })),
                 ..default()
             },
@@ -62,32 +62,15 @@ fn surface(commands: &mut Commands, title: &str, width: f32, tablet: bool) -> En
         ))
         .id();
     if tablet {
-        commands.entity(panel).with_children(|frame| {
-            frame
-                .spawn(Node {
-                    column_gap: px(8.),
-                    height: px(24.),
-                    align_items: AlignItems::Center,
-                    flex_shrink: 0.,
-                    ..default()
-                })
-                .with_children(|bar| {
-                    bar.spawn((
-                        Node {
-                            width: px(5.),
-                            height: px(5.),
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgb_u8(244, 94, 111)),
-                    ));
-                    bar.spawn((
-                        Text::new("VibePad"),
-                        TextFont::from_font_size(13.),
-                        TextColor(Color::srgb_u8(161, 184, 193)),
-                        Pickable::IGNORE,
-                    ));
-                });
-        });
+        tablet_display::target(commands, backdrop);
+    }
+    heading(commands, panel, title);
+    panel
+}
+
+fn heading(commands: &mut Commands, panel: Entity, title: &str) {
+    if title.is_empty() {
+        return;
     }
     commands.entity(panel).with_child((
         Text::new(title),
@@ -95,7 +78,11 @@ fn surface(commands: &mut Commands, title: &str, width: f32, tablet: bool) -> En
         TextColor(Color::srgb_u8(156, 241, 223)),
         Pickable::IGNORE,
     ));
-    panel
+}
+
+pub(super) fn refresh_tablet(commands: &mut Commands, panel: Entity, title: &str) {
+    commands.entity(panel).despawn_children();
+    heading(commands, panel, title);
 }
 
 pub(super) fn text(parent: &mut ChildSpawnerCommands, text: &str, ink: Color) {
@@ -107,7 +94,7 @@ pub(super) fn text(parent: &mut ChildSpawnerCommands, text: &str, ink: Color) {
     ));
 }
 
-fn panel_font() -> TextFont {
+pub(super) fn panel_font() -> TextFont {
     TextFont {
         font: FontSource::list([Handle::<Font>::default(), EMOJI_FONT]),
         ..TextFont::from_font_size(15.)
@@ -136,6 +123,7 @@ pub(super) fn input(
             TextInput,
             editable,
             TextCursorStyle::default(),
+            Outline::new(px(2.), px(2.), Color::NONE),
             TabIndex(index),
             Node {
                 width: percent(100.),
@@ -163,12 +151,8 @@ pub(super) fn button<
 ) -> Entity {
     parent
         .spawn((
-            file_picker::button(
-                label,
-                &TextFont::from_font_size(15.),
-                color,
-                AlignSelf::Auto,
-            ),
+            file_picker::button(label, &panel_font(), color, AlignSelf::Auto),
+            Outline::new(px(2.), px(2.), Color::NONE),
             action,
             observe(
                 |click: On<Activate>, actions: Query<&A>, mut state: ResMut<S>| {
@@ -199,33 +183,114 @@ pub(super) fn close(
 
 pub(super) const INK: Color = Color::srgb_u8(157, 231, 214);
 
-#[derive(Component, Default, Clone, Copy)]
-pub(super) struct TabletEntrance(f32);
-
-impl TabletEntrance {
-    const SECONDS: f32 = 0.38;
-
-    pub(super) fn pose(self) -> UiTransform {
-        let t = (self.0 / Self::SECONDS).min(1.);
-        let remaining = 1. - t * t * (3. - 2. * t);
-        UiTransform {
-            translation: Val2::new(px(0.), vh(remaining * 100.)),
-            scale: Vec2::splat(1. - remaining * 0.28),
-            rotation: Rot2::radians(remaining * 0.10),
+pub(super) fn focus_outline(
+    focus: Res<InputFocus>,
+    visible: Res<bevy::input_focus::InputFocusVisible>,
+    mut outlines: Query<(Entity, &mut Outline)>,
+) {
+    for (entity, mut outline) in &mut outlines {
+        let color = if visible.0 && focus.get() == Some(entity) {
+            INK
+        } else {
+            Color::NONE
+        };
+        if outline.color != color {
+            outline.color = color;
         }
     }
 }
 
-pub(super) fn raise_tablet(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut panels: Query<(Entity, &mut TabletEntrance, &mut UiTransform)>,
+/// Arrow navigation uses the same modal focus order as Tab, preserving text and shell input.
+pub(super) fn keyboard_navigation(
+    keys: Res<ButtonInput<KeyCode>>,
+    navigation: bevy::input_focus::tab_navigation::TabNavigation,
+    mut focus: ResMut<InputFocus>,
+    mut visible: ResMut<bevy::input_focus::InputFocusVisible>,
+    fields: Query<Option<&Name>, With<TextInput>>,
+    disabled: Query<(), With<bevy::ui::InteractionDisabled>>,
+    parents: Query<&ChildOf>,
+    nodes: Query<(&UiGlobalTransform, &ComputedNode)>,
+    mut scrolls: Query<&mut ScrollPosition>,
+    #[cfg(not(target_arch = "wasm32"))] terminal: Option<Res<terminal::Terminal>>,
+    #[cfg(not(target_arch = "wasm32"))] terminal_views: Query<Entity, With<terminal::View>>,
 ) {
-    for (entity, mut entrance, mut transform) in &mut panels {
-        entrance.0 += time.delta_secs();
-        *transform = entrance.pose();
-        if entrance.0 >= TabletEntrance::SECONDS {
-            commands.entity(entity).remove::<TabletEntrance>();
+    #[cfg(not(target_arch = "wasm32"))]
+    if keys.just_pressed(KeyCode::F6)
+        && let Ok(view) = terminal_views.single()
+    {
+        let next = if focus.get() == Some(view) {
+            navigation
+                .navigate(&focus, bevy::input_focus::tab_navigation::NavAction::First)
+                .unwrap_or(view)
+        } else {
+            view
+        };
+        focus.set(next, bevy::input_focus::FocusCause::Navigated);
+        visible.0 = true;
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if terminal.is_some_and(|terminal| terminal.active) {
+        return;
+    }
+    if keys.any_pressed([
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+        KeyCode::SuperLeft,
+        KeyCode::SuperRight,
+        KeyCode::AltLeft,
+        KeyCode::AltRight,
+    ]) {
+        return;
+    }
+    if let Some(entity) = focus.get()
+        && let Ok(name) = fields.get(entity)
+        && !(name
+            .is_some_and(|name| ["File name or path", "Filter options"].contains(&name.as_str()))
+            && keys.just_pressed(KeyCode::ArrowDown))
+    {
+        return;
+    }
+    use bevy::input_focus::{FocusCause, tab_navigation::NavAction};
+    let action = if keys.any_just_pressed([KeyCode::ArrowDown, KeyCode::ArrowRight]) {
+        NavAction::Next
+    } else if keys.any_just_pressed([KeyCode::ArrowUp, KeyCode::ArrowLeft]) {
+        NavAction::Previous
+    } else {
+        return;
+    };
+    for _ in 0..128 {
+        let Ok(next) = navigation.navigate(&focus, action) else {
+            return;
+        };
+        focus.set(next, FocusCause::Navigated);
+        if disabled.contains(next) {
+            continue;
         }
+        visible.0 = true;
+        if let Ok((transform, node)) = nodes.get(next) {
+            let target: bevy::math::Affine2 = transform.into();
+            let top = target.translation.y - node.size().y / 2.;
+            let bottom = top + node.size().y;
+            for parent in parents.iter_ancestors(next) {
+                if let (Ok(mut scroll), Ok((transform, area))) =
+                    (scrolls.get_mut(parent), nodes.get(parent))
+                {
+                    let area_transform: bevy::math::Affine2 = transform.into();
+                    let area_top = area_transform.translation.y - area.size().y / 2.;
+                    let area_bottom = area_top + area.size().y;
+                    let delta = if top < area_top {
+                        top - area_top
+                    } else if bottom > area_bottom {
+                        bottom - area_bottom
+                    } else {
+                        0.
+                    };
+                    scroll.y = (scroll.y + delta * area.inverse_scale_factor()).max(0.);
+                    break;
+                }
+            }
+        }
+        break;
     }
 }

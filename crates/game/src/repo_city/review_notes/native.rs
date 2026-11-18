@@ -41,7 +41,7 @@ impl LocalState {
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Unread => "Unread",
-            Self::Read => "Read",
+            Self::Read => "Viewed",
             Self::Addressed => "Addressed",
         }
     }
@@ -225,50 +225,6 @@ pub(super) fn save_notes(scope: &str, notes: &[Note]) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
     }
     transaction.commit().map_err(|error| error.to_string())
-}
-
-#[cfg(target_os = "macos")]
-pub(super) fn export(scope: String, note: Note) -> Result<(), String> {
-    use block2::RcBlock;
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSModalResponseOK, NSSavePanel};
-    use objc2_foundation::NSString;
-    let main = MainThreadMarker::new().ok_or("The file chooser needs the macOS main thread.")?;
-    let panel = NSSavePanel::savePanel(main);
-    panel.setNameFieldStringValue(&NSString::from_str("repo-city-review.json"));
-    let opened = panel.clone();
-    panel.beginWithCompletionHandler(&RcBlock::new(move |response| {
-        if response != NSModalResponseOK {
-            return;
-        }
-        let Some(path) = opened.URL().and_then(|url| url.to_file_path()) else {
-            return;
-        };
-        let result = (|| {
-            if path
-                .parent()
-                .and_then(|dir| dir.canonicalize().ok())
-                .is_some_and(|parent| parent.starts_with(&scope))
-            {
-                return Err("Choose a location outside the inspected repository.".to_owned());
-            }
-            let bytes = serde_json::to_vec_pretty(&serde_json::json!({
-                "version": 1, "repository": scope, "revision": note.revision,
-                "baseline": note.baseline, "notes": [note],
-            }))
-            .map_err(|e| e.to_string())?;
-            std::fs::write(path, bytes).map_err(|e| e.to_string())
-        })();
-        if let Err(error) = result {
-            warn!("Could not export review note: {error}");
-        }
-    }));
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(super) fn export(_: String, _: Note) -> Result<(), String> {
-    Err("The review export picker is available on macOS.".into())
 }
 
 #[cfg(test)]

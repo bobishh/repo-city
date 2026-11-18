@@ -398,7 +398,11 @@ change.addEventListener("click", () => {
 });
 revisionButton.addEventListener("click", () => showRevision(ref));
 baseButton.addEventListener("click", () => showRevision(base));
-document.querySelector("#use-revision").addEventListener("click", saveRevision);
+const useRevision = document.querySelector("#use-revision");
+// Keep the centered picker stationary until the click completes. Blurring the
+// search first collapses suggestions and moves this button between press and release.
+useRevision.addEventListener("pointerdown", event => event.preventDefault());
+useRevision.addEventListener("click", saveRevision);
 repo.addEventListener("input", () => { status.textContent = ""; });
 repo.addEventListener("keydown", event => {
   if (event.key === "Enter" && !event.isComposing && !event.defaultPrevented) {

@@ -51,7 +51,7 @@ impl FilePicker {
     }
 }
 
-fn rank(path: &str, query: &str) -> Option<usize> {
+pub(super) fn rank(path: &str, query: &str) -> Option<usize> {
     let path = path.to_lowercase();
     let name = path.rsplit('/').next().unwrap_or(&path);
     if query.is_empty() || name == query {
@@ -104,7 +104,7 @@ pub(super) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
                 left: px(if cfg!(target_arch = "wasm32") {
                     24.
                 } else {
-                    410.
+                    24.
                 }),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(4.),
@@ -214,6 +214,7 @@ pub(super) fn update(
     keys: Res<ButtonInput<KeyCode>>,
     mut events: MessageReader<KeyboardInput>,
     mut picker: ResMut<FilePicker>,
+    #[cfg(not(target_arch = "wasm32"))] mut tablet: Option<ResMut<review_tablet::Tablet>>,
     search: Res<listing::find::Search>,
     review: Option<Res<review_notes::Review>>,
     #[cfg(not(target_arch = "wasm32"))] repository: Option<
@@ -236,7 +237,10 @@ pub(super) fn update(
     mut labels: Query<(&mut Text, Has<PickerQuery>, Has<PickerHint>)>,
     #[cfg(not(target_arch = "wasm32"))] reset_button: Query<&Children, With<ResetProgressButton>>,
     (nearest, explorer): (Option<Res<Nearest>>, Option<Res<Explorer>>),
-    #[cfg(not(target_arch = "wasm32"))] mut markdown: Option<ResMut<markdown_preview::Request>>,
+    #[cfg(not(target_arch = "wasm32"))] (mut markdown, mut image): (
+        Option<ResMut<markdown_preview::Request>>,
+        Option<ResMut<image_preview::Request>>,
+    ),
 ) {
     picker.suppress_input = false;
     let modal = review.is_some_and(|review| review.blocked);
@@ -268,15 +272,21 @@ pub(super) fn update(
             .0
             .files
             .get(index)
-            .filter(|file| focus.includes(file) && file_preview::format(&file.path).is_some())
+            .filter(|file| focus.includes(file) && previewable(&file.path))
     {
         let before = file.after.is_none()
             || explorer
                 .as_ref()
                 .is_some_and(|explorer| explorer.selected == index && explorer.before);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(markdown) = markdown.as_deref_mut() {
-            markdown.0 = Some((index, before));
+        {
+            if image_preview::supported(&file.path) {
+                if let Some(image) = image.as_deref_mut() {
+                    image.0 = Some((index, before));
+                }
+            } else if let Some(markdown) = markdown.as_deref_mut() {
+                markdown.0 = Some((index, before));
+            }
         }
         #[cfg(target_arch = "wasm32")]
         markdown_preview::open_browser(&file.path, before);
@@ -285,7 +295,14 @@ pub(super) fn update(
     }
     let shortcut = keys.just_pressed(KeyCode::KeyP)
         && if cfg!(target_arch = "wasm32") {
-            !picker.open
+            (!command
+                || keys.any_pressed([
+                    KeyCode::SuperLeft,
+                    KeyCode::SuperRight,
+                    KeyCode::ControlLeft,
+                    KeyCode::ControlRight,
+                ]))
+                && !picker.open
         } else {
             command
         };
@@ -296,13 +313,23 @@ pub(super) fn update(
             .read()
             .find(|event| event.state.is_pressed() && event.key_code == KeyCode::KeyP);
     }
-    #[cfg(target_arch = "wasm32")]
     if picker.open {
-        browser_search();
-        picker.open = false;
-        picker.suppress_input = true;
-        events.clear();
-        return;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(tablet) = tablet.as_deref_mut() {
+            tablet.open_page(review_tablet::Page::Search);
+            picker.open = false;
+            picker.suppress_input = false;
+            events.clear();
+            return;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            browser_search();
+            picker.open = false;
+            picker.suppress_input = true;
+            events.clear();
+            return;
+        }
     }
     if !picker.open {
         events.clear();
@@ -442,6 +469,10 @@ pub(super) fn update(
             label.0 = file.path.clone();
         }
     }
+}
+
+fn previewable(path: &str) -> bool {
+    file_preview::format(path).is_some()
 }
 
 #[cfg(test)]
