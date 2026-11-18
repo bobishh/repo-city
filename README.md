@@ -76,6 +76,21 @@ The city shows the percentage of files visited and changed files whose diff
 you opened. In the browser, a pull request or branch update keeps visits to
 unchanged file contents and diffs.
 
+## VibePad and sound
+
+**Tab** opens the handheld tablet. Files, comments and Help share its screen;
+the gear opens reading and sound preferences. **Tab** or **Esc** puts it away.
+The screen follows the 3D case and hands, including on Retina displays.
+
+City ambience is synthesized in an AudioWorklet after the first click or keypress.
+Mute, volume and robot speech preferences are saved on this device. Speech uses
+an installed local browser voice when available. Leaving a code block lets the
+current phrase finish; hiding the page, opening the repository picker or muting
+stops audio. No remote speech service receives code.
+
+Long source lines wrap without changing file contents or comment line numbers.
+A line counts as read after all of its wrapped fragments have been read.
+
 ## Leave review notes
 
 Wash the source or use the readable diff wall. Pick a paint with **U** and

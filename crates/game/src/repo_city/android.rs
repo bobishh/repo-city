@@ -3,6 +3,10 @@ use super::*;
 use bevy::{camera::visibility::RenderLayers, light::NotShadowCaster};
 
 pub(super) const LAYER: usize = 7;
+pub(super) const TABLET_LAYER: usize = 8;
+pub(super) const TABLET_CASE: Vec2 = Vec2::new(1.15, 0.77);
+pub(super) const TABLET_SCREEN: Vec2 = Vec2::new(1.03, 0.65);
+pub(super) const TABLET_SIZE: UVec2 = UVec2::new(1440, 909);
 const SPRAYER_TIP: f32 = 0.23;
 
 fn sprayer_view(raised: f32, can: bool) -> Transform {
@@ -35,6 +39,7 @@ enum Paint {
     JetCore,
 }
 
+#[derive(Clone)]
 struct Workshop {
     block: Handle<Mesh>,
     ball: Handle<Mesh>,
@@ -221,6 +226,9 @@ pub(super) struct MirrorTablet;
 #[derive(Component)]
 pub(super) struct ViewTablet;
 
+#[derive(Component)]
+pub(super) struct TabletCamera;
+
 #[derive(Resource)]
 pub(super) struct CanPigment(Handle<StandardMaterial>);
 
@@ -228,6 +236,7 @@ pub(super) fn build(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
     pilot: Entity,
 ) {
     use Paint::*;
@@ -501,7 +510,28 @@ pub(super) fn build(
             Visibility::Hidden,
         ))
         .id();
-    tablet_case(&first_person, commands, tablet);
+    {
+        let case = Workshop {
+            layer: TABLET_LAYER,
+            ..first_person.clone()
+        };
+        let size = TABLET_CASE;
+        case.block(commands, tablet, Dark, [0.; 3], [size.x, size.y, 0.105]);
+        case.block(
+            commands,
+            tablet,
+            Dark,
+            [0., 0., 0.025],
+            [size.x * 0.995, size.y * 0.99, 0.050],
+        );
+        for side in [-1., 1.] {
+            tablet_grip(&case, commands, tablet, side);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        tablet_display::spawn(commands, pilot, tablet, images, meshes, materials);
+        #[cfg(target_arch = "wasm32")]
+        browser_tablet::spawn(commands, pilot, tablet, images, meshes, materials);
+    }
     let can = commands
         .spawn((
             ChildOf(pilot),
@@ -558,15 +588,95 @@ fn tablet_case(w: &Workshop, commands: &mut Commands, tablet: Entity) {
     );
 }
 
+fn tablet_grip(w: &Workshop, commands: &mut Commands, tablet: Entity, side: f32) {
+    use Paint::*;
+    let pivot = commands
+        .spawn((
+            ChildOf(tablet),
+            Transform::from_xyz(side * 0.579, -0.238, -0.015)
+                .with_rotation(Quat::from_rotation_z(side * -0.16)),
+            Visibility::Inherited,
+        ))
+        .id();
+    w.block(
+        commands,
+        pivot,
+        Dark,
+        [side * 0.009, -0.166, 0.063],
+        [0.088, 0.143, 0.084],
+    );
+    w.block(
+        commands,
+        pivot,
+        Metal,
+        [side * 0.012, -0.089, 0.045],
+        [0.074, 0.082, 0.077],
+    );
+    w.piece(
+        commands,
+        pivot,
+        &w.ball,
+        Dark,
+        [0., -0.027, 0.029],
+        [0.128, 0.127, 0.105],
+        Quat::IDENTITY,
+    );
+    // Fingers wrap behind the case; the thumb supports the front bezel.
+    for (y, reach) in [
+        (0.046, 0.091),
+        (0.010, 0.112),
+        (-0.026, 0.103),
+        (-0.057, 0.076),
+    ] {
+        w.piece(
+            commands,
+            pivot,
+            &w.ball,
+            Dark,
+            [side * 0.012, y, -0.024],
+            [0.052, 0.032, 0.046],
+            Quat::IDENTITY,
+        );
+        w.piece(
+            commands,
+            pivot,
+            &w.block,
+            Metal,
+            [-side * (reach * 0.5 - 0.012), y, -0.067],
+            [reach, 0.027, 0.035],
+            Quat::from_rotation_z(side * 0.09),
+        );
+    }
+    w.piece(
+        commands,
+        pivot,
+        &w.ball,
+        Dark,
+        [-side * 0.014, -0.046, 0.055],
+        [0.074, 0.068, 0.066],
+        Quat::IDENTITY,
+    );
+    w.piece(
+        commands,
+        pivot,
+        &w.block,
+        Metal,
+        [-side * 0.044, -0.019, 0.09],
+        [0.085, 0.035, 0.04],
+        Quat::from_rotation_z(-side * 0.61),
+    );
+}
+
 pub(super) fn show_tablet(
     review: Res<review_notes::Review>,
     time: Res<Time>,
     mut amount: Local<f32>,
     mut mirror: Query<&mut Visibility, (With<MirrorTablet>, Without<ViewTablet>)>,
     mut view: Query<(&mut Visibility, &mut Transform), With<ViewTablet>>,
+    window: Query<&Window, With<PrimaryWindow>>,
 ) {
     let direction = if review.tablet_open { 1. } else { -1. };
-    *amount = (*amount + direction * time.delta_secs() / 0.20).clamp(0., 1.);
+    *amount = (*amount + direction * time.delta_secs() / 0.38).clamp(0., 1.);
     for mut visibility in &mut mirror {
         visibility.set_if_neq(if review.tablet_open {
             Visibility::Inherited
@@ -576,19 +686,53 @@ pub(super) fn show_tablet(
     }
     let t = *amount;
     for (mut visibility, mut transform) in &mut view {
-        visibility.set_if_neq(if t > 0. && t < 1. {
+        let shown = t > 0.;
+        visibility.set_if_neq(if shown {
             Visibility::Inherited
         } else {
             Visibility::Hidden
         });
-        if t > 0. && t < 1. {
-            let remaining = (1. - t).powi(3);
-            transform.set_if_neq(
-                Transform::from_xyz(0., -remaining * 1.0, -0.83)
-                    .with_rotation(Quat::from_rotation_x(-remaining * 0.55)),
-            );
+        if shown {
+            let aspect = window
+                .single()
+                .map_or(1.6, |window| window.width() / window.height().max(1.));
+            transform.set_if_neq(tablet_pose(t, aspect));
         }
     }
+}
+
+pub(super) fn tablet_pose(amount: f32, aspect: f32) -> Transform {
+    let distance = (TABLET_CASE.x / aspect.max(0.1)).max(TABLET_CASE.y)
+        / (2. * std::f32::consts::FRAC_PI_8.tan() * 0.95);
+    let remaining = 1. - amount * amount * (3. - 2. * amount);
+    Transform::from_xyz(0., -remaining * 0.95, -distance - 0.08).with_rotation(Quat::from_euler(
+        EulerRot::XYZ,
+        -0.04 - remaining * 0.56,
+        0.04 + remaining * 0.2,
+        remaining * 0.13,
+    ))
+}
+
+pub(super) fn tablet_corners(pose: &Transform, viewport: Vec2) -> Option<[f32; 8]> {
+    let mut corners = [0.; 8];
+    let perspective = std::f32::consts::FRAC_PI_8.tan();
+    for (index, [x, y]) in [[-1., 1.], [1., 1.], [1., -1.], [-1., -1.]]
+        .into_iter()
+        .enumerate()
+    {
+        let point = pose.transform_point(Vec3::new(
+            x * TABLET_SCREEN.x / 2.,
+            y * TABLET_SCREEN.y / 2. + 0.012,
+            0.054,
+        ));
+        if point.z >= -0.01 {
+            return None;
+        }
+        let scale = viewport.y / (-point.z * perspective * 2.);
+        corners[index * 2] = viewport.x / 2. + point.x * scale;
+        corners[index * 2 + 1] = viewport.y / 2. - point.y * scale;
+    }
+    Some(corners)
 }
 
 pub(super) fn spray_origin(camera: &Transform, raised: f32, can: bool) -> Vec3 {
@@ -699,6 +843,27 @@ pub(super) fn animate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raised_tablet_screen_fits_wide_and_portrait_windows() {
+        for size in [
+            Vec2::new(1280., 800.),
+            Vec2::new(2560., 800.),
+            Vec2::new(400., 800.),
+        ] {
+            let pose = tablet_pose(1., size.x / size.y);
+            let corners = tablet_corners(&pose, size).unwrap();
+            for point in corners.chunks_exact(2) {
+                assert!(point[0] > 0. && point[0] < size.x);
+                assert!(point[1] > 0. && point[1] < size.y);
+            }
+            let lowered = tablet_corners(&tablet_pose(0., size.x / size.y), size).unwrap();
+            assert!(
+                lowered[1] > corners[1],
+                "the screen rises together with its case"
+            );
+        }
+    }
 
     #[test]
     fn pilot_joints_animate_at_idle_and_answer_motion() {

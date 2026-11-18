@@ -129,6 +129,8 @@ pub(crate) fn update(
         Face::at_camera(file, size, &eye, (size.x * 1.85).max(5.)).and_then(|face| {
             let count = if face == Face::Diff {
                 listing.diff_lines.len()
+            } else if face == Face::Source {
+                explorer.source_layout.len()
             } else {
                 explorer.highlighted.len()
             };
@@ -223,6 +225,10 @@ pub(crate) fn update(
                         .map(|(line, _)| line.as_ref().map_or("", |line| line.text.as_str())),
                     &search.query,
                 )
+            } else if side.face == Face::Source {
+                explorer
+                    .source_layout
+                    .find_rows(&explorer.highlighted, &search.query)
             } else {
                 matching_lines(
                     explorer.highlighted.iter().map(|line| line.text.as_str()),

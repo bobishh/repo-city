@@ -49,6 +49,23 @@ and hashes for reused code are recorded in
 `rounded_box` mesh for buildings and the Android tool model. The mesh module
 contains only that shared geometry.
 
+## Browser VibePad
+
+The tablet geometry and grip come from [Vibe City revision 4ad153a](https://github.com/bobishh/vibe-city/blob/4ad153a/crates/game/src/repo_city/android.rs).
+The browser adapter projects DOM controls onto that screen; the native adapter
+renders its UI into a texture. Browser projection converts engine coordinates
+to CSS pixels, including Retina scale and canvas offsets.
+
+`listing/layout.rs` owns the mapping between wrapped source rows and canonical
+file lines. Persisted progress and review notes retain canonical addresses.
+Diff and blame keep their existing rows. MCP and speech consume readable
+onscreen fragments rather than hidden continuations.
+
+For local browser verification on a Mac with a display, set
+`REPO_CITY_TEST_GPU=hardware` to use an isolated headed Metal browser. The default
+remains headless SwiftShader for portable runs. The test server never reuses an
+existing server.
+
 ## Build and test
 
 ```sh
