@@ -39,38 +39,54 @@ fn language(path: &str) -> Option<Language> {
     })
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn walk(node: Node, source: &str, spans: &mut Vec<Span>) {
-    let name = node.kind();
-    let whole = if name.contains("comment") {
-        Some(Kind::Comment)
-    } else if name == "predefined_type" {
-        Some(Kind::Type)
-    } else if matches!(
-        name,
-        "string"
-            | "string_literal"
-            | "raw_string_literal"
-            | "template_string"
-            | "char_literal"
-            | "heredoc_body"
-            | "string_content"
-            | "char_constant_expr"
-    ) {
-        Some(Kind::String)
-    } else if name.contains("integer")
-        || name.contains("float")
-        || matches!(name, "number" | "number_constant_expr")
-    {
-        Some(Kind::Number)
-    } else if matches!(
-        name,
-        "type_identifier" | "primitive_type" | "constant" | "upper_case_identifier"
-    ) {
-        Some(Kind::Type)
-    } else {
-        None
+// Whole-node colors stop traversal so comment/string contents keep their color.
+fn whole_kind(name: &str) -> Option<Kind> {
+    match name {
+        name if name.contains("comment") => Some(Kind::Comment),
+        "predefined_type" => Some(Kind::Type),
+        "string" | "string_literal" | "raw_string_literal" | "template_string" | "char_literal"
+        | "heredoc_body" | "string_content" | "char_constant_expr" => Some(Kind::String),
+        "number" | "number_constant_expr" => Some(Kind::Number),
+        name if name.contains("integer") || name.contains("float") => Some(Kind::Number),
+        "type_identifier" | "primitive_type" | "constant" | "upper_case_identifier" => {
+            Some(Kind::Type)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn is_function_name(node: Node) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
     };
-    if let Some(kind) = whole {
+    let callable = parent.kind().contains("function")
+        || parent.kind().contains("call")
+        || parent.kind().contains("method");
+    callable
+        && ["name", "function", "method"]
+            .into_iter()
+            .any(|field| parent.child_by_field_name(field) == Some(node))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn leaf_kind(node: Node, source: &str) -> Kind {
+    let Some(text) = source.get(node.byte_range()) else {
+        return Kind::Plain;
+    };
+    match text {
+        _ if !node.is_named() && text.chars().next().is_some_and(char::is_alphabetic) => {
+            Kind::Keyword
+        }
+        "true" | "false" | "nil" | "null" | "undefined" | "self" | "Self" => Kind::Keyword,
+        _ if is_function_name(node) => Kind::Function,
+        _ => Kind::Plain,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn walk(node: Node, source: &str, spans: &mut Vec<Span>) {
+    if let Some(kind) = whole_kind(node.kind()) {
         spans.push(Span {
             bytes: node.byte_range(),
             kind,
@@ -78,26 +94,7 @@ fn walk(node: Node, source: &str, spans: &mut Vec<Span>) {
         return;
     }
     if node.child_count() == 0 {
-        let text = &source[node.byte_range()];
-        let kind = if !node.is_named() && text.chars().next().is_some_and(char::is_alphabetic) {
-            Kind::Keyword
-        } else if matches!(
-            text,
-            "true" | "false" | "nil" | "null" | "undefined" | "self" | "Self"
-        ) {
-            Kind::Keyword
-        } else if node.parent().is_some_and(|p| {
-            ["name", "function", "method"]
-                .into_iter()
-                .any(|field| p.child_by_field_name(field) == Some(node))
-                && (p.kind().contains("function")
-                    || p.kind().contains("call")
-                    || p.kind().contains("method"))
-        }) {
-            Kind::Function
-        } else {
-            Kind::Plain
-        };
+        let kind = leaf_kind(node, source);
         if kind != Kind::Plain {
             spans.push(Span {
                 bytes: node.byte_range(),
