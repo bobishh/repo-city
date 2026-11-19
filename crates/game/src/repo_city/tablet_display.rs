@@ -23,7 +23,8 @@ pub(super) struct Display {
     view: Entity,
     shield: Entity,
     target: NormalizedRenderTarget,
-    image: Handle<Image>,
+    #[cfg(target_arch = "wasm32")]
+    screen_material: Handle<StandardMaterial>,
     pub(super) size: UVec2,
 }
 
@@ -33,6 +34,15 @@ pub(super) struct Screen;
 #[derive(Resource, Default)]
 pub(super) struct TouchScroll(pub f32);
 
+fn screen_texture(images: &mut Assets<Image>, size: UVec2) -> Handle<Image> {
+    images.add(Image::new_target_texture(
+        size.x,
+        size.y,
+        TextureFormat::Bgra8UnormSrgb,
+        None,
+    ))
+}
+
 pub(super) fn spawn(
     commands: &mut Commands,
     pilot: Entity,
@@ -41,12 +51,7 @@ pub(super) fn spawn(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
 ) {
-    let image = images.add(Image::new_target_texture(
-        SIZE.x,
-        SIZE.y,
-        TextureFormat::Bgra8UnormSrgb,
-        None,
-    ));
+    let image = screen_texture(images, SIZE);
     let target = image.clone().into();
     let ui = commands
         .spawn((
@@ -86,15 +91,16 @@ pub(super) fn spawn(
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.33, 2.72, 0.)),
         RenderLayers::layer(LAYER),
     ));
+    let screen_material = materials.add(StandardMaterial {
+        base_color_texture: Some(image.clone()),
+        unlit: true,
+        ..default()
+    });
     commands.spawn((
         ChildOf(tablet),
         Screen,
         Mesh3d(meshes.add(Rectangle::new(SCREEN.x, SCREEN.y))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color_texture: Some(image.clone()),
-            unlit: true,
-            ..default()
-        })),
+        MeshMaterial3d(screen_material.clone()),
         Transform::from_xyz(0., 0.012, 0.054),
         RenderLayers::layer(LAYER),
         bevy::light::NotShadowCaster,
@@ -119,8 +125,9 @@ pub(super) fn spawn(
         ui,
         view,
         shield,
-        target: NormalizedRenderTarget::Image(image.clone().into()),
-        image,
+        target: NormalizedRenderTarget::Image(image.into()),
+        #[cfg(target_arch = "wasm32")]
+        screen_material,
         size: SIZE,
     });
 }
@@ -383,7 +390,9 @@ pub(super) fn pointer(
 pub(super) fn resize(
     display: Option<ResMut<Display>>,
     window: Query<&Window, With<PrimaryWindow>>,
+    mut targets: Query<&mut RenderTarget>,
     mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let Some(mut display) = display else {
         return;
@@ -398,13 +407,14 @@ pub(super) fn resize(
     });
     let size = UVec2::new(width, width * SIZE.y / SIZE.x);
     if display.size != size
-        && let Some(mut image) = images.get_mut(&display.image)
+        && let Ok(mut camera_target) = targets.get_mut(display.ui)
+        && let Some(mut material) = materials.get_mut(&display.screen_material)
     {
-        image.resize(bevy::render::render_resource::Extent3d {
-            width: size.x,
-            height: size.y,
-            depth_or_array_layers: 1,
-        });
+        // A new image handle keeps the camera and material off the old GPU texture.
+        let image = screen_texture(&mut images, size);
+        *camera_target = RenderTarget::Image(image.clone().into());
+        material.base_color_texture = Some(image.clone());
+        display.target = NormalizedRenderTarget::Image(image.into());
         display.size = size;
     }
 }

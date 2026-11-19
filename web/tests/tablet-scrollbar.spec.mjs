@@ -30,13 +30,23 @@ test("VibePad scroll arrows, thumb drag and track paging follow the visible cont
   await openHelp(page);
   await expect.poll(async () => (await part(page, "track"))?.range ?? 0).toBeGreaterThan(0);
   const fixedIds = await servicePanel(page).locator("header button, nav.vibepad-tabs button").evaluateAll(nodes => nodes.map(node => node.dataset.tabletControl));
+  let stableLayout;
+  let previousBounds;
   await expect.poll(async () => {
-    const view = await readTablet(page);
-    return fixedIds.every(id => view?.layout.controls.some(control => control.id === id));
+    const { controls, scrollbars } = (await readTablet(page)).layout;
+    const header = controls.filter(control => fixedIds.includes(control.id));
+    const track = scrollbars?.find(item => item.kind === "track");
+    if (header.length !== fixedIds.length || !track) return false;
+    // Compare controls from the same frame after the tablet stops moving.
+    const bounds = JSON.stringify([...header.map(control => control.bounds), track.bounds]);
+    const settled = bounds === previousBounds;
+    previousBounds = bounds;
+    if (settled) stableLayout = { header, track };
+    return settled;
   }).toBe(true);
-  const before = (await readTablet(page)).layout.controls.filter(control => fixedIds.includes(control.id));
+  const { header: before, track: settledTrack } = stableLayout;
   const headerBottom = Math.max(...before.map(control => control.bounds[1] + control.bounds[3]));
-  expect((await part(page, "track")).bounds[1]).toBeGreaterThanOrEqual(headerBottom - 1);
+  expect(settledTrack.bounds[1]).toBeGreaterThanOrEqual(headerBottom - 1);
   await page.screenshot({ path: info.outputPath("vibepad-scrollbar.png") });
   await page.mouse.click(...await point(page, "down"), { delay: 100 });
   await expect.poll(async () => (await part(page, "track"))?.offset ?? 0).toBeGreaterThan(0);

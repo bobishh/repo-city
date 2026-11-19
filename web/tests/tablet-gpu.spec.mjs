@@ -85,6 +85,25 @@ test("GPU tablet renders help and autosaved settings, then finds a file with key
   expect(faults).toEqual([]);
 });
 
+test("VibePad renders and accepts input after resizing the canvas while it is closed", async ({ page }) => {
+  await repository(page);
+  expect((await state(page)).open).toBe(false);
+
+  await page.setViewportSize({ width: 900, height: 650 });
+  const canvas = page.locator("canvas");
+  // Winit can retain the previous CSS size after Playwright resizes the viewport.
+  await canvas.evaluate(element => {
+    element.style.setProperty("width", "900px", "important");
+    element.style.setProperty("height", "650px", "important");
+  });
+  await expect.poll(async () => (await state(page)).layout.viewport).toEqual([900, 650]);
+
+  await page.keyboard.press("h", { delay: 180 });
+  await renderedHeading(page, "Help");
+  await clickControl(page, "Settings");
+  await renderedHeading(page, "Settings");
+});
+
 test("radio station saves from GPU settings while city ambience remains off", async ({ page }) => {
   await repository(page);
   await page.keyboard.press("h", { delay: 180 });
