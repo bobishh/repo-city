@@ -6,7 +6,7 @@ test.beforeAll(async () => {
   const { createServer } = await import("node:http");
   server = createServer(async (request, response) => {
     const url = new URL(request.url, "http://localhost");
-    if (["/audio.mjs", "/audio-worklet.mjs", "/radio.mjs"].includes(url.pathname)) {
+    if (["/audio.mjs", "/audio-worklet.mjs", "/radio.mjs", "/radio-evolution.mjs"].includes(url.pathname)) {
       response.writeHead(200, { "Content-Type": "text/javascript" });
       response.end(await readFile(new URL(`..${url.pathname}`, import.meta.url), "utf8"));
       return;

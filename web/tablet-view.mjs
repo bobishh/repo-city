@@ -14,7 +14,10 @@ export function tabletView(root, identify, images = new Map()) {
       const kind = tag === "select" ? "select" : element.type === "checkbox" ? "check" : element.type === "range" ? "range" : element.type === "color" ? "color" : "input";
       return { id, kind, text: label || [...(element.closest("label")?.childNodes ?? [])].filter(node => node.nodeType === 3).map(node => node.textContent).join("").trim(), value: element.value, checked: Boolean(element.checked), disabled: Boolean(element.disabled), multiline: tag === "textarea", ...(element.maxLength > 0 ? { max_length: element.maxLength } : {}), ...(element.rows > 4 ? { rows: element.rows } : {}), min: element.min, max: element.max, step: element.step, options: tag === "select" ? [...element.options].map(option => ({ text: option.text, value: option.value })) : undefined };
     }
-    if (element.dataset.markdownSource !== undefined) return { id, kind: "column", children: [{ id: `${id}:markdown`, kind: "markdown", text: element.dataset.markdownSource }, ...[...element.querySelectorAll(".markdown-end")].map(read)] };
+    if (element.dataset.markdownSource !== undefined) return { id, kind: "column", children: [{
+      id: `${id}:markdown`, kind: "markdown", text: element.dataset.markdownSource,
+      name: element.dataset.markdownPath, before: element.dataset.markdownBefore === "true",
+    }, ...[...element.querySelectorAll(".markdown-end")].map(read)] };
     if (tag === "img") return { id, kind: "image", text: element.alt, source: element.dataset.previewSource ?? element.src, data: images.get(element.dataset.previewSource ?? element.src) ?? "" };
     if (/^h[1-6]$/.test(tag)) return { id, kind: "heading", text };
     if (element.classList.contains("settings-columns")) return { id, kind: "columns", children: children(element) };

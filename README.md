@@ -350,10 +350,11 @@ integration is native-only; the deployed browser does not start local agents.
 The gear at the right of VibePad's navigation opens **Settings**. Valid changes save automatically; invalid fields show a reason and keep the last valid settings. Set the water
 reading delay there, mute the city, adjust volume, or turn robot speech off.
 Sound and narration start disabled. Wind, spray, construction, and occasional sirens are synthesized locally when enabled.
-Choose **Radio** in Sound settings for **Space trance** or **Techno**. It synthesizes
-drums, bass, chords, arpeggios and echo locally, with evolving phrases and no external
-music service. Radio starts off and works independently of city ambience. Both become
-quieter during narration.
+Choose **Radio** in Sound settings for **Space trance** or **Techno**. Each station
+synthesizes a continuous mix locally and evolves its bass, arpeggios, and drums
+every two bars. Both stations build toward a drop and ease into a breakdown as
+their harmonies and lead motifs change. Radio starts off and works independently
+of city ambience. Both become quieter during narration.
 The browser starts its AudioWorklet after the first click or keypress. Preferences
 persist on the device; opening the repository picker or hiding the page silences it.
 The robot reads the current readable block from start to end, in source order.

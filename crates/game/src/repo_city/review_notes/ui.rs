@@ -431,6 +431,7 @@ fn draw(
                                     markdown_preview::draw(
                                         card,
                                         markdown_preview::markdown_html(note.comment()),
+                                        None,
                                     );
                                 }
                                 let can_visit = note.anchor.start > 0

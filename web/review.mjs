@@ -190,7 +190,11 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       if (!visibleText.trim()) { content.textContent = "Empty document."; return; }
       if (kind === "text") {
         content.replaceChildren(make("pre", visibleText, { class: "plain-file-preview" }));
-      } else markdown(visibleText, content);
+      } else {
+        content.dataset.markdownPath = path;
+        content.dataset.markdownBefore = String(mark?.before ?? false);
+        markdown(visibleText, content);
+      }
       const end = make("div", undefined, { class: "markdown-end", "aria-hidden": "true" });
       content.append(end);
       end.addEventListener("tabletread", () => { markdownRead = mark; });

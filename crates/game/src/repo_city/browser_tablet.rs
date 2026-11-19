@@ -31,6 +31,7 @@ struct NodeView {
     name: String,
     value: String,
     checked: bool,
+    before: bool,
     disabled: bool,
     selected: bool,
     multiline: bool,
@@ -286,8 +287,12 @@ fn draw(parent: &mut ChildSpawnerCommands, node: &NodeView, order: &mut i32) {
                 });
         }
         "markdown" => {
+            let source = (!node.name.is_empty()).then(|| markdown_preview::SourceFile {
+                path: node.name.clone(),
+                before: node.before,
+            });
             let document =
-                markdown_preview::draw(parent, markdown_preview::markdown_html(&node.text));
+                markdown_preview::draw(parent, markdown_preview::markdown_html(&node.text), source);
             parent.commands().entity(document).insert(binding());
         }
         "end" => {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createCityAudio, spokenWords, chooseLocalVoice } from "./audio.mjs";
 import { CitySynth } from "./audio-worklet.mjs";
+import { RadioSynth } from "./radio.mjs";
 
 test("procedural radio is optional, persists its station, and makes music without city ambience", () => {
   const storage = new Map();
@@ -31,6 +32,57 @@ test("procedural radio is optional, persists its station, and makes music withou
   }
   assert.notEqual(energies[0], energies[1], "stations have different arrangements");
   audio.dispose();
+});
+
+test("both stations drop the low end for a breakdown and bring it back for the drop", () => {
+  const rate = 12000;
+  for (const [station, bpm] of [[1, 126], [2, 134]]) {
+    const synth = new RadioSynth(123);
+    const barLength = rate * 4 * 60 / bpm;
+    let low = 0, breakdown = 0, drop = 0, peak = 0, largestStep = 0, previous = 0;
+    for (let frame = 0; frame < barLength * 24; frame++) {
+      synth.tick(station, rate);
+      const sample = synth.left;
+      const bar = Math.floor(frame / barLength);
+      low += (sample - low) * 0.05;
+      if (bar >= 13 && bar < 16) breakdown += low ** 2;
+      if (bar >= 21) drop += low ** 2;
+      peak = Math.max(peak, Math.abs(sample));
+      largestStep = Math.max(largestStep, Math.abs(sample - previous));
+      previous = sample;
+    }
+    assert.ok(breakdown > 0.001, "the breakdown still plays music");
+    assert.ok(drop > breakdown * 4, "kick and bass return for the drop");
+    assert.ok(peak < 0.8 && largestStep < 0.22, `bounded audio, peak ${peak}, step ${largestStep}`);
+  }
+});
+
+test("radio evolves every musical layer across successive forms", () => {
+  function phrases(station, seed) {
+    const synth = new RadioSynth(seed);
+    synth.tick(station, 48000);
+    return Array.from({ length: 48 }, (_, phrase) => {
+      if (phrase > 0) synth.playStep(phrase * 32);
+      return Array.from(synth.evolution.pattern);
+    });
+  }
+
+  for (const station of [1, 2]) {
+    const patterns = phrases(station, 123);
+    assert.deepEqual(patterns, phrases(station, 123), "the same seed reproduces the same radio");
+    assert.notDeepEqual(patterns, phrases(station, 456), "different seeds evolve different music");
+    for (let phrase = 1; phrase < patterns.length; phrase++) {
+      assert.notDeepEqual(patterns[phrase], patterns[phrase - 1], "successive phrases keep evolving");
+    }
+    for (let lane = 0; lane < 5; lane++) {
+      const parts = patterns.slice(16).map(pattern => pattern.filter((_, index) => index % 5 === lane).join(","));
+      assert.ok(new Set(parts).size >= 4, `lane ${lane} varies beyond the first form`);
+    }
+    for (const pattern of patterns) {
+      for (const step of [0, 4, 8, 12]) assert.equal(pattern[step * 5], 3);
+      for (const step of [4, 12]) assert.equal(pattern[step * 5 + 3], 3);
+    }
+  }
 });
 
 function browser(storage = new Map()) {

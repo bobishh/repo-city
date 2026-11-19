@@ -70,6 +70,112 @@ fn safe_link(url: &str) -> bool {
             || (!url.contains(':') && !url.starts_with("//")))
 }
 
+#[derive(Component)]
+pub(super) struct SourceFile {
+    pub path: String,
+    pub before: bool,
+}
+
+fn relative_file(source: &str, href: &str) -> Option<String> {
+    let href = href.split(['?', '#']).next()?;
+    let href = percent_encoding::percent_decode_str(href)
+        .decode_utf8()
+        .ok()?;
+    if href.is_empty() || href.chars().any(|c| c.is_control() || c == '\\') {
+        return None;
+    }
+    let mut path = Vec::new();
+    if !href.starts_with('/')
+        && let Some((directory, _)) = source.rsplit_once('/')
+    {
+        path.extend(directory.split('/'));
+    }
+    for part in href.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                path.pop()?;
+            }
+            part => path.push(part),
+        }
+    }
+    (!path.is_empty()).then(|| path.join("/"))
+}
+
+fn follow_links(
+    mut signals: MessageReader<bevy_markup::signals::ElementSignal>,
+    sources: Query<&SourceFile>,
+    parents: Query<&ChildOf>,
+    repo: Option<Res<Repo>>,
+    reading: Res<reading::Settings>,
+    #[cfg(not(target_arch = "wasm32"))] mut preview: ResMut<Request>,
+    #[cfg(not(target_arch = "wasm32"))] mut image: ResMut<image_preview::Request>,
+) {
+    for signal in signals.read() {
+        if signal.name != "open" {
+            continue;
+        }
+        let Some(href) = signal.payload["href"]
+            .as_str()
+            .map(str::trim)
+            .filter(|href| safe_link(href))
+        else {
+            continue;
+        };
+        if href.starts_with("https://")
+            || href.starts_with("http://")
+            || href.starts_with("mailto:")
+        {
+            #[cfg(target_arch = "wasm32")]
+            if let Some(window) = web_sys::window() {
+                let _ = window.open_with_url_and_target_and_features(
+                    href,
+                    "_blank",
+                    "noopener,noreferrer",
+                );
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Err(error) = native_github::open_browser_url(href) {
+                warn!("{error}");
+            }
+            continue;
+        }
+        let Some(source) = parents
+            .iter_ancestors(signal.target)
+            .find_map(|entity| sources.get(entity).ok())
+        else {
+            continue;
+        };
+        let Some(path) = relative_file(&source.path, href) else {
+            continue;
+        };
+        let Some((index, file)) = repo.as_ref().and_then(|repo| {
+            repo.0.files.iter().enumerate().find(|(_, file)| {
+                file.path == path
+                    && if source.before {
+                        file.before.is_some()
+                    } else {
+                        file.after.is_some()
+                    }
+            })
+        }) else {
+            continue;
+        };
+        let end = reading.block_lines as usize;
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = index;
+            open_browser(&file.path, source.before, 0, end, false);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if image_preview::supported(&file.path) {
+            image.0 = Some((index, source.before));
+        } else {
+            preview.0 = Some((index, source.before, 0..end, false));
+        }
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Resource, Default)]
 pub(super) struct Request(pub Option<(usize, bool, std::ops::Range<usize>, bool)>);
@@ -85,7 +191,8 @@ pub(super) fn register(app: &mut App) {
     use bevy::asset::io::embedded::EmbeddedAssetRegistry;
     use bevy_markup::prelude::{FontFaces, FontFamilies, GenericFamily};
 
-    app.add_plugins(bevy_markup::BevyMarkupPlugin);
+    app.add_plugins(bevy_markup::BevyMarkupPlugin)
+        .add_systems(Update, follow_links);
     #[cfg(target_arch = "wasm32")]
     let sans = FontSource::list([Handle::<Font>::default(), MATH_FONT, EMOJI_FONT]);
     #[cfg(not(target_arch = "wasm32"))]
@@ -113,13 +220,20 @@ pub(super) fn register(app: &mut App) {
     );
 }
 
-pub(super) fn draw(parent: &mut ChildSpawnerCommands, document: String) -> Entity {
+pub(super) fn draw(
+    parent: &mut ChildSpawnerCommands,
+    document: String,
+    source: Option<SourceFile>,
+) -> Entity {
     use bevy_markup::prelude::{HtmlStylesheet, HtmlUi, TemplateContext};
     let mut node = parent.spawn(Node {
         width: percent(100.),
         flex_shrink: 0.,
         ..default()
     });
+    if let Some(source) = source {
+        node.insert(source);
+    }
     let entity = node.id();
     node.commands().queue(move |world: &mut World| {
         let Some(assets) = world.get_resource::<AssetServer>() else {
@@ -182,6 +296,22 @@ pub(super) fn take_browser_read() -> Option<ReadDocument> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolves_relative_links_inside_the_current_snapshot() {
+        assert_eq!(
+            relative_file("guides/setup.md", "../docs/MIT%20License#terms").as_deref(),
+            Some("docs/MIT License")
+        );
+        assert_eq!(
+            relative_file("guides/setup.md", "/LICENSE").as_deref(),
+            Some("LICENSE")
+        );
+        assert!(relative_file("README.md", "../LICENSE").is_none());
+        assert!(relative_file("README.md", "docs%5cLICENSE").is_none());
+        assert!(relative_file("README.md", "#terms").is_none());
+    }
+
     #[test]
     fn markdown_renders_commonmark_and_treats_html_as_text() {
         let html = markdown_html(

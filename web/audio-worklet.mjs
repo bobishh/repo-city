@@ -50,7 +50,7 @@ if (typeof registerProcessor === "function") {
   class CityProcessor extends AudioWorkletProcessor {
     constructor() {
       super();
-      this.synth = new CitySynth();
+      this.synth = new CitySynth(Math.floor(Math.random() * 0x1_0000_0000));
       this.levels = { wind: 0.2 };
       this.lastActivity = 0;
       this.frames = 0;

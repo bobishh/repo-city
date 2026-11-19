@@ -17,7 +17,7 @@ use std::{
         Arc,
         atomic::{AtomicU32, Ordering},
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use synthesis::{Levels, Synth};
 
@@ -172,9 +172,12 @@ struct Decoder {
 impl Decodable for CitySound {
     type Decoder = Decoder;
     fn decoder(&self) -> Self::Decoder {
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0xc17a, |time| time.subsec_nanos() ^ time.as_secs() as u32);
         Decoder {
             controls: self.controls.clone(),
-            synth: Synth::new(0xc17a),
+            synth: Synth::new(seed),
             right: None,
             cue: self.controls.cue.load(Ordering::Relaxed),
             tone: change_sound::Tone::default(),

@@ -1434,7 +1434,11 @@ fn draw_document(
                 if html.trim().is_empty() {
                     native_panel::text(body, "Empty document.", native_panel::INK);
                 } else {
-                    document.content = Some(markdown_preview::draw(body, html));
+                    let source = markdown_preview::SourceFile {
+                        path: document.path.clone(),
+                        before: document.before,
+                    };
+                    document.content = Some(markdown_preview::draw(body, html, Some(source)));
                 }
             }
             Some(Err(error)) => native_panel::text(body, error, native_panel::INK),
@@ -1514,6 +1518,7 @@ fn draw_git(parent: &mut ChildSpawnerCommands, history: Option<&History>, tab: &
                         markdown_preview::draw(
                             body,
                             markdown_preview::document_html("commit.diff", text),
+                            None,
                         );
                     }
                     Err(error) => native_panel::text(body, error, native_panel::INK),

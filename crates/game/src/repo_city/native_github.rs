@@ -607,17 +607,17 @@ pub(super) fn request_sign_in() -> Job<DeviceCode> {
 }
 
 pub(super) fn browser_sign_in() -> Result<(), String> {
-    open_github_page(DEVICE_URL)
+    open_browser_url(DEVICE_URL)
 }
 
 pub(super) fn open_discussion(url: &str) -> Result<(), String> {
     if !url.starts_with("https://github.com/") {
         return Err("This discussion has no GitHub link.".into());
     }
-    open_github_page(url)
+    open_browser_url(url)
 }
 
-fn open_github_page(url: &str) -> Result<(), String> {
+pub(super) fn open_browser_url(url: &str) -> Result<(), String> {
     browser_command(std::env::consts::OS, url)?
         .spawn()
         .map(|_| ())

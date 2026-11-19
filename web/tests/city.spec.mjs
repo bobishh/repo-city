@@ -6,9 +6,11 @@ const after = "b".repeat(40);
 const before = "a".repeat(40);
 const next = "e".repeat(40);
 
-test("opens a rendered Markdown document from its building with P", async ({ page }) => {
+test("opens a rendered Markdown document with P and follows its relative link", async ({ page }) => {
   await emulatePointerLock(page);
-  const source = "# Project notes\n\nUse **this** command.\n\n- First step\n\n| Action | Example |\n| --- | --- |\n| Inspect | status |\n\n```sh\ngit status\n```\n\n[Unsafe](javascript:alert%281%29)\n\n" +
+  const license = "5".repeat(40);
+  const licenseText = "Permission is hereby granted to use this source.\n";
+  const source = "# Project notes\n\nSee the [MIT License](docs/LICENSE).\n\nUse **this** command.\n\n- First step\n\n| Action | Example |\n| --- | --- |\n| Inspect | status |\n\n```sh\ngit status\n```\n\n[Unsafe](javascript:alert%281%29)\n\n" +
     "Read the next paragraph.\n\n".repeat(50);
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
   await page.route("https://api.github.com/**", route => {
@@ -16,9 +18,13 @@ test("opens a rendered Markdown document from its building with P", async ({ pag
     if (path === "/repos/owner/preview") return route.fulfill({ json: { default_branch: "main" } });
     if (path.includes("/commits/")) return route.fulfill({ json: { sha: after, parents: [] } });
     if (path.includes("/git/trees/")) return route.fulfill({ json: {
-      tree: [{ path: "README.md", type: "blob", mode: "100644", sha: after, size: source.length }],
+      tree: [
+        { path: "README.md", type: "blob", mode: "100644", sha: after, size: source.length },
+        { path: "docs/LICENSE", type: "blob", mode: "100644", sha: license, size: licenseText.length },
+      ],
     } });
-    return route.fulfill({ json: { size: source.length, encoding: "base64", content: Buffer.from(source).toString("base64") } });
+    const body = path.endsWith(license) ? licenseText : source;
+    return route.fulfill({ json: { size: body.length, encoding: "base64", content: Buffer.from(body).toString("base64") } });
   });
   await page.goto("/?repo=owner%2Fpreview");
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
@@ -37,6 +43,32 @@ test("opens a rendered Markdown document from its building with P", async ({ pag
   await page.mouse.move(640, 400);
   await page.mouse.wheel(0, 1000);
   await expect(page.locator("#progress-summary")).toContainText(`${source.split("\n").length - 1} lines revealed`, { timeout: 20_000 });
+  await page.mouse.wheel(0, -1000);
+  let point;
+  await expect.poll(async () => {
+    const screenshot = await page.screenshot({ scale: "css" });
+    const coloredPixel = await page.evaluate(async png => {
+      const bytes = Uint8Array.from(atob(png), byte => byte.charCodeAt(0));
+      const image = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+      const context = new OffscreenCanvas(image.width, image.height).getContext("2d");
+      context.drawImage(image, 0, 0);
+      const { data, width } = context.getImageData(0, 0, image.width, image.height);
+      for (let y = 230; y < 520; y++) {
+        for (let x = 165; x < 440; x++) {
+          const i = (y * width + x) * 4;
+          const [red, green, blue] = [data[i], data[i + 1], data[i + 2]];
+          if (blue > 150 && blue > green + 45 && green > red + 30) return [x, y];
+        }
+      }
+      return null;
+    }, screenshot.toString("base64"));
+    const settled = coloredPixel && point && coloredPixel.every((value, index) => value === point[index]);
+    point = coloredPixel;
+    return Boolean(settled);
+  }).toBe(true);
+  await page.mouse.click(...point, { delay: 100 });
+  await expectOpen(page, "docs/LICENSE");
+  await expect(preview.locator(".plain-file-preview")).toHaveText(licenseText.trim());
   await page.keyboard.press("Tab", { delay: 120 });
   await expectClosed(page);
 });
