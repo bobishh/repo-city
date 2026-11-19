@@ -53,7 +53,6 @@ const ready = fetch("/github/session", { cache: "no-store", signal: AbortSignal.
   }).catch(() => {});
 
 export const githubAccount = () => session;
-export const githubReady = () => ready;
 export const githubSignIn = () => "/github/login?return=" + encodeURIComponent(location.pathname + location.search);
 
 function paintAccount() {

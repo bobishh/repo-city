@@ -101,13 +101,8 @@ in the `production` environment, then deploy. A private PR from a fork
 requires access to the base repository and the head fork. The Worker keeps
 the user token in an encrypted HttpOnly cookie with an eight-hour lifetime.
 
-The optional `TINSINK_BROWSER_KEY` GitHub repository variable enables
-production analytics. Use the public browser key for the `repo-city`
-project, restricted to the production origin. Events include page views and
-repository-open outcomes, timings, and whether a comparison base was
-requested. Payloads exclude repository names, revisions, source, identifiers,
-URL parameters, and cookies. Local builds and previews skip tracking, as do
-browsers with Do Not Track or Global Privacy Control enabled.
+The browser does not send usage analytics or telemetry. Builds and deployments
+do not inject event collectors or browser tracking keys.
 
 The optional GitHub App needs **Pull requests: write** for explicit PR
 comment publication. Read access still permits private drafts and GitHub
@@ -123,7 +118,3 @@ pinned Linguist projection in `web/syntax-language-map.json`. Ambiguous extensio
 prefer common grammars and `.lean` defaults to Lean 4. These are deterministic
 rules, rather than GitHub's statistical language classifier. Assets, Oniguruma
 WASM, source modules and license notices are served from the game origin.
-
-The optional web telemetry records coarse tour actions (start, complete,
-skip) and a successful GitHub connection. It sends no GitHub handle,
-repository name, source, search term, or comment.

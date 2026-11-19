@@ -8,7 +8,8 @@ mkdir -p "$output/game" "$output/assets"
 mkdir -p "$output/licenses"
 cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY.md licenses/stb-textedit-MIT.txt licenses/pulldown-cmark-MIT.txt licenses/bevy-markup-MIT.txt licenses/bevy-markup-APACHE.txt licenses/MPL-2.0.txt "$output/licenses/"
 cp assets/fonts/*-LICENSE web/assets/OFL-Caveat.txt "$output/licenses/"
-cp web/index.html web/style.css web/app.mjs web/github.mjs web/analytics.mjs web/syntax.mjs web/github-picker.mjs web/pointer.mjs web/touch.mjs web/progress.mjs web/review.mjs web/pr-review.mjs web/tablet.mjs web/tablet-view.mjs web/audio.mjs web/audio-worklet.mjs "$output/"
+cp web/index.html web/style.css web/app.mjs web/github.mjs web/syntax.mjs web/github-picker.mjs web/pointer.mjs web/touch.mjs web/progress.mjs web/review.mjs web/pr-review.mjs web/tablet.mjs web/tablet-view.mjs web/audio.mjs web/audio-worklet.mjs "$output/"
+rm -f "$output/analytics.mjs" "$output/analytics-config.mjs"
 rm -f "$output/github-markdown.css" "$output/github-markdown-LICENSE.txt"
 # Keep the worker and each language out of the initial game download.
 node web/build-syntax.mjs
@@ -26,15 +27,6 @@ cp licenses/linguist-MIT.txt "$output/syntax-licenses/"
 cp web/node_modules/vscode-oniguruma/LICENSE.txt "$output/syntax-licenses/vscode-oniguruma.txt"
 cp web/node_modules/vscode-textmate/LICENSE.md "$output/syntax-licenses/vscode-textmate.txt"
 cp web/node_modules/@wooorm/starry-night/lang/*.js "$output/syntax-source/"
-python3 - "$output/analytics-config.mjs" <<'PYCODE'
-from pathlib import Path
-import json
-import os
-import sys
-
-key = os.environ.get("TINSINK_BROWSER_KEY", "").strip()
-Path(sys.argv[1]).write_text(f"export const browserKey = {json.dumps(key)};\n")
-PYCODE
 cp web/assets/start-screen.webp web/assets/caveat-latin-wght.woff2 web/assets/OFL-Caveat.txt "$output/assets/"
 cp web/assets/robot-head.svg web/assets/apple-touch-icon.png "$output/assets/"
 wasm-bindgen --target web --remove-name-section --remove-producers-section \

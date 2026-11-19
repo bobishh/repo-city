@@ -1,16 +1,11 @@
 import { loadGitHub, parsePullRequest } from "./github.mjs";
-import { createAnalytics } from "./analytics.mjs";
-import { browserKey } from "./analytics-config.mjs";
 import { createSyntaxCache } from "./syntax.mjs";
 import { createCityAudio } from "./audio.mjs";
-import { focusRepositoryPicker, githubAccount, githubReady, githubRequest, refreshRepositoryPicker } from "./github-picker.mjs";
+import { focusRepositoryPicker, githubAccount, githubRequest, refreshRepositoryPicker } from "./github-picker.mjs";
 import { setupPointer } from "./pointer.mjs";
 import { createTouchControls } from "./touch.mjs";
 import { createReview } from "./review.mjs";
 import { readProgress, rememberExploration, writeProgress } from "./progress.mjs";
-
-const analytics = createAnalytics(browserKey);
-analytics.pageView();
 
 const form = document.querySelector("#repository-form");
 const status = document.querySelector("#status");
@@ -22,9 +17,7 @@ const dialog = document.querySelector("#repository-dialog");
 const help = document.querySelector("#help");
 const guideKey = "repo-city-guide-v1";
 let tourCommand = 0;
-let tourEntry = null;
 let changesOnlyRequested = false;
-let activeTourEntry = null;
 const logo = document.querySelector("#logo");
 const close = document.querySelector("#close");
 const reset = document.querySelector("#reset-progress");
@@ -44,8 +37,6 @@ const review = createReview({
   onCompare: (repository, before, after) => openRepository(repository, after, before, true),
   onTour(started) {
     tourCommand = ((tourCommand & ~1) + 2) | Number(started);
-    activeTourEntry = started ? (tourEntry ?? "help") : null;
-    analytics.tour(started ? "start" : "skip", tourEntry ?? "help");
     if (started) review.equipWater();
     try { localStorage.setItem(guideKey, "seen"); } catch { /* Available for this session. */ }
   },
@@ -94,7 +85,7 @@ window.addEventListener("keydown", event => {
     event.preventDefault();
     event.stopPropagation();
     if (!event.repeat) {
-      if (event.code === "KeyH") openGuide("help");
+      if (event.code === "KeyH") review.help();
       else review.changedFiles();
     }
     return;
@@ -107,15 +98,11 @@ window.addEventListener("keydown", event => {
   changesOnlyRequested = !changesOnlyRequested;
 }, true);
 
-function openGuide(entry) {
-  tourEntry = entry;
-  review.help();
-}
-help.addEventListener("click", () => { if (running) openGuide("help"); });
+help.addEventListener("click", () => { if (running) review.help(); });
 function offerFirstTour() {
   try { if (localStorage.getItem(guideKey)) return; }
   catch { /* The tour remains available when storage is disabled. */ }
-  openGuide("first_run");
+  review.help();
 }
 
 logo.addEventListener("click", () => {
@@ -178,9 +165,7 @@ function queryFor(repo, ref, base) {
 
 async function openRepository(repo, ref, base, exactBase = false) {
   if (submit.disabled) return;
-  const started = performance.now();
   const pull = parsePullRequest(repo);
-  const comparing = Boolean(pull || base?.trim());
   submit.disabled = true;
   form.setAttribute("aria-busy", "true");
   status.textContent = running ? "Loading repository…" : "Loading repository and browser engine…";
@@ -196,11 +181,6 @@ async function openRepository(repo, ref, base, exactBase = false) {
       await stageRepository(repository, ref, base);
       globalThis.repoCity = {
         tourCommand: () => tourCommand,
-        tourCompleted() {
-          if (!activeTourEntry) return;
-          analytics.tour("complete", activeTourEntry);
-          activeTourEntry = null;
-        },
         reviewVersion: review.version,
         reviewRead: review.snapshot,
         reviewSave: review.add,
@@ -335,11 +315,9 @@ async function openRepository(repo, ref, base, exactBase = false) {
     if (firstOpen) offerFirstTour();
     audio.refresh();
     focusCanvas();
-    analytics.repositoryOpened(true, performance.now() - started, comparing);
   } catch (error) {
     status.textContent = error instanceof Error ? error.message : String(error);
     if (!running) canvas.hidden = true;
-    analytics.repositoryOpened(false, performance.now() - started, comparing);
   } finally {
     submit.disabled = false;
     form.removeAttribute("aria-busy");
@@ -379,6 +357,5 @@ if (parameters.get("github") === "connected") {
   const clean = new URL(location.href);
   clean.searchParams.delete("github");
   history.replaceState(null, "", clean);
-  void githubReady().then(() => { if (githubAccount()?.login) analytics.githubConnected(); });
 }
 if (initial && !parameters.has("picker")) openRepository(initial, parameters.get("ref"), parameters.get("base"), parameters.get("exact") === "1");

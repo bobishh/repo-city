@@ -85,8 +85,6 @@ pub(super) fn advance(
             Step::Travel if navigation.is_flying() && !navigation.overview() => Step::Arriving,
             Step::Arriving if !navigation.is_flying() => Step::Wash,
             Step::Wash if review.washing && review.nozzle > 0.85 => {
-                #[cfg(target_arch = "wasm32")]
-                browser_tour_completed();
                 Step::Finish(time.elapsed_secs())
             }
             Step::Finish(started) if time.elapsed_secs() > started + 9. => Step::Off,
@@ -132,17 +130,6 @@ fn browser_tour() -> (u32, bool) {
     }
     let value = command();
     (value >> 1, value & 1 != 0)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn browser_tour_completed() {
-    use wasm_bindgen::prelude::*;
-    #[wasm_bindgen]
-    extern "C" {
-        #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = tourCompleted)]
-        fn completed();
-    }
-    completed();
 }
 
 #[cfg(not(target_arch = "wasm32"))]
