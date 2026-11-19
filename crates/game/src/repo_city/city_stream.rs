@@ -188,6 +188,115 @@ mod tests {
         assert_eq!(arrived[0], Item::File(5999));
         assert_eq!(repo.files.len(), 6000);
     }
+
+    // Given a project map and detailed buildings, filtering and restoring at
+    // intermediate frames must keep each map roof attached to its moving body.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_map_roofs_follow_the_same_filter_motion_as_building_parts() {
+        use file_facade::{Part, SinkPart, transform};
+        use std::time::Duration;
+
+        let mut repo = repository_picker::empty();
+        repo.baseline = Some("base".into());
+        repo.files = [Change::Modified, Change::Unchanged]
+            .into_iter()
+            .enumerate()
+            .map(|(index, change)| repo_world::File {
+                path: format!("src/file_{index}.rs"),
+                before: None,
+                after: Some(repo_world::Blob {
+                    id: format!("blob-{index}"),
+                    size: 4000,
+                    mode: "100644".into(),
+                }),
+                change,
+                position: [index as f32 * 20., 0.],
+            })
+            .collect();
+        let set = WorldSet::load(None).unwrap();
+        let mut app = App::new();
+        app.insert_resource(Repo(repo.clone()))
+            .insert_resource(Explorer::new(0))
+            .insert_resource(Time::<()>::default())
+            .init_resource::<file_facade::ChangesOnly>()
+            .init_resource::<listing::Listing>()
+            .init_resource::<city_navigation::Navigation>()
+            .add_systems(Update, file_facade::lower_unchanged);
+        let parts: Vec<_> = repo
+            .files
+            .iter()
+            .map(|file| {
+                let size = listing::block_size(file);
+                let mut body = app.world_mut().spawn(transform(file, size, Part::Body));
+                if file.change == Change::Unchanged {
+                    body.insert(SinkPart::new(file, size, Part::Body));
+                }
+                body.id()
+            })
+            .collect();
+        app.update();
+        let mut mesh = project_map(
+            &repo,
+            app.world().resource::<file_facade::ChangesOnly>(),
+            &set,
+        );
+        let colors = match mesh.attribute(Mesh::ATTRIBUTE_COLOR).unwrap() {
+            bevy::mesh::VertexAttributeValues::Float32x4(colors) => colors.clone(),
+            _ => panic!("project map uses linear RGBA colors"),
+        };
+        let indices = mesh.indices().unwrap().iter().collect::<Vec<_>>();
+        for enabled in [true, false, true, false] {
+            if app.world().resource::<file_facade::ChangesOnly>().enabled != enabled {
+                app.world_mut()
+                    .resource_mut::<file_facade::ChangesOnly>()
+                    .toggle();
+            }
+            for _ in 0..10 {
+                app.world_mut()
+                    .resource_mut::<Time>()
+                    .advance_by(Duration::from_millis(65));
+                app.update();
+                let filter = app.world().resource::<file_facade::ChangesOnly>();
+                assert!(move_project_roofs(&mut mesh, &repo, filter));
+                let Some(bevy::mesh::VertexAttributeValues::Float32x3(vertices)) =
+                    mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+                else {
+                    panic!("project map must contain roof positions");
+                };
+                assert_eq!(
+                    vertices.len(),
+                    8,
+                    "keep moving roofs until they sink below the street"
+                );
+                for (index, body) in parts.iter().enumerate() {
+                    let body = app.world().get::<Transform>(*body).unwrap();
+                    let top = body.translation.y + body.scale.y / 2.;
+                    assert!(
+                        (vertices[index * 4][1] - (top - 0.05)).abs() < 0.0001,
+                        "map roof {index} must move with the body while filter is {enabled}"
+                    );
+                }
+                let rebuilt = project_map(&repo, filter, &set);
+                let Some(bevy::mesh::VertexAttributeValues::Float32x3(rebuilt_vertices)) =
+                    rebuilt.attribute(Mesh::ATTRIBUTE_POSITION)
+                else {
+                    panic!("rebuilt project map must contain roof positions");
+                };
+                assert_eq!(
+                    vertices, rebuilt_vertices,
+                    "streaming during a transition uses the same heights"
+                );
+                let Some(bevy::mesh::VertexAttributeValues::Float32x4(current_colors)) =
+                    mesh.attribute(Mesh::ATTRIBUTE_COLOR)
+                else {
+                    panic!("project map must retain its colors");
+                };
+                assert_eq!(&colors, current_colors);
+                assert_eq!(indices, mesh.indices().unwrap().iter().collect::<Vec<_>>());
+            }
+        }
+    }
 }
 
 /// A single inexpensive mesh fills the overview beyond the detailed city stream.
@@ -218,23 +327,34 @@ pub(super) fn draw_project_map(
     set: Res<WorldSet>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    maps: Query<Entity, With<ProjectMap>>,
-    mut previous_filter: Local<Option<bool>>,
+    maps: Query<(Entity, &Mesh3d), With<ProjectMap>>,
+    mut previous_progress: Local<Option<f32>>,
 ) {
     let enabled = repo.0.files.len() > EAGER_FILES
         && navigation.overview_level() == Some(city_navigation::Overview::Project);
-    if enabled && !repo.is_changed() && *previous_filter == Some(focus.enabled) && !maps.is_empty()
+    let progress = focus.animation_progress();
+    if enabled
+        && !repo.is_changed()
+        && let Ok((_, handle)) = maps.single()
     {
-        return;
+        if *previous_progress == Some(progress) {
+            return;
+        }
+        if let Some(mut mesh) = meshes.get_mut(&handle.0)
+            && move_project_roofs(&mut mesh, &repo.0, &focus)
+        {
+            *previous_progress = Some(progress);
+            return;
+        }
     }
     if !enabled && maps.is_empty() {
         return;
     }
-    for entity in &maps {
+    for (entity, _) in &maps {
         commands.entity(entity).despawn();
     }
     if enabled {
-        *previous_filter = Some(focus.enabled);
+        *previous_progress = Some(progress);
         commands.spawn((
             ProjectMap,
             Mesh3d(meshes.add(project_map(&repo.0, &focus, &set))),
@@ -245,6 +365,38 @@ pub(super) fn draw_project_map(
             })),
         ));
     }
+}
+
+fn project_roof_height(
+    file: &repo_world::File,
+    focus: &file_facade::ChangesOnly,
+    size: Vec3,
+) -> f32 {
+    (size.y - 0.05).max(0.05) + focus.vertical_offset(file, size)
+}
+
+fn move_project_roofs(
+    mesh: &mut Mesh,
+    repo: &Repository,
+    focus: &file_facade::ChangesOnly,
+) -> bool {
+    let Some(bevy::mesh::VertexAttributeValues::Float32x3(vertices)) =
+        mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
+    else {
+        return false;
+    };
+    let first = repo.districts.len() * 4;
+    let count = repo.files.len().min(FILE_LIMIT);
+    if vertices.len() != first + count * 4 {
+        return false;
+    }
+    for (file, corners) in repo.files.iter().zip(vertices[first..].chunks_exact_mut(4)) {
+        let height = project_roof_height(file, focus, listing::block_size(file));
+        for corner in corners {
+            corner[1] = height;
+        }
+    }
+    true
 }
 
 fn project_map(repo: &Repository, focus: &file_facade::ChangesOnly, set: &WorldSet) -> Mesh {
@@ -284,12 +436,7 @@ fn project_map(repo: &Repository, focus: &file_facade::ChangesOnly, set: &WorldS
             ink(set.ground),
         );
     }
-    for file in repo
-        .files
-        .iter()
-        .filter(|file| focus.includes(file))
-        .take(FILE_LIMIT)
-    {
+    for file in repo.files.iter().take(FILE_LIMIT) {
         let size = listing::block_size(file);
         let tint = match file.change {
             Change::Unchanged => file_facade::INK[file_facade::kind(&file.path)],
@@ -300,7 +447,7 @@ fn project_map(repo: &Repository, focus: &file_facade::ChangesOnly, set: &WorldS
         roof(
             file.position.into(),
             size.xz() * 0.96,
-            (size.y - 0.05).max(0.05),
+            project_roof_height(file, focus, size),
             ink(tint),
         );
     }

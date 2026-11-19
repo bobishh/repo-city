@@ -56,7 +56,12 @@ export function createTablet(dialog, canvas) {
       const event = JSON.parse(value);
       const element = elements.get(event.id);
       if (!element?.isConnected || element.disabled) return;
-      if (event.kind === "enter") {
+      if (event.kind === "editor") {
+        // Rust owns the editing state. Keep this service projection observable
+        // without replacing the source or rebuilding the GPU widget per keystroke.
+        element.dataset.editorValue = event.value;
+        if (event.range) element.dataset.editorRange = JSON.stringify(event.range);
+      } else if (event.kind === "enter") {
         element.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
       } else if (event.kind === "input") {
         element.value = event.value;

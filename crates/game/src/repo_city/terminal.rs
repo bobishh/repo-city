@@ -166,16 +166,33 @@ impl Terminal {
         if self.root.as_deref() != Some(root) {
             self.start(root.to_owned());
         }
-        native_panel::text(parent, &root.to_string_lossy(), native_panel::INK);
+
         parent
             .spawn(Node {
-                column_gap: px(8.),
+                width: percent(100.),
+                min_height: px(32.),
+                flex_shrink: 0.,
+                column_gap: px(6.),
+                align_items: AlignItems::Center,
                 ..default()
             })
             .with_children(|tools| {
+                let name = root
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("Repository");
+                tools.spawn((
+                    Text::new(name),
+                    TextFont::from_font_size(13.),
+                    TextColor(Color::srgb_u8(139, 180, 185)),
+                ));
+                tools.spawn(Node {
+                    flex_grow: 1.,
+                    ..default()
+                });
                 let copy = native_panel::button::<Action, Self>(
                     tools,
-                    "Copy screen",
+                    "Copy",
                     native_panel::INK,
                     Action::Copy,
                 );
@@ -189,25 +206,14 @@ impl Terminal {
                 tools.commands().entity(paste).insert(TabIndex(41));
                 let restart = native_panel::button::<Action, Self>(
                     tools,
-                    "Restart shell",
+                    "Restart",
                     native_panel::INK,
                     Action::Restart,
                 );
                 tools.commands().entity(restart).insert(TabIndex(42));
             });
-        native_panel::text(
-            parent,
-            "F6 switches shell / controls. Ctrl+Tab puts away VibePad. Tab, Esc and Ctrl+C go to the shell.",
-            native_panel::INK,
-        );
-        parent.spawn((
-            Status,
-            Text::new(&self.status),
-            native_panel::panel_font(),
-            TextColor(native_panel::INK),
-        ));
         let image = self.image.clone().unwrap_or_default();
-        parent
+        let view = parent
             .spawn((
                 View,
                 ImageNode::new(image),
@@ -228,7 +234,35 @@ impl Terminal {
             .observe(|event: On<PointerPress>, mut focus: ResMut<InputFocus>| {
                 focus.set(event.entity, FocusCause::Pressed)
             })
-            .id()
+            .id();
+        parent
+            .spawn(Node {
+                width: percent(100.),
+                height: px(24.),
+                flex_shrink: 0.,
+                overflow: Overflow::scroll_y(),
+                ..default()
+            })
+            .with_children(|footer| {
+                footer.spawn((
+                    Status,
+                    Text::new(self.visible_status()),
+                    TextFont::from_font_size(12.),
+                    TextColor(Color::srgb_u8(177, 196, 198)),
+                    Node {
+                        width: percent(100.),
+                        ..default()
+                    },
+                ));
+            });
+        view
+    }
+
+    fn visible_status(&self) -> &str {
+        match self.status.as_str() {
+            "Shell ready" => "",
+            other => other,
+        }
     }
 }
 
@@ -388,7 +422,7 @@ pub(super) fn update(
             }
         }
         for mut label in &mut labels {
-            label.set_if_neq(Text::new(&terminal.status));
+            label.set_if_neq(Text::new(terminal.visible_status()));
         }
     }
 }
@@ -468,6 +502,33 @@ fn render(frame: &session::Frame) -> Image {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn terminal_chrome_keeps_routine_status_and_full_paths_out_of_the_screen() {
+        let root = PathBuf::from("/Users/example/private/project");
+        let mut terminal = Terminal {
+            root: Some(root.clone()),
+            status: "Shell ready".into(),
+            ..default()
+        };
+        let mut world = World::new();
+        let parent = world.spawn(Node::default()).id();
+        world.commands().entity(parent).with_children(|body| {
+            terminal.draw(body, &root);
+        });
+        world.flush();
+        let mut labels = world.query::<&Text>();
+        let labels = labels
+            .iter(&world)
+            .map(|text| text.0.clone())
+            .collect::<Vec<_>>();
+        assert!(!labels.iter().any(|text| text.contains("/Users/example")
+            || *text == "Shell ready"
+            || text.starts_with("F6 switches")));
+        let mut views = world.query_filtered::<&Node, With<View>>();
+        assert_eq!(views.single(&world).unwrap().flex_grow, 1.);
+        assert!(labels.iter().any(|text| *text == "project"));
+    }
 
     #[test]
     fn exiting_the_shell_starts_a_new_session_without_reopening_the_terminal() {

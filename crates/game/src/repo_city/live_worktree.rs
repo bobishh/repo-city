@@ -11,6 +11,7 @@ use std::{
 };
 
 use notify::{EventKind, RecursiveMode, Watcher};
+use sha2::{Digest, Sha256};
 
 use super::*;
 
@@ -29,9 +30,14 @@ pub(super) struct Live {
     last_touched: Option<(String, f64)>,
     focus_requested: bool,
     status: String,
+    change_generation: u64,
 }
 
 impl Live {
+    pub(super) fn change_generation(&self) -> u64 {
+        self.change_generation
+    }
+
     pub(super) fn touched_at(&self, path: &str) -> Option<f64> {
         self.touched.get(path).copied()
     }
@@ -76,7 +82,7 @@ pub(super) fn request_focus(_: On<bevy::ui_widgets::Activate>, mut live: ResMut<
 
 struct Session {
     root: PathBuf,
-    updates: Mutex<Receiver<Result<Repository, String>>>,
+    updates: Mutex<Receiver<Result<(Repository, u64), String>>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -87,7 +93,10 @@ impl Drop for Session {
 }
 
 impl Session {
-    fn start(root: PathBuf) -> Self {
+    fn start(previous: &Repository) -> Self {
+        let root = previous.root.clone();
+        let mut previous = previous.clone();
+        let mut change_generation = 0_u64;
         let (send, updates) = mpsc::sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
@@ -114,7 +123,16 @@ impl Session {
                 }
             };
             loop {
-                if send.send(Repository::open_worktree(&folder)).is_err() {
+                let refreshed = Repository::open_worktree(&folder).map(|next| {
+                    // Compare only candidate content on the watcher thread. Git and
+                    // worktree IDs use different hashes for the same saved bytes.
+                    if source_changed(&previous, &next) {
+                        change_generation = change_generation.wrapping_add(1);
+                    }
+                    previous = next.clone();
+                    (next, change_generation)
+                });
+                if send.send(refreshed).is_err() {
                     return;
                 }
                 loop {
@@ -139,6 +157,60 @@ impl Session {
 
 fn changed(before: &repo_world::File, after: &repo_world::File) -> bool {
     before.before != after.before || before.after != after.after
+}
+
+fn source_changed(previous: &Repository, next: &Repository) -> bool {
+    let before = previous
+        .files
+        .iter()
+        .enumerate()
+        .filter_map(|(index, file)| {
+            file.after
+                .as_ref()
+                .map(|blob| (file.path.as_str(), (index, blob)))
+        })
+        .collect::<HashMap<_, _>>();
+    let after = next
+        .files
+        .iter()
+        .enumerate()
+        .filter_map(|(index, file)| {
+            file.after
+                .as_ref()
+                .map(|blob| (file.path.as_str(), (index, blob)))
+        })
+        .collect::<HashMap<_, _>>();
+    before.len() != after.len()
+        || before.iter().any(|(path, (old_index, old))| {
+            let Some((new_index, new)) = after.get(path) else {
+                return true;
+            };
+            old.size != new.size
+                || (old.id != new.id
+                    && match (
+                        content_identity(previous, *old_index, old),
+                        content_identity(next, *new_index, new),
+                    ) {
+                        (Some(old), Some(new)) => old != new,
+                        _ => true,
+                    })
+        })
+}
+
+fn content_identity(repo: &Repository, index: usize, blob: &repo_world::Blob) -> Option<String> {
+    if let Some(hash) = blob.id.strip_prefix("worktree:")
+        && hash.len() == 64
+        && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Some(hash.to_owned());
+    }
+    if blob.id.starts_with("worktree:") {
+        // Oversized worktree assets have metadata identities, not recoverable
+        // old bytes. Keep such changes audible without reading large files.
+        return None;
+    }
+    let bytes = repo.asset_bytes(index, false).ok()?;
+    Some(format!("{:x}", Sha256::digest(bytes)))
 }
 
 fn refreshed_files(previous: &Repository, next: &Repository) -> Option<HashSet<usize>> {
@@ -213,7 +285,7 @@ pub(super) fn update(
         .is_none_or(|watch| watch.root != repo.0.root)
     {
         *live = Live {
-            session: Some(Session::start(repo.0.root.clone())),
+            session: Some(Session::start(&repo.0)),
             ..default()
         };
     }
@@ -224,7 +296,7 @@ pub(super) fn update(
     else {
         return;
     };
-    let mut next = match result {
+    let (mut next, change_generation) = match result {
         Ok(next) => next,
         Err(error) => {
             live.status = error;
@@ -232,6 +304,7 @@ pub(super) fn update(
         }
     };
     live.status.clear();
+    live.change_generation = change_generation;
     let refreshed_files = refreshed_files(&repo.0, &next);
     if refreshed_files.as_ref().is_some_and(HashSet::is_empty) {
         return;
@@ -410,6 +483,105 @@ mod tests {
     use super::*;
 
     #[test]
+    fn saving_then_committing_identical_bytes_does_not_repeat_the_save_cue() {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let path = std::env::temp_dir().join(format!(
+            "repo-city-save-cue-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        let fixture = Fixture(path);
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&fixture.0)
+                .args([
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.test",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "--quiet"]);
+        std::fs::write(fixture.0.join("main.rs"), "one\n").unwrap();
+        git(&["add", "main.rs"]);
+        git(&["commit", "--quiet", "-m", "initial"]);
+        let initial = Repository::open_worktree(&fixture.0).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                fixture.0.join("main.rs"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            let mode_only = Repository::open_worktree(&fixture.0).unwrap();
+            assert!(!source_changed(&initial, &mode_only));
+        }
+        std::fs::write(fixture.0.join("main.rs"), "two\n").unwrap();
+        let saved = Repository::open_worktree(&fixture.0).unwrap();
+        assert!(source_changed(&initial, &saved));
+        git(&["add", "main.rs"]);
+        git(&["commit", "--quiet", "-m", "save"]);
+        let committed = Repository::open_worktree(&fixture.0).unwrap();
+        assert!(!source_changed(&saved, &committed));
+        std::fs::remove_file(fixture.0.join("main.rs")).unwrap();
+        let deleted = Repository::open_worktree(&fixture.0).unwrap();
+        assert!(source_changed(&committed, &deleted));
+    }
+
+    #[test]
+    fn save_cues_track_worktree_content_including_deletion_not_baseline_or_mode_refreshes() {
+        let mut previous = repository_picker::empty();
+        previous.files.push(repo_world::File {
+            path: "src/main.rs".into(),
+            before: None,
+            after: Some(repo_world::Blob {
+                id: "content-a".into(),
+                size: 120,
+                mode: "100644".into(),
+            }),
+            position: [0., 0.],
+            change: Change::Added,
+        });
+        let mut next = previous.clone();
+        assert!(!source_changed(&previous, &next));
+        next.revision = "worktree:new-head".into();
+        next.baseline = Some("new-baseline".into());
+        next.files[0].before = next.files[0].after.clone();
+        next.files[0].after.as_mut().unwrap().mode = "100755".into();
+        assert!(!source_changed(&previous, &next));
+        next.files[0].after.as_mut().unwrap().id = "content-b".into();
+        assert!(source_changed(&previous, &next));
+        next.files[0].after = None;
+        assert!(source_changed(&previous, &next));
+        next.files.clear();
+        assert!(source_changed(&previous, &next));
+        assert!(source_changed(&next, &previous));
+    }
+
+    #[test]
     fn saving_one_file_in_a_120_file_city_does_not_rebuild_its_neighbors() {
         fn objects(world: &mut World) -> (HashSet<Entity>, HashSet<Entity>) {
             let mut query =
@@ -478,11 +650,12 @@ mod tests {
         .insert_resource(Time::<()>::default())
         .add_systems(Update, (update, spawn_city).chain());
         app.update();
+        assert_eq!(app.world().resource::<Live>().change_generation(), 0);
         let (stable_before, changed_before) = objects(app.world_mut());
         assert_eq!(changed_before.len(), 7);
         assert!(stable_before.len() > 119 * 7);
 
-        send.send(Ok(next)).unwrap();
+        send.send(Ok((next, 1))).unwrap();
         app.update();
         let (stable_after, changed_after) = objects(app.world_mut());
         assert_eq!(stable_after, stable_before);
@@ -490,6 +663,7 @@ mod tests {
         assert!(changed_after.is_disjoint(&changed_before));
         let expected = &app.world().resource::<Repo>().0.files[57].path;
         let live = app.world().resource::<Live>();
+        assert_eq!(live.change_generation(), 1);
         assert_eq!(live.last_touched(0.), Some((expected.as_str(), 0)));
         assert_eq!(live.touched.len(), 1);
         assert_eq!(

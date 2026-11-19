@@ -70,3 +70,19 @@ Touch flight controls adapt Feed the Poor's `web/src/touch.ts` at revision
 `beabe03f5aef648717fa175693cb9a76c953d9d5`. The local adaptation adds altitude,
 boost, water/paint actions, and VibePad navigation to the existing movement stick
 and drag-to-look controls.
+
+## Source editing
+
+VibePad uses Sean Barrett's unchanged `stb_textedit.h` 1.16 from `nothings/stb`
+revision `9600522de53973336fa033a289858a4354cbb04c`, under its MIT license option.
+See `licenses/stb-textedit-MIT.txt` and `crates/explorer/vendor/stb/SOURCE.md`.
+The local C adapter supplies bounded Unicode storage, wrapped row geometry and
+key bindings; the shared Bevy widget reuses the city's syntax colors and fonts.
+
+## Native agent audio
+
+Voice uses webrtc-rs 0.14.0 under MIT or Apache-2.0, Tokio under MIT, and CPAL
+under Apache-2.0. Packaged native builds include Cargo source notices alongside
+the application licenses. The session and transcript adaptation follows
+`bobishh/ecky` revision `c48e376f676663272ee3a06622cd81bacb3f24d7`;
+the local transport uses native WebRTC and audio devices instead of Tauri's webview.

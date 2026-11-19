@@ -8,6 +8,7 @@ export function tabletView(root, identify, images = new Map()) {
     const id = identify(element);
     const text = element.textContent?.trim() ?? "";
     const label = element.getAttribute("aria-label") ?? "";
+    if (element.dataset.codeEditor !== undefined) return { id, kind: "editor", name: element.dataset.path, source: element.dataset.sourceKey, text: element.textContent ?? "", value: element.dataset.editorValue ?? element.textContent ?? "" };
     if (tag === "button" || tag === "a") return { id, kind: "button", text, name: label || text, disabled: element.disabled ?? false, selected: element.getAttribute("aria-pressed") === "true", color: element.querySelector(".paint-swatch")?.style.getPropertyValue("--pigment") ?? "" };
     if (tag === "input" || tag === "textarea" || tag === "select") {
       const kind = tag === "select" ? "select" : element.type === "checkbox" ? "check" : element.type === "range" ? "range" : element.type === "color" ? "color" : "input";
@@ -20,8 +21,10 @@ export function tabletView(root, identify, images = new Map()) {
     if (element.classList.contains("reading-limits")) return { id, kind: "row", children: children(element) };
     if (tag === "header") {
       const parts = children(element);
+      if (element.classList.contains("vibepad-bar")) return { id, kind: "header", children: parts };
       return { id, kind: "row", children: [parts[0], { id: `${id}:spacer`, kind: "spacer" }, ...parts.slice(1)] };
     }
+    if (element.matches("nav.vibepad-tabs")) return { id, kind: "tabs", children: children(element) };
     if (tag === "dl") return { id, kind: "controls", children: children(element) };
     if (element.matches("nav,.dialog-actions,.paint-slots > div,tr")) return { id, kind: "row", children: children(element) };
     if (element.matches("fieldset,.reading-estimate,form.review-reading")) return { id, kind: "card", children: children(element) };

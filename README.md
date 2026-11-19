@@ -112,6 +112,9 @@ WebGPU. Paste an `owner/repository` name, a GitHub repository URL, or a GitHub
 pull request URL. For a repository, choose a branch, tag, or commit from the
 suggestions. Pick a comparison base to review a branch from its merge base.
 With no base specified, Repo City compares the revision with its first parent.
+The HUD labels this **Last commit**; its counter counts changed files whose diff
+you opened. **F** filters this comparison in flight and in map views, including
+ordinary repository URLs.
 A pull request opens its head tree and highlights changed lines in place. The
 diff wall also shows deleted lines. Paste a pull request URL or choose **Pull
 requests** after selecting its repository. Closed and merged pull requests
@@ -161,6 +164,9 @@ scrolls downward to the next unread block while water remains on. This setting i
 delay bounds. Wrapped continuations count as displayed rows; the original
 source line is saved as read only after all its continuations are cleared.
 Reading a close diff, blame wall, or hunk stop uses the same timer and reveals only its visible source lines on the correct comparison side. Flying past or looking away does not complete a block.
+Function blocks do not nest: an outer function owns its entire source interval,
+including callbacks inside it. Moving between those lines keeps the same block
+and reading estimate. Fixed fallback blocks stop at function boundaries.
 While washing, code is visible immediately. Leaving an unfinished block covers
 it again. A ring around the tool-colored reticle shrinks as the delay expires.
 
@@ -246,6 +252,75 @@ matching files remain listed as unresolved. Malformed JSON, duplicate OTel span
 IDs within one trace and parent cycles stop route creation. Exported names alone
 are not used to guess source locations.
 
+## Edit a private source draft
+
+Aim at a text or code file, press **P**, then choose **Edit**. VibePad edits only
+the current reading chunk, selected by the same function or fixed-line settings
+as washing. The full document remains available in preview. VibePad uses the
+same editor on desktop and in the browser. Syntax colors and mathematical glyph
+fallbacks are shared with source walls. Browser grammars load on demand.
+
+Typing autosaves a private draft on the current device, scoped to the repository,
+revision, comparison side, file, original blob and source chunk. Closing VibePad or reopening
+the same snapshot restores it. **Cmd/Ctrl+S** flushes the same draft; it does not
+create a commit or publish to GitHub. **Copy**, **Paste**, **Undo**, **Redo** and
+**Discard draft** are available in the editor. **Ctrl+]** inserts four spaces;
+**Tab** still puts VibePad away. **F6** switches between the editor and controls.
+Arrow keys, selection, Home/End and Page Up/Down stay inside the focused editor.
+**Cmd/Ctrl+F** focuses Find in file. Enter, Previous match and Next match open
+the matching source chunk immediately and preserve the query. **/** remains literal
+text inside the editor. On a wall, **/** searches and **Enter** opens its matching
+chunk for editing without waiting for a flight.
+
+On a live desktop worktree, **Apply to file** explicitly replaces only the original
+source interval with the edited chunk and preserves the rest of the file.
+It refuses paths through symbolic links and refuses to overwrite a file changed
+outside VibePad. Commit snapshots, pull requests and browser drafts keep their
+original source unchanged; use **Copy** to take edits elsewhere. Commit and push
+are separate Git operations and are not performed by this editor.
+
+Editing is limited to 256 KiB per chunk. Undo history is bounded and is not saved
+across reopening; source drafts are. Caret movement uses Unicode scalar values,
+so complex grapheme clusters and bidirectional editing are not fully supported.
+If local storage fails, the editor shows an error and retains the current chunk
+when navigation would abandon it. Unsaved text also survives putting away and
+reopening VibePad in the same app session. Copy changes before reloading or exiting
+when storage remains unavailable.
+Desktop drafts live beside preferences in `source-drafts`; browser drafts use
+local storage. Clearing application or site data removes them.
+
+The browser build needs a C compiler supporting WebAssembly for the small
+`stb_textedit` adapter. On macOS, install LLVM with Homebrew; the build selects
+`/opt/homebrew/opt/llvm/bin/clang` when no C compiler override is set. Other
+platforms can set `CC_wasm32_unknown_unknown` to a compatible Clang.
+
+## Talk to a coding agent
+
+On desktop, open **Tab → Agent** to connect to the locally installed Codex CLI.
+It uses your existing Codex login and keeps a conversation for each checkout.
+Enter a message and choose **Send**, or press **Cmd/Ctrl+Enter**. Requested
+command and file permissions appear in the same tablet with **Approve once**
+and **Reject**. **Stop work** interrupts the current turn.
+
+Press **F9** to start voice while flying (some Macs use **Fn+F9**). The app
+requests microphone access only after that action. Voice requires Codex
+app-server realtime support and uses native audio devices. The microphone pauses
+while the agent speaks; use headphones. **F9** stops voice, and **Disconnect**
+closes the agent connection. Putting away VibePad keeps the conversation active.
+**H** lists the voice and terminal controls. City audio pauses for the voice conversation.
+The current native transport uses PCMU at 8 kHz mono, giving speech telephone
+bandwidth. It does not support interrupting the agent by speaking over it.
+
+The agent receives the selected repository context and can read camera focus and
+local notes through Repo City's MCP tools. Focus reports whether the window is
+active; it is not eye tracking. Public tool events with explicit file paths
+draw blue beacons at those buildings, including activity from identified child
+agents. Unresolved activity is not assigned to a guessed building.
+
+The local dialogue view and conversation ID persist beside preferences in
+`agent-conversations`. Codex manages the underlying agent conversation. This
+integration is native-only; the deployed browser does not start local agents.
+
 ## Sound and preferences
 
 The gear at the right of VibePad's navigation opens **Settings**. Valid changes save automatically; invalid fields show a reason and keep the last valid settings. Set the water
@@ -264,6 +339,11 @@ block lets the current utterance finish; mute, opening a menu, or hiding the
 application stops speech. macOS uses system voices; desktop speech is currently
 unavailable on Linux and Windows. Browser voice availability depends on installed
 local voices.
+
+On desktop, **File changes** plays a short chime for coalesced local source saves,
+additions and deletions. It starts disabled, shares Volume/Mute, and waits for
+narration or an agent voice conversation to finish. Refreshing identical content
+or committing already-saved bytes does not replay the chime.
 
 ## Git history and terminal
 

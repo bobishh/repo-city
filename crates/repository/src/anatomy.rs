@@ -67,6 +67,31 @@ pub struct FileAnatomy {
 }
 
 impl FileAnatomy {
+    /// Canonical, zero-based reading regions. Nested callables remain in the
+    /// anatomy inventory, but their outer region owns every shared source row.
+    pub fn reading_regions(&self, total_lines: usize) -> Vec<std::ops::Range<usize>> {
+        let mut ranges = self
+            .callables
+            .iter()
+            .filter_map(|callable| {
+                let (start, end) = (callable.start_line? as usize, callable.end_line? as usize);
+                (start > 0 && start <= end && end <= total_lines).then(|| start - 1..end)
+            })
+            .collect::<Vec<_>>();
+        ranges.sort_unstable_by_key(|range| (range.start, range.end));
+        let mut regions: Vec<std::ops::Range<usize>> = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            if let Some(previous) = regions.last_mut()
+                && range.start < previous.end
+            {
+                previous.end = previous.end.max(range.end);
+            } else {
+                regions.push(range);
+            }
+        }
+        regions
+    }
+
     pub fn unavailable(file: &str, language: &str, reason: &str) -> Self {
         Self {
             status: AnatomyStatus::Unavailable,
@@ -108,4 +133,63 @@ pub fn analyze(file: &str, source: &str) -> FileAnatomy {
 #[cfg(target_arch = "wasm32")]
 pub fn analyze(file: &str, _: &str) -> FileAnatomy {
     FileAnatomy::unavailable(file, "", "Syntax extraction requires the native build")
+}
+
+#[cfg(test)]
+mod reading_tests {
+    use super::*;
+
+    fn callable(start: Option<u32>, end: Option<u32>) -> CallableAnatomy {
+        CallableAnatomy {
+            id: String::new(),
+            match_key: String::new(),
+            name: String::new(),
+            display_name: None,
+            kind: "function".into(),
+            visibility: CallableVisibility::Unknown,
+            arity: None,
+            start_line: start,
+            end_line: end,
+            start_byte: 0,
+            end_byte: 0,
+            body_line_span: None,
+            decision_count: None,
+        }
+    }
+
+    #[test]
+    fn reading_regions_keep_outer_ownership_without_losing_nested_anatomy() {
+        let mut anatomy = FileAnatomy::unavailable("callbacks.mjs", "js", "fixture");
+        anatomy.callables = vec![
+            callable(Some(5), Some(11)),
+            callable(Some(52), Some(54)),
+            callable(Some(4), Some(50)),
+            callable(Some(55), Some(56)),
+            callable(Some(9), Some(9)),
+            callable(Some(4), Some(50)),
+        ];
+        assert_eq!(anatomy.reading_regions(56), vec![3..50, 51..54, 54..56]);
+        assert_eq!(anatomy.callables.len(), 6);
+        anatomy.callables.reverse();
+        assert_eq!(anatomy.reading_regions(56), vec![3..50, 51..54, 54..56]);
+    }
+
+    #[test]
+    fn malformed_regions_are_ignored_and_shared_physical_rows_have_one_owner() {
+        let mut anatomy = FileAnatomy::unavailable("callbacks.mjs", "js", "fixture");
+        anatomy.callables = vec![
+            callable(Some(0), Some(1)),
+            callable(Some(8), Some(7)),
+            callable(Some(4), Some(51)),
+            callable(None, Some(3)),
+            callable(Some(1), None),
+        ];
+        assert!(anatomy.reading_regions(50).is_empty());
+        anatomy.callables.extend([
+            callable(Some(1), Some(5)),
+            callable(Some(5), Some(8)),
+            callable(Some(9), Some(9)),
+        ]);
+        assert_eq!(anatomy.reading_regions(50), vec![0..8, 8..9]);
+    }
 }

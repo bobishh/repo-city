@@ -207,6 +207,7 @@ pub(super) fn keyboard_navigation(
     mut focus: ResMut<InputFocus>,
     mut visible: ResMut<bevy::input_focus::InputFocusVisible>,
     fields: Query<Option<&Name>, With<TextInput>>,
+    editors: Query<Entity, With<source_editor::View>>,
     disabled: Query<(), With<bevy::ui::InteractionDisabled>>,
     parents: Query<&ChildOf>,
     nodes: Query<(&UiGlobalTransform, &ComputedNode)>,
@@ -214,6 +215,20 @@ pub(super) fn keyboard_navigation(
     #[cfg(not(target_arch = "wasm32"))] terminal: Option<Res<terminal::Terminal>>,
     #[cfg(not(target_arch = "wasm32"))] terminal_views: Query<Entity, With<terminal::View>>,
 ) {
+    if keys.just_pressed(KeyCode::F6)
+        && let Ok(view) = editors.single()
+    {
+        let next = if focus.get() == Some(view) {
+            navigation
+                .navigate(&focus, bevy::input_focus::tab_navigation::NavAction::First)
+                .unwrap_or(view)
+        } else {
+            view
+        };
+        focus.set(next, bevy::input_focus::FocusCause::Navigated);
+        visible.0 = true;
+        return;
+    }
     #[cfg(not(target_arch = "wasm32"))]
     if keys.just_pressed(KeyCode::F6)
         && let Ok(view) = terminal_views.single()
@@ -241,6 +256,9 @@ pub(super) fn keyboard_navigation(
         KeyCode::AltLeft,
         KeyCode::AltRight,
     ]) {
+        return;
+    }
+    if focus.get().is_some_and(|entity| editors.contains(entity)) {
         return;
     }
     if let Some(entity) = focus.get()

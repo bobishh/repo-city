@@ -142,7 +142,24 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     return container;
   }
 
-  function previewMarkdown(path, load, kind = "markdown") {
+  function sourceEditor(path, text, identity, preview) {
+    dialog.dataset.view = "source-editor";
+    dialog.dataset.tablet = "";
+    view(path);
+    const editor = make("div", text, { "data-code-editor": "", "data-path": path,
+      "data-source-key": JSON.stringify(identity), "aria-label": `Edit ${path}` });
+    actions(button("Preview", () => {
+      const range = JSON.parse(editor.dataset.editorRange ?? JSON.stringify(identity.range));
+      const lines = text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+      const value = editor.dataset.editorValue ?? lines.slice(range.start, range.end).join("");
+      preview({ range, value, displayText: lines.slice(0, range.start).join("") + value + lines.slice(range.end).join("") });
+    }));
+    dialog.append(editor);
+    show();
+    tablet.focus(editor);
+  }
+
+  function previewMarkdown(path, load, kind = "markdown", edit = false) {
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     previewUrl = undefined;
     dialog.dataset.view = kind;
@@ -151,7 +168,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     const content = make("article", "Loading document…", { class: "markdown-preview", "aria-live": "polite" });
     dialog.append(content);
     show();
-    void load().then(({ text, mark, bytes, format }) => {
+    void load().then(({ text, mark, bytes, format, identity, displayText }) => {
       if (!dialog.open || !content.isConnected) return;
       if (kind === "image") {
         const image = make("img", undefined, { alt: path, class: "file-image-preview" });
@@ -165,10 +182,17 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
         content.replaceChildren(image);
         return;
       }
-      if (!text.trim()) { content.textContent = "Empty document."; return; }
+      if (identity) {
+        const openEditor = () => sourceEditor(path, text, identity, ({ range, displayText }) => previewMarkdown(path, async () => ({ ...(await load()), identity: { ...identity, range }, displayText }), kind));
+        if (edit) { openEditor(); return; }
+        const editButton = button("Edit", openEditor);
+        content.before(editButton);
+      }
+      const visibleText = displayText ?? text;
+      if (!visibleText.trim()) { content.textContent = "Empty document."; return; }
       if (kind === "text") {
-        content.replaceChildren(make("pre", text, { class: "plain-file-preview" }));
-      } else markdown(text, content);
+        content.replaceChildren(make("pre", visibleText, { class: "plain-file-preview" }));
+      } else markdown(visibleText, content);
       const end = make("div", undefined, { class: "markdown-end", "aria-hidden": "true" });
       content.append(end);
       end.addEventListener("tabletread", () => { markdownRead = mark; });

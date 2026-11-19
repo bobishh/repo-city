@@ -38,6 +38,10 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["NSS
 security-framework = "3.7"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cpal = "0.17.3"
+webrtc = "=0.14.0"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "net"] }
+sha2 = "0.10"
 libc = "0.2"
 base64 = "0.22"
 notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
@@ -54,4 +58,7 @@ portable-pty = "0.9.0"
 getrandom = { version = "0.3.4", features = ["wasm_js"] }
 wasm-bindgen = "0.2"
 bevy = { version = "0.20", default-features = false, features = ["webgpu", "bevy_clipboard", "touch"] }
-web-sys = { version = "0.3", features = ["Document", "Element", "Window"] }
+web-sys = { version = "0.3", features = ["Document", "Element", "Window", "Storage"] }
+
+[build-dependencies]
+cc = "1"

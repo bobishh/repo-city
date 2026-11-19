@@ -70,7 +70,7 @@ window.addEventListener("keydown", event => {
   if (event.altKey && !event.ctrlKey && !event.metaKey && /^Digit[1-9]$/.test(event.code) && review.selectTab(Number(event.code.slice(-1)) - 1)) {
     event.preventDefault(); event.stopPropagation(); return;
   }
-  if (event.code === "KeyP" && (event.metaKey || event.ctrlKey) && !event.altKey && running && !dialog.open) {
+  if (event.code === "KeyP" && (event.metaKey || event.ctrlKey) && !event.altKey && running && (!dialog.open || review.tabletVisible())) {
     event.preventDefault(); event.stopPropagation(); if (!event.repeat) review.fileSearch(); return;
   }
   if (event.code === "KeyH" && plain && review.helpVisible() && !/^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) {
@@ -99,9 +99,9 @@ window.addEventListener("keydown", event => {
     }
     return;
   }
-  if (review.tabletVisible() && (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Space", "Enter", "Backspace"].includes(event.code) || ((event.metaKey || event.ctrlKey) && ["KeyA", "KeyC", "KeyV", "KeyX", "KeyZ"].includes(event.code)))) event.preventDefault();
+  if (review.tabletVisible() && (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Space", "Enter", "Backspace", "F6"].includes(event.code) || ((event.metaKey || event.ctrlKey) && ["KeyA", "KeyC", "KeyF", "KeyS", "KeyV", "KeyX", "KeyY", "KeyZ"].includes(event.code)))) event.preventDefault();
   if (event.code !== "KeyF" || event.repeat || event.metaKey || event.ctrlKey ||
-      event.altKey || (!locked && (event.target !== canvas || canvas.hasAttribute("data-pointer-ui"))) ||
+      event.altKey || (!locked && (event.target !== canvas || (canvas.hasAttribute("data-pointer-ui") && !canvas.hasAttribute("data-overview")))) ||
       document.querySelector("dialog[open]") || !active?.canFilterChanges) return;
   event.preventDefault();
   changesOnlyRequested = !changesOnlyRequested;
@@ -158,10 +158,9 @@ async function stageRepository(repository, ref, base) {
     progressError = error;
     return [];
   });
-  const { before, after } = snapshot;
-  const canFilterChanges = Boolean(pull) && (Object.keys(before).length !== Object.keys(after).length ||
-    Object.entries(before).some(([path, blob]) => after[path]?.id !== blob.id || after[path]?.mode !== blob.mode));
-  active = { repository, blobs: new Map(), blameFiles: new Map(), marks, progressError, canFilterChanges };
+  const canFilterChanges = Boolean(snapshot.baseline);
+  const comparisonLabel = pull ? "PR" : base?.trim() ? "Compare" : snapshot.baseline ? "Last commit" : "Initial";
+  active = { repository, blobs: new Map(), blameFiles: new Map(), marks, progressError, canFilterChanges, comparisonLabel };
   changesOnlyRequested = false;
   progressPanel.hidden = false;
   repositoryVersion++;
@@ -212,6 +211,7 @@ async function openRepository(repo, ref, base, exactBase = false) {
         takeTouchInput: touch.take,
         openFileSearch: review.fileSearch,
         canFilterChanges: () => active.canFilterChanges,
+        comparisonLabel: () => active.comparisonLabel,
         takeChangesOnlyRequest() {
           const requested = changesOnlyRequested;
           changesOnlyRequested = false;
@@ -227,7 +227,7 @@ async function openRepository(repo, ref, base, exactBase = false) {
         traceReply: review.traceReply,
         audio,
         audioActivity: audio.activity,
-        previewMarkdown(path, before) {
+        previewMarkdown(path, before, start = 0, end = 6, edit = false) {
           const { repository } = active;
           const snapshot = JSON.parse(repository.snapshot);
           const blob = snapshot[before ? "before" : "after"][path];
@@ -246,8 +246,12 @@ async function openRepository(repo, ref, base, exactBase = false) {
             try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
             catch { throw new Error("Non-UTF-8 asset: metadata only"); }
             const rows = text.split("\n").length - Number(!text || text.endsWith("\n"));
-            return { text, mark: { path, blob: blob.id, before, rows } };
-          }, image ? "image" : markdown ? "markdown" : "text");
+            return { text, mark: { path, blob: blob.id, before, rows }, identity: {
+              repository: repository.review.repository.toLowerCase(), revision: repository.review.revision,
+              baseline: repository.review.baseline ?? null, path, blob: blob.id, before,
+              range: { start: Math.max(0, Math.min(rows, start)), end: Math.max(0, Math.min(rows, end)) },
+            } };
+          }, image ? "image" : markdown ? "markdown" : "text", edit);
         },
         takeMarkdownRead: review.takeMarkdownRead,
         takeReadingSettings: review.takeReadingSettings,

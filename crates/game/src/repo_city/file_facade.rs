@@ -19,6 +19,22 @@ impl ChangesOnly {
     pub(super) fn includes(&self, file: &repo_world::File) -> bool {
         !self.enabled || file.change != Change::Unchanged
     }
+
+    pub(super) fn animation_progress(&self) -> f32 {
+        self.lowered
+    }
+
+    fn eased(&self) -> f32 {
+        self.lowered * self.lowered * (3. - 2. * self.lowered)
+    }
+
+    pub(super) fn vertical_offset(&self, file: &repo_world::File, size: Vec3) -> f32 {
+        if file.change == Change::Unchanged {
+            -SinkPart::depth(size) * self.eased()
+        } else {
+            0.
+        }
+    }
 }
 
 #[derive(Component)]
@@ -31,8 +47,12 @@ impl SinkPart {
     pub(super) fn new(file: &repo_world::File, size: Vec3, part: Part) -> Self {
         Self {
             street_y: transform(file, size, part).translation.y,
-            depth: size.y + BEAM_HEIGHT + 1.,
+            depth: Self::depth(size),
         }
+    }
+
+    fn depth(size: Vec3) -> f32 {
+        size.y + BEAM_HEIGHT + 1.
     }
 
     fn height(&self, lowered: f32) -> f32 {
@@ -99,7 +119,7 @@ pub(super) fn lower_unchanged(
     }
     let step = time.delta_secs() / 0.65;
     focus.lowered += (target - focus.lowered).clamp(-step, step);
-    let eased = focus.lowered * focus.lowered * (3. - 2. * focus.lowered);
+    let eased = focus.eased();
     for (part, mut pose) in &mut parts.p0() {
         pose.translation.y = part.height(eased);
     }

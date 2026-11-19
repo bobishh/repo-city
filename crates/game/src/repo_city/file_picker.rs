@@ -236,7 +236,12 @@ pub(super) fn update(
     >,
     mut labels: Query<(&mut Text, Has<PickerQuery>, Has<PickerHint>)>,
     #[cfg(not(target_arch = "wasm32"))] reset_button: Query<&Children, With<ResetProgressButton>>,
-    (nearest, explorer): (Option<Res<Nearest>>, Option<Res<Explorer>>),
+    (nearest, explorer, settings, camera): (
+        Option<Res<Nearest>>,
+        Option<Res<Explorer>>,
+        Option<Res<reading::Settings>>,
+        Query<&Transform, PlayerCamera>,
+    ),
     #[cfg(not(target_arch = "wasm32"))] (mut markdown, mut image): (
         Option<ResMut<markdown_preview::Request>>,
         Option<ResMut<image_preview::Request>>,
@@ -278,6 +283,19 @@ pub(super) fn update(
             || explorer
                 .as_ref()
                 .is_some_and(|explorer| explorer.selected == index && explorer.before);
+        let settings = settings.as_deref().copied().unwrap_or_default();
+        let range = explorer
+            .as_deref()
+            .filter(|explorer| explorer.selected == index)
+            .zip(camera.single().ok())
+            .map_or(0..settings.block_lines as usize, |(explorer, camera)| {
+                listing::editor_range(file, explorer, camera, settings)
+            });
+        let range = if range.is_empty() {
+            0..settings.block_lines as usize
+        } else {
+            range
+        };
         #[cfg(not(target_arch = "wasm32"))]
         {
             if image_preview::supported(&file.path) {
@@ -285,11 +303,11 @@ pub(super) fn update(
                     image.0 = Some((index, before));
                 }
             } else if let Some(markdown) = markdown.as_deref_mut() {
-                markdown.0 = Some((index, before));
+                markdown.0 = Some((index, before, range.clone(), false));
             }
         }
         #[cfg(target_arch = "wasm32")]
-        markdown_preview::open_browser(&file.path, before);
+        markdown_preview::open_browser(&file.path, before, range.start, range.end, false);
         events.clear();
         return;
     }

@@ -159,7 +159,7 @@ const NAVIGATION: &[(&str, &str)] = &[
     ("Cmd+P", "Find a file"),
     ("P", "Preview aimed text or image"),
     ("Tab", "Open or put away VibePad"),
-    ("Alt+1–6", "Select a VibePad tab"),
+    ("Alt+1–8", "Select a VibePad tab"),
     ("Arrows / Enter", "Move through controls and activate"),
     ("Ctrl+O / Ctrl+I", "Previous or next building"),
     ("L", "Fly to the last changed file"),
@@ -189,6 +189,26 @@ const REVIEW: &[(&str, &str)] = &[
     ("W / S or scroll", "Next or previous review stop"),
     ("Q", "Return to the diff wall"),
     ("V", "Toggle reviewed mark"),
+];
+
+#[cfg(not(target_arch = "wasm32"))]
+const WORKBENCH: &[(&str, &str)] = &[
+    (
+        "F9",
+        "Start or stop agent voice; works with VibePad put away",
+    ),
+    (
+        "Tab → Agent",
+        "Open the conversation; closing VibePad keeps it active",
+    ),
+    ("Cmd/Ctrl+Enter", "Send the message in Agent"),
+    ("Tab → Terminal", "Open the persistent shell"),
+    (
+        "F6",
+        "Switch between shell/editor input and tablet controls",
+    ),
+    ("Ctrl+Tab", "Put away VibePad while the terminal has focus"),
+    ("Tab / Esc / Ctrl+C", "Pass through to the focused shell"),
 ];
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -272,6 +292,11 @@ pub(super) fn draw_controls(parent: &mut ChildSpawnerCommands) {
             });
             columns.spawn(column).with_children(|right| {
                 section(right, "Review", REVIEW, &font, ink);
+                right.spawn(Node {
+                    height: px(10.),
+                    ..default()
+                });
+                section(right, "Agent and terminal", WORKBENCH, &font, ink);
             });
         });
 }

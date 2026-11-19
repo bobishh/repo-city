@@ -25,6 +25,7 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>Talk to your coding agent while exploring the repository. Recording starts only when you choose Talk.</string>
 </dict></plist>
 PLIST
 printf '%s\n' "$bundle"

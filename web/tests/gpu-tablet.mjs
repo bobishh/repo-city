@@ -44,7 +44,7 @@ export async function gpuClick(page, control, touch = false) {
       return;
     }
     await page.mouse.move(640, 400);
-    await page.mouse.wheel(0, item?.bounds[1] < 0 ? -12 : 12);
+    await page.mouse.wheel(0, item?.bounds[1] < (item?.clip?.[1] ?? 0) ? -12 : 12);
     await expect.poll(async () => JSON.stringify((await readTablet(page)).layout.controls.find(item => item.id === id)?.bounds)).not.toBe(JSON.stringify(item?.bounds));
   }
   throw new Error(`Tablet control ${id} did not enter the screen`);

@@ -1,4 +1,5 @@
 //! Native city atmosphere, generative radio and local narration of visible code.
+mod change_sound;
 mod radio;
 mod speech;
 mod synthesis;
@@ -37,6 +38,7 @@ impl bevy::app::Plugin for Plugin {
 pub(super) struct Settings {
     pub ambience: bool,
     pub speech: bool,
+    pub file_changes: bool,
     pub volume: f32,
     pub voice: String,
     pub radio: Station,
@@ -80,6 +82,7 @@ impl Default for Settings {
         Self {
             ambience: false,
             speech: false,
+            file_changes: false,
             volume: 0.18,
             voice: "Daniel".into(),
             radio: Station::Off,
@@ -118,11 +121,15 @@ impl Settings {
 }
 
 #[derive(Default)]
-struct Controls([AtomicU32; 8]);
+struct Controls {
+    levels: [AtomicU32; 8],
+    cue: AtomicU32,
+    cue_volume: AtomicU32,
+}
 
 impl Controls {
     fn store(&self, levels: Levels) {
-        for (field, value) in self.0.iter().zip([
+        for (field, value) in self.levels.iter().zip([
             levels.master,
             levels.wind,
             levels.spray,
@@ -137,7 +144,7 @@ impl Controls {
     }
     fn load(&self) -> Levels {
         let [master, wind, spray, works, siren, pan, music, radio] =
-            std::array::from_fn(|index| f32::from_bits(self.0[index].load(Ordering::Relaxed)));
+            std::array::from_fn(|index| f32::from_bits(self.levels[index].load(Ordering::Relaxed)));
         Levels {
             master,
             wind,
@@ -159,6 +166,8 @@ struct Decoder {
     controls: Arc<Controls>,
     synth: Synth,
     right: Option<f32>,
+    cue: u32,
+    tone: change_sound::Tone,
 }
 impl Decodable for CitySound {
     type Decoder = Decoder;
@@ -167,6 +176,8 @@ impl Decodable for CitySound {
             controls: self.controls.clone(),
             synth: Synth::new(0xc17a),
             right: None,
+            cue: self.controls.cue.load(Ordering::Relaxed),
+            tone: change_sound::Tone::default(),
         }
     }
 }
@@ -176,9 +187,17 @@ impl Iterator for Decoder {
         if let Some(right) = self.right.take() {
             return Some(right);
         }
+        let cue = self.controls.cue.load(Ordering::Relaxed);
+        if cue != self.cue {
+            self.cue = cue;
+            self.tone.trigger();
+        }
+        let tone = self.tone.frame(f32::from_bits(
+            self.controls.cue_volume.load(Ordering::Relaxed),
+        ));
         let [left, right] = self.synth.frame(self.controls.load());
-        self.right = Some(right);
-        Some(left)
+        self.right = Some((right + tone).clamp(-1., 1.));
+        Some((left + tone).clamp(-1., 1.))
     }
 }
 impl Source for Decoder {
@@ -217,6 +236,7 @@ struct Runtime {
     camera: Option<Vec3>,
     speech_enabled: bool,
     voice_failed: bool,
+    change_cue: change_sound::Gate,
 }
 impl Default for Runtime {
     fn default() -> Self {
@@ -228,6 +248,7 @@ impl Default for Runtime {
             camera: None,
             speech_enabled: false,
             voice_failed: false,
+            change_cue: change_sound::Gate::default(),
         }
     }
 }
@@ -252,11 +273,34 @@ fn update(
     windows: Query<&Window, With<PrimaryWindow>>,
     camera: Query<&Transform, PlayerCamera>,
     mut runtime: ResMut<Runtime>,
+    live: Res<live_worktree::Live>,
+    agent: Option<Res<agent_session::Session>>,
 ) {
     let (Ok(camera), Ok(window)) = (camera.single(), windows.single()) else {
         return;
     };
     let active = window.focused && !repo.0.files.is_empty();
+    let cue_enabled = repo.0.is_worktree() && settings.file_changes && settings.volume > 0.;
+    let conversation = agent.is_some_and(|agent| agent.voice_active());
+    let speaking = runtime.voice.busy() || conversation;
+    runtime.controls.cue_volume.store(
+        (if cue_enabled && !speaking {
+            settings.volume
+        } else {
+            0.
+        })
+        .to_bits(),
+        Ordering::Relaxed,
+    );
+    if runtime.change_cue.update(
+        &repo.0.root,
+        live.change_generation(),
+        cue_enabled,
+        speaking,
+        time.elapsed_secs_f64(),
+    ) {
+        runtime.controls.cue.fetch_add(1, Ordering::Relaxed);
+    }
     let movement = runtime
         .camera
         .replace(camera.translation)
@@ -268,7 +312,7 @@ fn update(
         .and_then(|aim| repo.0.files.get(aim.index))
         .is_some_and(|file| file.change != Change::Unchanged);
     runtime.controls.store(Levels {
-        master: if active && settings.ambience {
+        master: if active && settings.ambience && !conversation {
             settings.volume
                 * if runtime.voice.busy() {
                     0.12
@@ -289,14 +333,15 @@ fn update(
         works: if changed { 0.8 } else { 0.12 },
         siren: 0.5,
         pan: camera.forward().x,
-        music: if active {
+        music: if active && !conversation {
             settings.volume * if runtime.voice.busy() { 0.12 } else { 1. }
         } else {
             0.
         },
         radio: settings.radio.code(),
     });
-    let enabled = active && settings.speech && settings.volume > 0. && !review.blocked;
+    let enabled =
+        active && settings.speech && settings.volume > 0. && !review.blocked && !conversation;
     if enabled != runtime.speech_enabled {
         runtime.voice.stop();
         runtime.focus = None;
@@ -395,5 +440,47 @@ fn update(
         runtime
             .voice
             .speak(text, (settings.volume * 2.).min(1.), &settings.voice);
+    }
+}
+
+#[cfg(test)]
+mod change_tests {
+    use super::*;
+
+    #[test]
+    fn local_change_audio_stays_off_for_new_and_existing_preferences() {
+        let settings = Settings::default();
+        assert!(!settings.file_changes && !settings.ambience && !settings.speech);
+        let previous: Settings = serde_json::from_str(r#"{"ambience":true,"volume":0.4}"#).unwrap();
+        assert!(!previous.file_changes);
+        let enabled = Settings {
+            file_changes: true,
+            ..settings
+        };
+        let restored: Settings =
+            serde_json::from_slice(&serde_json::to_vec(&enabled).unwrap()).unwrap();
+        assert!(restored.file_changes);
+    }
+
+    #[test]
+    fn change_cue_reaches_the_stereo_decoder_with_ambience_off_and_obeys_mute() {
+        let controls = Arc::new(Controls::default());
+        let asset = CitySound {
+            controls: controls.clone(),
+        };
+        let mut decoder = asset.decoder();
+        controls
+            .cue_volume
+            .store(0.4_f32.to_bits(), Ordering::Relaxed);
+        controls.cue.fetch_add(1, Ordering::Relaxed);
+        controls.store(Levels::default());
+        let samples = decoder.by_ref().take(44_100).collect::<Vec<_>>();
+        assert!(samples.iter().map(|sample| sample.abs()).sum::<f32>() > 10.);
+        assert!(samples.chunks_exact(2).all(|pair| pair[0] == pair[1]));
+        controls.cue_volume.store(0, Ordering::Relaxed);
+        // Let the gain smooth to silence before another save.
+        decoder.by_ref().take(44_100).for_each(drop);
+        controls.cue.fetch_add(1, Ordering::Relaxed);
+        assert!(decoder.take(44_100).all(|sample| sample.abs() < 0.00001));
     }
 }

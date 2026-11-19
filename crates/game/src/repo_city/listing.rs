@@ -36,6 +36,56 @@ fn texture_row_height(width: f32) -> f32 {
     width * code_texture::LISTING_ROW_PIXELS as f32 / code_texture::LISTING_WIDTH as f32
 }
 
+/// Canonical source lines for editing the reading block under the reticle.
+pub(super) fn editor_range(
+    file: &repo_world::File,
+    explorer: &Explorer,
+    camera: &Transform,
+    settings: reading::Settings,
+) -> Range<usize> {
+    let size = block_size(file);
+    let face = Face::at_camera(file, size, camera, (size.x * 1.85).max(5.)).unwrap_or(Face::Source);
+    let count = match face {
+        Face::Source => explorer.source_layout.len(),
+        Face::Blame => explorer.blame_layout.len(),
+        Face::Diff => explorer.diff_layout.rows.len(),
+    };
+    if count == 0 {
+        return settings.rows(0, explorer.highlighted.len());
+    }
+    let side = WallSide::new(file, count, face, size);
+    let row = side.wall.row(side.look_height(camera), count);
+    let line = match face {
+        Face::Source => explorer
+            .source_layout
+            .rows
+            .get(row)
+            .map(|line| line.number.saturating_sub(1)),
+        Face::Blame => explorer
+            .blame_layout
+            .rows
+            .get(row)
+            .map(|line| line.number.saturating_sub(1)),
+        Face::Diff => explorer.comparison.as_ref().map(|diff| {
+            explorer
+                .diff_layout
+                .project(diff, row, explorer.before, false)
+        }),
+    }
+    .unwrap_or(0);
+    editor_range_at_line(explorer, line, settings)
+}
+pub(super) fn editor_range_at_line(
+    explorer: &Explorer,
+    line: usize,
+    settings: reading::Settings,
+) -> Range<usize> {
+    let row = explorer.source_layout.visual_rows(line).start;
+    explorer
+        .source_layout
+        .canonical_range(settings.block(explorer, row))
+}
+
 pub(super) fn block_size(file: &repo_world::File) -> Vec3 {
     size_from_rows(estimated_rows(file))
 }

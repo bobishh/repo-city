@@ -115,14 +115,23 @@ struct ImageView {
 #[derive(Default)]
 struct Document {
     path: String,
-    pending: Option<native_github::Job<(String, markdown_preview::ReadDocument)>>,
-    result: Option<Result<(String, markdown_preview::ReadDocument), String>>,
+    pending: Option<native_github::Job<(String, markdown_preview::ReadDocument, String)>>,
+    result: Option<Result<(String, markdown_preview::ReadDocument, String), String>>,
     content: Option<Entity>,
     finished: bool,
+    before: bool,
+    range: std::ops::Range<usize>,
+    editing: bool,
+    edited_source: Option<String>,
 }
 
 impl Document {
-    fn open(repository: &Repository, index: usize, before: bool) -> Option<Self> {
+    fn open(
+        repository: &Repository,
+        index: usize,
+        before: bool,
+        range: std::ops::Range<usize>,
+    ) -> Option<Self> {
         let file = repository.files.get(index)?.clone();
         let path = file.path.clone();
         let file_snapshot = Repository {
@@ -135,6 +144,8 @@ impl Document {
         let read_path = path.clone();
         Some(Self {
             path,
+            before,
+            range,
             pending: Some(native_github::Job::spawn(move || {
                 let source = file_snapshot.source(0, before)?;
                 let file = &file_snapshot.files[0];
@@ -150,7 +161,11 @@ impl Document {
                     blob,
                     rows: source.split_inclusive('\n').count(),
                 };
-                Ok((markdown_preview::document_html(&file.path, &source), read))
+                Ok((
+                    markdown_preview::document_html(&file.path, &source),
+                    read,
+                    source,
+                ))
             })),
             ..default()
         })
@@ -170,10 +185,11 @@ pub(super) enum Page {
     Search,
     Terminal,
     Trace,
+    Agent,
 }
 
 impl Page {
-    pub(super) const NAVIGATION: [(Self, &'static str); 7] = [
+    pub(super) const NAVIGATION: [(Self, &'static str); 8] = [
         (Self::Files, "Files"),
         (Self::Search, "Find"),
         (Self::Help, "Help"),
@@ -181,6 +197,7 @@ impl Page {
         (Self::Git, "Git"),
         (Self::Terminal, "Terminal"),
         (Self::Trace, "Trace"),
+        (Self::Agent, "Agent"),
     ];
 }
 
@@ -200,12 +217,14 @@ enum Action {
     GitAfter(usize),
     GitCompare,
     StartTour,
+    EditDocument,
     Connection(usize),
     TraceImport,
     TraceFollow,
     TraceSelect(usize),
     Ambience,
     Speech,
+    FileChangeSound,
     Voice,
     Radio,
     Volume(f32),
@@ -243,6 +262,7 @@ impl Tablet {
             Page::Search => "search",
             Page::Terminal => "terminal",
             Page::Trace => "trace",
+            Page::Agent => "agent",
         })
     }
 
@@ -273,10 +293,19 @@ pub(super) fn spawn_help(commands: &mut Commands, font: &TextFont, ink: Color) {
             },
         ))
         .with_children(|controls| {
-            controls.spawn((
-                file_picker::button("H", font, ink, AlignSelf::Auto),
-                observe(|_: On<Activate>, mut tablet: ResMut<Tablet>| tablet.open_help()),
-            ));
+            controls
+                .spawn((
+                    file_picker::button("?", font, ink, AlignSelf::Auto),
+                    observe(|_: On<Activate>, mut tablet: ResMut<Tablet>| tablet.open_help()),
+                ))
+                .insert(Node {
+                    width: px(32.),
+                    height: px(32.),
+                    padding: UiRect::ZERO,
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                });
         });
 }
 
@@ -427,6 +456,7 @@ pub(super) fn update(
         mut images,
         mut terminal,
         mut trace,
+        editors,
     ): (
         ResMut<reading::Settings>,
         ResMut<guide::Tour>,
@@ -443,9 +473,12 @@ pub(super) fn update(
         Option<ResMut<Assets<Image>>>,
         Option<ResMut<terminal::Terminal>>,
         Option<ResMut<trace_import::Trace>>,
+        Query<&source_editor::View>,
     ),
 ) {
-    let editing = focus.get().is_some_and(|entity| fields.contains(entity));
+    let editing = focus
+        .get()
+        .is_some_and(|entity| fields.contains(entity) || editors.contains(entity));
     let terminal_page = tablet.is_open() && tablet.view == Page::Terminal;
     let help = keys.just_pressed(KeyCode::KeyH) && unmodified(&keys) && !editing && !terminal_page;
     let find_file = !terminal_page
@@ -475,6 +508,7 @@ pub(super) fn update(
                 KeyCode::Digit5,
                 KeyCode::Digit6,
                 KeyCode::Digit7,
+                KeyCode::Digit8,
             ]
             .iter()
             .position(|key| keys.just_pressed(*key))
@@ -562,7 +596,7 @@ pub(super) fn update(
                 .filter(|document| !document.finished)
             && let Some(content) = document.content.and_then(|entity| layout.get(entity).ok())
             && content.size().y > 0.
-            && let Some(Ok((_, mark))) = &document.result
+            && let Some(Ok((_, mark, _))) = &document.result
             && let Ok((scroll, viewport)) = rows.single()
             && viewport.size().y > 0.
             && scroll.y * viewport.inverse_scale_factor().recip() + viewport.size().y + 2.
@@ -610,6 +644,18 @@ pub(super) fn update(
             return;
         }
         match action {
+            Some(Action::EditDocument) => {
+                if let Some(document) = tablet.document.as_mut() {
+                    if document.editing {
+                        if let Ok(editor) = editors.single() {
+                            document.edited_source = Some(editor.full_value());
+                            document.range = editor.range();
+                        }
+                    }
+                    document.editing = !document.editing;
+                    redraw = true;
+                }
+            }
             Some(Action::TraceSelect(index)) => {
                 if let Some(trace) = trace.as_deref_mut()
                     && let Some(group) =
@@ -713,6 +759,7 @@ pub(super) fn update(
             Some(
                 Action::Ambience
                 | Action::Speech
+                | Action::FileChangeSound
                 | Action::Volume(_)
                 | Action::Voice
                 | Action::Radio,
@@ -722,6 +769,7 @@ pub(super) fn update(
                     match action {
                         Some(Action::Ambience) => audio.ambience = !audio.ambience,
                         Some(Action::Speech) => audio.speech = !audio.speech,
+                        Some(Action::FileChangeSound) => audio.file_changes = !audio.file_changes,
                         Some(Action::Radio) => audio.radio = audio.radio.next(),
                         Some(Action::Voice) => {
                             audio.voice = match audio.voice.as_str() {
@@ -805,9 +853,12 @@ pub(super) fn update(
             tablet.history = Some(History::open(&repo.0, 0));
         }
         if page == Page::Document
-            && let Some((index, before)) = markdown
+            && let Some((index, before, range, edit)) = markdown
         {
-            tablet.document = Document::open(&repo.0, index, before);
+            tablet.document = Document::open(&repo.0, index, before, range);
+            if let Some(document) = tablet.document.as_mut() {
+                document.editing = edit;
+            }
         }
         if page == Page::Image
             && let Some((index, before)) = image
@@ -1035,12 +1086,18 @@ fn draw(
         Page::Search => "Find a file",
         Page::Terminal => "Terminal",
         Page::Trace => "Paste a trace",
+        Page::Agent => "Agent",
+    };
+    let chrome_title = if matches!(tablet.view, Page::Agent | Page::Terminal) {
+        ""
+    } else {
+        title
     };
     let panel = if let Some(panel) = tablet.panel {
-        native_panel::refresh_tablet(commands, panel, title);
+        native_panel::refresh_tablet(commands, panel, chrome_title);
         panel
     } else {
-        native_panel::tablet(commands, title)
+        native_panel::tablet(commands, chrome_title)
     };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1056,16 +1113,31 @@ fn draw(
                 column_gap: px(6.),
                 width: percent(100.),
                 flex_wrap: FlexWrap::Wrap,
+                padding: UiRect::bottom(px(9.)),
+                border: UiRect::bottom(px(1.)),
                 ..default()
             })
+            .insert(BorderColor::all(Color::srgb_u8(31, 64, 70)))
             .with_children(|bar| {
                 for (view, label) in Page::NAVIGATION {
                     let entity = add_button(bar, label, Action::Switch(view), &mut tab);
                     first.get_or_insert(entity);
+                    bar.commands().entity(entity).insert(Node {
+                        min_height: px(32.),
+                        align_items: AlignItems::Center,
+                        padding: UiRect::axes(px(11.), px(5.)),
+                        border: UiRect::bottom(px(2.)),
+                        ..default()
+                    });
                     if view == tablet.view {
+                        bar.commands().entity(entity).insert((
+                            BackgroundColor(Color::srgb_u8(19, 60, 68)),
+                            BorderColor::all(Color::srgb_u8(117, 225, 205)),
+                        ));
+                    } else {
                         bar.commands()
                             .entity(entity)
-                            .insert(BackgroundColor(Color::srgb_u8(23, 79, 87)));
+                            .insert((BackgroundColor(Color::NONE), BorderColor::all(Color::NONE)));
                     }
                 }
                 let settings = add_button(bar, "⚙", Action::Switch(Page::Settings), &mut tab);
@@ -1076,6 +1148,10 @@ fn draw(
                 });
             });
         match tablet.view {
+            Page::Agent => {
+                first = Some(agent_session::spawn(parent));
+                return;
+            }
             Page::Trace => {
                 first = Some(draw_trace(parent, tablet, trace, &mut tab));
                 return;
@@ -1120,7 +1196,11 @@ fn draw(
                 return;
             }
             Page::Document => {
-                draw_document(parent, tablet.document.as_mut());
+                if let Some(editor) =
+                    draw_document(parent, tablet.document.as_mut(), repository, &mut tab)
+                {
+                    first = Some(editor);
+                }
                 return;
             }
             Page::Settings => {
@@ -1281,7 +1361,54 @@ fn draw(
     (panel, first.expect("the tablet always has navigation"))
 }
 
-fn draw_document(parent: &mut ChildSpawnerCommands, document: Option<&mut Document>) {
+fn draw_document(
+    parent: &mut ChildSpawnerCommands,
+    document: Option<&mut Document>,
+    repository: &Repository,
+    tab: &mut i32,
+) -> Option<Entity> {
+    let document = document?;
+    if let Some(Ok((_, mark, source))) = &document.result {
+        let end = document.range.end.min(source.split_inclusive('\n').count());
+        let range = document.range.start..end;
+        let permitted = source_editor::chunk_bytes(source, range.clone())
+            .is_ok_and(|bytes| bytes.len() <= 256 * 1024);
+        let button = add_button(
+            parent,
+            if document.editing { "Preview" } else { "Edit" },
+            Action::EditDocument,
+            tab,
+        );
+        if !permitted {
+            parent
+                .commands()
+                .entity(button)
+                .insert(bevy::ui::InteractionDisabled);
+            native_panel::text(
+                parent,
+                "Editing is limited to 256 KiB. The full file remains available in preview.",
+                native_panel::INK,
+            );
+        }
+        if document.editing && permitted {
+            let identity = serde_json::json!({"repository":repository.root.to_string_lossy(),"revision":repository.revision,"baseline":repository.baseline,"path":document.path,"blob":mark.blob,"before":document.before,"range":range}).to_string();
+            let apply = (repository.is_worktree() && !document.before).then(|| {
+                source_editor::ApplyTarget {
+                    root: repository.root.clone(),
+                    path: document.path.clone(),
+                    expected: source.clone(),
+                    bytes: source_editor::chunk_bytes(source, range.clone()).unwrap_or(0..0),
+                }
+            });
+            return Some(source_editor::spawn(
+                parent,
+                &document.path,
+                &identity,
+                source,
+                apply,
+            ));
+        }
+    }
     parent
         .spawn((
             FileRows,
@@ -1294,17 +1421,22 @@ fn draw_document(parent: &mut ChildSpawnerCommands, document: Option<&mut Docume
                 ..default()
             },
         ))
-        .with_children(|body| {
-            let Some(document) = document else { return };
-            match document.result.as_ref() {
-                Some(Ok((html, _))) if !html.trim().is_empty() => {
-                    document.content = Some(markdown_preview::draw(body, html.clone()));
+        .with_children(|body| match document.result.as_ref() {
+            Some(Ok((html, _, _source))) => {
+                let html = document.edited_source.as_ref().map_or_else(
+                    || html.clone(),
+                    |edited| markdown_preview::document_html(&document.path, edited),
+                );
+                if html.trim().is_empty() {
+                    native_panel::text(body, "Empty document.", native_panel::INK);
+                } else {
+                    document.content = Some(markdown_preview::draw(body, html));
                 }
-                Some(Ok(_)) => native_panel::text(body, "Empty document.", native_panel::INK),
-                Some(Err(error)) => native_panel::text(body, error, native_panel::INK),
-                None => native_panel::text(body, "Loading document…", native_panel::INK),
             }
+            Some(Err(error)) => native_panel::text(body, error, native_panel::INK),
+            None => native_panel::text(body, "Loading document…", native_panel::INK),
         });
+    None
 }
 
 fn draw_git(parent: &mut ChildSpawnerCommands, history: Option<&History>, tab: &mut i32) {
@@ -1508,6 +1640,7 @@ fn draw_settings(
                         form.spawn(Node { column_gap: px(6.), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|row| {
                             add_button(row, if audio.ambience { "City sounds: on" } else { "City sounds: off" }, Action::Ambience, tab);
                             add_button(row, if audio.speech { "Robot voice: on" } else { "Robot voice: off" }, Action::Speech, tab);
+                            add_button(row, if audio.file_changes { "File changes: on" } else { "File changes: off" }, Action::FileChangeSound, tab);
                         });
                         native_panel::text(form, "Volume", native_panel::INK);
                         form.spawn(Node { column_gap: px(6.), ..default() }).with_children(|row| {
@@ -1518,7 +1651,8 @@ fn draw_settings(
                         });
                         add_button(form, &format!("System voice: {}", audio.voice), Action::Voice, tab);
                         add_button(form, &format!("Radio: {}", audio.radio.label()), Action::Radio, tab);
-                        native_panel::text(form, "Reads the visible block from start to end. Water is muted; ambience and radio become quieter during speech. Radio music is synthesized on this device.", native_panel::INK);
+                        native_panel::text(form, "File changes plays one short chime for local saves, additions or deletions. Off by default; waits until narration or the voice conversation ends.", native_panel::INK);
+                        native_panel::text(form, "Reads the visible block from start to end. Water is muted; ambience and radio become quieter during narration. City audio stays quiet during an agent voice conversation. Radio music is synthesized on this device.", native_panel::INK);
                     });
                 }
                 let card = settings_card(column, "Reading estimate");
@@ -1704,6 +1838,51 @@ fn add_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn document_edit_renders_only_the_selected_chunk_with_original_source_identity() {
+        // Given a text preview, Edit mounts a source widget for its canonical reading chunk.
+        let source = "PREFIX\nfn chosen() {\n  work();\n}\nUNSEEN_TAIL\n";
+        let mut repository = repository_picker::empty();
+        repository.root = PathBuf::from("/native-editor-fixture");
+        repository.revision = "immutable-commit".into();
+        let mut document = Document {
+            path: "sample.rs".into(),
+            before: false,
+            range: 1..4,
+            editing: true,
+            result: Some(Ok((
+                String::new(),
+                markdown_preview::ReadDocument {
+                    path: "sample.rs".into(),
+                    blob: format!("test-{}", std::process::id()),
+                    before: false,
+                    rows: 5,
+                },
+                source.into(),
+            ))),
+            ..default()
+        };
+        let mut app = App::new();
+        app.init_resource::<Tablet>();
+        let root = app.world_mut().spawn(Node::default()).id();
+        app.world_mut()
+            .commands()
+            .entity(root)
+            .with_children(|parent| {
+                assert!(draw_document(parent, Some(&mut document), &repository, &mut 0).is_some());
+            });
+        app.world_mut().flush();
+        let mut query = app.world_mut().query::<&source_editor::View>();
+        let editor = query.single(app.world()).unwrap();
+        assert_eq!(editor.value(), "fn chosen() {\n  work();\n}\n");
+        assert_eq!(editor.range(), 1..4);
+        assert_eq!(
+            editor.full_value(),
+            source,
+            "opening Edit must not mutate source outside its chunk"
+        );
+    }
 
     #[test]
     fn pasted_trace_stays_editable_after_failure_and_starts_from_worktrees_or_commits() {

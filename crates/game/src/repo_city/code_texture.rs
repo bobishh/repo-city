@@ -38,7 +38,7 @@ pub fn render(
         .collect();
     source(title, &rows, tint, width, height, 0)
 }
-fn ink(kind: Kind) -> [f32; 3] {
+pub(super) fn ink(kind: Kind) -> [f32; 3] {
     match kind {
         Kind::Plain => [0.82, 0.87, 0.92],
         Kind::Keyword => [0.80, 0.57, 1.],

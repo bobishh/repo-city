@@ -72,13 +72,13 @@ fn safe_link(url: &str) -> bool {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Resource, Default)]
-pub(super) struct Request(pub Option<(usize, bool)>);
+pub(super) struct Request(pub Option<(usize, bool, std::ops::Range<usize>, bool)>);
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = previewMarkdown)]
-    pub(super) fn open_browser(path: &str, before: bool);
+    pub(super) fn open_browser(path: &str, before: bool, start: usize, end: usize, edit: bool);
 }
 
 pub(super) fn register(app: &mut App) {

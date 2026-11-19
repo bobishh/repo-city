@@ -1,5 +1,7 @@
 //! Repository explorer and the code city's presentation.
 #![allow(dead_code)]
+#[cfg(not(target_arch = "wasm32"))]
+mod agent_session;
 mod android;
 mod blame;
 #[cfg(target_arch = "wasm32")]
@@ -43,6 +45,7 @@ mod review_notes;
 mod review_tablet;
 #[path = "../shapes.rs"]
 mod shapes;
+mod source_editor;
 mod tablet_display;
 mod tablet_scroll;
 #[cfg(not(target_arch = "wasm32"))]
@@ -667,6 +670,9 @@ pub fn run() {
     )
     .add_systems(Update, live_worktree::highlight.after(animate));
     markdown_preview::register(&mut app);
+    source_editor::register(&mut app);
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_plugins(agent_session::Plugin);
     #[cfg(not(target_arch = "wasm32"))]
     {
         app.insert_resource(reading::Settings::load());
@@ -2231,6 +2237,16 @@ fn detail_scene(
         }
     }
 }
+#[cfg(target_arch = "wasm32")]
+fn comparison_label() -> String {
+    #[wasm_bindgen::prelude::wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = comparisonLabel)]
+        fn label() -> String;
+    }
+    label()
+}
+
 fn animate(
     mut commands: Commands,
     time: Res<Time>,
@@ -2349,10 +2365,14 @@ fn hud(
     for (mut text, mut node, top, bottom, status, toast, counter) in &mut texts {
         if let Some(counter) = counter {
             let value = if counter.0 {
+                #[cfg(target_arch = "wasm32")]
+                let label = comparison_label();
+                #[cfg(not(target_arch = "wasm32"))]
+                let label = "Diff";
                 if total_diffs == 0 {
-                    "Diff —".into()
+                    format!("{label} —")
                 } else {
-                    format!("Diff {diffs}/{total_diffs}")
+                    format!("{label} {diffs}/{total_diffs}")
                 }
             } else {
                 format!("City {city}/{}", repo.0.files.len())

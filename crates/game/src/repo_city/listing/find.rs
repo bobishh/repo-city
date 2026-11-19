@@ -61,7 +61,7 @@ pub(crate) fn spawn(commands: &mut Commands, font: &TextFont, ink: Color) {
     ));
 }
 
-fn matching_lines<'a>(lines: impl Iterator<Item = &'a str>, needle: &str) -> Vec<usize> {
+pub(crate) fn matching_lines<'a>(lines: impl Iterator<Item = &'a str>, needle: &str) -> Vec<usize> {
     let needle = needle.trim().to_lowercase();
     if needle.is_empty() {
         return Vec::new();
@@ -112,6 +112,8 @@ pub(crate) fn update(
     window: Query<&Window, With<PrimaryWindow>>,
     mut hud: Query<(&mut Node, &mut Text), With<SearchHud>>,
     time: Res<Time>,
+    settings: Res<reading::Settings>,
+    #[cfg(not(target_arch = "wasm32"))] mut preview: Option<ResMut<markdown_preview::Request>>,
 ) {
     if repo.is_changed() {
         *search = Search::default();
@@ -180,6 +182,7 @@ pub(crate) fn update(
         search.editing = false;
     }
     let mut jump = false;
+    let mut edit_match = false;
     let mut direction = None;
     if search.editing {
         search.suppress = true;
@@ -195,6 +198,7 @@ pub(crate) fn update(
                 KeyCode::Enter | KeyCode::NumpadEnter => {
                     search.editing = false;
                     jump = true;
+                    edit_match = true;
                 }
                 KeyCode::ArrowDown => direction = Some(false),
                 KeyCode::ArrowUp => direction = Some(true),
@@ -264,6 +268,59 @@ pub(crate) fn update(
         search.remaining = 0.;
     }
 
+    if edit_match
+        && let (Some((side, count)), Some(&row)) = (&side, search.hits.get(search.selected))
+        && row < *count
+    {
+        eye.translation.y += search.remaining;
+        search.remaining = 0.;
+        search.suppress = false;
+        listing.scroll_remaining = 0.;
+        let before = if side.face == Face::Diff {
+            explorer
+                .diff_layout
+                .rows
+                .get(row)
+                .is_some_and(|(_, mark)| *mark == repo_world::comparison::Mark::Removed)
+        } else {
+            explorer.before
+        };
+        let line = match side.face {
+            Face::Source => explorer
+                .source_layout
+                .rows
+                .get(row)
+                .map(|line| line.number.saturating_sub(1)),
+            Face::Blame => explorer
+                .blame_layout
+                .rows
+                .get(row)
+                .map(|line| line.number.saturating_sub(1)),
+            Face::Diff => explorer
+                .comparison
+                .as_ref()
+                .map(|diff| explorer.diff_layout.project(diff, row, before, false)),
+        }
+        .unwrap_or(0);
+        let range = if before == explorer.before {
+            super::editor_range_at_line(&explorer, line, *settings)
+        } else {
+            settings.rows(
+                line,
+                explorer
+                    .comparison
+                    .as_ref()
+                    .map_or(0, |diff| diff.before.len()),
+            )
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(preview) = preview.as_deref_mut() {
+            preview.0 = Some((explorer.selected, before, range.clone(), true));
+        }
+        #[cfg(target_arch = "wasm32")]
+        markdown_preview::open_browser(&file.path, before, range.start, range.end, true);
+    }
+
     let displayed = !blocked && search.active_wall && (search.editing || !search.query.is_empty());
     node.display = if displayed {
         Display::Flex
@@ -283,7 +340,7 @@ pub(crate) fn update(
             )
         };
         let hint = if search.editing {
-            "Enter keeps results · Esc clears"
+            "Enter edits matching chunk · Esc clears"
         } else {
             "N next · Shift+N prev · / edit"
         };

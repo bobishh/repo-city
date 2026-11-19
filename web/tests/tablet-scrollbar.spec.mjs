@@ -29,9 +29,22 @@ test("VibePad scroll arrows, thumb drag and track paging follow the visible cont
   // Given help content taller than the tablet, show the themed scrollbar.
   await openHelp(page);
   await expect.poll(async () => (await part(page, "track"))?.range ?? 0).toBeGreaterThan(0);
+  const fixedIds = await servicePanel(page).locator("header button, nav.vibepad-tabs button").evaluateAll(nodes => nodes.map(node => node.dataset.tabletControl));
+  await expect.poll(async () => {
+    const view = await readTablet(page);
+    return fixedIds.every(id => view?.layout.controls.some(control => control.id === id));
+  }).toBe(true);
+  const before = (await readTablet(page)).layout.controls.filter(control => fixedIds.includes(control.id));
+  const headerBottom = Math.max(...before.map(control => control.bounds[1] + control.bounds[3]));
+  expect((await part(page, "track")).bounds[1]).toBeGreaterThanOrEqual(headerBottom - 1);
   await page.screenshot({ path: info.outputPath("vibepad-scrollbar.png") });
   await page.mouse.click(...await point(page, "down"), { delay: 100 });
   await expect.poll(async () => (await part(page, "track"))?.offset ?? 0).toBeGreaterThan(0);
+  for (const previous of before) {
+    const current = (await readTablet(page)).layout.controls.find(control => control.id === previous.id);
+    expect(current.bounds[1]).toBeCloseTo(previous.bounds[1], 0);
+    expect(current.visible).toBe(true);
+  }
   const afterArrow = (await part(page, "track")).offset;
   const thumb = await point(page, "thumb");
   await page.mouse.move(...thumb); await page.mouse.down();

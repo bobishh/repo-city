@@ -6,7 +6,7 @@ cargo build --locked -p repo-city --bin repo-city --profile web-release --target
 output=web/dist
 mkdir -p "$output/game" "$output/assets"
 mkdir -p "$output/licenses"
-cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY.md licenses/pulldown-cmark-MIT.txt licenses/bevy-markup-MIT.txt licenses/bevy-markup-APACHE.txt licenses/MPL-2.0.txt "$output/licenses/"
+cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY.md licenses/stb-textedit-MIT.txt licenses/pulldown-cmark-MIT.txt licenses/bevy-markup-MIT.txt licenses/bevy-markup-APACHE.txt licenses/MPL-2.0.txt "$output/licenses/"
 cp assets/fonts/*-LICENSE web/assets/OFL-Caveat.txt "$output/licenses/"
 cp web/index.html web/style.css web/app.mjs web/github.mjs web/analytics.mjs web/syntax.mjs web/github-picker.mjs web/pointer.mjs web/touch.mjs web/progress.mjs web/review.mjs web/pr-review.mjs web/tablet.mjs web/tablet-view.mjs web/audio.mjs web/audio-worklet.mjs "$output/"
 rm -f "$output/github-markdown.css" "$output/github-markdown-LICENSE.txt"

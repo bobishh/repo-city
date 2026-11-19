@@ -129,17 +129,39 @@ impl Settings {
     }
 
     pub(super) fn block(self, explorer: &Explorer, row: usize) -> std::ops::Range<usize> {
-        if self.block_kind == BlockKind::Function
-            && let Some(range) = callable_at(explorer, row)
-        {
-            let start = explorer.source_layout.visual_rows(range.start).start;
-            let end = explorer
-                .source_layout
-                .visual_rows(range.end.saturating_sub(1))
-                .end;
-            return start..end;
+        self.block_in_layout(explorer, &explorer.source_layout, row)
+    }
+
+    pub(super) fn block_in_layout(
+        self,
+        explorer: &Explorer,
+        layout: &listing::layout::SourceLayout,
+        row: usize,
+    ) -> std::ops::Range<usize> {
+        let total = layout.len();
+        if self.block_kind == BlockKind::Lines {
+            return self.rows(row, total);
         }
-        self.rows(row, explorer.source_layout.len())
+        if row >= total {
+            return total..total;
+        }
+        let mut gap = 0..total;
+        for range in callable_regions(explorer) {
+            let visual =
+                layout.visual_rows(range.start).start..layout.visual_rows(range.end - 1).end;
+            if visual.contains(&row) {
+                return visual;
+            }
+            if visual.end <= row {
+                gap.start = visual.end;
+            } else if visual.start > row {
+                gap.end = visual.start;
+                break;
+            }
+        }
+        let size = (self.block_lines as usize).max(1);
+        let start = gap.start + (row - gap.start) / size * size;
+        start..start.saturating_add(size).min(gap.end)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -207,17 +229,16 @@ pub(super) fn callable_for_line(
     explorer: &Explorer,
     line: usize,
 ) -> Option<std::ops::Range<usize>> {
-    explorer
-        .anatomy
-        .as_ref()?
-        .callables
-        .iter()
-        .filter_map(|callable| {
-            let (start, end) = (callable.start_line? as usize, callable.end_line? as usize);
-            (start > 0 && start <= line && line <= end && end <= explorer.highlighted.len())
-                .then_some(start - 1..end)
-        })
-        .min_by_key(|range| range.len())
+    let row = line.checked_sub(1)?;
+    callable_regions(explorer)
+        .into_iter()
+        .find(|range| range.contains(&row))
+}
+
+fn callable_regions(explorer: &Explorer) -> Vec<std::ops::Range<usize>> {
+    explorer.anatomy.as_ref().map_or_else(Vec::new, |anatomy| {
+        anatomy.reading_regions(explorer.highlighted.len())
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -305,6 +326,74 @@ mod tests {
             assert!(one.min_seconds.is_none() && one.max_seconds.is_none());
             assert!(Settings::with_inputs(Mode::Delayed, "0", "", "").is_err());
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn nested_callbacks_keep_one_outer_reading_and_editor_block_on_every_wrapped_row() {
+        // Regression: the outer Playwright callback owns lines 4–50; hovering
+        // addInitScript at line 5 must not replace it with the inner 5–11 block.
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../web/tests/image-codecs.spec.mjs"
+        ));
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight("image-codecs.spec.mjs", source));
+        explorer.anatomy = Some(repo_world::anatomy::analyze(
+            "image-codecs.spec.mjs",
+            source,
+        ));
+        let settings = Settings::default();
+        let expected =
+            explorer.source_layout.visual_rows(3).start..explorer.source_layout.visual_rows(49).end;
+        assert!(expected.len() > 47, "fixture must exercise wrapped rows");
+        for row in expected.clone() {
+            assert_eq!(settings.block(&explorer, row), expected, "visual row {row}");
+            let line = explorer.source_layout.rows[row].number;
+            assert_eq!(callable_for_line(&explorer, line), Some(3..50));
+            assert_eq!(
+                listing::editor_range_at_line(&explorer, line - 1, settings),
+                3..50
+            );
+        }
+        let blame = &explorer.blame_layout;
+        let expected = blame.visual_rows(3).start..blame.visual_rows(49).end;
+        for row in expected.clone() {
+            assert_eq!(settings.block_in_layout(&explorer, blame, row), expected);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn function_and_fallback_reading_blocks_partition_the_source_without_overlap() {
+        let source = "const before = 0;\n\nfunction outer() {\n  const nested = () => {\n    return 1;\n  };\n  return nested();\n}\nconst between = 1;\n\n\nfunction next() {\n return 2;\n}\nconst after = 2;\n";
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight("partition.mjs", source));
+        explorer.anatomy = Some(repo_world::anatomy::analyze("partition.mjs", source));
+        let settings = Settings::default();
+        for (row, expected) in [(0, 0..2), (3, 2..8), (8, 8..11), (11, 11..14), (14, 14..15)] {
+            assert_eq!(settings.block(&explorer, row), expected);
+        }
+        let blocks = (0..explorer.source_layout.len())
+            .map(|row| {
+                let block = settings.block(&explorer, row);
+                assert!(block.contains(&row));
+                block
+            })
+            .collect::<Vec<_>>();
+        for left in &blocks {
+            for right in &blocks {
+                if left.start < right.end && right.start < left.end {
+                    assert_eq!(left, right);
+                }
+            }
+        }
+        let fixed = Settings {
+            block_kind: BlockKind::Lines,
+            ..settings
+        };
+        assert_eq!(fixed.block(&explorer, 0), 0..6);
+        assert_eq!(fixed.block(&explorer, 3), 0..6);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

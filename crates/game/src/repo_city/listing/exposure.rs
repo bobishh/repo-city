@@ -166,17 +166,11 @@ pub(crate) fn update(
         let side = WallSide::new(file, count, face, block_size(file));
         let visible = side.visible_rows(camera, count, aspect);
         let focus = side.wall.row(side.look_height(camera), count);
-        let mut rows = settings.rows(focus, count);
-        if face == Face::Blame && settings.block_kind == reading::BlockKind::Function {
-            let line = explorer.blame_layout.rows[focus].number;
-            if let Some(callable) = reading::callable_for_line(&explorer, line) {
-                rows = explorer.blame_layout.visual_rows(callable.start).start
-                    ..explorer
-                        .blame_layout
-                        .visual_rows(callable.end.saturating_sub(1))
-                        .end;
-            }
-        }
+        let mut rows = if face == Face::Blame {
+            settings.block_in_layout(&explorer, &explorer.blame_layout, focus)
+        } else {
+            settings.rows(focus, count)
+        };
         if face == Face::Diff {
             if let Some((Some(line), mark)) = explorer.diff_layout.rows.get(focus) {
                 let before = *mark == Mark::Removed;

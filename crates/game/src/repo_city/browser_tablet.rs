@@ -88,6 +88,7 @@ fn flatten(
 
 fn label(node: &NodeView) -> String {
     match node.kind.as_str() {
+        "editor" => node.name.clone(),
         "check" => format!("{}: {}", node.text, if node.checked { "on" } else { "off" }),
         "select" => node
             .options
@@ -107,6 +108,51 @@ fn draw(parent: &mut ChildSpawnerCommands, node: &NodeView, order: &mut i32) {
         .map_or(native_panel::INK, |[r, g, b]| Color::srgb_u8(r, g, b));
     let binding = || Binding(node.id.clone());
     match node.kind.as_str() {
+        "header" | "tabs" => {
+            parent
+                .spawn((
+                    binding(),
+                    Node {
+                        width: percent(100.),
+                        min_width: px(0.),
+                        flex_shrink: 0.,
+                        flex_direction: FlexDirection::Row,
+                        flex_wrap: if node.kind == "tabs" {
+                            FlexWrap::Wrap
+                        } else {
+                            FlexWrap::NoWrap
+                        },
+                        align_items: AlignItems::Center,
+                        column_gap: px(8.),
+                        row_gap: px(8.),
+                        ..default()
+                    },
+                ))
+                .with_children(|bar| {
+                    for child in &node.children {
+                        if node.kind == "header" && child.kind == "heading" {
+                            bar.spawn(Node {
+                                flex_grow: 1.,
+                                flex_basis: px(0.),
+                                min_width: px(0.),
+                                flex_direction: FlexDirection::Column,
+                                ..default()
+                            })
+                            .with_children(|title| draw(title, child, order));
+                        } else {
+                            draw(bar, child, order);
+                        }
+                    }
+                });
+        }
+        "editor" => {
+            let entity = source_editor::spawn(parent, &node.name, &node.source, &node.text, None);
+            parent.commands().entity(entity).insert((
+                binding(),
+                bevy::input_focus::tab_navigation::TabIndex(*order),
+            ));
+            *order += 1;
+        }
         "input" | "color" => {
             let input = native_panel::input(parent, "", &node.value, *order, node.multiline);
             if node.max_length.is_some() || node.rows > 4 {
@@ -325,6 +371,7 @@ pub(super) fn update(
     mut tablet: ResMut<Tablet>,
     mut focus: ResMut<InputFocus>,
     mut fields: Query<(Entity, &Binding, &mut EditableText)>,
+    mut editors: Query<(&Binding, &mut source_editor::View)>,
     mut texts: Query<(&Label, &mut Text, &mut TextColor)>,
     bindings: Query<(Entity, &Binding)>,
     parents: Query<&ChildOf>,
@@ -336,6 +383,13 @@ pub(super) fn update(
     mut images: ResMut<Assets<Image>>,
     mut touch_scroll: Option<ResMut<tablet_display::TouchScroll>>,
 ) {
+    for (binding, mut editor) in &mut editors {
+        if let Some(value) = editor.take_change() {
+            send_action(
+                &serde_json::json!({"id": binding.0,"kind":"editor","value":value,"range":editor.range()}).to_string(),
+            );
+        }
+    }
     for (_, binding, field) in &mut fields {
         if tablet.nodes.contains_key(&binding.0) {
             let text = field.value().to_string();
@@ -409,6 +463,14 @@ pub(super) fn update(
                     .unwrap_or_else(|| native_panel::tablet(&mut commands, ""));
                 commands.entity(panel).despawn_children();
                 commands.entity(panel).with_children(|root| {
+                    let mut order = 0;
+                    for node in view
+                        .nodes
+                        .iter()
+                        .filter(|node| matches!(node.kind.as_str(), "header" | "tabs"))
+                    {
+                        draw(root, node, &mut order);
+                    }
                     root.spawn((
                         Body,
                         ScrollPosition::default(),
@@ -423,8 +485,11 @@ pub(super) fn update(
                         },
                     ))
                     .with_children(|body| {
-                        let mut order = 0;
-                        for node in &view.nodes {
+                        for node in view
+                            .nodes
+                            .iter()
+                            .filter(|node| !matches!(node.kind.as_str(), "header" | "tabs"))
+                        {
                             draw(body, node, &mut order);
                         }
                     });
@@ -668,13 +733,17 @@ pub(super) fn geometry(
     pose: Query<&Transform, With<android::ViewTablet>>,
     window: Query<&Window, With<PrimaryWindow>>,
     controls: Query<(
+        Entity,
         &Binding,
         &UiGlobalTransform,
         &ComputedNode,
         Option<&bevy::input_focus::tab_navigation::TabIndex>,
+        Option<&source_editor::View>,
     )>,
     focus: Res<InputFocus>,
     entities: Query<&Binding>,
+    parents: Query<&ChildOf>,
+    clipping: Query<(&UiGlobalTransform, &ComputedNode, &Node)>,
     scroll_parts: Query<(&tablet_scroll::Part, &UiGlobalTransform, &ComputedNode)>,
     scroll_areas: Query<(&ScrollPosition, &ComputedNode), With<tablet_scroll::Area>>,
     mut previous: Local<String>,
@@ -700,15 +769,33 @@ pub(super) fn geometry(
                 uv.y,
             )
     };
-    let controls: Vec<_> = controls.iter().filter_map(|(binding, transform, node, index)| {
+    let controls: Vec<_> = controls.iter().filter_map(|(entity, binding, transform, node, index, editor)| {
         let view = tablet.nodes.get(&binding.0)?;
         if index.is_none() && !["heading", "text", "code", "status"].contains(&view.kind.as_str()) { return None; }
         let transform: bevy::math::Affine2 = transform.into();
         let min = transform.translation - node.size() / 2.;
         let max = min + node.size();
-        let visible = min.y >= 20. && max.y <= display.size.y as f32 - 20.;
+        let mut clip_min = Vec2::splat(20.);
+        let mut clip_max = display.size.as_vec2() - Vec2::splat(20.);
+        for ancestor in parents.iter_ancestors(entity) {
+            let Ok((transform, area, style)) = clipping.get(ancestor) else { continue; };
+            let transform: bevy::math::Affine2 = transform.into();
+            let area_min = transform.translation - area.size() / 2.;
+            let area_max = area_min + area.size();
+            if style.overflow.x != OverflowAxis::Visible {
+                clip_min.x = clip_min.x.max(area_min.x);
+                clip_max.x = clip_max.x.min(area_max.x);
+            }
+            if style.overflow.y != OverflowAxis::Visible {
+                clip_min.y = clip_min.y.max(area_min.y);
+                clip_max.y = clip_max.y.min(area_max.y);
+            }
+        }
+        let visible = min.cmpge(clip_min - Vec2::splat(0.5)).all()
+            && max.cmple(clip_max + Vec2::splat(0.5)).all();
+        let clip_min = project(clip_min); let clip_max = project(clip_max);
         let min = project(min); let max = project(max);
-        Some(serde_json::json!({"id":binding.0,"kind":view.kind,"text":if view.name.is_empty() { label(view) } else { view.name.clone() },"display":label(view),"value":view.value,"disabled":view.disabled,"visible":visible,"order":index.map_or(-1, |index| index.0),"bounds":[min.x,min.y,max.x-min.x,max.y-min.y]}))
+        Some(serde_json::json!({"id":binding.0,"kind":view.kind,"text":if view.name.is_empty() { label(view) } else { view.name.clone() },"display":label(view),"value":editor.map_or(view.value.as_str(), source_editor::View::value),"status":editor.map(source_editor::View::status_label),"disabled":view.disabled,"visible":visible,"order":index.map_or(-1, |index| index.0),"bounds":[min.x,min.y,max.x-min.x,max.y-min.y],"clip":[clip_min.x,clip_min.y,clip_max.x-clip_min.x,clip_max.y-clip_min.y]}))
     }).collect();
     let focused = focus
         .get()
