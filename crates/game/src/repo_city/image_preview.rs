@@ -1,10 +1,7 @@
 //! Bounded snapshot image loading for VibePad; decoding happens off the render thread.
 use std::io::Cursor;
 
-use bevy::{
-    asset::RenderAssetUsages,
-    image::{CompressedImageFormats, ImageSampler, ImageType},
-};
+use bevy::{asset::RenderAssetUsages, image::ImageSampler};
 
 use super::*;
 
@@ -76,32 +73,31 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Image, String> {
     }
     let format = image::guess_format(bytes)
         .map_err(|_| "Image data is invalid or unsupported.".to_owned())?;
-    let extension = match format {
-        image::ImageFormat::Png => "png",
-        image::ImageFormat::Jpeg => "jpg",
-        image::ImageFormat::WebP => "webp",
-        _ => return Err("Image preview supports PNG, JPEG, and WebP.".into()),
-    };
-    // Bevy's from_buffer disables allocation limits, so inspect dimensions before decoding pixels.
+    if !matches!(
+        format,
+        image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP
+    ) {
+        return Err("Image preview supports PNG, JPEG, and WebP.".into());
+    }
+    // The shared image decoder has the same codecs and allocation limits on every target.
     let mut header = image::ImageReader::with_format(Cursor::new(bytes), format);
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_DIMENSION);
     limits.max_image_height = Some(MAX_DIMENSION);
     limits.max_alloc = Some(128 * 1024 * 1024);
-    header.limits(limits);
+    header.limits(limits.clone());
     let (width, height) = header
         .into_dimensions()
         .map_err(|error| format!("Could not read image dimensions: {error}"))?;
     validate_dimensions(width, height)?;
-    Image::from_buffer(
-        bytes,
-        ImageType::Extension(extension),
-        CompressedImageFormats::NONE,
-        true,
-        ImageSampler::linear(),
-        RenderAssetUsages::default(),
-    )
-    .map_err(|error| format!("Could not decode image: {error}"))
+    let mut reader = image::ImageReader::with_format(Cursor::new(bytes), format);
+    reader.limits(limits);
+    let decoded = reader
+        .decode()
+        .map_err(|error| format!("Could not decode image: {error}"))?;
+    let mut image = Image::from_dynamic(decoded, true, RenderAssetUsages::default());
+    image.sampler = ImageSampler::linear();
+    Ok(image)
 }
 
 #[cfg(test)]

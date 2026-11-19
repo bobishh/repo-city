@@ -51,7 +51,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
   let previewUrl;
   let historySelection = { before: null, after: null };
   let historyPage = 1;
-  let traceText = "", traceRequest, traceReport, tracePending = false;
+  let traceText = "", traceBuiltText = "", traceSelected, traceRequest, traceReport, tracePending = false;
   const repaint = () => { version++; };
   let defaults = [];
 
@@ -368,6 +368,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     }
     session = data;
     traceText = ""; traceReport = undefined; traceRequest = undefined; tracePending = false;
+    traceBuiltText = ""; traceSelected = undefined;
     historySelection = { before: data.review?.baseline ?? null, after: data.review?.revision ?? null }; historyPage = 1;
     destination = undefined;
     selected = 0;
@@ -634,13 +635,14 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     if (!session) return;
     dialog.dataset.view = "trace"; dialog.dataset.tablet = "";
     view("Paste a trace");
-    dialog.append(make("p", "Paste file:line frames or a Ruby, Python, JavaScript, Rust or Elixir stack trace. Source stays on this device."));
+    dialog.append(make("p", "Paste a stack trace, OpenTelemetry OTLP JSON or Chrome Trace JSON. Source stays on this device."));
     const input = make("textarea", undefined, { "aria-label": "Stack trace", maxlength: "65536", rows: "8", spellcheck: "false" });
     input.value = traceText;
-    input.addEventListener("input", () => { traceText = input.value; follow.disabled = true; });
+    input.addEventListener("input", () => { traceText = input.value; follow.disabled = true; if (group) group.disabled = true; });
     const status = make("p", tracePending ? "Building route…" : traceReport?.error ?? "", { role: "status" });
     const build = button("Build route", () => {
       traceText = input.value; tracePending = true;
+      traceBuiltText = traceText;
       traceRequest = { action: "import", text: traceText };
       status.textContent = "Building route…";
       build.disabled = true; follow.disabled = true;
@@ -650,12 +652,31 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       status.textContent = "Opening trace…"; build.disabled = true; follow.disabled = true;
     });
     build.disabled = tracePending;
-    follow.disabled = tracePending || !traceReport?.frames?.length;
-    dialog.append(input, status, make("p", "Up to 64 KiB and 128 frames. Locations are checked against the selected snapshot when opened."));
+    const frames = traceReport?.frames?.filter(frame => (frame.span?.group ?? "stack") === traceSelected) ?? [];
+    follow.disabled = tracePending || traceText !== traceBuiltText || !frames.length || Boolean(traceReport?.error);
+    dialog.append(input, status, make("p", "Up to 64 KiB and 128 frames or spans. Locations are checked against the selected snapshot when opened."));
+    let group;
+    if (traceReport?.groups?.length > 1) {
+      dialog.append(make("p", "Choose one trace or thread to follow."));
+      group = make("select", undefined, { "aria-label": "Trace or thread" });
+      group.append(make("option", "Choose a trace or thread", { value: "" }));
+      for (const entry of traceReport.groups) group.append(make("option", entry.label, { value: entry.id }));
+      group.value = traceSelected ?? "";
+      group.disabled = tracePending || traceText !== traceBuiltText;
+      group.addEventListener("change", () => {
+        tracePending = true; traceRequest = { action: "select", group: group.value };
+        group.disabled = true; follow.disabled = true;
+      });
+      dialog.append(group);
+    }
     actions(build, follow);
     if (traceReport) {
-      dialog.append(make("p", `${traceReport.frames.length} frames · ${traceReport.issues.length} unresolved locations · ${traceReport.ignored} lines without locations`));
-      for (const frame of traceReport.frames) dialog.append(make("p", `${frame.path}:${frame.line}${frame.suffix ? " (path suffix match)" : ""}`));
+      dialog.append(make("p", traceReport.format), make("p", `${traceReport.frames.length} frames · ${traceReport.issues.length} unresolved locations · ${traceReport.ignored} ignored entries`));
+      for (const frame of frames) {
+        let label = `${frame.path}:${frame.line}${frame.suffix ? " (path suffix match)" : ""}`;
+        if (frame.span) label = `${frame.span.name} · ${label}${frame.span.duration_ms == null ? "" : ` · ${frame.span.duration_ms.toFixed(3)} ms`}${frame.span.error ? " · error" : ""}${frame.span.parent ? ` · parent ${frame.span.parent}` : ""}`;
+        dialog.append(make("p", label));
+      }
       for (const issue of traceReport.issues) dialog.append(make("p", issue));
     }
     show(); tablet.focus(input);
@@ -1113,7 +1134,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     takeTraceRequest() { const request = traceRequest; traceRequest = undefined; return request ? JSON.stringify(request) : ""; },
     traceReply(value) {
       const result = JSON.parse(value);
-      tracePending = false; traceReport = result.report;
+      tracePending = false; traceReport = result.report; traceSelected = result.selected;
       if (result.following) close();
       else if (dialog.open && dialog.dataset.view === "trace") tracePanel();
     },

@@ -1,11 +1,107 @@
 //! Pasted traces resolve against the active snapshot; unresolved locations stay visible.
 use super::*;
+mod json;
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub(super) struct Span {
+    pub group: String,
+    pub name: String,
+    pub id: String,
+    pub parent: String,
+    pub duration_ms: Option<f64>,
+    pub error: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub(super) struct Group {
+    pub id: String,
+    pub label: String,
+}
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub(super) struct Frame {
     pub path: String,
     pub line: usize,
     pub suffix: bool,
+    pub span: Option<Span>,
+}
+
+impl Frame {
+    fn resolve(repo: &Repository, prefix: &str, line: usize) -> Result<Self, &'static str> {
+        let normalized = prefix.trim().replace('\\', "/");
+        let prefix = normalized.strip_prefix("at ").unwrap_or(&normalized);
+        let exact = repo
+            .files
+            .iter()
+            .filter(|file| file.after.is_some())
+            .filter(|file| {
+                prefix.strip_suffix(&file.path).is_some_and(|start| {
+                    start.is_empty()
+                        || start
+                            .chars()
+                            .last()
+                            .is_some_and(|ch| matches!(ch, '/' | '(' | '@' | ' ' | '"' | '\''))
+                })
+            })
+            .max_by_key(|file| file.path.len());
+        let token = prefix
+            .rsplit([' ', '(', '"', '\'', '\t', '@'])
+            .next()
+            .unwrap_or(prefix);
+        let candidates = if let Some(file) = exact {
+            vec![file]
+        } else if !token.contains('/') {
+            repo.files
+                .iter()
+                .filter(|file| file.after.is_some() && file.path.rsplit('/').next() == Some(token))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        match candidates.as_slice() {
+            [] => Err("File not found in the selected snapshot."),
+            [file] if line > 0 => Ok(Self {
+                path: file.path.clone(),
+                line,
+                suffix: prefix != file.path,
+                span: None,
+            }),
+            [_] => Err("Line must be a positive number."),
+            _ => Err("Ambiguous file name; use a repository-relative path."),
+        }
+    }
+
+    pub fn group(&self) -> &str {
+        self.span
+            .as_ref()
+            .map_or("stack", |span| span.group.as_str())
+    }
+
+    pub fn description(&self) -> String {
+        let mut label = format!(
+            "{}:{}{}",
+            self.path,
+            self.line,
+            if self.suffix {
+                " (path suffix match)"
+            } else {
+                ""
+            }
+        );
+        if let Some(span) = &self.span {
+            label = format!("{} · {label}", span.name);
+            if let Some(duration) = span.duration_ms {
+                label.push_str(&format!(" · {duration:.3} ms"));
+            }
+            if span.error {
+                label.push_str(" · error");
+            }
+            if !span.parent.is_empty() {
+                label.push_str(&format!(" · parent {}", span.parent));
+            }
+        }
+        label
+    }
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize)]
@@ -14,6 +110,8 @@ pub(super) struct Report {
     pub issues: Vec<String>,
     pub ignored: usize,
     pub error: String,
+    pub format: String,
+    pub groups: Vec<Group>,
 }
 
 impl Report {
@@ -22,6 +120,9 @@ impl Report {
         if source.len() > 64 * 1024 {
             report.error = "Trace exceeds the 64 KiB limit.".into();
             return report;
+        }
+        if source.trim_start().starts_with(['{', '[']) {
+            return json::parse(repo, source);
         }
         for (index, text) in source
             .lines()
@@ -47,38 +148,9 @@ impl Report {
             };
             let mut located = None;
             for (prefix, tail) in locations {
-                let normalized = prefix.trim().replace('\\', "/");
-                let prefix = normalized.strip_prefix("at ").unwrap_or(&normalized);
-                let exact = repo
-                    .files
-                    .iter()
-                    .filter(|file| file.after.is_some())
-                    .filter(|file| {
-                        prefix.strip_suffix(&file.path).is_some_and(|start| {
-                            start.is_empty()
-                                || start.chars().last().is_some_and(|ch| {
-                                    matches!(ch, '/' | '(' | '@' | ' ' | '"' | '\'')
-                                })
-                        })
-                    })
-                    .max_by_key(|file| file.path.len());
-                let token = prefix
-                    .rsplit([' ', '(', '"', '\'', '\t', '@'])
-                    .next()
-                    .unwrap_or(prefix);
-                let candidates = if let Some(file) = exact {
-                    vec![file]
-                } else if !token.contains('/') {
-                    repo.files
-                        .iter()
-                        .filter(|file| {
-                            file.after.is_some() && file.path.rsplit('/').next() == Some(token)
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                if candidates.is_empty() && !token.contains(['/', '.']) {
+                if !prefix.contains(['/', '\\', '.'])
+                    && !repo.files.iter().any(|file| prefix.ends_with(&file.path))
+                {
                     continue;
                 }
                 let digits = tail.bytes().take_while(u8::is_ascii_digit).count();
@@ -86,16 +158,10 @@ impl Report {
                     .parse::<usize>()
                     .ok()
                     .filter(|&line| line > 0);
-                located = Some(match (line, candidates.as_slice()) {
-                    (None, _) => Err("Line must be a positive number."),
-                    (_, []) => Err("File not found in the selected snapshot."),
-                    (Some(line), [file]) => Ok(Frame {
-                        path: file.path.clone(),
-                        line,
-                        suffix: prefix != file.path,
-                    }),
-                    _ => Err("Ambiguous file name; use a repository-relative path."),
-                });
+                located = Some(
+                    line.ok_or("Line must be a positive number.")
+                        .and_then(|line| Frame::resolve(repo, prefix, line)),
+                );
                 break;
             }
             if located.is_some() && report.frames.len() + report.issues.len() == 128 {
@@ -114,6 +180,13 @@ impl Report {
                 None => report.ignored += 1,
             }
         }
+        report.format = "Text stack trace".into();
+        if !report.frames.is_empty() {
+            report.groups.push(Group {
+                id: "stack".into(),
+                label: "Stack trace".into(),
+            });
+        }
         if report.frames.is_empty() && report.error.is_empty() {
             report.error =
                 "No matching frames. Paste file:line locations or a stack trace for this snapshot."
@@ -129,12 +202,16 @@ pub(super) struct Trace {
     pub report: Report,
     pub version: u64,
     pub start: bool,
+    pub selected: Option<String>,
+    built_source: String,
     scope: Option<(PathBuf, String, Option<String>)>,
 }
 
 impl Trace {
     pub fn import(&mut self, repo: &Repository, source: String) {
         self.report = Report::parse(repo, &source);
+        self.selected = (self.report.groups.len() == 1).then(|| self.report.groups[0].id.clone());
+        self.built_source = source.clone();
         self.source = source;
         self.start = false;
         self.scope = Some((
@@ -152,12 +229,40 @@ impl Trace {
                 ..default()
             };
             self.start = false;
+        } else if self.source != self.built_source {
+            self.report.error = "Build the route again after editing the trace.".into();
+            self.start = false;
         } else {
             self.report = Report::parse(repo, &self.source);
-            self.start = !self.report.frames.is_empty();
+            self.start = self.can_follow();
         }
         self.version = self.version.wrapping_add(1);
         self.start
+    }
+
+    pub fn select(&mut self, group: &str) {
+        if self
+            .report
+            .groups
+            .iter()
+            .any(|candidate| candidate.id == group)
+        {
+            self.selected = Some(group.into());
+            self.version = self.version.wrapping_add(1);
+        }
+    }
+
+    pub fn frames(&self) -> impl Iterator<Item = &Frame> {
+        self.report
+            .frames
+            .iter()
+            .filter(|frame| self.selected.as_deref() == Some(frame.group()))
+    }
+
+    pub fn can_follow(&self) -> bool {
+        self.source == self.built_source
+            && self.report.error.is_empty()
+            && self.frames().next().is_some()
     }
 
     fn matches(&self, repo: &Repository) -> bool {
@@ -183,6 +288,7 @@ extern "C" {
 #[serde(tag = "action", rename_all = "lowercase")]
 enum Request {
     Import { text: String },
+    Select { group: String },
     Follow,
 }
 
@@ -215,6 +321,10 @@ pub(super) fn update(
                 false
             }
             Ok(Request::Follow) => trace.follow(&repo.0),
+            Ok(Request::Select { group }) => {
+                trace.select(&group);
+                false
+            }
             Err(_) => {
                 trace.report = Report {
                     error: "Trace request is invalid.".into(),
@@ -223,7 +333,7 @@ pub(super) fn update(
                 false
             }
         };
-        reply(&serde_json::json!({ "report": trace.report, "following": following }).to_string());
+        reply(&serde_json::json!({ "report": trace.report, "selected": trace.selected, "following": following }).to_string());
     }
 }
 
@@ -231,7 +341,7 @@ pub(super) fn update(
 mod tests {
     use super::*;
 
-    fn repo() -> Repository {
+    pub(super) fn repo() -> Repository {
         let mut repo = repository_picker::empty();
         repo.files = [
             "lib/demo.rb",

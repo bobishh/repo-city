@@ -203,9 +203,9 @@ listed with an explanation. This is syntax-based navigation, not a compiler
 call graph. Parsing runs in a background worker and its in-memory cache uses
 language and content identity.
 
-## Follow a pasted stack trace
+## Follow a pasted trace
 
-Open **Tab → Trace** in either application. Paste a stack trace, choose
+Open **Tab → Trace** in either application. Paste a stack trace or JSON export, choose
 **Build route**, inspect the resolved frames and any unresolved locations, then
 choose **Follow trace**. This works for local worktrees, commit snapshots and
 GitHub pull requests without requiring write access. **W/S** visits the next or
@@ -217,10 +217,34 @@ repeated calls. Absolute paths can match by repository path suffix; the preview
 labels those matches. A bare filename must identify exactly one file. Missing
 or ambiguous paths remain listed and do not become route steps. Source line
 availability is checked when each frame opens. Traces are limited to 64 KiB
-and 128 locations and stay in the current application session. Switching the
+and 128 frames or spans and stay in the current application session. Switching the
 repository or comparison clears them; a worktree update stops an active route
-so it can be rebuilt against the updated files. JSON span imports and execution
-timings are not supported.
+so it can be rebuilt against the updated files.
+
+The same field detects these JSON formats:
+
+- **OpenTelemetry OTLP:** `resourceSpans[].scopeSpans[].spans[]`, older
+  `instrumentationLibrarySpans`, or a top-level `spans` array. Source attributes
+  are `code.file.path` and `code.line.number`; the older `code.filepath` and
+  `code.lineno` names also work. Parents precede children, with start times
+  ordering independent spans. Nanosecond timestamps produce millisecond durations;
+  names, parent IDs and error status remain visible. See the
+  [OTLP example](https://github.com/open-telemetry/opentelemetry-proto/blob/main/examples/trace.json)
+  and [source attributes](https://opentelemetry.io/docs/specs/semconv/registry/attributes/code/).
+- **Chrome Trace:** a `traceEvents` object or event array, using complete `X`,
+  synchronous `B`/`E`, or nestable async `b`/`e` duration events. Source coordinates
+  can use the same code attributes, `args.file` / `args.line`, or Blink
+  `args.data.url` / `lineNumber` (one-based). Explicit Runtime `callFrame`
+  locations are converted from zero-based lines. Microsecond timestamps and
+  durations are converted to milliseconds. Metadata, counters and other phases
+  do not become steps. See the [Chrome JSON format](https://perfetto.dev/docs/getting-started/other-formats#chrome-json-format).
+
+Choose a trace ID, thread or async scope when an export contains several.
+Routes follow only the selected group. Chrome steps use timestamp order within
+that group; they do not imply a call graph. Spans without source coordinates or
+matching files remain listed as unresolved. Malformed JSON, duplicate OTel span
+IDs within one trace and parent cycles stop route creation. Exported names alone
+are not used to guess source locations.
 
 ## Sound and preferences
 

@@ -41,6 +41,7 @@ pub(super) struct Tablet {
     search_list: Option<Entity>,
     search_results: Vec<usize>,
     trace_input: Option<Entity>,
+    trace_follow: Option<Entity>,
     trace_version: u64,
 }
 
@@ -202,6 +203,7 @@ enum Action {
     Connection(usize),
     TraceImport,
     TraceFollow,
+    TraceSelect(usize),
     Ambience,
     Speech,
     Voice,
@@ -493,12 +495,31 @@ pub(super) fn update(
     let mut redraw = !was_open;
     if let Some(panel) = tablet.panel {
         if tablet.view == Page::Trace
+            && tablet
+                .scope
+                .as_ref()
+                .is_some_and(|(root, revision, baseline)| {
+                    root == &repo.0.root
+                        && revision == &repo.0.revision
+                        && baseline == &repo.0.baseline
+                })
             && let Some(trace) = trace.as_deref_mut()
             && let Some(input) = tablet
                 .trace_input
                 .and_then(|entity| fields.get(entity).ok())
         {
             trace.source = input.editor().text().to_string();
+            if let Some(follow) = tablet.trace_follow {
+                if trace.can_follow() {
+                    commands
+                        .entity(follow)
+                        .remove::<bevy::ui::InteractionDisabled>();
+                } else {
+                    commands
+                        .entity(follow)
+                        .insert(bevy::ui::InteractionDisabled);
+                }
+            }
         }
         if tablet.view == Page::Settings {
             let previous = tablet.bounds.clone();
@@ -589,6 +610,15 @@ pub(super) fn update(
             return;
         }
         match action {
+            Some(Action::TraceSelect(index)) => {
+                if let Some(trace) = trace.as_deref_mut()
+                    && let Some(group) =
+                        trace.report.groups.get(index).map(|group| group.id.clone())
+                {
+                    trace.select(&group);
+                }
+                redraw = true;
+            }
             Some(Action::TraceImport) => {
                 if let Some(trace) = trace.as_deref_mut() {
                     trace.import(&repo.0, trace.source.clone());
@@ -1562,7 +1592,7 @@ fn draw_trace(
     tablet.trace_version = trace.map_or(0, |trace| trace.version);
     native_panel::text(
         parent,
-        "Paste file:line frames or a Ruby, Python, JavaScript, Rust or Elixir stack trace. Source stays on this device.",
+        "Paste a stack trace, OpenTelemetry OTLP JSON or Chrome Trace JSON. Source stays on this device.",
         native_panel::INK,
     );
     let input = native_panel::input(
@@ -1590,7 +1620,8 @@ fn draw_trace(
         .with_children(|bar| {
             add_button(bar, "Build route", Action::TraceImport, tab);
             let follow = add_button(bar, "Follow trace", Action::TraceFollow, tab);
-            if trace.is_none_or(|trace| trace.report.frames.is_empty()) {
+            tablet.trace_follow = Some(follow);
+            if trace.is_none_or(|trace| !trace.can_follow()) {
                 bar.commands()
                     .entity(follow)
                     .insert(bevy::ui::InteractionDisabled);
@@ -1598,7 +1629,7 @@ fn draw_trace(
         });
     native_panel::text(
         parent,
-        "Up to 64 KiB and 128 frames. Locations are checked against the selected snapshot when opened.",
+        "Up to 64 KiB and 128 frames or spans. Locations are checked against the selected snapshot when opened.",
         native_panel::INK,
     );
     parent
@@ -1620,7 +1651,7 @@ fn draw_trace(
                 native_panel::text(
                     body,
                     &format!(
-                        "{} frames · {} unresolved locations · {} lines without locations",
+                        "{} frames · {} unresolved locations · {} ignored entries",
                         trace.report.frames.len(),
                         trace.report.issues.len(),
                         trace.report.ignored
@@ -1630,21 +1661,25 @@ fn draw_trace(
                 if !trace.report.error.is_empty() {
                     native_panel::text(body, &trace.report.error, native_panel::INK);
                 }
-                for frame in &trace.report.frames {
+                native_panel::text(body, &trace.report.format, native_panel::INK);
+                if trace.report.groups.len() > 1 {
                     native_panel::text(
                         body,
-                        &format!(
-                            "{}:{}{}",
-                            frame.path,
-                            frame.line,
-                            if frame.suffix {
-                                " (path suffix match)"
-                            } else {
-                                ""
-                            }
-                        ),
+                        "Choose one trace or thread to follow.",
                         native_panel::INK,
                     );
+                    for (index, group) in trace.report.groups.iter().enumerate() {
+                        let button =
+                            add_button(body, &group.label, Action::TraceSelect(index), tab);
+                        if trace.selected.as_deref() == Some(group.id.as_str()) {
+                            body.commands()
+                                .entity(button)
+                                .insert(BackgroundColor(Color::srgb_u8(23, 79, 87)));
+                        }
+                    }
+                }
+                for frame in trace.frames() {
+                    native_panel::text(body, &frame.description(), native_panel::INK);
                 }
                 for issue in &trace.report.issues {
                     native_panel::text(body, issue, native_panel::INK);
@@ -1726,6 +1761,44 @@ mod tests {
             app.update();
             assert!(!app.world().resource::<Tablet>().is_open());
             assert!(app.world().resource::<trace_import::Trace>().start);
+            // The same tablet requires choosing one JSON trace before following it.
+            app.world_mut()
+                .resource_mut::<review_notes::Review>()
+                .blocked = false;
+            app.world_mut()
+                .resource_mut::<Tablet>()
+                .open_page(Page::Trace);
+            app.update();
+            let source = serde_json::json!({"spans": [
+                {"traceId":"a","spanId":"first","name":"first","attributes":{"code.file.path":"lib/demo.rb","code.line.number":12}},
+                {"traceId":"b","spanId":"second","name":"second","attributes":{"code.file.path":"lib/demo.rb","code.line.number":19}}
+            ]}).to_string();
+            let input = app.world().resource::<Tablet>().trace_input.unwrap();
+            app.world_mut()
+                .get_mut::<EditableText>(input)
+                .unwrap()
+                .editor_mut()
+                .set_text(&source);
+            app.world_mut().resource_mut::<Tablet>().action = Some(Action::TraceImport);
+            app.update();
+            assert!(!app.world().resource::<trace_import::Trace>().can_follow());
+            app.world_mut().resource_mut::<Tablet>().action = Some(Action::TraceFollow);
+            app.update();
+            assert!(app.world().resource::<Tablet>().is_open());
+            app.world_mut().resource_mut::<Tablet>().action = Some(Action::TraceSelect(1));
+            app.update();
+            assert_eq!(
+                app.world()
+                    .resource::<trace_import::Trace>()
+                    .frames()
+                    .next()
+                    .unwrap()
+                    .line,
+                19
+            );
+            app.world_mut().resource_mut::<Tablet>().action = Some(Action::TraceFollow);
+            app.update();
+            assert!(!app.world().resource::<Tablet>().is_open());
         }
     }
 

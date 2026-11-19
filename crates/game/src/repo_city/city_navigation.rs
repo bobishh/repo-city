@@ -32,6 +32,7 @@ struct Route {
     stops: Vec<Stop>,
     current: usize,
     scroll: f32,
+    labels: Vec<String>,
 }
 
 impl Route {
@@ -738,28 +739,41 @@ pub(super) fn navigate(
 
     if keys.just_pressed(KeyCode::KeyC) || keys.just_pressed(KeyCode::KeyT) || trace_start {
         let following_trace = keys.just_pressed(KeyCode::KeyT) || trace_start;
-        let (kind, stops) = if following_trace {
+        let (kind, stops, labels) = if following_trace {
             focus.enabled = false;
-            (
-                RouteKind::Trace,
-                trace.as_ref().map_or_else(Vec::new, |trace| {
+            let (stops, labels) = trace.as_ref().map_or_else(
+                || (Vec::new(), Vec::new()),
+                |trace| {
                     trace
-                        .report
-                        .frames
-                        .iter()
+                        .frames()
                         .filter_map(|frame| {
                             let file =
                                 repo.0.files.iter().position(|file| {
                                     file.path == frame.path && file.after.is_some()
                                 })?;
-                            Some(Stop::Trace {
-                                file,
-                                line: frame.line,
-                            })
+                            let label = frame.span.as_ref().map_or_else(String::new, |span| {
+                                let name = span.name.chars().take(32).collect::<String>();
+                                format!(
+                                    "{name}{}{}",
+                                    span.duration_ms
+                                        .map_or_else(String::new, |duration| format!(
+                                            " · {duration:.3} ms"
+                                        )),
+                                    if span.error { " · error" } else { "" }
+                                )
+                            });
+                            Some((
+                                Stop::Trace {
+                                    file,
+                                    line: frame.line,
+                                },
+                                label,
+                            ))
                         })
-                        .collect()
-                }),
-            )
+                        .unzip()
+                },
+            );
+            (RouteKind::Trace, stops, labels)
         } else {
             (
                 RouteKind::Review,
@@ -767,6 +781,7 @@ pub(super) fn navigate(
                     .comparison
                     .as_ref()
                     .map_or_else(Vec::new, review_stops),
+                Vec::new(),
             )
         };
         if stops.is_empty() {
@@ -787,6 +802,7 @@ pub(super) fn navigate(
             stops,
             current: 0,
             scroll: 0.,
+            labels,
         });
         fly_to_stop(&mut navigation, *camera, &repo.0, explorer.selected);
         return;
@@ -1017,6 +1033,9 @@ pub(super) fn draw(
                 let path = &repo.0.files[file].path;
                 let number = index + 1;
                 let mut title = format!("Frame {number} / {path}:{line}");
+                if let Some(label) = route.labels.get(index).filter(|label| !label.is_empty()) {
+                    title = format!("Frame {number} / {label} / {path}:{line}");
+                }
                 let rows = match repo.0.source(file, false) {
                     Ok(source) if line <= source.lines().count() => {
                         syntax::highlight(path, &source)
@@ -1485,6 +1504,7 @@ mod tests {
                 .collect(),
             current: 0,
             scroll: 0.,
+            labels: Vec::new(),
         };
         let lower = stop_position(&route, 0, &repo, 0);
         let upper = stop_position(&route, 1, &repo, 0);
@@ -1520,6 +1540,7 @@ mod tests {
                 .collect(),
             current: 0,
             scroll: 0.,
+            labels: Vec::new(),
         };
         let start = stop_position(&route, 0, &repo, 0) + Vec3::new(0., 5., 15.);
         let mut app = App::new();
@@ -1582,6 +1603,7 @@ mod tests {
                 }],
                 current: 0,
                 scroll: 0.,
+                labels: Vec::new(),
             }),
             ..default()
         };

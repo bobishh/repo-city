@@ -255,12 +255,11 @@ fn draw(parent: &mut ChildSpawnerCommands, node: &NodeView, order: &mut i32) {
             ));
         }
         "image" => {
-            parent.spawn((
-                binding(),
-                Text::new(format!("Loading image: {}", node.text)),
-                native_panel::panel_font(),
-                TextColor(ink),
-            ));
+            parent
+                .spawn((binding(), Node::default()))
+                .with_children(|body| {
+                    native_panel::text(body, &format!("Loading image: {}", node.text), ink);
+                });
         }
         _ => {
             let row = node.kind == "row" || node.kind == "columns";
@@ -578,7 +577,7 @@ pub(super) fn update(
         }
         match tablet.images.get(&node.source).unwrap() {
             Ok(handle) => {
-                commands.entity(entity).remove::<Text>().insert((
+                commands.entity(entity).despawn_children().insert((
                     ImageNode::new(handle.clone()),
                     Node {
                         max_width: percent(100.),
@@ -588,7 +587,12 @@ pub(super) fn update(
                 ));
             }
             Err(error) => {
-                commands.entity(entity).insert(Text::new(error));
+                commands
+                    .entity(entity)
+                    .despawn_children()
+                    .with_children(|body| {
+                        native_panel::text(body, error, native_panel::INK);
+                    });
             }
         }
         tablet.image_nodes.insert(binding.0.clone());
