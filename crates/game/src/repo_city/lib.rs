@@ -96,6 +96,8 @@ struct Explorer {
     column: usize,
     highlighted: Vec<syntax::Line>,
     source_layout: listing::layout::SourceLayout,
+    blame_layout: listing::layout::SourceLayout,
+    diff_layout: listing::layout::DiffLayout,
     comparison: Option<Comparison>,
     comparison_mode: u8,
     hunk: usize,
@@ -123,6 +125,8 @@ impl Explorer {
             column: 0,
             highlighted: vec![],
             source_layout: default(),
+            blame_layout: default(),
+            diff_layout: default(),
             comparison: None,
             comparison_mode: 0,
             hunk: 0,
@@ -177,7 +181,17 @@ impl Explorer {
     }
     fn set_highlighted(&mut self, lines: Vec<syntax::Line>) {
         self.source_layout.replace(&lines);
+        self.blame_layout = listing::layout::SourceLayout::for_face(&lines, listing::Face::Blame);
         self.highlighted = lines;
+    }
+
+    fn set_comparison(&mut self, comparison: Option<Comparison>) {
+        self.comparison = comparison;
+        self.refresh_diff_layout();
+    }
+
+    fn refresh_diff_layout(&mut self) {
+        self.diff_layout = listing::layout::DiffLayout::new(self.comparison.as_ref());
     }
 
     fn refresh(&mut self, repo: &Repository) {
@@ -199,7 +213,7 @@ impl Explorer {
         } else {
             repo.source(self.selected, false)
         };
-        self.comparison = match (old, new) {
+        let comparison = match (old, new) {
             (Ok(old), Ok(new)) => match Comparison::new(&file.path, &old, &new) {
                 Ok(c) => Some(c),
                 Err(e) => {
@@ -209,6 +223,7 @@ impl Explorer {
             },
             _ => None,
         };
+        self.set_comparison(comparison);
     }
     fn detach_selection(&mut self, repo: &Repository) {
         self.cut();
@@ -798,6 +813,7 @@ fn browser_refresh(
                 }
             }
         }
+        explorer.refresh_diff_layout();
         explorer.rebuild = true;
         listing.recolor();
     }

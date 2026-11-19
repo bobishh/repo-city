@@ -991,7 +991,7 @@ test("publishes a painted preset in one action and still supports suggestions", 
   expect(reactionAttempts).toBe(2);
 });
 
-test("VibePad owns file search, plain previews, help toggle and exact commit comparison", async ({ page }) => {
+test("VibePad owns file search, extensionless license previews, help toggle and exact commit comparison", async ({ page }) => {
   await emulatePointerLock(page);
   await page.addInitScript(() => localStorage.setItem("repo-city-guide-v1", "seen"));
   const source = "literal <script>not HTML</script> & text\nsecond line\n";
@@ -1004,7 +1004,7 @@ test("VibePad owns file search, plain previews, help toggle and exact commit com
       { sha: before, commit: { message: "Old commit", author: { name: "Writer", date: "2026-11-17T12:00:00Z" } } },
     ] });
     if (path.includes("/commits/")) return route.fulfill({ json: { sha: path.endsWith(before) ? before : after, parents: [], commit: { message: "Commit detail", author: { name: "Writer" } }, files: [{ filename: "notes.txt", patch: "@@ -1 +1 @@\n-old\n+new" }] } });
-    if (path.includes("/git/trees/")) return route.fulfill({ json: { tree: [{ path: "notes.txt", type: "blob", mode: "100644", sha: after, size: source.length }] } });
+    if (path.includes("/git/trees/")) return route.fulfill({ json: { tree: [{ path: "skills/differential-review/UPSTREAM-LICENSE", type: "blob", mode: "100644", sha: after, size: source.length }] } });
     return route.fulfill({ json: { size: source.length, encoding: "base64", content: Buffer.from(source).toString("base64") } });
   });
   await page.goto("/?repo=owner%2Ftools");
@@ -1017,8 +1017,8 @@ test("VibePad owns file search, plain previews, help toggle and exact commit com
   await page.keyboard.press("Meta+p", { delay: 120 });
   const search = page.locator("#review-dialog"); await expectOpen(page);
   await gpuFill(page, search.getByRole("searchbox", { includeHidden: true }), "missing"); await expect(search.getByRole("status", { includeHidden: true })).toHaveText("No matching files.");
-  await gpuFill(page, search.getByRole("searchbox", { includeHidden: true }), "notes"); await page.keyboard.press("ArrowDown", { delay: 120 });
-  await gpuFocus(page, search.getByRole("button", { includeHidden: true, name: "notes.txt", exact: true })); await page.keyboard.press("Enter", { delay: 120 });
+  await gpuFill(page, search.getByRole("searchbox", { includeHidden: true }), "upstream-license"); await page.keyboard.press("ArrowDown", { delay: 120 });
+  await gpuFocus(page, search.getByRole("button", { includeHidden: true, name: "skills/differential-review/UPSTREAM-LICENSE", exact: true })); await page.keyboard.press("Enter", { delay: 120 });
   await expectClosed(page);
   await expect(canvas).toBeFocused();
   await page.waitForTimeout(1200);
@@ -1059,11 +1059,12 @@ test("mobile Pad button opens and puts away the GPU tablet", async ({ browser })
   await context.close();
 });
 
-test("P previews image data and keeps corrupt images inside VibePad", async ({ page }) => {
+test("P previews images and keeps corrupt images and binary files inside VibePad", async ({ page }) => {
   await emulatePointerLock(page);
   await page.addInitScript(() => localStorage.setItem("repo-city-guide-v1", "seen"));
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP1sAAAAASUVORK5CYII=", "base64");
-  const images = { [after]: png, [before]: Buffer.from("broken PNG") };
+  const binary = "c".repeat(40);
+  const images = { [after]: png, [before]: Buffer.from("broken PNG"), [binary]: Buffer.from([65, 0, 66]) };
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
   await page.route("https://api.github.com/**", route => {
     const path = new URL(route.request().url()).pathname;
@@ -1072,13 +1073,14 @@ test("P previews image data and keeps corrupt images inside VibePad", async ({ p
     if (path.includes("/git/trees/")) return route.fulfill({ json: { tree: [
       { path: "image.png", type: "blob", mode: "100644", sha: after, size: png.length },
       { path: "broken.png", type: "blob", mode: "100644", sha: before, size: 10 },
+      { path: "binary.unknown", type: "blob", mode: "100644", sha: binary, size: 3 },
     ] } });
     const bytes = images[path.split("/").pop()];
     return route.fulfill({ json: { size: bytes.length, encoding: "base64", content: bytes.toString("base64") } });
   });
   await page.goto("/?repo=owner%2Fimages");
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
-  for (const name of ["image.png", "broken.png"]) {
+  for (const name of ["image.png", "broken.png", "binary.unknown"]) {
     await page.keyboard.press("Meta+p", { delay: 120 });
     const search = page.locator("#review-dialog");
     await gpuClick(page, search.getByRole("button", { includeHidden: true, name, exact: true }));
@@ -1090,7 +1092,7 @@ test("P previews image data and keeps corrupt images inside VibePad", async ({ p
     if (name === "image.png") {
       await expect(preview.getByRole("img", { includeHidden: true, name })).toBeAttached();
       await expect.poll(() => preview.getByRole("img", { includeHidden: true }).evaluate(image => image.naturalWidth)).toBe(1);
-    } else await expect(preview).toContainText("Image data is invalid or unsupported.");
+    } else await expect(preview).toContainText(name === "broken.png" ? "Image data is invalid or unsupported." : "Binary asset: metadata only");
     await page.keyboard.press("Tab", { delay: 120 }); await expectClosed(page);
   }
 });

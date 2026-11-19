@@ -128,11 +128,11 @@ pub(crate) fn update(
     let side = if Listing::visible(&explorer, &navigation) && !listing.turning() {
         Face::at_camera(file, size, &eye, (size.x * 1.85).max(5.)).and_then(|face| {
             let count = if face == Face::Diff {
-                listing.diff_lines.len()
+                explorer.diff_layout.rows.len()
             } else if face == Face::Source {
                 explorer.source_layout.len()
             } else {
-                explorer.highlighted.len()
+                explorer.blame_layout.len()
             };
             let side = WallSide::new(file, count, face, size);
             (count > 0 && side.look_height(&eye) <= side.wall.top).then_some((side, count))
@@ -218,22 +218,17 @@ pub(crate) fn update(
             && let Some((side, count)) = &side
         {
             search.hits = if side.face == Face::Diff {
-                matching_lines(
-                    listing
-                        .diff_lines
-                        .iter()
-                        .map(|(line, _)| line.as_ref().map_or("", |line| line.text.as_str())),
-                    &search.query,
-                )
+                explorer.comparison.as_ref().map_or_else(Vec::new, |diff| {
+                    explorer.diff_layout.find_rows(diff, &search.query)
+                })
             } else if side.face == Face::Source {
                 explorer
                     .source_layout
                     .find_rows(&explorer.highlighted, &search.query)
             } else {
-                matching_lines(
-                    explorer.highlighted.iter().map(|line| line.text.as_str()),
-                    &search.query,
-                )
+                explorer
+                    .blame_layout
+                    .find_rows(&explorer.highlighted, &search.query)
             };
             search.selected = nearest(&search.hits, side.wall.row(side.look_height(&eye), *count));
             jump = true;
@@ -305,7 +300,6 @@ pub(crate) fn mark(
     search: Res<Search>,
     explorer: Res<Explorer>,
     repo: Res<Repo>,
-    listing: Res<Listing>,
 ) {
     if !search.active_wall {
         return;
@@ -314,10 +308,10 @@ pub(crate) fn mark(
         return;
     };
     let file = &repo.0.files[key.file];
-    let count = if key.face == Face::Diff {
-        listing.diff_lines.len()
-    } else {
-        explorer.highlighted.len()
+    let count = match key.face {
+        Face::Source => explorer.source_layout.len(),
+        Face::Diff => explorer.diff_layout.rows.len(),
+        Face::Blame => explorer.blame_layout.len(),
     };
     if count == 0 || row >= count {
         return;

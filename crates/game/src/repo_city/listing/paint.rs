@@ -132,7 +132,7 @@ pub(crate) fn draw(
     let size = super::block_size(file);
     let sides = [
         (Face::Source, explorer.source_layout.len()),
-        (Face::Diff, listing.diff_lines.len()),
+        (Face::Diff, explorer.diff_layout.rows.len()),
     ];
     if repo.is_changed() || files_by_path.is_empty() {
         *files_by_path = repo
@@ -226,10 +226,12 @@ pub(crate) fn draw(
                     Face::Source => {
                         Some((explorer.before, explorer.source_layout.rows[row].number))
                     }
-                    Face::Diff => listing.diff_lines[row]
-                        .0
-                        .as_ref()
-                        .map(|line| (listing.diff_lines[row].1 == Mark::Removed, line.number)),
+                    Face::Diff => explorer.diff_layout.rows[row].0.as_ref().map(|line| {
+                        (
+                            explorer.diff_layout.rows[row].1 == Mark::Removed,
+                            line.number,
+                        )
+                    }),
                     _ => None,
                 };
                 if let Some((before, line)) = point {
@@ -268,11 +270,12 @@ pub(crate) fn draw(
                                     (anchor.start..=anchor.end).contains(&line.number)
                                 })
                         };
-                        listing
-                            .diff_lines
+                        explorer
+                            .diff_layout
+                            .rows
                             .iter()
                             .position(matches)
-                            .zip(listing.diff_lines.iter().rposition(matches))
+                            .zip(explorer.diff_layout.rows.iter().rposition(matches))
                             .map(|(start, end)| (start, end + 1))
                     }
                     _ => None,

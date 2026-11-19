@@ -150,6 +150,10 @@ The first city visit offers a controls tour. Open **H** to take it again.
 | Fold a code block | **Z** collapses the aimed function; **X** expands it. Fixed-line blocks are used when syntax boundaries are unavailable. |
 | Open controls | **H** opens and puts away VibePad Help. Choose **Start tour** to practice flying and washing source. |
 
+Source, diff and blame walls wrap long code to their available text width for
+every language. Blame reserves space for attribution while history loads.
+Continuation rows keep the original line number for notes, search and links.
+
 **Reading block** chooses whole functions where syntax boundaries are available,
 or fixed-line blocks. **Lines per wash block** sets the fallback/fixed block size
 (default: 6). Set it to 1 to clear individual rows. **Auto-advance** smoothly
@@ -172,6 +176,9 @@ configurable preset, not a research-backed optimum. The Mac stores `mode`,
 `~/Library/Application Support/Repo City/reading.json`. A `null` bound has no limit.
 
 Reach the end of a Markdown or text preview to reveal the file's source wall.
+**P** also opens extensionless documents such as `UPSTREAM-LICENSE` and files
+with unknown extensions as plain text. Binary and non-UTF-8 data show an error
+inside VibePad; PNG, JPEG and WebP use the image viewer.
 Repo City saves revealed lines and reviewed files in your browser or on your
 Mac. The same repository and comparison restore those marks. Press **V** to
 toggle the selected file’s review mark. To start over on the open comparison,

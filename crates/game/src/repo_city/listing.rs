@@ -151,7 +151,6 @@ pub(super) struct Listing {
     diff_tiles: Tiles,
     blame_tiles: Tiles,
     blame_header: Option<Tile>,
-    diff_lines: Vec<(Option<syntax::Line>, Mark)>,
     source_marks: Vec<Mark>,
     preview_marks: Vec<(review_notes::Anchor, Vec4)>,
 }
@@ -307,53 +306,16 @@ fn wall_pose(file: &repo_world::File, y: f32, angle: f32, distance: f32) -> Tran
     Transform::from_translation(center + direction * distance).looking_at(center, Vec3::Y)
 }
 
-fn diff_row_width(row: &repo_world::comparison::Row) -> usize {
-    usize::from(row.before.is_some() && (row.changed || row.after.is_none()))
-        + usize::from(row.after.is_some())
-}
-
 fn diff_rows(explorer: &Explorer) -> usize {
-    explorer
-        .comparison
-        .as_ref()
-        .filter(|diff| !diff.hunks.is_empty())
-        .map_or(0, |diff| diff.rows.iter().map(diff_row_width).sum())
+    explorer.diff_layout.rows.len()
 }
 
 fn projected_row(explorer: &Explorer, row: usize, to_diff: bool) -> usize {
-    let Some(diff) = &explorer.comparison else {
-        return row;
-    };
-    let mut side = 0;
-    let mut closest = 0;
-    for pair in &diff.rows {
-        let removed = pair.before.is_some() && (pair.changed || pair.after.is_none());
-        let added = pair.after.is_some();
-        let count = diff_row_width(pair);
-        let number = if explorer.before {
-            pair.before
-        } else {
-            pair.after
-        };
-        if to_diff {
-            if number == Some(row) {
-                return side + usize::from(removed && added && !explorer.before);
-            }
-        } else {
-            if let Some(number) = number {
-                closest = number;
-            }
-            if row < side + count {
-                return closest;
-            }
-        }
-        side += count;
-    }
-    if to_diff {
-        side.saturating_sub(1)
-    } else {
-        closest
-    }
+    explorer.comparison.as_ref().map_or(row, |diff| {
+        explorer
+            .diff_layout
+            .project(diff, row, explorer.before, to_diff)
+    })
 }
 
 impl Listing {
@@ -424,8 +386,8 @@ impl Listing {
         let face = Face::at_camera(file, block_size(file), camera, DETAIL_RAY_REACH)?;
         let count = match face {
             Face::Source => explorer.source_layout.len(),
-            Face::Diff => self.diff_lines.len(),
-            Face::Blame => explorer.highlighted.len(),
+            Face::Diff => explorer.diff_layout.rows.len(),
+            Face::Blame => explorer.blame_layout.len(),
         };
         if count == 0 {
             return None;
@@ -591,7 +553,7 @@ impl Listing {
             if face == Face::Source {
                 explorer.source_layout.len()
             } else {
-                explorer.highlighted.len()
+                explorer.blame_layout.len()
             }
         };
         let side = WallSide::new(file, count, face, size);
@@ -616,13 +578,11 @@ impl Listing {
         let count = diff_rows(explorer);
         let size = block_size(file);
         let side = WallSide::new(file, count, Face::Diff, size);
-        let row = explorer.comparison.as_ref().map_or(0, |diff| {
-            diff.rows
-                .iter()
-                .take(row)
-                .map(diff_row_width)
-                .sum::<usize>()
-        });
+        let row = explorer
+            .diff_layout
+            .aligned
+            .get(row)
+            .map_or(0, |rows| rows.start);
         side.view(side.wall.y(row.min(count.saturating_sub(1)) as f32 + 0.5))
     }
 
@@ -634,19 +594,13 @@ impl Listing {
         let source_row = line.checked_sub(1)?;
         let diff_count = diff_rows(explorer);
         if diff_count > 0 {
-            let mut row = 0;
-            for pair in &explorer.comparison.as_ref()?.rows {
-                let removed = pair.before.is_some() && (pair.changed || pair.after.is_none());
-                let target = if explorer.before {
-                    (removed && pair.before == Some(source_row)).then_some(row)
-                } else {
-                    (pair.after == Some(source_row)).then_some(row + usize::from(removed))
-                };
-                if let Some(target) = target {
-                    let side = WallSide::new(file, diff_count, Face::Diff, block_size(file));
-                    return Some(side.view(side.wall.y(target as f32 + 0.5)));
-                }
-                row += diff_row_width(pair);
+            if let Some(row) = explorer.diff_layout.rows.iter().position(|(line, mark)| {
+                line.as_ref()
+                    .is_some_and(|line| line.number == source_row + 1)
+                    && (*mark == Mark::Removed) == explorer.before
+            }) {
+                let side = WallSide::new(file, diff_count, Face::Diff, block_size(file));
+                return Some(side.view(side.wall.y(row as f32 + 0.5)));
             }
         }
         let count = explorer.source_layout.len();
@@ -986,7 +940,7 @@ pub(super) fn controls(
         } else if face == Face::Source {
             source_count
         } else {
-            explorer.highlighted.len()
+            explorer.blame_layout.len()
         }
     };
     let cycle = !keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight])
@@ -1036,6 +990,8 @@ pub(super) fn controls(
             projected_row(&explorer, row, false)
         } else if active == Face::Source && old_count > 0 {
             explorer.source_layout.rows[row].number - 1
+        } else if active == Face::Blame && old_count > 0 {
+            explorer.blame_layout.rows[row].number - 1
         } else {
             row
         };
@@ -1046,7 +1002,7 @@ pub(super) fn controls(
         } else if destination == Face::Source {
             explorer.source_layout.visual_rows(source_row).start
         } else {
-            source_row
+            explorer.blame_layout.visual_rows(source_row).start
         };
         let y = if count == 0 {
             side.wall.top * 0.5
@@ -1852,7 +1808,6 @@ pub(super) fn draw(
     }
     if diff_changed || recolored {
         let mut source_marks = vec![Mark::Context; count];
-        listing.diff_lines.clear();
         if visible
             && let Some(diff) = &explorer.comparison
             && !diff.hunks.is_empty()
@@ -1872,23 +1827,6 @@ pub(super) fn draw(
                         };
                     }
                 }
-                if let Some(index) = row.before
-                    && (row.changed || row.after.is_none())
-                {
-                    listing
-                        .diff_lines
-                        .push((Some(diff.before[index].clone()), Mark::Removed));
-                }
-                if let Some(index) = row.after {
-                    let mark = if row.changed {
-                        Mark::Added
-                    } else {
-                        Mark::Context
-                    };
-                    listing
-                        .diff_lines
-                        .push((Some(diff.after[index].clone()), mark));
-                }
             }
         }
         if source_marks != listing.source_marks {
@@ -1907,9 +1845,10 @@ pub(super) fn draw(
     let size = block_size(file);
     let source_count = explorer.source_layout.len();
     let source = WallSide::new(file, source_count, Face::Source, size);
-    let diff_count = listing.diff_lines.len();
+    let diff_count = explorer.diff_layout.rows.len();
     let diff = WallSide::new(file, diff_count, Face::Diff, size);
-    let blame = WallSide::new(file, count, Face::Blame, size);
+    let blame_count = explorer.blame_layout.len();
+    let blame = WallSide::new(file, blame_count, Face::Blame, size);
     if changed {
         let title = if count == 0 {
             format!("{} / {}", file.path, explorer.notice)
@@ -1956,8 +1895,12 @@ pub(super) fn draw(
     if listing.turn.is_none() {
         listing.viewing = viewed;
     }
-    let blame_row = (viewed == Some(Face::Blame) && count > 0 && listing.turn.is_none())
-        .then(|| blame.wall.row(blame.look_height(camera), count));
+    let blame_row = (viewed == Some(Face::Blame) && blame_count > 0 && listing.turn.is_none())
+        .then(|| {
+            explorer.blame_layout.rows[blame.wall.row(blame.look_height(camera), blame_count)]
+                .number
+                - 1
+        });
     let attribution_updated = listing.blame.update(&repo.0, &explorer, blame_row);
     if listing.blame_header.is_none() || attribution_updated {
         let caption = if count > 0 {
@@ -1979,7 +1922,6 @@ pub(super) fn draw(
         source_tiles,
         diff_tiles,
         blame_tiles,
-        diff_lines,
         source_marks,
         revealed,
         partial_source,
@@ -1994,6 +1936,7 @@ pub(super) fn draw(
         .is_some_and(|coverage| coverage.rows == count && coverage.opened == count);
     let is_revealed =
         |line| fully_revealed || revealed.contains(&(explorer.selected, explorer.before, line));
+    let diff_lines = &explorer.diff_layout.rows;
     let source_row = |index: usize| {
         let line = &explorer.source_layout.rows[index];
         (Some(line), source_marks[line.number - 1])
@@ -2171,16 +2114,16 @@ pub(super) fn draw(
             Face::Blame if show_blame => render.tiles(
                 &blame,
                 blame_tiles,
-                blame.visible_rows(camera, count, aspect),
-                blame.wall.row(blame.look_height(camera), count),
-                count,
+                blame.visible_rows(camera, blame_count, aspect),
+                blame.wall.row(blame.look_height(camera), blame_count),
+                blame_count,
                 |rows| {
                     code_texture::listing_with_notes(
                         &rows
                             .map(|index| {
                                 (
-                                    Some(explorer.highlighted[index].clone()),
-                                    source_marks[index],
+                                    Some(explorer.blame_layout.rows[index].clone()),
+                                    source_marks[explorer.blame_layout.rows[index].number - 1],
                                 )
                             })
                             .collect::<Vec<_>>(),
@@ -2200,7 +2143,7 @@ pub(super) fn draw(
 pub(super) fn smoke_side(explorer: &Explorer, file: &repo_world::File, blame: bool) -> Transform {
     let face = if blame { Face::Blame } else { Face::Diff };
     let count = if blame {
-        explorer.highlighted.len()
+        explorer.blame_layout.len()
     } else {
         diff_rows(explorer)
     };
@@ -2239,6 +2182,19 @@ pub(super) fn smoke_blame_ready(listing: &Listing, count: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_diff_lines_expand_into_continuations_instead_of_clipping_at_the_wall_edge() {
+        let mut explorer = Explorer::new(0);
+        let old = format!("{} BEFORE_TAIL\n", "module Argument ".repeat(70));
+        let new = format!("{} AFTER_TAIL\n", "module Argument ".repeat(70));
+        explorer.set_highlighted(syntax::highlight("Campaign.elm", &new));
+        explorer.set_comparison(Some(Comparison::new("Campaign.elm", &old, &new).unwrap()));
+        assert!(
+            diff_rows(&explorer) > 2,
+            "Both diff sides need visual continuation rows"
+        );
+    }
 
     fn wrapped_fixture() -> (repo_world::File, Explorer) {
         let source = format!("{} TAIL\nlast line\n", "word ".repeat(1000));
@@ -2635,7 +2591,7 @@ mod tests {
         let suffix = "let end = 2;\n".repeat(28);
         let before = format!("{prefix}let old = 1;\n{suffix}");
         let after = format!("{prefix}let new = 1;\n{suffix}");
-        explorer.comparison = Some(Comparison::new(&file.path, &before, &after).unwrap());
+        explorer.set_comparison(Some(Comparison::new(&file.path, &before, &after).unwrap()));
         let count = diff_rows(&explorer);
         let side = WallSide::new(&file, count, Face::Diff, block_size(&file));
         for (before, expected) in [(false, 2), (true, 1)] {
@@ -3156,7 +3112,7 @@ mod tests {
         let mut explorer = Explorer::new(0);
         explorer.set_highlighted(syntax::highlight(&file.path, &source));
         let before = source.replacen("let x = 1;", "let x = 0;", 1);
-        explorer.comparison = Some(Comparison::new(&file.path, &before, &source).unwrap());
+        explorer.set_comparison(Some(Comparison::new(&file.path, &before, &source).unwrap()));
         let mut app = App::new();
         app.insert_resource(Repo(repo))
             .insert_resource(explorer)

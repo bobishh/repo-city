@@ -8,20 +8,26 @@ pub(crate) struct SourceLayout {
     starts: Vec<usize>,
     revision: u64,
     folds: Vec<Range<usize>>,
+    width: f32,
 }
 
 impl SourceLayout {
     pub fn new(lines: &[syntax::Line]) -> Self {
-        Self::project(lines, Vec::new())
+        Self::for_face(lines, Face::Source)
     }
 
-    fn project(lines: &[syntax::Line], folds: Vec<Range<usize>>) -> Self {
+    pub fn for_face(lines: &[syntax::Line], face: Face) -> Self {
+        Self::project(lines, Vec::new(), code_texture::text_width(face))
+    }
+
+    fn project(lines: &[syntax::Line], folds: Vec<Range<usize>>, width: f32) -> Self {
         let mut result = Self {
             folds,
+            width,
             ..Self::default()
         };
         let mut advances = HashMap::new();
-        let limit = code_texture::LISTING_WIDTH as f32 - 106. - 20.;
+        let limit = width;
         for (index, line) in lines.iter().enumerate() {
             result.starts.push(result.rows.len());
             if result
@@ -144,7 +150,7 @@ impl SourceLayout {
     }
     fn reproject(&mut self, lines: &[syntax::Line], folds: Vec<Range<usize>>) {
         let revision = self.revision.wrapping_add(1);
-        *self = Self::project(lines, folds);
+        *self = Self::project(lines, folds, self.width);
         self.revision = revision;
     }
 
@@ -182,26 +188,181 @@ impl SourceLayout {
             .iter()
             .enumerate()
             .filter_map(|(index, line)| {
-                let offset = line.text.to_lowercase().find(&needle)?;
-                let mut lower_bytes = 0;
-                let byte = line
-                    .text
-                    .char_indices()
-                    .find_map(|(byte, ch)| {
-                        let start = lower_bytes;
-                        lower_bytes += ch.to_lowercase().map(char::len_utf8).sum::<usize>();
-                        (offset >= start && offset < lower_bytes).then_some(byte)
-                    })
-                    .unwrap_or(0);
+                let byte = match_byte(&line.text, &needle)?;
                 Some(self.visual_row(index, byte))
             })
             .collect()
     }
 }
 
+fn match_byte(text: &str, needle: &str) -> Option<usize> {
+    let offset = text.to_lowercase().find(needle)?;
+    let mut lower_bytes = 0;
+    text.char_indices().find_map(|(byte, ch)| {
+        let start = lower_bytes;
+        lower_bytes += ch.to_lowercase().map(char::len_utf8).sum::<usize>();
+        (offset >= start && offset < lower_bytes).then_some(byte)
+    })
+}
+
+#[derive(Default)]
+pub(crate) struct DiffLayout {
+    pub rows: Vec<(Option<syntax::Line>, Mark)>,
+    pub aligned: Vec<Range<usize>>,
+    bytes: Vec<Range<usize>>,
+}
+
+impl DiffLayout {
+    pub fn new(diff: Option<&Comparison>) -> Self {
+        let mut result = Self::default();
+        let Some(diff) = diff.filter(|diff| !diff.hunks.is_empty()) else {
+            return result;
+        };
+        for row in &diff.rows {
+            let start = result.rows.len();
+            let mut append = |line: &syntax::Line, mark| {
+                let layout = SourceLayout::for_face(std::slice::from_ref(line), Face::Diff);
+                result.bytes.extend(layout.bytes);
+                result
+                    .rows
+                    .extend(layout.rows.into_iter().map(|line| (Some(line), mark)));
+            };
+            if let Some(index) = row.before.filter(|_| row.changed || row.after.is_none()) {
+                append(&diff.before[index], Mark::Removed);
+            }
+            if let Some(index) = row.after {
+                append(
+                    &diff.after[index],
+                    if row.changed {
+                        Mark::Added
+                    } else {
+                        Mark::Context
+                    },
+                );
+            }
+            result.aligned.push(start..result.rows.len());
+        }
+        result
+    }
+
+    pub fn find_rows(&self, diff: &Comparison, needle: &str) -> Vec<usize> {
+        let needle = needle.trim().to_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let mut hits = Vec::new();
+        let mut previous = None;
+        for (index, (fragment, mark)) in self.rows.iter().enumerate() {
+            let Some(fragment) = fragment else { continue };
+            let before = *mark == Mark::Removed;
+            let key = (before, fragment.number);
+            if previous.is_none_or(|(saved, _)| saved != key) {
+                let lines = if before { &diff.before } else { &diff.after };
+                let byte = lines
+                    .get(fragment.number.saturating_sub(1))
+                    .and_then(|line| match_byte(&line.text, &needle));
+                previous = Some((key, byte));
+            }
+            if previous
+                .and_then(|(_, byte)| byte)
+                .is_some_and(|byte| self.bytes[index].contains(&byte))
+            {
+                hits.push(index);
+            }
+        }
+        hits
+    }
+
+    pub fn project(&self, diff: &Comparison, row: usize, before: bool, to_diff: bool) -> usize {
+        let mut closest = 0;
+        for (pair, range) in diff.rows.iter().zip(&self.aligned) {
+            let number = if before { pair.before } else { pair.after };
+            if to_diff {
+                if number == Some(row) {
+                    return if before {
+                        range.start
+                    } else {
+                        range
+                            .clone()
+                            .find(|&index| self.rows[index].1 != Mark::Removed)
+                            .unwrap_or(range.start)
+                    };
+                }
+            } else {
+                if let Some(number) = number {
+                    closest = number;
+                }
+                if range.contains(&row) {
+                    return closest;
+                }
+            }
+        }
+        if to_diff {
+            self.rows.len().saturating_sub(1)
+        } else {
+            closest
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrapped_diff_search_and_navigation_keep_side_and_canonical_line() {
+        let before = format!("{}BEFOREBOUNDARY{}\n", "x".repeat(114), "y".repeat(180));
+        let after = format!("{}AFTERBOUNDARY{}\n", "x".repeat(114), "y".repeat(180));
+        let diff = Comparison::new("Campaign.elm", &before, &after).unwrap();
+        let layout = DiffLayout::new(Some(&diff));
+        assert!(layout.rows.len() > 2);
+        let first_added = layout
+            .rows
+            .iter()
+            .position(|(_, mark)| *mark == Mark::Added)
+            .unwrap();
+        assert_eq!(layout.find_rows(&diff, "AFTERBOUNDARY"), [first_added]);
+        assert_eq!(layout.find_rows(&diff, "BEFOREBOUNDARY"), [0]);
+        for before in [true, false] {
+            let first = layout.project(&diff, 0, before, true);
+            assert_eq!(first, if before { 0 } else { first_added });
+            assert_eq!(layout.project(&diff, first + 1, before, false), 0);
+        }
+        assert!(
+            layout
+                .rows
+                .iter()
+                .all(|(line, _)| line.as_ref().unwrap().number == 1)
+        );
+    }
+
+    #[test]
+    fn every_code_face_wraps_to_its_available_width_without_losing_elm_or_unicode() {
+        let source = format!(
+            "module JobGame.Campaign exposing ({}) -- ℕ ELM_TAIL",
+            "Model, Outcome(..), Difficulty(..), Stage(..), ".repeat(25)
+        );
+        let lines = syntax::highlight("Campaign.elm", &source);
+        for face in [Face::Source, Face::Diff, Face::Blame] {
+            let layout = SourceLayout::for_face(&lines, face);
+            assert_eq!(
+                layout
+                    .rows
+                    .iter()
+                    .map(|line| line.text.as_str())
+                    .collect::<String>(),
+                source
+            );
+            assert!(layout.rows.iter().all(|line| line.number == 1));
+            for line in &layout.rows {
+                let width: f32 = line.text.chars().map(code_texture::source_advance).sum();
+                assert!(
+                    width <= code_texture::text_width(face),
+                    "{face:?}: {width}px exceeds its code area"
+                );
+            }
+        }
+    }
 
     #[test]
     fn folding_preserves_source_line_identity_and_expanding_restores_all_bytes() {

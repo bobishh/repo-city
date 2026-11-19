@@ -238,7 +238,11 @@ async function openRepository(repo, ref, base, exactBase = false) {
               return { bytes: await repository.blob(blob.id), format: path.split(".").pop().toLowerCase() };
             }
             if (blob.size > 1024 * 1024) throw new Error("Source exceeds the 1 MiB inspection limit.");
-            const text = new TextDecoder("utf-8", { fatal: true }).decode(await repository.blob(blob.id));
+            const bytes = await repository.blob(blob.id);
+            if (bytes.includes(0)) throw new Error("Binary asset: metadata only");
+            let text;
+            try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+            catch { throw new Error("Non-UTF-8 asset: metadata only"); }
             const rows = text.split("\n").length - Number(!text || text.endsWith("\n"));
             return { text, mark: { path, blob: blob.id, before, rows } };
           }, image ? "image" : markdown ? "markdown" : "text");

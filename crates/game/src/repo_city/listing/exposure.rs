@@ -159,19 +159,26 @@ pub(crate) fn update(
             return None;
         }
         let count = if face == Face::Diff {
-            listing.diff_lines.len()
+            explorer.diff_layout.rows.len()
         } else {
-            explorer.highlighted.len()
+            explorer.blame_layout.len()
         };
         let side = WallSide::new(file, count, face, block_size(file));
         let visible = side.visible_rows(camera, count, aspect);
         let focus = side.wall.row(side.look_height(camera), count);
         let mut rows = settings.rows(focus, count);
         if face == Face::Blame && settings.block_kind == reading::BlockKind::Function {
-            rows = reading::callable_for_line(&explorer, focus + 1).unwrap_or(rows);
+            let line = explorer.blame_layout.rows[focus].number;
+            if let Some(callable) = reading::callable_for_line(&explorer, line) {
+                rows = explorer.blame_layout.visual_rows(callable.start).start
+                    ..explorer
+                        .blame_layout
+                        .visual_rows(callable.end.saturating_sub(1))
+                        .end;
+            }
         }
         if face == Face::Diff {
-            if let Some((Some(line), mark)) = listing.diff_lines.get(focus) {
+            if let Some((Some(line), mark)) = explorer.diff_layout.rows.get(focus) {
                 let before = *mark == Mark::Removed;
                 if let Some(diff) = &explorer.comparison
                     && let Some(hunk) = diff.hunks.iter().find(|hunk| {
@@ -182,8 +189,9 @@ pub(crate) fn update(
                         }
                     })
                 {
-                    let matching = listing
-                        .diff_lines
+                    let matching = explorer
+                        .diff_layout
+                        .rows
                         .iter()
                         .enumerate()
                         .filter(|(_, (line, mark))| {
@@ -207,18 +215,31 @@ pub(crate) fn update(
         if rows.is_empty() {
             return None;
         }
-        let lines = if face == Face::Diff {
-            listing.diff_lines[rows.clone()]
+        let mut lines: Vec<(bool, syntax::Line)> = if face == Face::Diff {
+            explorer.diff_layout.rows[rows.clone()]
                 .iter()
                 .filter_map(|(line, mark)| line.clone().map(|line| (*mark == Mark::Removed, line)))
                 .collect()
         } else {
-            explorer.highlighted[rows.clone()]
+            explorer.blame_layout.rows[rows.clone()]
                 .iter()
                 .cloned()
                 .map(|line| (explorer.before, line))
                 .collect()
         };
+        // Continuations retain one canonical source line for read progress and timing.
+        lines.dedup_by_key(|(before, line)| (*before, line.number));
+        for (before, line) in &mut lines {
+            let original = explorer
+                .comparison
+                .as_ref()
+                .map_or(&explorer.highlighted, |diff| {
+                    if *before { &diff.before } else { &diff.after }
+                });
+            if let Some(original) = original.get(line.number - 1) {
+                *line = original.clone();
+            }
+        }
         Some(Viewed {
             kind: if face == Face::Diff { 1 } else { 2 },
             rows,
@@ -253,8 +274,9 @@ mod tests {
         let file = super::super::tests::fixture_file();
         let mut explorer = Explorer::new(0);
         explorer.set_highlighted(syntax::highlight("test.rs", "new value\nunseen\n"));
-        explorer.comparison =
-            Some(Comparison::new("test.rs", "old value\nunseen\n", "new value\nunseen\n").unwrap());
+        explorer.set_comparison(Some(
+            Comparison::new("test.rs", "old value\nunseen\n", "new value\nunseen\n").unwrap(),
+        ));
         let settings = reading::Settings {
             min_seconds: Some(1.),
             max_seconds: Some(1.),

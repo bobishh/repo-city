@@ -160,6 +160,19 @@ impl Canvas {
         scale: Vec2,
         color: impl Fn(usize) -> [f32; 3],
     ) {
+        self.scaled_text_to(text, x, y, size, scale, self.width as f32 - 14., color);
+    }
+
+    fn scaled_text_to(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        size: f32,
+        scale: Vec2,
+        right: f32,
+        color: impl Fn(usize) -> [f32; 3],
+    ) {
         let font = FontRef::from_index(
             include_bytes!("../../../../assets/fonts/FiraMono-Medium.ttf"),
             0,
@@ -174,7 +187,7 @@ impl Canvas {
         }
         let mut x = x;
         for (byte, ch) in text.char_indices() {
-            if x >= self.width as f32 - 14. {
+            if x >= right {
                 break;
             }
             if ch == '\t' {
@@ -208,6 +221,9 @@ impl Canvas {
             } else {
                 (render.render(&mut scaler, id), metrics.advance_width(id))
             };
+            if x + advance * scale.x > right {
+                break;
+            }
             if let Some(glyph) = glyph {
                 let p = glyph.placement;
                 for gy in 0..p.height {
@@ -218,6 +234,7 @@ impl Canvas {
                         if px >= 0
                             && py >= 0
                             && (px as u32) < self.width
+                            && (px as f32) < right
                             && (py as u32) < self.height
                         {
                             let offset = ((py as u32 * self.width + px as u32) * 4) as usize;
@@ -384,6 +401,22 @@ pub(super) fn heading(title: &str, tint: [f32; 3], aspect: f32, glyph_scale: f32
 pub(super) const LISTING_WIDTH: u32 = 1536;
 pub(super) const LISTING_ROW_PIXELS: u32 = 27;
 pub(super) const HEADING_LEFT: f32 = 32.;
+
+pub(super) fn text_start(face: Face) -> f32 {
+    if face == Face::Blame {
+        if cfg!(target_arch = "wasm32") {
+            470.
+        } else {
+            405.
+        }
+    } else {
+        106.
+    }
+}
+
+pub(super) fn text_width(face: Face) -> f32 {
+    LISTING_WIDTH as f32 - text_start(face) - 20.
+}
 
 /// Unscaled source advance, shared by fixed-width wrapping and the rasterizer's font choices.
 pub(super) fn source_advance(ch: char) -> f32 {
@@ -637,7 +670,8 @@ pub(super) fn listing_with_notes(
             glyph_scale,
             |_| [0.50, 0.66, 0.71],
         );
-        let text_start = if let Some(notes) = notes {
+        let start = x(106.) + (text_start(face) - 106.) * glyph_scale.x;
+        if let Some(notes) = notes {
             if let Some(author) = notes.get(line.number.saturating_sub(1)) {
                 let (limit, size) = if cfg!(target_arch = "wasm32") {
                     (39, 15.)
@@ -645,19 +679,17 @@ pub(super) fn listing_with_notes(
                     (28, 17.)
                 };
                 let short = author.chars().take(limit).collect::<String>();
-                canvas.scaled_text(&short, x(106.), baseline, size, glyph_scale, |_| {
-                    [0.53, 0.83, 0.78]
-                });
+                canvas.scaled_text_to(
+                    &short,
+                    x(106.),
+                    baseline,
+                    size,
+                    glyph_scale,
+                    start - x(8.),
+                    |_| [0.53, 0.83, 0.78],
+                );
             }
-            if cfg!(target_arch = "wasm32") {
-                470
-            } else {
-                405
-            }
-        } else {
-            106
-        };
-        let start = x(106.) + (text_start as f32 - 106.) * glyph_scale.x;
+        }
         canvas.scaled_text(&line.text, start, baseline, 20., glyph_scale, |byte| {
             ink(line
                 .spans
@@ -682,6 +714,65 @@ pub(super) fn listing_with_notes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_code_tails_render_on_every_face_and_history_cannot_overlap_source() {
+        let text = format!("{} ELM_TAIL", "module SourceArgument ".repeat(25));
+        let lines = [Line {
+            number: 1,
+            spans: vec![repo_world::syntax::Span {
+                bytes: text.len() - 8..text.len(),
+                kind: Kind::Keyword,
+            }],
+            text,
+        }];
+        for face in [Face::Source, Face::Diff, Face::Blame] {
+            let layout = super::super::listing::layout::SourceLayout::for_face(&lines, face);
+            let rows = layout
+                .rows
+                .into_iter()
+                .map(|line| (Some(line), Mark::Context))
+                .collect::<Vec<_>>();
+            for scale in [Vec2::ONE, Vec2::splat(0.5), Vec2::new(1., 0.25)] {
+                let notes = vec!["👀".repeat(80)];
+                let ready = listing_with_notes(
+                    &rows,
+                    face,
+                    scale,
+                    (face == Face::Blame).then_some(notes.as_slice()),
+                );
+                assert!(
+                    ready
+                        .data
+                        .as_ref()
+                        .unwrap()
+                        .chunks_exact(4)
+                        .any(|pixel| pixel[0] > 160 && pixel[1] < 185 && pixel[2] > 235),
+                    "The tail keyword was clipped on {face:?}"
+                );
+                if face == Face::Blame {
+                    let pending = listing_with_notes(&rows, face, scale, None);
+                    let width = ready.width() as usize;
+                    let start = ((106. + (text_start(face) - 106.) * scale.x)
+                        * (width as f32 / LISTING_WIDTH as f32))
+                        .ceil() as usize;
+                    for (ready, pending) in ready
+                        .data
+                        .as_ref()
+                        .unwrap()
+                        .chunks_exact(width * 4)
+                        .zip(pending.data.as_ref().unwrap().chunks_exact(width * 4))
+                    {
+                        assert_eq!(
+                            &ready[start * 4..],
+                            &pending[start * 4..],
+                            "Attribution changed the code area"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn heading_ink_clears_the_physical_file_stripe_at_every_glyph_scale() {

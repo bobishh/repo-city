@@ -1,4 +1,4 @@
-//! One extension policy for file previews in the desktop and browser tablets.
+//! Shared preview selection; unrecognized names use the bounded text reader.
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,134 +20,24 @@ pub(super) fn format(path: &str) -> Option<Format> {
     if ["png", "jpg", "jpeg", "webp"].contains(&extension) {
         return Some(Format::Image);
     }
-    if [
-        "txt",
-        "text",
-        "log",
-        "csv",
-        "tsv",
-        "rst",
-        "adoc",
-        "asciidoc",
-        "org",
-        "rdoc",
-        "tex",
-        "json",
-        "jsonc",
-        "json5",
-        "yaml",
-        "yml",
-        "toml",
-        "xml",
-        "html",
-        "htm",
-        "svg",
-        "css",
-        "scss",
-        "sass",
-        "less",
-        "js",
-        "mjs",
-        "cjs",
-        "jsx",
-        "ts",
-        "tsx",
-        "rs",
-        "go",
-        "py",
-        "rb",
-        "rake",
-        "gemspec",
-        "clj",
-        "cljs",
-        "cljc",
-        "edn",
-        "c",
-        "cc",
-        "cpp",
-        "cxx",
-        "h",
-        "hpp",
-        "sh",
-        "bash",
-        "zsh",
-        "fish",
-        "ps1",
-        "bat",
-        "cmd",
-        "sql",
-        "graphql",
-        "proto",
-        "ini",
-        "cfg",
-        "conf",
-        "config",
-        "env",
-        "lock",
-        "properties",
-        "svelte",
-        "vue",
-        "swift",
-        "kt",
-        "kts",
-        "java",
-        "cs",
-        "fs",
-        "ex",
-        "exs",
-        "erl",
-        "hrl",
-        "hs",
-        "lua",
-        "nix",
-        "cmake",
-        "gradle",
-        "scala",
-        "dart",
-        "diff",
-        "patch",
-    ]
-    .contains(&extension)
-        || [
-            "readme",
-            "license",
-            "licence",
-            "copying",
-            "notice",
-            "authors",
-            "contributors",
-            "changelog",
-            "changes",
-            "makefile",
-            "dockerfile",
-            "containerfile",
-            "gemfile",
-            "rakefile",
-            "procfile",
-            ".gitignore",
-            ".gitattributes",
-            ".gitmodules",
-            ".editorconfig",
-            ".env",
-        ]
-        .contains(&file.as_str())
-        || file.starts_with("license-")
-        || file.starts_with("licence-")
-    {
-        Some(Format::Text)
-    } else {
-        None
-    }
+    // The bounded source reader validates UTF-8 and rejects binary data.
+    // Text previews must not depend on a language or filename registry.
+    Some(Format::Text)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn documents_code_and_images_share_a_case_insensitive_extension_policy() {
+    fn document_names_and_unknown_languages_use_text_while_images_keep_their_decoder() {
         for name in [
             "notes.TXT",
             "LICENSE-MIT",
+            "skills/differential-review/UPSTREAM-LICENSE",
+            "licenses/THIRD_PARTY_NOTICES",
+            "proof.lean",
+            "Campaign.elm",
+            "document.custom-extension",
             ".gitignore",
             "settings.toml",
             "source.mjs",
@@ -161,7 +51,7 @@ mod tests {
         for name in ["picture.PNG", "photo.jpeg", "texture.webp"] {
             assert_eq!(format(name), Some(Format::Image));
         }
-        for name in ["app.exe", "data.sqlite3", "archive.zip", "README.md.bak"] {
+        for name in ["", "/"] {
             assert_eq!(format(name), None);
         }
     }
