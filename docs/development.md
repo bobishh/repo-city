@@ -19,9 +19,12 @@ changes when it switches snapshots. The watcher follows the batching pattern
 from Sloposcope at `11ebbc7b33a3e8faf3cee8bc0ee155290bf3940e`. Repo City
 passes snapshots to its scene instead of maintaining a graph in SQLite.
 
-To inspect a stack trace, save one repository-relative `path:line` frame
-per line, starting at the error. Pass `--trace FILE` and press **T** in the
-city. **W** and **S** follow the supplied trace.
+Use **Tab → Trace** to paste a stack trace on desktop or in the browser.
+For command-line loading, save the trace to a file and pass `--trace FILE`.
+Press **T** in the city; **W** and **S** follow the supplied frame order.
+The same importer handles both entry points. It accepts repository-relative
+`path:line` frames and common runtime stack formats; unresolved locations appear
+in the tablet's Trace preview.
 
 Press **Enter** to enter the source wall and left-click a function to detach its
 declaration into a private draft. **R** restores it. **F6** explicitly exports

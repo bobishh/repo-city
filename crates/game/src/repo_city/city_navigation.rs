@@ -147,7 +147,6 @@ pub(super) struct ReviewedPlatform(usize);
 
 #[derive(Resource, Default)]
 pub(super) struct Navigation {
-    trace: Vec<Stop>,
     route: Option<Route>,
     hop: Option<Hop>,
     redraw: bool,
@@ -237,14 +236,26 @@ impl Navigation {
         self.hop = Some(hop);
     }
 
-    pub(super) fn new(repo: &Repository, trace_path: Option<&str>) -> Result<Self, String> {
-        let trace = if let Some(path) = trace_path {
-            let content = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
-            parse_trace(repo, &content)?
-        } else {
-            Vec::new()
-        };
-        Ok(Self { trace, ..default() })
+    pub(super) fn clear_trace_route(&mut self) {
+        if self
+            .route
+            .as_ref()
+            .is_some_and(|route| route.kind == RouteKind::Trace)
+        {
+            self.route = None;
+            self.hop = None;
+            self.redraw = true;
+        }
+    }
+
+    pub(super) fn refresh_trace(&mut self) {
+        if self
+            .route
+            .as_ref()
+            .is_some_and(|route| route.kind == RouteKind::Trace)
+        {
+            self.redraw = true;
+        }
     }
 
     pub(super) fn reading_rows(
@@ -330,31 +341,12 @@ impl Navigation {
             return "SOURCE WALL · Scroll to read · E flies to the facade · Enter closes the wall"
                 .into();
         }
-        let trace = if self.trace.is_empty() {
-            ""
-        } else {
-            " · T follows stack trace"
-        };
+        let trace = " · T follows imported stack trace";
         let shortcut = file_picker::SHORTCUT;
         format!(
             "Click to capture · Esc releases · Right-click opens actions · E flies to the aimed face\nScroll follows the text · Files / {shortcut} searches paths · WASD flies\nClick close to start or stop washing source · Home frames the file · G diff · B blame · C reviews changes{trace}"
         )
     }
-}
-
-fn parse_trace(repo: &Repository, source: &str) -> Result<Vec<Stop>, String> {
-    let stops = source.lines().enumerate().filter(|(_, text)| !text.trim().is_empty()).map(|(index, text)| {
-        let error = || format!("Frame {} needs a repository-relative path and positive line (path:line): {text}", index + 1);
-        let (path, line) = text.trim().rsplit_once(':').ok_or_else(error)?;
-        let line = line.parse::<usize>().ok().filter(|&line| line > 0).ok_or_else(error)?;
-        let file = repo.files.iter().position(|file| file.path == path && file.after.is_some())
-            .ok_or_else(|| format!("Frame {} is absent from the selected revision: {path}", index + 1))?;
-        Ok(Stop::Trace { file, line })
-    }).collect::<Result<Vec<_>, String>>()?;
-    if stops.is_empty() {
-        return Err("No stack frames supplied.".into());
-    }
-    Ok(stops)
 }
 
 fn review_stops(diff: &Comparison) -> Vec<Stop> {
@@ -433,7 +425,11 @@ extern "C" {
 }
 
 pub(super) fn navigate(
-    (time, keys): (Res<Time>, Res<ButtonInput<KeyCode>>),
+    (time, keys, mut trace): (
+        Res<Time>,
+        Res<ButtonInput<KeyCode>>,
+        Option<ResMut<trace_import::Trace>>,
+    ),
     wheel: Res<AccumulatedMouseScroll>,
     repo: Res<Repo>,
     mut focus: ResMut<file_facade::ChangesOnly>,
@@ -458,6 +454,16 @@ pub(super) fn navigate(
     };
     if !window.focused {
         return;
+    }
+    let trace_start = trace
+        .as_deref_mut()
+        .is_some_and(|trace| std::mem::take(&mut trace.start));
+    if trace_start {
+        navigation.route = None;
+        navigation.hop = None;
+        navigation.overview = None;
+        listing.reset_view();
+        focus.enabled = false;
     }
 
     let destination = review_notes::take_destination(review.as_deref_mut());
@@ -687,6 +693,10 @@ pub(super) fn navigate(
                         if file != explorer.selected {
                             explorer.open(&repo.0, file);
                         }
+                        if explorer.before {
+                            explorer.before = false;
+                            explorer.reload(&repo.0);
+                        }
                         explorer.page = (line - 1) / PAGE;
                         explorer.rebuild = true;
                     }
@@ -726,10 +736,30 @@ pub(super) fn navigate(
         return;
     }
 
-    if keys.just_pressed(KeyCode::KeyC) || keys.just_pressed(KeyCode::KeyT) {
-        let trace = keys.just_pressed(KeyCode::KeyT);
-        let (kind, stops) = if trace {
-            (RouteKind::Trace, navigation.trace.clone())
+    if keys.just_pressed(KeyCode::KeyC) || keys.just_pressed(KeyCode::KeyT) || trace_start {
+        let following_trace = keys.just_pressed(KeyCode::KeyT) || trace_start;
+        let (kind, stops) = if following_trace {
+            focus.enabled = false;
+            (
+                RouteKind::Trace,
+                trace.as_ref().map_or_else(Vec::new, |trace| {
+                    trace
+                        .report
+                        .frames
+                        .iter()
+                        .filter_map(|frame| {
+                            let file =
+                                repo.0.files.iter().position(|file| {
+                                    file.path == frame.path && file.after.is_some()
+                                })?;
+                            Some(Stop::Trace {
+                                file,
+                                line: frame.line,
+                            })
+                        })
+                        .collect()
+                }),
+            )
         } else {
             (
                 RouteKind::Review,
@@ -740,8 +770,8 @@ pub(super) fn navigate(
             )
         };
         if stops.is_empty() {
-            explorer.notice = if trace {
-                "Launch with --trace PATH to follow a stack trace."
+            explorer.notice = if following_trace {
+                "Open VibePad → Trace to paste a stack trace."
             } else {
                 "This file has no readable text changes. N visits the next changed file."
             }

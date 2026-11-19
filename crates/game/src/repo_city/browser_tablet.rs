@@ -34,6 +34,8 @@ struct NodeView {
     disabled: bool,
     selected: bool,
     multiline: bool,
+    max_length: Option<usize>,
+    rows: usize,
     children: Vec<NodeView>,
     options: Vec<Choice>,
     source: String,
@@ -107,6 +109,21 @@ fn draw(parent: &mut ChildSpawnerCommands, node: &NodeView, order: &mut i32) {
     match node.kind.as_str() {
         "input" | "color" => {
             let input = native_panel::input(parent, "", &node.value, *order, node.multiline);
+            if node.max_length.is_some() || node.rows > 4 {
+                let (limit, rows) = (node.max_length, node.rows);
+                parent.commands().queue(move |world: &mut World| {
+                    if let Some(limit) = limit
+                        && let Some(mut field) = world.get_mut::<EditableText>(input)
+                    {
+                        field.max_characters = Some(limit);
+                    }
+                    if rows > 4
+                        && let Some(mut node) = world.get_mut::<Node>(input)
+                    {
+                        node.height = px((rows as f32 * 20. + 12.).min(240.));
+                    }
+                });
+            }
             parent.commands().entity(input).insert((
                 binding(),
                 Name::new(if node.text.contains("File name") {

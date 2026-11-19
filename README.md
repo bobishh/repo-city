@@ -203,6 +203,25 @@ listed with an explanation. This is syntax-based navigation, not a compiler
 call graph. Parsing runs in a background worker and its in-memory cache uses
 language and content identity.
 
+## Follow a pasted stack trace
+
+Open **Tab → Trace** in either application. Paste a stack trace, choose
+**Build route**, inspect the resolved frames and any unresolved locations, then
+choose **Follow trace**. This works for local worktrees, commit snapshots and
+GitHub pull requests without requiring write access. **W/S** visits the next or
+previous frame; **Esc** leaves the route. **T** starts the imported trace again.
+
+The importer accepts `path:line` and `path:line:column`, including common Ruby,
+Python, JavaScript, Rust and Elixir stack formats. It preserves frame order and
+repeated calls. Absolute paths can match by repository path suffix; the preview
+labels those matches. A bare filename must identify exactly one file. Missing
+or ambiguous paths remain listed and do not become route steps. Source line
+availability is checked when each frame opens. Traces are limited to 64 KiB
+and 128 locations and stay in the current application session. Switching the
+repository or comparison clears them; a worktree update stops an active route
+so it can be rebuilt against the updated files. JSON span imports and execution
+timings are not supported.
+
 ## Sound and preferences
 
 The gear at the right of VibePad's navigation opens **Settings**. Valid changes save automatically; invalid fields show a reason and keep the last valid settings. Set the water

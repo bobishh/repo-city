@@ -40,6 +40,8 @@ pub(super) struct Tablet {
     search_input: Option<Entity>,
     search_list: Option<Entity>,
     search_results: Vec<usize>,
+    trace_input: Option<Entity>,
+    trace_version: u64,
 }
 
 struct History {
@@ -166,16 +168,18 @@ pub(super) enum Page {
     Git,
     Search,
     Terminal,
+    Trace,
 }
 
 impl Page {
-    pub(super) const NAVIGATION: [(Self, &'static str); 6] = [
+    pub(super) const NAVIGATION: [(Self, &'static str); 7] = [
         (Self::Files, "Files"),
         (Self::Search, "Find"),
         (Self::Help, "Help"),
         (Self::Connections, "Connections"),
         (Self::Git, "Git"),
         (Self::Terminal, "Terminal"),
+        (Self::Trace, "Trace"),
     ];
 }
 
@@ -196,6 +200,8 @@ enum Action {
     GitCompare,
     StartTour,
     Connection(usize),
+    TraceImport,
+    TraceFollow,
     Ambience,
     Speech,
     Voice,
@@ -234,6 +240,7 @@ impl Tablet {
             Page::Git => "git",
             Page::Search => "search",
             Page::Terminal => "terminal",
+            Page::Trace => "trace",
         })
     }
 
@@ -417,6 +424,7 @@ pub(super) fn update(
         mut image_request,
         mut images,
         mut terminal,
+        mut trace,
     ): (
         ResMut<reading::Settings>,
         ResMut<guide::Tour>,
@@ -432,6 +440,7 @@ pub(super) fn update(
         Option<ResMut<image_preview::Request>>,
         Option<ResMut<Assets<Image>>>,
         Option<ResMut<terminal::Terminal>>,
+        Option<ResMut<trace_import::Trace>>,
     ),
 ) {
     let editing = focus.get().is_some_and(|entity| fields.contains(entity));
@@ -463,6 +472,7 @@ pub(super) fn update(
                 KeyCode::Digit4,
                 KeyCode::Digit5,
                 KeyCode::Digit6,
+                KeyCode::Digit7,
             ]
             .iter()
             .position(|key| keys.just_pressed(*key))
@@ -482,6 +492,14 @@ pub(super) fn update(
     let was_open = tablet.panel.is_some();
     let mut redraw = !was_open;
     if let Some(panel) = tablet.panel {
+        if tablet.view == Page::Trace
+            && let Some(trace) = trace.as_deref_mut()
+            && let Some(input) = tablet
+                .trace_input
+                .and_then(|entity| fields.get(entity).ok())
+        {
+            trace.source = input.editor().text().to_string();
+        }
         if tablet.view == Page::Settings {
             let previous = tablet.bounds.clone();
             tablet.capture_bounds(&fields);
@@ -540,6 +558,10 @@ pub(super) fn update(
             }
             _ => false,
         };
+        let follow_trace = matches!(action, Some(Action::TraceFollow))
+            && trace
+                .as_deref_mut()
+                .is_some_and(|trace| trace.follow(&repo.0));
         let destination = match action {
             Some(Action::Visit(index)) if !repo.is_changed() => Some(index),
             _ => None,
@@ -551,6 +573,7 @@ pub(super) fn update(
         if matches!(action, Some(Action::Close | Action::StartTour))
             || destination.is_some()
             || connection
+            || follow_trace
             || (!terminal_page && keys.just_pressed(KeyCode::Escape))
             || (!terminal_page && plain_tab(&keys))
             || (terminal_page
@@ -562,10 +585,17 @@ pub(super) fn update(
             native_panel::close(&mut commands, panel, &mut focus, &parents);
             *tablet = Tablet::default();
             picker.destination = destination;
-            review.blocked |= destination.is_none() && !connection;
+            review.blocked |= destination.is_none() && !connection && !follow_trace;
             return;
         }
         match action {
+            Some(Action::TraceImport) => {
+                if let Some(trace) = trace.as_deref_mut() {
+                    trace.import(&repo.0, trace.source.clone());
+                }
+                redraw = true;
+            }
+            Some(Action::TraceFollow) => redraw = true,
             Some(Action::Filter(viewed)) => {
                 tablet.viewed_only = viewed;
                 tablet.page = 0;
@@ -832,6 +862,11 @@ pub(super) fn update(
         }
     }
     if !redraw {
+        if tablet.view == Page::Trace {
+            redraw = trace
+                .as_ref()
+                .is_some_and(|trace| tablet.trace_version != trace.version);
+        }
         if tablet.view == Page::Connections
             && let Some(links) = &links
         {
@@ -858,6 +893,7 @@ pub(super) fn update(
         audio.as_deref(),
         terminal.as_deref_mut(),
         &repo.0,
+        trace.as_deref(),
     );
     tablet.panel = Some(panel);
     focus.set(first, FocusCause::Navigated);
@@ -950,6 +986,7 @@ fn draw(
     audio: Option<&city_audio::Settings>,
     mut terminal: Option<&mut terminal::Terminal>,
     repository: &Repository,
+    trace: Option<&trace_import::Trace>,
 ) -> (Entity, Entity) {
     let title = match tablet.view {
         Page::Files => "Changed files",
@@ -967,6 +1004,7 @@ fn draw(
         Page::Git => "Git history",
         Page::Search => "Find a file",
         Page::Terminal => "Terminal",
+        Page::Trace => "Paste a trace",
     };
     let panel = if let Some(panel) = tablet.panel {
         native_panel::refresh_tablet(commands, panel, title);
@@ -1008,6 +1046,10 @@ fn draw(
                 });
             });
         match tablet.view {
+            Page::Trace => {
+                first = Some(draw_trace(parent, tablet, trace, &mut tab));
+                return;
+            }
             Page::Search => {
                 tablet.search_results = search_results(repository, &tablet.search);
                 let input =
@@ -1511,6 +1553,107 @@ fn draw_connections(
         });
 }
 
+fn draw_trace(
+    parent: &mut ChildSpawnerCommands,
+    tablet: &mut Tablet,
+    trace: Option<&trace_import::Trace>,
+    tab: &mut i32,
+) -> Entity {
+    tablet.trace_version = trace.map_or(0, |trace| trace.version);
+    native_panel::text(
+        parent,
+        "Paste file:line frames or a Ruby, Python, JavaScript, Rust or Elixir stack trace. Source stays on this device.",
+        native_panel::INK,
+    );
+    let input = native_panel::input(
+        parent,
+        "Stack trace",
+        trace.map_or("", |trace| trace.source.as_str()),
+        *tab,
+        true,
+    );
+    parent.commands().queue(move |world: &mut World| {
+        if let Some(mut field) = world.get_mut::<EditableText>(input) {
+            field.max_characters = Some(65536);
+        }
+        if let Some(mut node) = world.get_mut::<Node>(input) {
+            node.height = px(180.);
+        }
+    });
+    tablet.trace_input = Some(input);
+    *tab += 1;
+    parent
+        .spawn(Node {
+            column_gap: px(8.),
+            ..default()
+        })
+        .with_children(|bar| {
+            add_button(bar, "Build route", Action::TraceImport, tab);
+            let follow = add_button(bar, "Follow trace", Action::TraceFollow, tab);
+            if trace.is_none_or(|trace| trace.report.frames.is_empty()) {
+                bar.commands()
+                    .entity(follow)
+                    .insert(bevy::ui::InteractionDisabled);
+            }
+        });
+    native_panel::text(
+        parent,
+        "Up to 64 KiB and 128 frames. Locations are checked against the selected snapshot when opened.",
+        native_panel::INK,
+    );
+    parent
+        .spawn((
+            FileRows,
+            ScrollPosition::default(),
+            Node {
+                flex_direction: FlexDirection::Column,
+                flex_grow: 1.,
+                min_height: px(0.),
+                width: percent(100.),
+                row_gap: px(6.),
+                overflow: Overflow::scroll_y(),
+                ..default()
+            },
+        ))
+        .with_children(|body| {
+            if let Some(trace) = trace {
+                native_panel::text(
+                    body,
+                    &format!(
+                        "{} frames · {} unresolved locations · {} lines without locations",
+                        trace.report.frames.len(),
+                        trace.report.issues.len(),
+                        trace.report.ignored
+                    ),
+                    native_panel::INK,
+                );
+                if !trace.report.error.is_empty() {
+                    native_panel::text(body, &trace.report.error, native_panel::INK);
+                }
+                for frame in &trace.report.frames {
+                    native_panel::text(
+                        body,
+                        &format!(
+                            "{}:{}{}",
+                            frame.path,
+                            frame.line,
+                            if frame.suffix {
+                                " (path suffix match)"
+                            } else {
+                                ""
+                            }
+                        ),
+                        native_panel::INK,
+                    );
+                }
+                for issue in &trace.report.issues {
+                    native_panel::text(body, issue, native_panel::INK);
+                }
+            }
+        });
+    input
+}
+
 fn add_button(
     parent: &mut ChildSpawnerCommands,
     label: &str,
@@ -1526,6 +1669,65 @@ fn add_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pasted_trace_stays_editable_after_failure_and_starts_from_worktrees_or_commits() {
+        for revision in ["worktree:head", "commit-sha"] {
+            let mut repository = repository_picker::empty();
+            repository.revision = revision.into();
+            repository.files = vec![repo_world::File {
+                path: "lib/demo.rb".into(),
+                before: None,
+                after: Some(repo_world::Blob {
+                    id: "blob".into(),
+                    size: 100,
+                    mode: "100644".into(),
+                }),
+                change: Change::Added,
+                position: [0., 0.],
+            }];
+            let mut app = App::new();
+            app.init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<AccumulatedMouseScroll>()
+                .init_resource::<Tablet>()
+                .init_resource::<guide::Tour>()
+                .init_resource::<reading::Settings>()
+                .init_resource::<review_notes::Review>()
+                .init_resource::<file_picker::FilePicker>()
+                .init_resource::<city_menu::Menu>()
+                .init_resource::<live_worktree::Live>()
+                .init_resource::<progress::Progress>()
+                .init_resource::<listing::find::Search>()
+                .init_resource::<InputFocus>()
+                .init_resource::<trace_import::Trace>()
+                .insert_resource(Time::<()>::default())
+                .insert_resource(Repo(repository))
+                .insert_resource(repository_picker::RepositoryPicker::new(String::new()))
+                .add_systems(Update, update);
+            app.world_mut()
+                .resource_mut::<Tablet>()
+                .open_page(Page::Trace);
+            app.update();
+            for source in ["missing.rb:1", "lib/demo.rb:12"] {
+                let input = app.world().resource::<Tablet>().trace_input.unwrap();
+                app.world_mut()
+                    .get_mut::<EditableText>(input)
+                    .unwrap()
+                    .editor_mut()
+                    .set_text(source);
+                app.world_mut().resource_mut::<Tablet>().action = Some(Action::TraceImport);
+                app.update();
+                assert_eq!(app.world().resource::<trace_import::Trace>().source, source);
+                assert_eq!(app.world().resource::<Tablet>().page_name(), Some("trace"));
+            }
+            let trace = app.world().resource::<trace_import::Trace>();
+            assert_eq!(trace.report.frames[0].line, 12);
+            app.world_mut().resource_mut::<Tablet>().action = Some(Action::TraceFollow);
+            app.update();
+            assert!(!app.world().resource::<Tablet>().is_open());
+            assert!(app.world().resource::<trace_import::Trace>().start);
+        }
+    }
 
     #[test]
     fn help_preserves_text_input_and_opens_in_vibepad_after_focus_leaves() {

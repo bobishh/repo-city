@@ -47,6 +47,7 @@ mod tablet_display;
 mod tablet_scroll;
 #[cfg(not(target_arch = "wasm32"))]
 mod terminal;
+mod trace_import;
 mod world_set;
 
 use avian3d::prelude::{Collider, PhysicsPlugins, RigidBody};
@@ -476,11 +477,19 @@ pub fn run() {
         );
     }
     let mut app = App::new();
-    let navigation =
-        city_navigation::Navigation::new(&repo, arg("--trace")).unwrap_or_else(|error| {
-            eprintln!("Trace: {error}");
+    let navigation = city_navigation::Navigation::default();
+    let mut trace = trace_import::Trace::default();
+    if let Some(path) = arg("--trace") {
+        let source = std::fs::read_to_string(path).unwrap_or_else(|error| {
+            eprintln!("Trace {path}: {error}");
             std::process::exit(1)
         });
+        trace.import(&repo, source);
+        if !trace.report.error.is_empty() {
+            eprintln!("Trace: {}", trace.report.error);
+            std::process::exit(1)
+        }
+    }
     let picker = repository_picker::RepositoryPicker::new(startup_error);
     #[cfg(not(target_arch = "wasm32"))]
     let picker = {
@@ -521,6 +530,7 @@ pub fn run() {
     .insert_resource(set)
     .insert_resource(explorer)
     .insert_resource(navigation)
+    .insert_resource(trace)
     .insert_resource(picker)
     .init_resource::<Nearest>()
     .init_resource::<city_menu::Menu>()
@@ -536,7 +546,12 @@ pub fn run() {
     .add_systems(
         Update,
         (
-            (file_facade::lower_unchanged, file_picker::update).chain(),
+            (
+                trace_import::update,
+                file_facade::lower_unchanged,
+                file_picker::update,
+            )
+                .chain(),
             flight,
             (file_facade::keep_beams_clear, targeting).chain(),
             (
@@ -775,10 +790,12 @@ fn browser_refresh(
     mut version: Local<u32>,
     mut styling: Local<u32>,
     mut listing: ResMut<listing::Listing>,
+    mut navigation: ResMut<city_navigation::Navigation>,
 ) {
     let current = repo_world::browser_source_version();
     if current != *version {
         *version = current;
+        navigation.refresh_trace();
         if explorer.anatomy.is_none() || (explorer.comparison.is_none() && !explorer.dirty) {
             let page = explorer.page;
             explorer.reload(&repo.0);
@@ -789,6 +806,7 @@ fn browser_refresh(
     let syntax_version = repo_world::browser_syntax_version();
     if syntax_version != *styling {
         *styling = syntax_version;
+        navigation.refresh_trace();
         let file = &repo.0.files[explorer.selected];
         let highlighted = syntax::highlight(&file.path, &explorer.source);
         explorer.set_highlighted(highlighted);

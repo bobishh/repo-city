@@ -223,6 +223,8 @@ async function openRepository(repo, ref, base, exactBase = false) {
         tabletAction: review.tabletAction,
         tabletLayout: review.tabletLayout,
         readTablet: review.readTablet,
+        takeTraceRequest: review.takeTraceRequest,
+        traceReply: review.traceReply,
         audio,
         audioActivity: audio.activity,
         previewMarkdown(path, before) {

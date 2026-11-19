@@ -51,6 +51,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
   let previewUrl;
   let historySelection = { before: null, after: null };
   let historyPage = 1;
+  let traceText = "", traceRequest, traceReport, tracePending = false;
   const repaint = () => { version++; };
   let defaults = [];
 
@@ -99,6 +100,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
         ["Git", "git-history", gitHistory],
         ["Comments", "notes", () => { notesPanel(); show(); }],
         ["Help", "help", help],
+        ["Trace", "trace", tracePanel],
       ]) {
         const tab = button(label, open);
         tab.setAttribute("aria-pressed", String(page === dialog.dataset.view));
@@ -365,6 +367,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       } catch { data.status = "Couldn't carry progress from the previous review."; }
     }
     session = data;
+    traceText = ""; traceReport = undefined; traceRequest = undefined; tracePending = false;
     historySelection = { before: data.review?.baseline ?? null, after: data.review?.revision ?? null }; historyPage = 1;
     destination = undefined;
     selected = 0;
@@ -625,6 +628,37 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       }
       if (rows.length === 100) tools.append(button("Older", () => gitHistory(historyPage + 1)));
     } catch (error) { if (current()) feedback.textContent = error.message; }
+  }
+
+  function tracePanel() {
+    if (!session) return;
+    dialog.dataset.view = "trace"; dialog.dataset.tablet = "";
+    view("Paste a trace");
+    dialog.append(make("p", "Paste file:line frames or a Ruby, Python, JavaScript, Rust or Elixir stack trace. Source stays on this device."));
+    const input = make("textarea", undefined, { "aria-label": "Stack trace", maxlength: "65536", rows: "8", spellcheck: "false" });
+    input.value = traceText;
+    input.addEventListener("input", () => { traceText = input.value; follow.disabled = true; });
+    const status = make("p", tracePending ? "Building route…" : traceReport?.error ?? "", { role: "status" });
+    const build = button("Build route", () => {
+      traceText = input.value; tracePending = true;
+      traceRequest = { action: "import", text: traceText };
+      status.textContent = "Building route…";
+      build.disabled = true; follow.disabled = true;
+    });
+    const follow = button("Follow trace", () => {
+      tracePending = true; traceRequest = { action: "follow" };
+      status.textContent = "Opening trace…"; build.disabled = true; follow.disabled = true;
+    });
+    build.disabled = tracePending;
+    follow.disabled = tracePending || !traceReport?.frames?.length;
+    dialog.append(input, status, make("p", "Up to 64 KiB and 128 frames. Locations are checked against the selected snapshot when opened."));
+    actions(build, follow);
+    if (traceReport) {
+      dialog.append(make("p", `${traceReport.frames.length} frames · ${traceReport.issues.length} unresolved locations · ${traceReport.ignored} lines without locations`));
+      for (const frame of traceReport.frames) dialog.append(make("p", `${frame.path}:${frame.line}${frame.suffix ? " (path suffix match)" : ""}`));
+      for (const issue of traceReport.issues) dialog.append(make("p", issue));
+    }
+    show(); tablet.focus(input);
   }
 
   function fileSearch() {
@@ -1076,6 +1110,13 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     show();
   }
   return {
+    takeTraceRequest() { const request = traceRequest; traceRequest = undefined; return request ? JSON.stringify(request) : ""; },
+    traceReply(value) {
+      const result = JSON.parse(value);
+      tracePending = false; traceReport = result.report;
+      if (result.following) close();
+      else if (dialog.open && dialog.dataset.view === "trace") tracePanel();
+    },
     selectTab, load, version: () => version, snapshot, add, panel, changedFiles, fileSearch, help, helpVisible: () => dialog.open && dialog.dataset.view === "help", previewMarkdown, dismissTablet,
     takeMarkdownRead() {
       const mark = markdownRead;
