@@ -10,7 +10,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-const RATE: u32 = 24_000;
+const RATE: u32 = super::opus_codec::SAMPLE_RATE;
+const FRAME_SAMPLES: usize = super::opus_codec::FRAME_SAMPLES;
+const PREBUFFER: usize = RATE as usize * 60 / 1000;
 const CAPACITY: usize = RATE as usize * 4;
 const PLAYBACK_CAPACITY: usize = RATE as usize * 30;
 
@@ -22,6 +24,9 @@ struct Metrics {
     gated_frames: AtomicU64,
     output_frames: AtomicU64,
     output_peak: AtomicU32,
+    input_rate: AtomicU32,
+    output_rate: AtomicU32,
+    underruns: AtomicU64,
 }
 
 static DEVICE_OPENING: AtomicBool = AtomicBool::new(false);
@@ -120,6 +125,11 @@ impl Ring {
         self.values[write].store(sample.to_bits(), Ordering::Relaxed);
         self.write.store(next, Ordering::Release);
     }
+    fn available(&self) -> usize {
+        let read = self.read.load(Ordering::Acquire);
+        let write = self.write.load(Ordering::Acquire);
+        (write + self.values.len() - read) % self.values.len()
+    }
     fn pop(&self) -> Option<f32> {
         let read = self.read.load(Ordering::Relaxed);
         if read == self.write.load(Ordering::Acquire) {
@@ -139,7 +149,6 @@ pub(super) struct Devices {
     playback: Arc<Ring>,
     failed: Arc<AtomicBool>,
     captured: Vec<i16>,
-    previous_output: f32,
     speaking: Arc<AtomicBool>,
     active: Arc<AtomicBool>,
     metrics: Arc<Metrics>,
@@ -248,8 +257,7 @@ impl Devices {
             capture,
             playback,
             failed,
-            captured: Vec::with_capacity(480),
-            previous_output: 0.,
+            captured: Vec::with_capacity(FRAME_SAMPLES),
             speaking,
             active,
             metrics,
@@ -257,31 +265,26 @@ impl Devices {
     }
 
     pub fn capture(&mut self) -> Option<Vec<i16>> {
-        while self.captured.len() < 480 {
+        while self.captured.len() < FRAME_SAMPLES {
             let sample = self.capture.pop()?;
             self.captured
                 .push((sample.clamp(-1., 1.) * i16::MAX as f32) as i16);
         }
         Some(std::mem::replace(
             &mut self.captured,
-            Vec::with_capacity(480),
+            Vec::with_capacity(FRAME_SAMPLES),
         ))
     }
 
-    /// PCMU supplies 8 kHz mono. Interpolate into the 24 kHz device queue.
+    /// Opus supplies 48 kHz mono, matching the bounded playback queue.
     pub fn append(&mut self, samples: &[i16]) {
         for sample in samples {
-            let next = f32::from(*sample) / 32768.;
-            for step in 1..=3 {
-                self.playback
-                    .push(self.previous_output + (next - self.previous_output) * step as f32 / 3.);
-            }
-            self.previous_output = next;
+            self.playback.push(f32::from(*sample) / 32768.);
         }
     }
 
     pub fn diagnostics(&self) -> Value {
-        json!({"input_frames":self.metrics.input_frames.load(Ordering::Relaxed),"input_peak":f32::from_bits(self.metrics.input_peak.swap(0,Ordering::Relaxed)),"captured_peak":f32::from_bits(self.metrics.captured_peak.swap(0,Ordering::Relaxed)),"gated_frames":self.metrics.gated_frames.load(Ordering::Relaxed),"output_frames":self.metrics.output_frames.load(Ordering::Relaxed),"output_peak":f32::from_bits(self.metrics.output_peak.swap(0,Ordering::Relaxed)),"capture_overflow":self.capture.overflow.load(Ordering::Relaxed),"playback_overflow":self.playback.overflow.load(Ordering::Relaxed),"speaking":self.speaking.load(Ordering::Relaxed)})
+        json!({"codec_rate":RATE,"frame_samples":FRAME_SAMPLES,"input_device_rate":self.metrics.input_rate.load(Ordering::Relaxed),"output_device_rate":self.metrics.output_rate.load(Ordering::Relaxed),"playback_queued_samples":self.playback.available(),"playback_underruns":self.metrics.underruns.load(Ordering::Relaxed),"input_frames":self.metrics.input_frames.load(Ordering::Relaxed),"input_peak":f32::from_bits(self.metrics.input_peak.swap(0,Ordering::Relaxed)),"captured_peak":f32::from_bits(self.metrics.captured_peak.swap(0,Ordering::Relaxed)),"gated_frames":self.metrics.gated_frames.load(Ordering::Relaxed),"output_frames":self.metrics.output_frames.load(Ordering::Relaxed),"output_peak":f32::from_bits(self.metrics.output_peak.swap(0,Ordering::Relaxed)),"capture_overflow":self.capture.overflow.load(Ordering::Relaxed),"playback_overflow":self.playback.overflow.load(Ordering::Relaxed),"speaking":self.speaking.load(Ordering::Relaxed)})
     }
 
     pub fn healthy(&self) -> bool {
@@ -303,6 +306,9 @@ struct Playback {
     current: f32,
     previous: f32,
     silence: u32,
+    primed: bool,
+    waiting: u32,
+    underruns: u64,
 }
 
 impl Playback {
@@ -312,13 +318,43 @@ impl Playback {
             current: 0.,
             previous: 0.,
             silence: RATE,
+            primed: false,
+            waiting: 0,
+            underruns: 0,
         }
     }
     fn frame(&mut self, ring: &Ring, rate: u32) -> f32 {
+        if !self.primed {
+            if ring.available() >= PREBUFFER
+                || (ring.available() > 0 && self.waiting >= rate * 60 / 1000)
+            {
+                self.primed = true;
+                self.waiting = 0;
+            } else {
+                self.waiting = if ring.available() > 0 {
+                    self.waiting.saturating_add(1)
+                } else {
+                    0
+                };
+                self.phase = self.phase.saturating_add(RATE);
+                self.silence = self.silence.saturating_add(self.phase / rate);
+                self.phase %= rate;
+                self.previous = 0.;
+                self.current = 0.;
+                return 0.;
+            }
+        }
         while self.phase >= rate {
             self.phase -= rate;
             self.previous = self.current;
-            self.current = ring.pop().unwrap_or(0.);
+            self.current = if let Some(sample) = ring.pop() {
+                sample
+            } else {
+                self.primed = false;
+                self.waiting = 0;
+                self.underruns += 1;
+                0.
+            };
             // RTP can contain an uninterrupted stream of digital silence. Only
             // audible output should suspend capture, never packet availability.
             if self.current.abs() > 0.004 {
@@ -353,6 +389,8 @@ where
     let channels = usize::from(config.channels);
     let rate = config.sample_rate.max(1);
     let mut phase = 0_u32;
+    let mut previous = 0_f32;
+    metrics.input_rate.store(rate, Ordering::Relaxed);
     // Half duplex prevents speaker echo without inventing an untested native AEC.
     device.build_input_stream(
         config,
@@ -380,8 +418,10 @@ where
                 phase += RATE;
                 while phase >= rate {
                     phase -= rate;
-                    ring.push(sample);
+                    let fraction = 1. - phase as f32 / RATE as f32;
+                    ring.push(previous + (sample - previous) * fraction.clamp(0., 1.));
                 }
+                previous = sample;
             }
             metrics
                 .input_frames
@@ -416,6 +456,7 @@ where
     let channels = usize::from(config.channels);
     let rate = config.sample_rate.max(1);
     let mut playback = Playback::new(rate);
+    metrics.output_rate.store(rate, Ordering::Relaxed);
     device.build_output_stream(
         config,
         move |samples: &mut [T], _| {
@@ -435,6 +476,9 @@ where
             metrics
                 .output_peak
                 .fetch_max(peak.to_bits(), Ordering::Relaxed);
+            metrics
+                .underruns
+                .store(playback.underruns, Ordering::Relaxed);
             speaking.store(playback.speaking(), Ordering::Relaxed);
         },
         move |_| {
@@ -447,6 +491,35 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn short_network_bursts_are_buffered_and_short_tails_eventually_play() {
+        let queue = Ring::new();
+        for _ in 0..FRAME_SAMPLES {
+            queue.push(0.2);
+        }
+        let mut playback = Playback::new(RATE);
+        for _ in 0..RATE * 30 / 1000 {
+            assert_eq!(playback.frame(&queue, RATE), 0.);
+        }
+        for _ in 0..FRAME_SAMPLES {
+            queue.push(0.2);
+        }
+        for _ in 0..RATE * 30 / 1000 {
+            assert_eq!(playback.frame(&queue, RATE), 0.);
+        }
+        let played = (0..FRAME_SAMPLES * 2)
+            .filter(|_| playback.frame(&queue, RATE) > 0.1)
+            .count();
+        assert!(
+            played >= FRAME_SAMPLES * 2 - 2,
+            "buffered speech must not contain network gaps"
+        );
+        for _ in 0..RATE / 3 {
+            playback.frame(&queue, RATE);
+        }
+        assert!(!playback.speaking());
+    }
+
     #[test]
     fn a_blocked_device_open_prevents_another_worker_and_releases_its_permit() {
         let permit = OpeningPermit::acquire().expect("no audio device is opened in unit tests");

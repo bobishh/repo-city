@@ -87,6 +87,21 @@ the application licenses. The session and transcript adaptation follows
 `bobishh/ecky` revision `c48e376f676663272ee3a06622cd81bacb3f24d7`;
 the local transport uses native WebRTC and audio devices instead of Tauri's webview.
 
+Native WebRTC audio uses opus 0.4.0 (MIT OR Apache-2.0) and opusic-sys 0.7.7
+(BSD-3-Clause), with the unmodified bundled libopus 1.6.1 statically linked.
+The bundled source comes from the published
+[opusic-sys 0.7.7 archive](https://crates.io/api/v1/crates/opusic-sys/0.7.7/download).
+See `licenses/libopus-BSD-3-Clause.txt` for libopus copyright, redistribution
+conditions and patent-license links. Cargo source notices cover the Rust bindings
+and the CMake build dependency (MIT OR Apache-2.0). The local adapter uses 48 kHz
+mono audio, 20 ms Opus frames, a bounded RTP reorder window and packet-loss recovery.
+
+The native WebRTC adapter uses a local webrtc-ice 0.14.0 adaptation for
+periodic consent checks on the selected connection. Source revision, local
+changes and both licenses are in `crates/explorer/vendor/webrtc-ice`.
+
+
+
 ## Image preview
 
 Image preview uses image-rs 0.25.10 (MIT OR Apache-2.0). Additional GIF, TIFF and

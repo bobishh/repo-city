@@ -86,7 +86,7 @@ impl Client {
                 speaking,
                 &mut diagnostics,
             ) {
-                diagnostics.record("disconnected", || json!({}));
+                diagnostics.record("disconnected", || json!({"error":error}));
                 let _ = events.try_send(Event::Error(error));
             }
             let _ = events.try_send(Event::Closed);
@@ -132,6 +132,8 @@ struct Diagnostics {
     path: Option<PathBuf>,
     phase: &'static str,
     last: Option<Instant>,
+    last_error: Option<String>,
+    last_streaming: Option<Value>,
 }
 impl Diagnostics {
     fn new(path: Option<PathBuf>) -> Self {
@@ -139,6 +141,8 @@ impl Diagnostics {
             path,
             phase: "",
             last: None,
+            last_error: None,
+            last_streaming: None,
         }
     }
     fn record(&mut self, phase: &'static str, details: impl FnOnce() -> Value) {
@@ -154,7 +158,14 @@ impl Diagnostics {
         }
         self.phase = phase;
         self.last = Some(Instant::now());
-        let value = json!({"version":1,"process":std::process::id(),"updated_millis":SystemTime::now().duration_since(UNIX_EPOCH).map_or(0,|time|time.as_millis()),"phase":phase,"details":details()});
+        let details = details();
+        if let Some(error) = details["error"].as_str() {
+            self.last_error = Some(error.chars().take(1000).collect());
+        }
+        if phase == "streaming" {
+            self.last_streaming = Some(details.clone());
+        }
+        let value = json!({"version":1,"process":std::process::id(),"updated_millis":SystemTime::now().duration_since(UNIX_EPOCH).map_or(0,|time|time.as_millis()),"phase":phase,"details":details,"last_error":self.last_error,"last_streaming":self.last_streaming});
         let _ = (|| -> Result<(), String> {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -250,37 +261,78 @@ impl Work {
 }
 
 #[derive(Default)]
-struct DesiredVoice(Option<(String, String)>, bool);
+struct DesiredVoice {
+    pending: Option<(String, String)>,
+    request: Option<(String, String)>,
+    waiting_notified: bool,
+    attempts: u8,
+    ready_at: Option<Instant>,
+}
 impl DesiredVoice {
     fn arm(&mut self, id: String, context: String) {
-        self.0 = Some((id, context));
-        self.1 = false;
+        self.pending = Some((id.clone(), context.clone()));
+        self.request = Some((id, context));
+        self.waiting_notified = false;
+        self.attempts = 0;
+        self.ready_at = None;
+    }
+    fn cancel(&mut self) {
+        *self = Self::default();
     }
     fn clear_stale(&mut self, wanted: &Mutex<Option<String>>) {
         if self
-            .0
+            .request
             .as_ref()
             .is_some_and(|(id, _)| !wanted_current(wanted, id))
         {
-            self.0 = None;
-            self.1 = false;
+            self.cancel();
         }
+    }
+    fn recover(
+        &mut self,
+        stable: bool,
+        wanted: &Mutex<Option<String>>,
+        now: Instant,
+    ) -> Option<String> {
+        self.clear_stale(wanted);
+        let (id, context) = self.request.as_ref()?;
+        if stable {
+            self.attempts = 0;
+        }
+        if self.attempts >= 3 {
+            self.pending = None;
+            return None;
+        }
+        self.ready_at = Some(now + Duration::from_secs(1 << self.attempts));
+        self.attempts += 1;
+        self.pending = Some((id.clone(), context.clone()));
+        self.waiting_notified = false;
+        Some(id.clone())
     }
     fn take_ready(
         &mut self,
         work: &Work,
         wanted: &Mutex<Option<String>>,
     ) -> Option<(String, String)> {
+        self.take_ready_at(work, wanted, Instant::now())
+    }
+    fn take_ready_at(
+        &mut self,
+        work: &Work,
+        wanted: &Mutex<Option<String>>,
+        now: Instant,
+    ) -> Option<(String, String)> {
         self.clear_stale(wanted);
-        if work.id.is_some() || work.pending {
+        if work.id.is_some() || work.pending || self.ready_at.is_some_and(|at| now < at) {
             return None;
         }
-        self.0.take()
+        self.ready_at = None;
+        self.pending.take()
     }
     fn waiting(&mut self, work: &Work) -> Option<String> {
-        if (work.id.is_some() || work.pending) && !self.1 {
-            self.1 = true;
-            return self.0.as_ref().map(|(id, _)| id.clone());
+        if (work.id.is_some() || work.pending) && !self.waiting_notified {
+            self.waiting_notified = true;
+            return self.pending.as_ref().map(|(id, _)| id.clone());
         }
         None
     }
@@ -447,16 +499,8 @@ impl Wire {
                             .take(1500)
                             .collect(),
                     ));
-                    if method == "thread/realtime/error" {
-                        let error = self
-                            .voice_error
-                            .as_ref()
-                            .map(|(_, error)| error.clone())
-                            .unwrap_or_default();
-                        let _ = events.try_send(Event::VoiceError(error));
-                        return Ok(());
-                    }
                 }
+                return Ok(());
             }
             if let Some(id) = value.get("id") {
                 if matches!(
@@ -670,13 +714,18 @@ fn start_voice(
     )
 }
 
+const VOICE_CONTEXT_CHARS: usize = 16_000;
+
 fn realtime_params(thread: &str, id: &str, sdp: &str, context: Option<&str>) -> Value {
     // The default builds summaries of unrelated recent Codex threads before SDP.
     // Live pre-network preparation/queuing reached 84 s. Camera/MCP context is explicit.
     let mut params = json!({"threadId":thread,"realtimeSessionId":id,"version":"v3","outputModality":"audio","transport":{"type":"webrtc","sdp":sdp},"flushTranscriptTailOnSessionEnd":false,"includeStartupContext":false,"realtimeStartInstructions":instructions()});
     if let Some(context) = context {
-        let mut bounded = context.chars().take(3000).collect::<String>();
-        if bounded.len() < context.len() {
+        let mut bounded = context
+            .chars()
+            .take(VOICE_CONTEXT_CHARS)
+            .collect::<String>();
+        if bounded.len() != context.len() {
             bounded.push_str(
                 "\n[Camera context shortened. Use repo_city MCP get_focus for the current view.]",
             );
@@ -687,6 +736,21 @@ fn realtime_params(thread: &str, id: &str, sdp: &str, context: Option<&str>) -> 
             json!("Transport check only. Remain silent; do not use tools.");
     }
     params
+}
+
+fn transient_voice_error(error: &str) -> bool {
+    let text = error.to_ascii_lowercase();
+    ![
+        "api key",
+        "authentication",
+        "not authorized",
+        "permission",
+        "microphone",
+        "speaker",
+        "unsupported",
+    ]
+    .iter()
+    .any(|word| text.contains(word))
 }
 
 fn end_voice(
@@ -825,7 +889,7 @@ fn run(
                     desired.arm(id, context);
                 }
                 Command::StopVoice => {
-                    desired.0 = None;
+                    desired.cancel();
                     end_voice(&mut voice, &mut wire, &thread, events, stop, diagnostics)?;
                 }
                 Command::Interrupt => {
@@ -860,13 +924,24 @@ fn run(
                 Ok(started) => voice = Some(started),
                 Err(error) => {
                     let active = wanted_current(wanted_voice, &id);
-                    diagnostics.record(if active { "voice_error" } else { "canceled" }, || {
-                        json!({})
-                    });
-                    if active {
-                        let _ = events.try_send(Event::VoiceError(error));
+                    diagnostics.record(
+                        if active { "voice_error" } else { "canceled" },
+                        || json!({"error":error}),
+                    );
+                    let retry = active
+                        && desired.attempts > 0
+                        && transient_voice_error(&error)
+                        && desired
+                            .recover(false, wanted_voice, Instant::now())
+                            .is_some();
+                    if retry {
+                        let _ = events.try_send(Event::VoiceStarting { id });
+                    } else {
+                        if active {
+                            let _ = events.try_send(Event::VoiceError(error));
+                        }
+                        let _ = events.try_send(Event::Voice { id, active: false });
                     }
-                    let _ = events.try_send(Event::Voice { id, active: false });
                     let _ = wire.call(
                         "thread/realtime/stop",
                         json!({"threadId":thread}),
@@ -886,9 +961,24 @@ fn run(
                 }
                 Ok(false) => {}
                 Err(error) => {
-                    diagnostics.record("audio_error",||json!({"media":current.media.diagnostics(),"audio":current.devices.as_ref().map(Devices::diagnostics)}));
-                    let _ = events.try_send(Event::VoiceError(error));
-                    end_voice(&mut voice, &mut wire, &thread, events, stop, diagnostics)?;
+                    let network = !current.media.healthy();
+                    let stable = current.started.elapsed() >= Duration::from_secs(30);
+                    diagnostics.record("audio_error",||json!({"error":error,"media":current.media.diagnostics(),"audio":current.devices.as_ref().map(Devices::diagnostics)}));
+                    if network
+                        && let Some(id) = desired.recover(stable, wanted_voice, Instant::now())
+                    {
+                        drop(voice.take());
+                        let _ = events.try_send(Event::VoiceStarting { id });
+                        let _ = wire.call(
+                            "thread/realtime/stop",
+                            json!({"threadId":thread}),
+                            events,
+                            stop,
+                        );
+                    } else {
+                        let _ = events.try_send(Event::VoiceError(error));
+                        end_voice(&mut voice, &mut wire, &thread, events, stop, diagnostics)?;
+                    }
                 }
             }
         }
@@ -922,15 +1012,37 @@ fn run(
                         "thread/realtime/closed" | "thread/realtime/error" => {
                             if let Some(previous) = voice.take() {
                                 let id = previous.id.clone();
-                                if wanted_current(wanted_voice, &id)
-                                    && method == "thread/realtime/closed"
-                                {
-                                    let _=events.try_send(Event::VoiceError(value.pointer("/params/reason").and_then(Value::as_str).unwrap_or("Voice service closed the connection. Start voice again.").chars().take(1500).collect()));
-                                }
+                                let error = value
+                                    .pointer("/params/message")
+                                    .or_else(|| value.pointer("/params/reason"))
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("Voice service closed the connection.")
+                                    .chars()
+                                    .take(1000)
+                                    .collect::<String>();
+                                let stable = previous.started.elapsed() >= Duration::from_secs(30);
+                                diagnostics.record("provider_closed",||json!({"error":error,"media":previous.media.diagnostics(),"audio":previous.devices.as_ref().map(Devices::diagnostics)}));
                                 drop(previous);
-                                diagnostics.record("provider_closed", || json!({}));
-                                let _ = events.try_send(Event::Voice { id, active: false });
+                                if wanted_current(wanted_voice, &id) {
+                                    if transient_voice_error(&error)
+                                        && desired
+                                            .recover(stable, wanted_voice, Instant::now())
+                                            .is_some()
+                                    {
+                                        diagnostics.record(
+                                            "reconnecting",
+                                            || json!({"attempt":desired.attempts,"error":error}),
+                                        );
+                                        let _ = events.try_send(Event::VoiceStarting { id });
+                                    } else {
+                                        let _ = events.try_send(Event::VoiceError(format!("Voice stopped after repeated connection failures: {error}")));
+                                        let _ = events.try_send(Event::Voice { id, active: false });
+                                    }
+                                } else {
+                                    let _ = events.try_send(Event::Voice { id, active: false });
+                                }
                             }
+                            continue;
                         }
                         "turn/started" => {
                             if let Some(id) =
@@ -1021,12 +1133,50 @@ fn instructions() -> &'static str {
 mod tests {
     use super::*;
     #[test]
+    fn reconnects_back_off_stop_after_three_early_failures_and_cancel_immediately() {
+        let mut desired = DesiredVoice::default();
+        desired.arm("voice".into(), "context".into());
+        let wanted = Mutex::new(Some("voice".into()));
+        let now = Instant::now();
+        let work = Work::default();
+        desired.take_ready_at(&work, &wanted, now).unwrap();
+        for (attempt, delay) in [(1, 1), (2, 2), (3, 4)] {
+            assert_eq!(desired.recover(false, &wanted, now), Some("voice".into()));
+            assert_eq!(desired.attempts, attempt);
+            assert!(
+                desired
+                    .take_ready_at(&work, &wanted, now + Duration::from_millis(500))
+                    .is_none()
+            );
+            assert!(
+                desired
+                    .take_ready_at(&work, &wanted, now + Duration::from_secs(delay))
+                    .is_some()
+            );
+        }
+        assert!(desired.recover(false, &wanted, now).is_none());
+        assert!(desired.recover(true, &wanted, now).is_some());
+        *wanted.lock().unwrap() = None;
+        assert!(
+            desired
+                .take_ready_at(&work, &wanted, now + Duration::from_secs(20))
+                .is_none()
+        );
+        assert!(desired.request.is_none());
+        assert!(!transient_voice_error("requires API key auth"));
+    }
+
+    #[test]
     fn production_voice_uses_bounded_camera_context_without_scanning_global_thread_history() {
-        let text = "λ".repeat(12000);
+        let text = "λ".repeat(VOICE_CONTEXT_CHARS + 200);
         let production = realtime_params("thread", "voice", "offer", Some(&text));
         assert_eq!(production["includeStartupContext"], false);
         let initial = production["initialItems"][0]["text"].as_str().unwrap();
-        assert!(initial.len() < 12500);
+        assert_eq!(
+            initial.chars().take_while(|ch| *ch == 'λ').count(),
+            VOICE_CONTEXT_CHARS
+        );
+        assert!(initial.chars().count() < VOICE_CONTEXT_CHARS + 120);
         assert!(initial.contains("get_focus"));
         let probe = realtime_params("thread", "voice", "offer", None);
         assert_eq!(
@@ -1060,7 +1210,7 @@ mod tests {
         desired.arm("latest".into(), String::new());
         *wanted.lock().unwrap() = None;
         assert!(desired.take_ready(&work, &wanted).is_none());
-        assert!(desired.0.is_none());
+        assert!(desired.pending.is_none());
         assert!(work.pending);
         assert!(!work.stop);
     }
@@ -1197,10 +1347,15 @@ mod tests {
         if std::env::var("REPO_CITY_TEST_NATIVE_VOICE").as_deref() != Ok("1") {
             return Err("Set REPO_CITY_TEST_NATIVE_VOICE=1 to explicitly authorize this provider connection check.".into());
         }
+        let hold_seconds = std::env::var("REPO_CITY_VOICE_PROBE_HOLD_SECONDS")
+            .ok()
+            .and_then(|seconds| seconds.parse::<u64>().ok())
+            .unwrap_or(0)
+            .min(90);
         let stop = Arc::new(AtomicBool::new(false));
         let deadline = stop.clone();
         thread::spawn(move || {
-            thread::sleep(Duration::from_secs(45));
+            thread::sleep(Duration::from_secs(45 + hold_seconds));
             deadline.store(true, Ordering::Release);
         });
         let (events, _output) = mpsc::sync_channel(256);
@@ -1256,13 +1411,45 @@ mod tests {
                     return Err(error);
                 }
             }
+            let negotiated_ms = probe_started.elapsed().as_millis();
+            let stream_started = Instant::now();
+            let mut audio_frames_sent = 0;
+            let silent_frame = [0; super::super::opus_codec::FRAME_SAMPLES];
+            let mut next_frame = stream_started;
+            while stream_started.elapsed() < Duration::from_secs(hold_seconds) {
+                if !voice.media.healthy() || !voice.media.ready() {
+                    return Err(format!(
+                        "Native Opus disconnected at {:.2}s: {}",
+                        stream_started.elapsed().as_secs_f64(),
+                        voice.media.diagnostics()
+                    ));
+                }
+                if let Some((_, error)) = wire.voice_error.take() {
+                    return Err(error);
+                }
+                voice.media.receive()?;
+                if Instant::now() >= next_frame {
+                    voice.media.send(&silent_frame)?;
+                    audio_frames_sent += 1;
+                    next_frame += Duration::from_millis(20);
+                }
+                match wire.output.recv_timeout(Duration::from_millis(5)) {
+                    Ok(Ok(value)) if value["method"] == "thread/realtime/outputAudio/delta" => {}
+                    Ok(Ok(value)) => wire.project(value, &events)?,
+                    Ok(Err(error)) => return Err(error),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err("Probe app-server disconnected.".into());
+                    }
+                }
+            }
             let connected = voice.media.ready();
             let microphone_opened = voice.devices.is_some();
             let diagnostics = voice.media.diagnostics();
             let media_error = voice.media.receive().err();
             drop(voice);
             if let Some(path) = std::env::var_os("REPO_CITY_VOICE_PROBE_REPORT") {
-                let report = json!({"transport":"native-webrtc","authentication":"chatgpt","codec":"PCMU/8000","connection_ready":connected,"microphone_opened":microphone_opened,"audio_frames_sent":0,"contextual_request":contextual,"elapsed_millis":probe_started.elapsed().as_millis(),"diagnostics":diagnostics,"media_error":media_error});
+                let report = json!({"transport":"native-webrtc","authentication":"chatgpt","codec":"opus/48000/2","connection_ready":connected,"microphone_opened":microphone_opened,"audio_frames_sent":audio_frames_sent,"contextual_request":contextual,"elapsed_millis":negotiated_ms,"stream_seconds":hold_seconds,"diagnostics":diagnostics,"media_error":media_error});
                 std::fs::write(
                     path,
                     serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?,

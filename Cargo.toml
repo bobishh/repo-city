@@ -17,3 +17,6 @@ opt-level = 3
 inherits = "release"
 opt-level = "s"
 strip = "debuginfo"
+
+[patch.crates-io]
+webrtc-ice = { path = "crates/explorer/vendor/webrtc-ice" }

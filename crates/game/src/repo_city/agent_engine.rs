@@ -4,7 +4,7 @@ mod audio;
 mod codex;
 mod codex_projection;
 mod codex_transport;
-mod g711;
+mod opus_codec;
 mod rtc;
 pub(super) mod state;
 

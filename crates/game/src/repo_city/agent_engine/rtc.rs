@@ -1,8 +1,8 @@
 //! Native WebRTC media for the ChatGPT-authenticated app-server voice transport.
-use super::g711;
+use super::opus_codec::{self, Encoder, Playout};
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc::{self, Receiver},
     },
@@ -13,7 +13,7 @@ use webrtc::{
     api::{
         APIBuilder,
         interceptor_registry::register_default_interceptors,
-        media_engine::{MIME_TYPE_PCMU, MediaEngine},
+        media_engine::{MIME_TYPE_OPUS, MediaEngine},
     },
     interceptor::registry::Registry,
     media::Sample,
@@ -22,7 +22,9 @@ use webrtc::{
         peer_connection_state::RTCPeerConnectionState,
         sdp::session_description::RTCSessionDescription,
     },
-    rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType},
+    rtp_transceiver::rtp_codec::{
+        RTCRtpCodecCapability, RTCRtpCodecParameters, RTCRtpHeaderExtensionCapability, RTPCodecType,
+    },
     track::track_local::{TrackLocal, track_local_static_sample::TrackLocalStaticSample},
 };
 
@@ -30,6 +32,10 @@ use webrtc::{
 struct Metrics {
     inbound_packets: AtomicU64,
     inbound_samples: AtomicU64,
+    concealed_frames: AtomicU64,
+    dropped_packets: AtomicU64,
+    invalid_packets: AtomicU64,
+    ended_tracks: AtomicU64,
     outbound_frames: AtomicU64,
     outbound_samples: AtomicU64,
     outbound_peak: AtomicU32,
@@ -39,7 +45,8 @@ pub(super) struct Connection {
     runtime: Option<Runtime>,
     peer: Arc<RTCPeerConnection>,
     track: Arc<TrackLocalStaticSample>,
-    output: Receiver<Result<Vec<u8>, String>>,
+    output: Receiver<Result<Vec<i16>, String>>,
+    encoder: Mutex<Encoder>,
     connected: Arc<AtomicBool>,
     events_open: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
@@ -50,6 +57,7 @@ pub(super) struct Connection {
 impl Connection {
     /// Gather a native audio/data offer without opening any audio device.
     pub fn offer() -> Result<Self, String> {
+        let encoder = Mutex::new(Encoder::new()?);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -67,12 +75,13 @@ impl Connection {
                 .register_codec(
                     RTCRtpCodecParameters {
                         capability: codec.clone(),
-                        payload_type: 0,
+                        payload_type: 111,
                         ..Default::default()
                     },
                     RTPCodecType::Audio,
                 )
                 .map_err(|error| format!("Native voice codec: {error}"))?;
+            register_audio_extensions(&mut engine)?;
             let registry = register_default_interceptors(Registry::new(), &mut engine)
                 .map_err(|error| format!("Native voice RTP: {error}"))?;
             let api = APIBuilder::new()
@@ -104,50 +113,59 @@ impl Connection {
                     }
                 })
             }));
-            let dead = failed.clone();
             let received = metrics.clone();
             peer.on_track(Box::new(move |track, _, _| {
                 let send = send.clone();
-                let dead = dead.clone();
                 let received = received.clone();
                 Box::pin(async move {
-                    // webrtc-rs 0.14 initializes TrackRemote's payload type to 0,
-                    // so PT0 does not trigger its first codec lookup. Our offer and
-                    // validated answer select only PCMU; validate each RTP payload
-                    // type and seed that known codec instead of rejecting empty metadata.
-                    track.set_codec(RTCRtpCodecParameters {
-                        capability: capability(),
-                        payload_type: 0,
-                        ..Default::default()
-                    });
-                    let mut last = None::<u16>;
-                    while let Ok((packet, _)) = track.read_rtp().await {
-                        if packet.header.payload_type != 0 {
-                            let _ = send.try_send(Err(
-                                "The voice service sent an unnegotiated audio payload type.".into(),
-                            ));
-                            dead.store(true, Ordering::Release);
-                            break;
+                    let mut playout = match Playout::new() {
+                        Ok(playout) => playout,
+                        Err(error) => {
+                            let _ = send.try_send(Err(error));
+                            return;
                         }
-                        if packet.payload.len() > 8000 {
-                            dead.store(true, Ordering::Release);
-                            break;
+                    };
+                    let mut counted = (0, 0, 0);
+                    loop {
+                        match tokio::time::timeout(Duration::from_millis(10), track.read_rtp())
+                            .await
+                        {
+                            Ok(Ok((packet, _))) => {
+                                if packet.header.payload_type != 111 {
+                                    received.invalid_packets.fetch_add(1, Ordering::Relaxed);
+                                    continue;
+                                }
+                                received.inbound_packets.fetch_add(1, Ordering::Relaxed);
+                                playout.push(
+                                    packet.header.sequence_number,
+                                    packet.payload.to_vec(),
+                                    std::time::Instant::now(),
+                                );
+                            }
+                            Ok(Err(_)) => {
+                                received.ended_tracks.fetch_add(1, Ordering::Relaxed);
+                                break;
+                            }
+                            Err(_) => {} // DTX and jitter are ordinary; keep the call alive.
                         }
-                        if let Some(previous) = last {
-                            let distance = packet.header.sequence_number.wrapping_sub(previous);
-                            if distance == 0 || distance > 32768 {
-                                continue;
+                        for samples in playout.drain(std::time::Instant::now()) {
+                            received
+                                .inbound_samples
+                                .fetch_add(samples.len() as u64, Ordering::Relaxed);
+                            if send.try_send(Ok(samples)).is_err() {
+                                received.dropped_packets.fetch_add(1, Ordering::Relaxed);
                             }
                         }
-                        last = Some(packet.header.sequence_number);
-                        received.inbound_packets.fetch_add(1, Ordering::Relaxed);
                         received
-                            .inbound_samples
-                            .fetch_add(packet.payload.len() as u64, Ordering::Relaxed);
-                        if send.try_send(Ok(packet.payload.to_vec())).is_err() {
-                            dead.store(true, Ordering::Release);
-                            break;
-                        }
+                            .concealed_frames
+                            .fetch_add(playout.concealed - counted.0, Ordering::Relaxed);
+                        received
+                            .dropped_packets
+                            .fetch_add(playout.dropped - counted.1, Ordering::Relaxed);
+                        received
+                            .invalid_packets
+                            .fetch_add(playout.invalid - counted.2, Ordering::Relaxed);
+                        counted = (playout.concealed, playout.dropped, playout.invalid);
                     }
                 })
             }));
@@ -200,6 +218,7 @@ impl Connection {
             peer,
             track,
             output,
+            encoder,
             connected,
             events_open,
             failed,
@@ -213,8 +232,8 @@ impl Connection {
     }
 
     pub fn answer(&self, sdp: String) -> Result<(), String> {
-        if !pcmu_answer(&sdp) {
-            return Err("The voice service did not accept PCMU audio.".into());
+        if !opus_answer(&sdp) {
+            return Err("The voice service did not accept Opus 48 kHz audio.".into());
         }
         let answer = RTCSessionDescription::answer(sdp)
             .map_err(|_| "The voice service returned an invalid SDP answer.".to_owned())?;
@@ -237,15 +256,19 @@ impl Connection {
     }
 
     pub fn diagnostics(&self) -> serde_json::Value {
-        serde_json::json!({"connection_state":self.peer.connection_state().to_string(),"ice_state":self.peer.ice_connection_state().to_string(),"events_open":self.events_open.load(Ordering::Acquire),"failed":self.failed.load(Ordering::Acquire),"dtls_state":format!("{:?}",self.peer.sctp().transport().state()),"sctp_state":format!("{:?}",self.peer.sctp().state()),"inbound_packets":self.metrics.inbound_packets.load(Ordering::Relaxed),"inbound_pcmu_samples":self.metrics.inbound_samples.load(Ordering::Relaxed),"outbound_frames":self.metrics.outbound_frames.load(Ordering::Relaxed),"outbound_samples_24k":self.metrics.outbound_samples.load(Ordering::Relaxed),"outbound_peak":f32::from_bits(self.metrics.outbound_peak.swap(0,Ordering::Relaxed))})
+        serde_json::json!({"connection_state":self.peer.connection_state().to_string(),"ice_state":self.peer.ice_connection_state().to_string(),"events_open":self.events_open.load(Ordering::Acquire),"failed":self.failed.load(Ordering::Acquire),"dtls_state":format!("{:?}",self.peer.sctp().transport().state()),"sctp_state":format!("{:?}",self.peer.sctp().state()),"inbound_packets":self.metrics.inbound_packets.load(Ordering::Relaxed),"inbound_samples_48k":self.metrics.inbound_samples.load(Ordering::Relaxed),"codec":"opus/48000/2","concealed_frames":self.metrics.concealed_frames.load(Ordering::Relaxed),"dropped_packets":self.metrics.dropped_packets.load(Ordering::Relaxed),"invalid_packets":self.metrics.invalid_packets.load(Ordering::Relaxed),"ended_tracks":self.metrics.ended_tracks.load(Ordering::Relaxed),"outbound_frames":self.metrics.outbound_frames.load(Ordering::Relaxed),"outbound_samples_48k":self.metrics.outbound_samples.load(Ordering::Relaxed),"outbound_peak":f32::from_bits(self.metrics.outbound_peak.swap(0,Ordering::Relaxed))})
     }
 
     pub fn send(&self, samples: &[i16]) -> Result<(), String> {
-        let payload = g711::encode(samples);
+        let payload = self
+            .encoder
+            .lock()
+            .map_err(|_| "Native Opus encoder unavailable.")?
+            .encode(samples)?;
         if payload.is_empty() {
             return Ok(());
         }
-        let duration = Duration::from_secs_f64(payload.len() as f64 / 8000.);
+        let duration = Duration::from_millis(20);
         self.runtime
             .as_ref()
             .ok_or("Native voice runtime closed.")?
@@ -279,11 +302,7 @@ impl Connection {
     }
 
     pub fn receive(&self) -> Result<Vec<Vec<i16>>, String> {
-        self.output
-            .try_iter()
-            .take(64)
-            .map(|packet| packet.map(|packet| g711::decode(&packet)))
-            .collect()
+        self.output.try_iter().take(64).collect()
     }
 }
 
@@ -298,48 +317,80 @@ impl Drop for Connection {
     }
 }
 
+fn register_audio_extensions(engine: &mut MediaEngine) -> Result<(), String> {
+    // The service may start another RTP SSRC. webrtc-rs requires negotiated
+    // MID/RID metadata to route undeclared streams when audio and data coexist.
+    for uri in [
+        "urn:ietf:params:rtp-hdrext:sdes:mid",
+        "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
+        "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id",
+    ] {
+        engine
+            .register_header_extension(
+                RTCRtpHeaderExtensionCapability { uri: uri.into() },
+                RTPCodecType::Audio,
+                None,
+            )
+            .map_err(|error| format!("Native voice RTP extension: {error}"))?;
+    }
+    Ok(())
+}
+
 fn capability() -> RTCRtpCodecCapability {
     RTCRtpCodecCapability {
-        mime_type: MIME_TYPE_PCMU.into(),
-        clock_rate: 8000,
-        channels: 0,
+        mime_type: MIME_TYPE_OPUS.into(),
+        clock_rate: opus_codec::SAMPLE_RATE,
+        channels: 2,
+        sdp_fmtp_line: "minptime=10;useinbandfec=1;stereo=0;sprop-stereo=0".into(),
         ..Default::default()
     }
 }
 
-fn pcmu_answer(sdp: &str) -> bool {
+fn opus_answer(sdp: &str) -> bool {
     sdp.len() <= 65536
         && sdp.lines().any(|line| {
             let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
             fields.len() >= 4
                 && fields[0] == "m=audio"
                 && fields[1] != "0"
-                && fields[3..].contains(&"0")
+                && fields[3..].contains(&"111")
         })
-        && sdp.to_ascii_lowercase().contains("a=rtpmap:0 pcmu/8000")
+        && sdp
+            .to_ascii_lowercase()
+            .contains("a=rtpmap:111 opus/48000/2")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn sdp_requires_negotiated_non_rejected_pcmu_audio() {
-        assert!(pcmu_answer(
-            "m=audio 9 UDP/TLS/RTP/SAVPF 0\r\na=rtpmap:0 PCMU/8000\r\n"
-        ));
-        assert!(!pcmu_answer(
-            "m=audio 0 UDP/TLS/RTP/SAVPF 0\r\na=rtpmap:0 PCMU/8000\r\n"
-        ));
-        assert!(!pcmu_answer(
+    fn sdp_requires_negotiated_non_rejected_opus_audio() {
+        assert!(opus_answer(
             "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\n"
+        ));
+        assert!(!opus_answer(
+            "m=audio 0 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\n"
+        ));
+        assert!(!opus_answer(
+            "m=audio 9 UDP/TLS/RTP/SAVPF 0\r\na=rtpmap:0 PCMU/8000\r\n"
         ));
     }
 
     #[test]
-    fn native_offer_contains_pcmu_and_events_without_opening_microphone() {
+    fn native_offer_contains_opus_and_events_without_opening_microphone() {
         let connection = Connection::offer().unwrap();
-        assert!(connection.sdp().contains("a=rtpmap:0 PCMU/8000"));
+        assert!(connection.sdp().contains("a=rtpmap:111 opus/48000/2"));
         assert!(connection.sdp().contains("m=application"));
+        assert!(
+            connection
+                .sdp()
+                .contains("urn:ietf:params:rtp-hdrext:sdes:mid")
+        );
+        assert!(
+            connection
+                .sdp()
+                .contains("urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id")
+        );
         assert!(!connection.ready());
     }
 
@@ -351,19 +402,20 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let (sent, received_by_answerer) = mpsc::sync_channel(1);
+        let (sent, received_by_answerer) = mpsc::sync_channel(16);
         let (peer, answer, source) = runtime.block_on(async {
             let mut engine = MediaEngine::default();
             engine
                 .register_codec(
                     RTCRtpCodecParameters {
                         capability: capability(),
-                        payload_type: 0,
+                        payload_type: 111,
                         ..Default::default()
                     },
                     RTPCodecType::Audio,
                 )
                 .unwrap();
+            register_audio_extensions(&mut engine).unwrap();
             let api = APIBuilder::new().with_media_engine(engine).build();
             let peer = api
                 .new_peer_connection(RTCConfiguration::default())
@@ -372,8 +424,10 @@ mod tests {
             peer.on_track(Box::new(move |track, _, _| {
                 let sent = sent.clone();
                 Box::pin(async move {
-                    if let Ok((packet, _)) = track.read_rtp().await {
-                        let _ = sent.try_send(packet.payload.to_vec());
+                    for _ in 0..8 {
+                        if let Ok((packet, _)) = track.read_rtp().await {
+                            let _ = sent.try_send(packet.payload.to_vec());
+                        }
                     }
                 })
             }));
@@ -411,31 +465,57 @@ mod tests {
         }
         let ready = connection.ready();
         let diagnostics = connection.diagnostics();
-        connection.send(&[1000; 480]).unwrap();
-        let outbound = received_by_answerer
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap();
-        assert_eq!(g711::decode(&outbound), vec![988; 160]);
-        runtime
-            .block_on(source.write_sample(&Sample {
-                data: g711::encode(&[1000; 480]).into(),
-                duration: Duration::from_millis(20),
-                ..Default::default()
-            }))
-            .unwrap();
+        let waveform = (0..opus_codec::FRAME_SAMPLES)
+            .map(|index| {
+                (10_000.
+                    * (index as f64 * 6500. * std::f64::consts::TAU
+                        / opus_codec::SAMPLE_RATE as f64)
+                        .sin()) as i16
+            })
+            .collect::<Vec<_>>();
+        let mut outbound_decoder = opus_codec::Decoder::new().unwrap();
+        for _ in 0..8 {
+            connection.send(&waveform).unwrap();
+            let packet = received_by_answerer
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            let samples = outbound_decoder.decode(&packet).unwrap();
+            assert_eq!(samples.len(), 960);
+            assert!(samples.iter().any(|x| x.abs() > 1000));
+        }
+        let mut encoder = Encoder::new().unwrap();
+        for frame in 0..8 {
+            runtime
+                .block_on(source.write_sample(&Sample {
+                    data: encoder.encode(&waveform).unwrap().into(),
+                    duration: Duration::from_millis(20),
+                    // Simulate a real lost RTP sequence number. The receiver must use
+                    // Opus FEC/PLC and keep the peer alive for the following frames.
+                    prev_dropped_packets: u16::from(frame == 4),
+                    ..Default::default()
+                }))
+                .unwrap();
+        }
         let started = std::time::Instant::now();
         let mut received = Vec::new();
-        while received.is_empty() && started.elapsed() < Duration::from_secs(5) {
-            received = connection.receive().unwrap();
-            if received.is_empty() {
+        while received.len() < 9 && started.elapsed() < Duration::from_secs(5) {
+            received.extend(connection.receive().unwrap());
+            if received.len() < 9 {
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
+        assert_eq!(
+            received.len(),
+            9,
+            "packets after recovery: {}",
+            connection.diagnostics()
+        );
+        assert_eq!(connection.diagnostics()["concealed_frames"], 1);
+        assert!(connection.healthy());
         runtime.block_on(peer.close()).unwrap();
         assert!(ready, "native loopback state: {diagnostics}");
-        assert_eq!(
-            received.first().map(Vec::as_slice),
-            Some([988_i16; 160].as_slice())
-        );
+        assert_eq!(received.first().map(Vec::len), Some(960));
+        assert!(received.iter().all(|frame| frame.len() == 960));
+        assert!(received[7].iter().any(|x| x.abs() > 1000));
     }
 }

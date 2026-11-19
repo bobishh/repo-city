@@ -27,7 +27,7 @@ The former `bobishh/vibe-city` repository is superseded by this workspace.
 
 ### On your Mac
 
-The desktop app is called **Vibe City**. Build it with Rust and open the resulting bundle.
+The desktop app is called **Vibe City**. Install Rust and CMake to build the app and its bundled Opus codec.
 
 ```sh
 git clone https://github.com/bobishh/repo-city.git
@@ -79,7 +79,7 @@ the app. Enter the checkout directory, then choose **Open**. You can also pass
 On Debian or Ubuntu, install the native build dependencies before building:
 
 ```sh
-sudo apt install build-essential pkg-config libasound2-dev libudev-dev \
+sudo apt install build-essential cmake pkg-config libasound2-dev libudev-dev \
   libfontconfig-dev libwayland-dev libxkbcommon-dev libx11-dev libxkbcommon-x11-0
 ./scripts/build-linux.sh
 ```
@@ -87,7 +87,7 @@ sudo apt install build-essential pkg-config libasound2-dev libudev-dev \
 The script creates `dist/VibeCity-<target>.tar.gz`. Extract it and launch
 `vibe-city`; the package lists its runtime dependencies. Build with Rust 1.98
 or newer. On Windows, install Rust with the MSVC toolchain, Visual Studio C++
-Build Tools, and Git for Windows, then run:
+Build Tools, CMake, and Git for Windows, then run:
 
 ```powershell
 ./scripts/build-windows.ps1
@@ -319,8 +319,11 @@ app-server realtime support and uses native audio devices. The microphone pauses
 while the agent speaks; use headphones. **F9** stops voice, and **Disconnect**
 closes the agent connection. Putting away VibePad keeps the conversation active.
 **H** lists the voice and terminal controls. City audio pauses for the voice conversation.
-The current native transport uses PCMU at 8 kHz mono, giving speech telephone
-bandwidth. It does not support interrupting the agent by speaking over it.
+The native transport uses Opus at 48 kHz with 20 ms microphone frames. A short
+playout buffer and packet-loss recovery smooth network bursts. The session retries
+transient connection loss after 1, 2 and 4 seconds, then stops after three early
+failures. F9 cancels pending reconnects. It does not support interrupting the agent
+by speaking over it.
 
 The agent receives the selected repository context and can read camera focus and
 local notes through Repo City's MCP tools. Focus reports whether the window is
