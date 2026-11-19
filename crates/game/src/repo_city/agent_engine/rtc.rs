@@ -3,7 +3,7 @@ use super::g711;
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc::{self, Receiver},
     },
     time::Duration,
@@ -26,6 +26,15 @@ use webrtc::{
     track::track_local::{TrackLocal, track_local_static_sample::TrackLocalStaticSample},
 };
 
+#[derive(Default)]
+struct Metrics {
+    inbound_packets: AtomicU64,
+    inbound_samples: AtomicU64,
+    outbound_frames: AtomicU64,
+    outbound_samples: AtomicU64,
+    outbound_peak: AtomicU32,
+}
+
 pub(super) struct Connection {
     runtime: Option<Runtime>,
     peer: Arc<RTCPeerConnection>,
@@ -35,6 +44,7 @@ pub(super) struct Connection {
     events_open: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
     sdp: String,
+    metrics: Arc<Metrics>,
 }
 
 impl Connection {
@@ -48,6 +58,7 @@ impl Connection {
         let connected = Arc::new(AtomicBool::new(false));
         let events_open = Arc::new(AtomicBool::new(false));
         let failed = Arc::new(AtomicBool::new(false));
+        let metrics = Arc::new(Metrics::default());
         let (send, output) = mpsc::sync_channel(128);
         let (peer, track, sdp) = runtime.block_on(async {
             let mut engine = MediaEngine::default();
@@ -94,9 +105,11 @@ impl Connection {
                 })
             }));
             let dead = failed.clone();
+            let received = metrics.clone();
             peer.on_track(Box::new(move |track, _, _| {
                 let send = send.clone();
                 let dead = dead.clone();
+                let received = received.clone();
                 Box::pin(async move {
                     // webrtc-rs 0.14 initializes TrackRemote's payload type to 0,
                     // so PT0 does not trigger its first codec lookup. Our offer and
@@ -127,6 +140,10 @@ impl Connection {
                             }
                         }
                         last = Some(packet.header.sequence_number);
+                        received.inbound_packets.fetch_add(1, Ordering::Relaxed);
+                        received
+                            .inbound_samples
+                            .fetch_add(packet.payload.len() as u64, Ordering::Relaxed);
                         if send.try_send(Ok(packet.payload.to_vec())).is_err() {
                             dead.store(true, Ordering::Release);
                             break;
@@ -187,6 +204,7 @@ impl Connection {
             events_open,
             failed,
             sdp,
+            metrics,
         })
     }
 
@@ -219,7 +237,7 @@ impl Connection {
     }
 
     pub fn diagnostics(&self) -> serde_json::Value {
-        serde_json::json!({"connection_state":self.peer.connection_state().to_string(),"ice_state":self.peer.ice_connection_state().to_string(),"events_open":self.events_open.load(Ordering::Acquire),"failed":self.failed.load(Ordering::Acquire),"dtls_state":format!("{:?}",self.peer.sctp().transport().state()),"sctp_state":format!("{:?}",self.peer.sctp().state())})
+        serde_json::json!({"connection_state":self.peer.connection_state().to_string(),"ice_state":self.peer.ice_connection_state().to_string(),"events_open":self.events_open.load(Ordering::Acquire),"failed":self.failed.load(Ordering::Acquire),"dtls_state":format!("{:?}",self.peer.sctp().transport().state()),"sctp_state":format!("{:?}",self.peer.sctp().state()),"inbound_packets":self.metrics.inbound_packets.load(Ordering::Relaxed),"inbound_pcmu_samples":self.metrics.inbound_samples.load(Ordering::Relaxed),"outbound_frames":self.metrics.outbound_frames.load(Ordering::Relaxed),"outbound_samples_24k":self.metrics.outbound_samples.load(Ordering::Relaxed),"outbound_peak":f32::from_bits(self.metrics.outbound_peak.swap(0,Ordering::Relaxed))})
     }
 
     pub fn send(&self, samples: &[i16]) -> Result<(), String> {
@@ -243,7 +261,21 @@ impl Connection {
                 .await
                 .map_err(|_| "Native voice audio send timed out.".to_owned())?
                 .map_err(|error| format!("Native voice audio send: {error}"))
-            })
+            })?;
+        self.metrics.outbound_frames.fetch_add(1, Ordering::Relaxed);
+        self.metrics
+            .outbound_samples
+            .fetch_add(samples.len() as u64, Ordering::Relaxed);
+        let peak = samples
+            .iter()
+            .map(|sample| sample.unsigned_abs())
+            .max()
+            .unwrap_or(0) as f32
+            / 32768.;
+        self.metrics
+            .outbound_peak
+            .fetch_max(peak.to_bits(), Ordering::Relaxed);
+        Ok(())
     }
 
     pub fn receive(&self) -> Result<Vec<Vec<i16>>, String> {
@@ -319,6 +351,7 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
+        let (sent, received_by_answerer) = mpsc::sync_channel(1);
         let (peer, answer, source) = runtime.block_on(async {
             let mut engine = MediaEngine::default();
             engine
@@ -336,6 +369,14 @@ mod tests {
                 .new_peer_connection(RTCConfiguration::default())
                 .await
                 .unwrap();
+            peer.on_track(Box::new(move |track, _, _| {
+                let sent = sent.clone();
+                Box::pin(async move {
+                    if let Ok((packet, _)) = track.read_rtp().await {
+                        let _ = sent.try_send(packet.payload.to_vec());
+                    }
+                })
+            }));
             let source = Arc::new(TrackLocalStaticSample::new(
                 capability(),
                 "fixture".into(),
@@ -370,6 +411,11 @@ mod tests {
         }
         let ready = connection.ready();
         let diagnostics = connection.diagnostics();
+        connection.send(&[1000; 480]).unwrap();
+        let outbound = received_by_answerer
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(g711::decode(&outbound), vec![988; 160]);
         runtime
             .block_on(source.write_sample(&Sample {
                 data: g711::encode(&[1000; 480]).into(),

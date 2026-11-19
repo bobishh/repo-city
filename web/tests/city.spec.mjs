@@ -1062,7 +1062,7 @@ test("mobile Pad button opens and puts away the GPU tablet", async ({ browser })
 test("P previews images and keeps corrupt images and binary files inside VibePad", async ({ page }) => {
   await emulatePointerLock(page);
   await page.addInitScript(() => localStorage.setItem("repo-city-guide-v1", "seen"));
-  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP1sAAAAASUVORK5CYII=", "base64");
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
   const binary = "c".repeat(40);
   const images = { [after]: png, [before]: Buffer.from("broken PNG"), [binary]: Buffer.from([65, 0, 66]) };
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
@@ -1091,7 +1091,8 @@ test("P previews images and keeps corrupt images and binary files inside VibePad
     const preview = page.locator("#review-dialog");
     if (name === "image.png") {
       await expect(preview.getByRole("img", { includeHidden: true, name })).toBeAttached();
-      await expect.poll(() => preview.getByRole("img", { includeHidden: true }).evaluate(image => image.naturalWidth)).toBe(1);
+      // The hidden service image carries raw bytes; GPU pixel rendering is covered by image-codecs.spec.
+      await expect(preview.getByRole("img", { includeHidden: true })).toHaveAttribute("data-preview-source", /^blob:/);
     } else await expect(preview).toContainText(name === "broken.png" ? "Image data is invalid or unsupported." : "Binary asset: metadata only");
     await page.keyboard.press("Tab", { delay: 120 }); await expectClosed(page);
   }

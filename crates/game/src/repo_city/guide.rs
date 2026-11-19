@@ -201,7 +201,14 @@ const WORKBENCH: &[(&str, &str)] = &[
         "Tab → Agent",
         "Open the conversation; closing VibePad keeps it active",
     ),
-    ("Cmd/Ctrl+Enter", "Send the message in Agent"),
+    (
+        "Cmd/Ctrl+Enter",
+        "Send a message or steer the current agent work",
+    ),
+    (
+        "Y / N",
+        "Accept or dismiss a proposed flight outside text input",
+    ),
     ("Tab → Terminal", "Open the persistent shell"),
     (
         "F6",

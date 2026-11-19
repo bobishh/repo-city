@@ -31,20 +31,25 @@ export function createTablet(dialog, canvas) {
       dirty = false;
       if (!visible()) { state = { open: false, nodes: [] }; return JSON.stringify(state); }
       for (const image of dialog.querySelectorAll("img")) {
-        const source = image.src;
+        const source = (image.dataset.previewSource ?? image.src);
         if (!source.startsWith("blob:") || images.has(source)) continue;
         images.set(source, "");
         fetch(source).then(response => response.arrayBuffer()).then(buffer => {
-          if (buffer.byteLength > 16 * 1024 * 1024) return;
+          if (buffer.byteLength > 16 * 1024 * 1024) throw new Error("Image exceeds the preview limit.");
           const bytes = new Uint8Array(buffer); let binary = "";
           for (let offset = 0; offset < bytes.length; offset += 16384) binary += String.fromCharCode(...bytes.subarray(offset, offset + 16384));
-          if (image.isConnected && image.src === source) { images.set(source, btoa(binary)); dirty = true; }
-        }).catch(() => { /* The preview's existing error state remains authoritative. */ });
+          if (image.isConnected && (image.dataset.previewSource ?? image.src) === source) { images.set(source, btoa(binary)); dirty = true; }
+        }).catch(() => {
+          if (image.isConnected && (image.dataset.previewSource ?? image.src) === source) {
+            const error = document.createElement("p"); error.textContent = "Could not load image data.";
+            image.replaceWith(error); dirty = true;
+          }
+        });
       }
       const root = dialog.querySelector("[data-tablet-options]") ?? dialog;
       const nodes = tabletView(root, identify, images);
       for (const [id, element] of elements) if (!element.isConnected) elements.delete(id);
-      const sources = new Set([...dialog.querySelectorAll("img")].map(image => image.src));
+      const sources = new Set([...dialog.querySelectorAll("img")].map(image => (image.dataset.previewSource ?? image.src)));
       for (const source of images.keys()) if (!sources.has(source)) images.delete(source);
       state = { open: true, title: root.querySelector("h2")?.textContent ?? "VibePad", focus: requestedFocus, nodes };
       requestedFocus = undefined;
@@ -56,7 +61,10 @@ export function createTablet(dialog, canvas) {
       const event = JSON.parse(value);
       const element = elements.get(event.id);
       if (!element?.isConnected || element.disabled) return;
-      if (event.kind === "editor") {
+      if (event.kind === "image-error") {
+        const error = document.createElement("p"); error.textContent = event.value;
+        element.replaceWith(error);
+      } else if (event.kind === "editor") {
         // Rust owns the editing state. Keep this service projection observable
         // without replacing the source or rebuilding the GPU widget per keystroke.
         element.dataset.editorValue = event.value;

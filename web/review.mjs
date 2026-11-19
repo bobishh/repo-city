@@ -172,13 +172,11 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       if (!dialog.open || !content.isConnected) return;
       if (kind === "image") {
         const image = make("img", undefined, { alt: path, class: "file-image-preview" });
-        image.addEventListener("load", () => {
-          if (image.naturalWidth > 8192 || image.naturalHeight > 8192 || image.naturalWidth * image.naturalHeight > 16 * 1024 * 1024) content.textContent = "Image exceeds preview limits (8192 pixels per side, 16 megapixels total).";
-        });
-        image.addEventListener("error", () => { content.textContent = "Image data is invalid or unsupported."; });
-        const type = format === "jpg" || format === "jpeg" ? "jpeg" : format;
-        previewUrl = URL.createObjectURL(new Blob([bytes], { type: `image/${type}` }));
-        image.src = previewUrl;
+        // The common Rust decoder validates dimensions and formats. Browser-native image
+        // decoding is not authoritative: several supported raster formats have no HTML decoder.
+        const types = {jpg:"image/jpeg",jpeg:"image/jpeg",tif:"image/tiff",tiff:"image/tiff",ico:"image/vnd.microsoft.icon",tga:"image/x-tga",pnm:"image/x-portable-anymap",pbm:"image/x-portable-bitmap",pgm:"image/x-portable-graymap",ppm:"image/x-portable-pixmap",pam:"image/x-portable-arbitrarymap",dds:"image/vnd-ms.dds",hdr:"image/vnd.radiance",rgbe:"image/vnd.radiance"};
+        previewUrl = URL.createObjectURL(new Blob([bytes], { type: types[format] ?? `image/${format}` }));
+        image.dataset.previewSource = previewUrl;
         content.replaceChildren(image);
         return;
       }

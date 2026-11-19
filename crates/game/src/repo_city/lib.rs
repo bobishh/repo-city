@@ -1,6 +1,10 @@
 //! Repository explorer and the code city's presentation.
 #![allow(dead_code)]
 #[cfg(not(target_arch = "wasm32"))]
+mod agent_engine;
+#[cfg(not(target_arch = "wasm32"))]
+mod agent_navigation;
+#[cfg(not(target_arch = "wasm32"))]
 mod agent_session;
 mod android;
 mod blame;
@@ -650,6 +654,7 @@ pub fn run() {
         native_panel::keyboard_navigation.after(review_tablet::update),
     )
     .add_plugins(city_audio::Plugin)
+    .add_systems(PostUpdate, synchronize_cursor)
     .add_plugins(focus_context::Plugin)
     .init_resource::<file_links::Links>()
     .add_systems(Update, file_links::update.before(review_tablet::update))
@@ -673,6 +678,8 @@ pub fn run() {
     source_editor::register(&mut app);
     #[cfg(not(target_arch = "wasm32"))]
     app.add_plugins(agent_session::Plugin);
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_plugins(agent_navigation::Plugin);
     #[cfg(not(target_arch = "wasm32"))]
     {
         app.insert_resource(reading::Settings::load());
@@ -1491,6 +1498,32 @@ fn spawn_city(
     }
 }
 
+/// Apply cursor state after every tablet/menu action, rather than racing Update writers.
+#[cfg(not(target_arch = "wasm32"))]
+fn synchronize_cursor(
+    mut windows: Query<(&Window, &mut CursorOptions), With<PrimaryWindow>>,
+    camera: Query<&Pilot, PlayerCamera>,
+) {
+    let Ok(pilot) = camera.single() else {
+        return;
+    };
+    let Ok((window, mut cursor)) = windows.single_mut() else {
+        return;
+    };
+    let captured = window.focused && pilot.captured;
+    let grab = if captured {
+        CursorGrabMode::Locked
+    } else {
+        CursorGrabMode::None
+    };
+    if cursor.grab_mode != grab {
+        cursor.grab_mode = grab;
+    }
+    if cursor.visible == captured {
+        cursor.visible = !captured;
+    }
+}
+
 fn flight(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -1500,7 +1533,6 @@ fn flight(
     navigation: Res<city_navigation::Navigation>,
     mut camera: Query<(&mut Transform, &mut Pilot), PlayerCamera>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    #[cfg(not(target_arch = "wasm32"))] mut cursors: Query<&mut CursorOptions, With<PrimaryWindow>>,
     picker: Res<file_picker::FilePicker>,
     menu: Res<city_menu::Menu>,
     (listing, repo): (Res<listing::Listing>, Res<Repo>),
@@ -1600,22 +1632,6 @@ fn flight(
     }
     if !focused || pointer_ui_open || map_open {
         pilot.captured = false;
-    }
-    // Updating CursorOptions on the web reapplies winit's grab mode (None)
-    // and would release the browser lock. CSS handles visibility there.
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Ok(mut cursor) = cursors.single_mut() {
-        let grab_mode = if pilot.captured {
-            CursorGrabMode::Locked
-        } else {
-            CursorGrabMode::None
-        };
-        if cursor.grab_mode != grab_mode {
-            cursor.grab_mode = grab_mode;
-        }
-        if cursor.visible == pilot.captured {
-            cursor.visible = !pilot.captured;
-        }
     }
     pilot.map_click = map_open
         && focused
@@ -2827,5 +2843,60 @@ mod flight_speed_tests {
             flight_speed(1000., false, false),
             flight_speed(2000., false, false)
         );
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod cursor_visibility_tests {
+    use super::*;
+    #[test]
+    fn capture_hides_cursor_after_late_panel_writes_and_focus_loss_releases_it() {
+        let mut app = App::new();
+        app.add_systems(PostUpdate, synchronize_cursor);
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    focused: true,
+                    ..default()
+                },
+                CursorOptions::default(),
+                PrimaryWindow,
+            ))
+            .id();
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Pilot {
+                    captured: true,
+                    ..default()
+                },
+            ))
+            .id();
+        app.update();
+        assert!(!app.world().get::<CursorOptions>(window).unwrap().visible);
+        assert_eq!(
+            app.world().get::<CursorOptions>(window).unwrap().grab_mode,
+            CursorGrabMode::Locked
+        );
+        // A UI action wrote the free cursor before the final synchronization pass.
+        app.world_mut()
+            .get_mut::<CursorOptions>(window)
+            .unwrap()
+            .visible = true;
+        app.update();
+        assert!(!app.world().get::<CursorOptions>(window).unwrap().visible);
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = false;
+        app.update();
+        assert!(app.world().get::<CursorOptions>(window).unwrap().visible);
+        assert_eq!(
+            app.world().get::<CursorOptions>(window).unwrap().grab_mode,
+            CursorGrabMode::None
+        );
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = true;
+        app.world_mut().get_mut::<Pilot>(camera).unwrap().captured = false;
+        app.update();
+        assert!(app.world().get::<CursorOptions>(window).unwrap().visible);
     }
 }

@@ -137,7 +137,7 @@ The first city visit offers a controls tour. Open **H** to take it again.
 | Action | Control |
 | --- | --- |
 | Find a file by name or path | **P** in the browser, **⌘P** on Mac |
-| Preview a document or image | Aim at its building and press **P**. VibePad renders Markdown, plain text and code, and PNG, JPEG, or WebP images. |
+| Preview a document or image | Aim at its building and press **P**. VibePad renders Markdown, plain text and code, and raster images (formats below). |
 | Fly | **WASD**, **Space** and **Ctrl** for altitude, **Shift** to boost |
 | Capture or release the cursor | Click the scene to capture. **Esc** releases. |
 | Use the actions menu | Right-click to open or close it. Scroll or use the arrow keys to highlight an action. Click or press **Enter** to select it. |
@@ -184,7 +184,13 @@ configurable preset, not a research-backed optimum. The Mac stores `mode`,
 Reach the end of a Markdown or text preview to reveal the file's source wall.
 **P** also opens extensionless documents such as `UPSTREAM-LICENSE` and files
 with unknown extensions as plain text. Binary and non-UTF-8 data show an error
-inside VibePad; PNG, JPEG and WebP use the image viewer.
+inside VibePad. The image viewer supports PNG, JPEG, WebP, GIF, BMP, ICO,
+TIFF (`.tif` / `.tiff`), TGA, PNM (`.pnm`, `.pbm`, `.pgm`, `.ppm`, `.pam`), QOI,
+DDS and Radiance HDR (`.hdr` / `.rgbe`). GIF previews show the first frame.
+HDR and 16-bit images use an 8-bit display preview. DDS support covers DXT1,
+DXT3 and DXT5 textures; unsupported layouts show a decoding error. SVG remains
+available as text. All raster formats use the same bounded Rust decoder on desktop
+and in the browser: 16 MiB input, 8192 pixels per side and 16 megapixels total.
 Repo City saves revealed lines and reviewed files in your browser or on your
 Mac. The same repository and comparison restore those marks. Press **V** to
 toggle the selected file’s review mark. To start over on the open comparison,
@@ -298,12 +304,17 @@ platforms can set `CC_wasm32_unknown_unknown` to a compatible Clang.
 
 On desktop, open **Tab → Agent** to connect to the locally installed Codex CLI.
 It uses your existing Codex login and keeps a conversation for each checkout.
-Enter a message and choose **Send**, or press **Cmd/Ctrl+Enter**. Requested
+Enter a message and choose **Send**, or press **Cmd/Ctrl+Enter**. During an active
+turn, **Steer** sends new instructions into that same work without restarting it. Requested
 command and file permissions appear in the same tablet with **Approve once**
 and **Reject**. **Stop work** interrupts the current turn.
 
-Press **F9** to start voice while flying (some Macs use **Fn+F9**). The app
-requests microphone access only after that action. Voice requires Codex
+Choose **Start voice** in VibePad or press **F9** while flying (some Macs use
+**Fn+F9**). **Connect chat** starts the text connection separately. The app
+requests microphone access only after that action. If a turn is running, voice
+waits for it to finish; **F9** cancels that pending start. The HUD shows a drawn
+microphone, connection animation and speaking bars while VibePad is put away.
+Voice requires Codex
 app-server realtime support and uses native audio devices. The microphone pauses
 while the agent speaks; use headphones. **F9** stops voice, and **Disconnect**
 closes the agent connection. Putting away VibePad keeps the conversation active.
@@ -316,6 +327,16 @@ local notes through Repo City's MCP tools. Focus reports whether the window is
 active; it is not eye tracking. Public tool events with explicit file paths
 draw blue beacons at those buildings, including activity from identified child
 agents. Unresolved activity is not assigned to a guessed building.
+Paths such as `crates/explorer/build.rs:12` are highlighted inside chat; click
+to fly to that file and source line. The MCP tool `propose_navigation` shows a
+notification with **Y · Fly** and **N · Dismiss**. Proposals expire after a minute
+and never move the camera without acceptance. Y/N remain text while an editor,
+message field or terminal has focus.
+
+Agent sessions use a shared engine contract for commands, normalized conversation
+state, capabilities and lifecycle events. The Codex adapter owns its authentication,
+app-server messages and native media. Other providers require their own adapter;
+Grok and Agy are not installed by this integration.
 
 The local dialogue view and conversation ID persist beside preferences in
 `agent-conversations`. Codex manages the underlying agent conversation. This

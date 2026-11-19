@@ -242,6 +242,10 @@ impl Tablet {
         self.open_page(Page::Help);
     }
 
+    pub(super) fn request_close(&mut self) {
+        self.action = Some(Action::Close);
+    }
+
     pub(super) fn open_page(&mut self, page: Page) {
         self.action = Some(Action::Switch(page));
     }

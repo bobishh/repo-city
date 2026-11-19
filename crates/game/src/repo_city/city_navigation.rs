@@ -445,7 +445,10 @@ pub(super) fn navigate(
     mut review: Option<ResMut<review_notes::Review>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut camera: Query<(&mut Transform, &Pilot), PlayerCamera>,
-    #[cfg(not(target_arch = "wasm32"))] mut links: Option<ResMut<file_links::Links>>,
+    #[cfg(not(target_arch = "wasm32"))] (mut links, mut agent_navigation): (
+        Option<ResMut<file_links::Links>>,
+        Option<ResMut<agent_navigation::Navigation>>,
+    ),
 ) {
     if picker.is_open() || listing.turning() {
         return;
@@ -473,6 +476,16 @@ pub(super) fn navigate(
         let destination = links
             .as_deref_mut()
             .and_then(file_links::Links::take_destination);
+        if destination.is_some() {
+            focus.enabled = false;
+        }
+        destination
+    });
+    #[cfg(not(target_arch = "wasm32"))]
+    let destination = destination.or_else(|| {
+        let destination = agent_navigation
+            .as_deref_mut()
+            .and_then(|navigation| navigation.take_destination(&repo.0));
         if destination.is_some() {
             focus.enabled = false;
         }

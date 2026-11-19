@@ -83,7 +83,7 @@ fn now_millis() -> u64 {
         .map_or(0, |time| time.as_millis().min(u64::MAX as u128) as u64)
 }
 
-fn directory(scope: &str) -> Option<PathBuf> {
+pub(super) fn directory(scope: &str) -> Option<PathBuf> {
     // Stable across app/MCP launches; the embedded repository is checked again on read.
     let hash = scope.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
         (hash ^ byte as u64).wrapping_mul(0x100000001b3)

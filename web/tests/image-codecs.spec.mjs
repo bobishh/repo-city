@@ -1,7 +1,8 @@
 import { test, expect } from "@playwright/test";
+import { readFile } from "node:fs/promises";
 import { gpuClick, expectOpen, expectClosed } from "./gpu-tablet.mjs";
 
-for (const extension of ["jpeg", "JPG", "webp"]) test(`P renders ${extension} pixels in the GPU tablet`, async ({ page }, info) => {
+for (const extension of ["jpeg", "JPG", "webp", "gif", "bmp", "ico", "tiff", "TGA", "pnm", "qoi", "dds", "hdr"]) test(`P renders ${extension} pixels in the GPU tablet`, async ({ page }, info) => {
   await page.addInitScript(() => {
     localStorage.setItem("repo-city-guide-v1", "seen");
     let locked = null;
@@ -9,11 +10,12 @@ for (const extension of ["jpeg", "JPG", "webp"]) test(`P renders ${extension} pi
     HTMLCanvasElement.prototype.requestPointerLock = function () { locked = this; queueMicrotask(() => document.dispatchEvent(new Event("pointerlockchange"))); return Promise.resolve(); };
     document.exitPointerLock = () => { locked = null; queueMicrotask(() => document.dispatchEvent(new Event("pointerlockchange"))); };
   });
-  const data = await page.evaluate(type => {
+  const data = ["jpeg", "JPG", "webp"].includes(extension) ? await page.evaluate(type => {
     const canvas = document.createElement("canvas"); canvas.width = 160; canvas.height = 100;
     const context = canvas.getContext("2d"); context.fillStyle = "rgb(210,40,170)"; context.fillRect(0, 0, 160, 100);
     return canvas.toDataURL(type).split(",")[1];
-  }, extension === "webp" ? "image/webp" : "image/jpeg");
+  }, extension === "webp" ? "image/webp" : "image/jpeg")
+    : (await readFile(new URL(`./fixtures/image-codecs/raster.${extension.toLowerCase()}`, import.meta.url))).toString("base64");
   const bytes = Buffer.from(data, "base64"), head = "b".repeat(40), name = `photo.${extension}`;
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
   await page.route("https://api.github.com/**", route => {

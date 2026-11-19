@@ -6,7 +6,7 @@ use std::{
 
 use serde_json::{Value, json};
 
-use super::super::focus_context;
+use super::super::{agent_navigation, focus_context};
 use super::native::{self, LocalState};
 
 pub(crate) fn serve(root: &Path) -> Result<(), String> {
@@ -75,6 +75,17 @@ fn respond(scope: &str, request: &Value) -> Option<Value> {
                     "id":{"type":"string"},"state":{"type":"string","enum":["unread","read","addressed"]}
                 },"required":["id","state"],"additionalProperties":false},
                 "annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}
+            },
+            {
+                "name":"propose_navigation",
+                "description":"Propose a file and source line in the current city. Shows a notification; the camera moves only after the user accepts with Y or Fly. N dismisses it. Never forces navigation.",
+                "inputSchema":{"type":"object","properties":{
+                    "path":{"type":"string","description":"Exact repository-relative file path using forward slashes.","maxLength":4096},
+                    "line":{"type":"integer","minimum":1,"maximum":1000000,"default":1},
+                    "before":{"type":"boolean","default":false},
+                    "reason":{"type":"string","maxLength":240,"description":"Short explanation shown to the user."}
+                },"required":["path"],"additionalProperties":false},
+                "annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}
             }
         ]}),
         "tools/call" => {
@@ -127,6 +138,27 @@ fn run_tool(scope: &str, params: &Value) -> Result<Value, String> {
             )
         }
         Some("get_focus") => Ok(json!({"repository":scope,"focus":focus_context::read(scope)})),
+        Some("propose_navigation") => {
+            let path = args["path"]
+                .as_str()
+                .ok_or("Supply a repository-relative file path.")?;
+            let line = match args.get("line") {
+                None => 1,
+                Some(value) => value
+                    .as_u64()
+                    .and_then(|line| usize::try_from(line).ok())
+                    .ok_or("Supply a one-based positive source line.")?,
+            };
+            let before = match args.get("before") {
+                None => false,
+                Some(value) => value.as_bool().ok_or("Before must be a boolean.")?,
+            };
+            let reason = match args.get("reason") {
+                None => "",
+                Some(value) => value.as_str().ok_or("The explanation must be text.")?,
+            };
+            agent_navigation::propose(scope, path, line, before, reason)
+        }
         Some("mark_note") => {
             let id = args["id"].as_str().ok_or("Supply a note ID.")?;
             let state = state.ok_or("Supply a note state.")?;
@@ -156,8 +188,17 @@ mod tests {
         assert!(names.contains(&"get_focus"));
         assert!(names.contains(&"list_notes"));
         assert!(names.contains(&"mark_note"));
+        assert!(names.contains(&"propose_navigation"));
         let reply = respond("/nonexistent-checkout", &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_focus","arguments":{}}})).unwrap();
         assert_eq!(reply["result"]["isError"], false);
         assert_eq!(reply["result"]["structuredContent"]["focus"]["live"], false);
+    }
+
+    #[test]
+    fn navigation_reports_missing_windows_and_rejects_escape_paths() {
+        for path in ["src/main.rs", "../secrets"] {
+            let reply = respond("/nonexistent-checkout", &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"propose_navigation","arguments":{"path":path}}})).unwrap();
+            assert_eq!(reply["result"]["isError"], true);
+        }
     }
 }

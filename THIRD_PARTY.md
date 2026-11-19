@@ -86,3 +86,10 @@ under Apache-2.0. Packaged native builds include Cargo source notices alongside
 the application licenses. The session and transcript adaptation follows
 `bobishh/ecky` revision `c48e376f676663272ee3a06622cd81bacb3f24d7`;
 the local transport uses native WebRTC and audio devices instead of Tauri's webview.
+
+## Image preview
+
+Image preview uses image-rs 0.25.10 (MIT OR Apache-2.0). Additional GIF, TIFF and
+QOI decoding uses color_quant 1.1.0, fax 0.2.7, gif 0.14.2, qoi 0.4.1,
+tiff 0.11.3 and weezl 0.1.12, under MIT or MIT OR Apache-2.0 as declared by
+each package. Distribution bundles include the complete source notices.

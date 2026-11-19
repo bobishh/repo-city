@@ -1,72 +1,16 @@
-//! Public provider events projected into local dialogue and measured file activity.
-use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use super::state::Dialogue;
+use super::state::{Presence, Projection};
 use serde_json::Value;
-use std::{collections::HashMap, path::Path};
-
-#[derive(Clone, Default, Serialize, Deserialize)]
-pub(super) struct Dialogue {
-    pub thread: Option<String>,
-    pub messages: Vec<Message>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub(super) struct Message {
-    pub id: String,
-    pub role: String,
-    pub text: String,
-}
-
-#[derive(Clone)]
-pub(super) struct Presence {
-    pub agent: String,
-    pub item: String,
-    pub path: String,
-}
-
-#[derive(Default)]
-pub(super) struct Projection {
-    pub dialogue: Dialogue,
-    pub turn: Option<String>,
-    pub presence: Vec<Presence>,
-    pub agents: HashMap<String, String>,
-    pub approvals: HashMap<String, String>,
-    pub voice: Option<String>,
-    pub status: String,
-}
-
+use std::path::Path;
 impl Projection {
-    pub fn message(&mut self, id: &str, role: &str, text: &str, append: bool) {
-        if text.trim().is_empty() || internal(text) {
-            return;
-        }
-        let value = self.dialogue.messages.iter_mut().find(|message| {
-            message.id == id
-                || (role == "user"
-                    && message.id.starts_with("user-pending-")
-                    && message.text == text)
-        });
-        if let Some(value) = value {
-            value.id = id.into();
-            if append {
-                // Bound a streamed item as well as the complete persisted conversation.
-                let available = 64_000_usize.saturating_sub(value.text.len());
-                value.text.extend(text.chars().take(available / 4));
-            } else {
-                value.text = text.chars().take(16_000).collect();
-            }
-        } else {
-            self.dialogue.messages.push(Message {
-                id: id.into(),
-                role: role.into(),
-                text: text.chars().take(16_000).collect(),
-            });
-        }
-        if self.dialogue.messages.len() > 160 {
-            self.dialogue.messages.remove(0);
+    fn codex_message(&mut self, id: &str, role: &str, text: &str, append: bool) {
+        if !internal(text) {
+            self.message(id, role, text, append);
         }
     }
 
-    pub fn apply(&mut self, root: &Path, method: &str, params: &Value) -> bool {
+    pub(super) fn apply(&mut self, root: &Path, method: &str, params: &Value) -> bool {
         let Some(thread) = params.get("threadId").and_then(Value::as_str) else {
             return false;
         };
@@ -99,7 +43,7 @@ impl Projection {
                 let Some(id) = params.get("itemId").and_then(Value::as_str) else {
                     return false;
                 };
-                self.message(
+                self.codex_message(
                     &format!("{thread}:{id}"),
                     "assistant",
                     params.get("delta").and_then(Value::as_str).unwrap_or(""),
@@ -116,7 +60,7 @@ impl Projection {
                 if item["type"] == "transcriptSegment" {
                     let role = item["role"].as_str().unwrap_or("");
                     if matches!(role, "user" | "assistant") {
-                        self.message(
+                        self.codex_message(
                             &format!("voice:{}", item["id"].as_str().unwrap_or("")),
                             role,
                             item["text"].as_str().unwrap_or(""),
@@ -153,7 +97,7 @@ impl Projection {
                 self.presence
                     .retain(|presence| presence.agent != thread || presence.item != id);
                 match item["type"].as_str().unwrap_or("") {
-                    "agentMessage" if done => self.message(
+                    "agentMessage" if done => self.codex_message(
                         &format!("{thread}:{id}"),
                         "assistant",
                         item["text"].as_str().unwrap_or(""),
@@ -173,7 +117,7 @@ impl Projection {
                         } else {
                             &text
                         };
-                        self.message(&format!("{thread}:{id}"), "user", text, false);
+                        self.codex_message(&format!("{thread}:{id}"), "user", text, false);
                     }
                     "collabAgentToolCall" if primary => {
                         if let Some(states) = item["agentsStates"].as_object() {

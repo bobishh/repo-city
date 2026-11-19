@@ -636,7 +636,7 @@ pub(super) fn update(
             let decoded = base64::engine::general_purpose::STANDARD
                 .decode(&node.data)
                 .map_err(|error| error.to_string())
-                .and_then(|bytes| image_preview::decode(&bytes))
+                .and_then(|bytes| image_preview::decode_named(&node.text, &bytes))
                 .map(|image| images.add(image));
             tablet.images.insert(node.source.clone(), decoded);
         }
@@ -652,6 +652,10 @@ pub(super) fn update(
                 ));
             }
             Err(error) => {
+                send_action(
+                    &serde_json::json!({ "id": binding.0, "kind": "image-error", "value": error })
+                        .to_string(),
+                );
                 commands
                     .entity(entity)
                     .despawn_children()

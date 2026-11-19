@@ -231,7 +231,7 @@ async function openRepository(repo, ref, base, exactBase = false) {
           const { repository } = active;
           const snapshot = JSON.parse(repository.snapshot);
           const blob = snapshot[before ? "before" : "after"][path];
-          const image = /\.(png|jpe?g|webp)$/i.test(path);
+          const image = /\.(png|jpe?g|webp|gif|bmp|ico|tiff?|tga|p[bnpg]m|pam|qoi|dds|hdr|rgbe)$/i.test(path);
           const markdown = /\.(md|markdown|mdown|mkd)$/i.test(path);
           review.previewMarkdown(path, async () => {
             if (!blob || blob.mode === "120000") throw new Error("No readable source in this snapshot.");

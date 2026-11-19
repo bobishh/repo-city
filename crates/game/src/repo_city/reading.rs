@@ -335,7 +335,7 @@ mod tests {
         // addInitScript at line 5 must not replace it with the inner 5–11 block.
         let source = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../web/tests/image-codecs.spec.mjs"
+            "/tests/fixtures/reading-nested-callbacks.mjs"
         ));
         let mut explorer = Explorer::new(0);
         explorer.set_highlighted(syntax::highlight("image-codecs.spec.mjs", source));

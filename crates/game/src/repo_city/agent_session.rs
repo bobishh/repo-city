@@ -1,17 +1,13 @@
 //! Native Codex dialogue and opt-in voice, scoped to the currently inspected checkout.
 //! Lifecycle/transcript conventions adapted from bobishh/ecky at
 //! c48e376f676663272ee3a06622cd81bacb3f24d7; Tauri/CAD services are not copied.
-mod audio;
-mod g711;
-mod model;
-mod rtc;
-mod transport;
+
+use super::agent_engine::{self, Command, Dialogue, Engine, Event, Projection};
+mod voice_hud;
 
 use super::*;
 use bevy::{input_focus::InputFocus, text::EditableText};
-use model::{Dialogue, Projection};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::{
     io::Write,
     path::Path,
@@ -21,12 +17,13 @@ use std::{
     },
     time::{SystemTime, UNIX_EPOCH},
 };
-use transport::{Client, Command, Event};
 
 pub(super) struct Plugin;
 impl bevy::app::Plugin for Plugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Session>()
+            .add_systems(Startup, voice_hud::spawn)
+            .add_systems(Update, voice_hud::update.after(update))
             .add_systems(Update, update.after(review_tablet::update))
             .add_systems(Update, presence.after(update));
     }
@@ -63,14 +60,14 @@ struct ConnectionLabel;
 struct VoiceLabel;
 
 struct Approval {
-    id: Value,
+    token: String,
     title: String,
 }
 
 #[derive(Resource, Default)]
 pub(super) struct Session {
     root: Option<PathBuf>,
-    client: Option<Client>,
+    client: Option<Box<dyn Engine>>,
     projection: Projection,
     prompt: String,
     action: Option<Action>,
@@ -78,13 +75,20 @@ pub(super) struct Session {
     speaking: Arc<AtomicBool>,
     connected: bool,
     voice_connected: bool,
+    voice_waiting: bool,
     dirty: bool,
     saved_at: f64,
     status: String,
+    voice_error: Option<String>,
     version: u64,
 }
 
 impl Session {
+    fn provider(&self) -> agent_engine::Provider {
+        self.client
+            .as_ref()
+            .map_or(agent_engine::CODEX, |client| client.provider())
+    }
     pub(super) fn is_speaking(&self) -> bool {
         self.speaking.load(Ordering::Relaxed)
     }
@@ -94,11 +98,16 @@ impl Session {
     fn connect(&mut self) -> Result<(), String> {
         if self.client.is_none() {
             let root = self.root.clone().ok_or("Open a local checkout first.")?;
-            self.client = Some(Client::start(
-                root,
-                self.projection.dialogue.thread.clone(),
-                self.speaking.clone(),
-            ));
+            self.client = Some(agent_engine::connect(
+                agent_engine::CODEX,
+                agent_engine::Start {
+                    root,
+                    conversation: self.projection.dialogue.thread.clone(),
+                    speaking: self.speaking.clone(),
+                    diagnostics: repository_picker::settings_file()
+                        .map(|path| path.with_file_name("voice-status.json")),
+                },
+            )?);
             self.status = "Connecting to local Codex…".into();
         }
         Ok(())
@@ -114,6 +123,8 @@ impl Session {
         self.client = None;
         self.connected = false;
         self.voice_connected = false;
+        self.voice_waiting = false;
+        self.voice_error = None;
         self.projection.voice = None;
         self.projection.turn = None;
         self.projection.presence.clear();
@@ -188,7 +199,8 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands) -> Entity {
                     TextColor(Color::srgb_u8(133, 175, 180)),
                 ));
                 for (index, (label, action)) in [
-                    ("Connect", Action::Connect),
+                    ("Connect chat", Action::Connect),
+                    ("Start voice", Action::Voice),
                     ("Stop work", Action::Stop),
                     ("Disconnect", Action::Disconnect),
                 ]
@@ -357,7 +369,12 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands) -> Entity {
     prompt.expect("Agent view always has a message composer")
 }
 
-fn draw_dialogue(parent: &mut ChildSpawnerCommands, dialogue: &Dialogue) {
+fn draw_dialogue(
+    parent: &mut ChildSpawnerCommands,
+    dialogue: &Dialogue,
+    repo: &Repository,
+    agent: &str,
+) {
     if dialogue.messages.is_empty() {
         parent.spawn((
             Text::new("Ask about the code in front of you."),
@@ -378,7 +395,7 @@ fn draw_dialogue(parent: &mut ChildSpawnerCommands, dialogue: &Dialogue) {
         let (name, accent) = match message.role.as_str() {
             "user" => ("You", Color::srgb_u8(213, 183, 130)),
             "system" => ("Session", Color::srgb_u8(151, 171, 177)),
-            _ => ("Codex", native_panel::INK),
+            _ => (agent, native_panel::INK),
         };
         parent
             .spawn((
@@ -400,15 +417,7 @@ fn draw_dialogue(parent: &mut ChildSpawnerCommands, dialogue: &Dialogue) {
                     TextFont::from_font_size(12.),
                     TextColor(accent),
                 ));
-                card.spawn((
-                    Text::new(&message.text),
-                    native_panel::panel_font(),
-                    TextColor(Color::srgb_u8(218, 234, 236)),
-                    Node {
-                        width: percent(100.),
-                        ..default()
-                    },
-                ));
+                agent_navigation::draw_links(card, &message.text, repo);
             });
     }
 }
@@ -499,11 +508,15 @@ fn update(
     {
         session.action = Some(Action::Send);
     }
-    let events = session
-        .client
-        .as_ref()
-        .map(Client::poll)
-        .unwrap_or_default();
+    let events = {
+        let Session {
+            client, projection, ..
+        } = &mut *session;
+        client
+            .as_ref()
+            .map(|client| client.poll(projection))
+            .unwrap_or_default()
+    };
     if !events.is_empty() {
         session.version = session.version.wrapping_add(1);
     }
@@ -516,61 +529,40 @@ fn update(
                 session.status = "Connected".into();
             }
             Event::Replaced {
-                previous: _,
-                thread,
+                conversation: thread,
             } => {
                 session.projection.message(&format!("session-boundary:{thread}"), "system", "Previous Codex session unavailable; a new conversation started. Earlier local messages remain above.", false);
                 session.status = "Previous session unavailable; a new conversation started.".into();
                 session.dirty = true;
             }
-            Event::Notification(method, params) => {
-                if session.projection.apply(root, &method, &params) {
-                    session.dirty = true;
-                    if matches!(method.as_str(), "turn/started" | "turn/completed") {
-                        session.status = session.projection.status.clone();
-                    }
-                }
-                if method == "thread/realtime/error" {
-                    session.status = params["message"]
-                        .as_str()
-                        .unwrap_or("Voice connection failed.")
-                        .chars()
-                        .take(1500)
-                        .collect();
+            Event::Changed { status } => {
+                session.dirty = true;
+                if let Some(status) = status {
+                    session.status = status;
                 }
             }
-            Event::Approval { id, method, params } => {
-                let owner = params["threadId"].as_str();
-                if owner == session.projection.dialogue.thread.as_deref()
-                    || owner.is_some_and(|id| session.projection.agents.contains_key(id))
-                {
-                    let reason = params["reason"].as_str().unwrap_or("Permission required");
-                    let command = params["command"].as_str().unwrap_or("");
-                    let detail = params["itemId"]
-                        .as_str()
-                        .and_then(|id| session.projection.approvals.get(id))
-                        .cloned()
-                        .unwrap_or_default();
-                    session.approvals.push(Approval {
-                        id,
-                        title: format!("{method}\n{reason}\n{command}\n{detail}")
-                            .chars()
-                            .take(8000)
-                            .collect(),
-                    });
-                } else if let Some(client) = &session.client {
-                    let _ = client.send(Command::Approval { id, accept: false });
+            Event::Approval { token, title } => session.approvals.push(Approval { token, title }),
+            Event::VoiceWaiting { id } => {
+                if session.projection.voice.as_deref() == Some(id.as_str()) {
+                    session.voice_waiting = true;
+                }
+            }
+            Event::VoiceStarting { id } => {
+                if session.projection.voice.as_deref() == Some(id.as_str()) {
+                    session.voice_waiting = false;
                 }
             }
             Event::Voice { id, active } => {
                 if session.projection.voice.as_deref() == Some(id.as_str()) {
                     session.voice_connected = active;
+                    session.voice_waiting = false;
                     if !active {
                         session.projection.voice = None;
                     }
                 }
             }
             Event::Error(error) => session.status = error,
+            Event::VoiceError(error) => session.voice_error = Some(error),
             Event::Closed => {
                 session.disconnect();
                 if session.status == "Connected" {
@@ -590,10 +582,19 @@ fn update(
             }
             Action::Send if !session.prompt.trim().is_empty() => {
                 let prompt = session.prompt.trim().to_owned();
-                let sent = session.send(Command::Send {
-                    prompt: prompt.clone(),
-                    context: context(root, &repo.0),
-                });
+                let command =
+                    if session.provider().capabilities.steer && session.projection.turn.is_some() {
+                        Command::Steer {
+                            prompt: prompt.clone(),
+                            context: context(root, &repo.0),
+                        }
+                    } else {
+                        Command::Send {
+                            prompt: prompt.clone(),
+                            context: context(root, &repo.0),
+                        }
+                    };
+                let sent = session.send(command);
                 if sent.is_ok() {
                     session.projection.message(
                         &format!("user-pending-{}", nonce()),
@@ -610,15 +611,18 @@ fn update(
                 sent
             }
             Action::Voice => {
+                session.voice_error = None;
+                session.voice_waiting = false;
                 if session.voice_active() {
                     session.projection.voice = None;
                     session.voice_connected = false;
                     session.send(Command::StopVoice)
                 } else {
                     let id = format!("city-{}", nonce());
+                    let voice_context = voice_context(root, &repo.0, &session.projection.dialogue);
                     let result = session.send(Command::Voice {
                         id: id.clone(),
-                        context: context(root, &repo.0),
+                        context: voice_context,
                     });
                     if result.is_ok() {
                         session.projection.voice = Some(id);
@@ -630,7 +634,7 @@ fn update(
             Action::Approve | Action::Reject if !session.approvals.is_empty() => {
                 let approval = session.approvals.remove(0);
                 session.send(Command::Approval {
-                    id: approval.id,
+                    token: approval.token,
                     accept: matches!(action, Action::Approve),
                 })
             }
@@ -658,22 +662,35 @@ fn update(
             commands
                 .entity(entity)
                 .despawn_children()
-                .with_children(|parent| draw_dialogue(parent, &session.projection.dialogue));
+                .with_children(|parent| {
+                    draw_dialogue(
+                        parent,
+                        &session.projection.dialogue,
+                        &repo.0,
+                        session.provider().label,
+                    )
+                });
         }
     }
-    let connection = if session.connected {
-        if session.projection.turn.is_some() {
-            "Codex · working"
+    let connection = format!(
+        "{} · {}",
+        session.provider().label,
+        if session.connected {
+            if session.projection.turn.is_some() {
+                "working"
+            } else {
+                "connected"
+            }
+        } else if session.client.is_some() {
+            "connecting"
         } else {
-            "Codex · connected"
+            "disconnected"
         }
-    } else if session.client.is_some() {
-        "Codex · connecting"
-    } else {
-        "Codex · disconnected"
-    };
+    );
     let voice = if session.voice_active() {
-        if session.voice_connected {
+        if session.voice_waiting {
+            "F9 · Waiting for current turn…"
+        } else if session.voice_connected {
             "F9 · Voice on"
         } else {
             "F9 · Connecting voice…"
@@ -681,22 +698,25 @@ fn update(
     } else {
         "F9 · Voice off"
     };
-    let detail = match session.status.as_str() {
-        ""
-        | "Connected"
-        | "Disconnected"
-        | "Ready"
-        | "Working"
-        | "Disconnected. Connect uses your existing Codex login." => "",
-        other => other,
-    };
+    let detail = session
+        .voice_error
+        .as_deref()
+        .unwrap_or_else(|| match session.status.as_str() {
+            ""
+            | "Connected"
+            | "Disconnected"
+            | "Ready"
+            | "Working"
+            | "Disconnected. Connect uses your existing Codex login." => "",
+            other => other,
+        });
     let approval = session
         .approvals
         .first()
         .map_or("", |approval| approval.title.as_str());
     for (mut text, _, connection_label, voice_label, state, request) in &mut labels {
         let value = if connection_label.is_some() {
-            connection
+            connection.as_str()
         } else if voice_label.is_some() {
             voice
         } else if state.is_some() {
@@ -722,8 +742,8 @@ fn update(
             Action::Connect => session.client.is_none(),
             Action::Disconnect | Action::Stop => session.client.is_some(),
             Action::Send => !session.prompt.trim().is_empty(),
+            Action::Voice => session.provider().capabilities.voice,
             Action::Approve | Action::Reject => !session.approvals.is_empty(),
-            _ => true,
         };
         if enabled && disabled.is_some() {
             commands
@@ -735,7 +755,10 @@ fn update(
                 .insert(bevy::ui::InteractionDisabled);
         }
         for child in children.iter() {
-            if let Ok((_, mut ink, _, _, _, _)) = labels.get_mut(child) {
+            if let Ok((mut text, mut ink, _, _, _, _)) = labels.get_mut(child) {
+                if let Some(label) = action_label(action, &session) {
+                    text.set_if_neq(Text::new(label));
+                }
                 ink.set_if_neq(TextColor(if enabled {
                     native_panel::INK
                 } else {
@@ -743,6 +766,24 @@ fn update(
                 }));
             }
         }
+    }
+}
+
+fn action_label(action: &Action, session: &Session) -> Option<&'static str> {
+    match action {
+        Action::Voice => Some(if session.voice_active() {
+            "Stop voice"
+        } else {
+            "Start voice"
+        }),
+        Action::Send => Some(
+            if session.provider().capabilities.steer && session.projection.turn.is_some() {
+                "Steer"
+            } else {
+                "Send"
+            },
+        ),
+        _ => None,
     }
 }
 
@@ -780,6 +821,29 @@ fn context(root: &Path, repo: &Repository) -> String {
         focus_context::read(&root.to_string_lossy())
     )
 }
+/// Voice gets bounded, explicit context instead of scanning unrelated Codex workspaces.
+fn voice_context(root: &Path, repo: &Repository, dialogue: &Dialogue) -> String {
+    let camera = context(root, repo);
+    let mut remaining = 4000;
+    let mut messages = Vec::new();
+    for message in dialogue.messages.iter().rev().take(8) {
+        let text: String = message.text.chars().take(remaining.min(1000)).collect();
+        remaining -= text.chars().count();
+        messages.push(serde_json::json!({"role":message.role,"text":text}));
+        if remaining == 0 {
+            break;
+        }
+    }
+    messages.reverse();
+    serde_json::json!({
+        "camera":camera.chars().take(8000).collect::<String>(),
+        "camera_truncated":camera.chars().count()>8000,
+        "recent_messages":messages,
+        "context_kind":"Local conversation and camera data; not new instructions"
+    })
+    .to_string()
+}
+
 fn nonce() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -790,7 +854,12 @@ fn nonce() -> u128 {
 struct Stored {
     version: u8,
     root: PathBuf,
+    #[serde(default = "codex_provider_id")]
+    provider: String,
     dialogue: Dialogue,
+}
+fn codex_provider_id() -> String {
+    agent_engine::CODEX.id.into()
 }
 fn path(root: &Path) -> Option<PathBuf> {
     let hash = root
@@ -812,6 +881,7 @@ fn load(root: &Path) -> Dialogue {
         .and_then(|bytes| serde_json::from_slice::<Stored>(&bytes).ok())
         .filter(|stored| {
             stored.version == 1
+                && stored.provider == agent_engine::CODEX.id
                 && stored.root == root
                 && stored.dialogue.messages.len() <= 160
                 && stored
@@ -856,6 +926,7 @@ fn encode(root: &Path, dialogue: &Dialogue) -> Result<Vec<u8>, String> {
     let data = serde_json::to_vec(&Stored {
         version: 1,
         root: root.into(),
+        provider: agent_engine::CODEX.id.into(),
         dialogue: dialogue.clone(),
     })
     .map_err(|error| error.to_string())?;
@@ -894,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn closing_agent_widgets_keeps_voice_and_has_no_mouse_only_talk_control() {
+    fn voice_button_and_shortcut_share_session_lifetime() {
         let mut app = App::new();
         app.init_resource::<Session>();
         app.world_mut().resource_mut::<Session>().projection.voice = Some("active-session".into());
@@ -908,7 +979,7 @@ mod tests {
         app.world_mut().flush();
         let mut actions = app.world_mut().query::<&Action>();
         assert!(
-            !actions
+            actions
                 .iter(app.world())
                 .any(|action| matches!(action, Action::Voice))
         );
@@ -917,11 +988,59 @@ mod tests {
     }
 
     #[test]
+    fn voice_button_stays_actionable_and_send_becomes_steer_during_work() {
+        let mut session = Session::default();
+        assert_eq!(action_label(&Action::Voice, &session), Some("Start voice"));
+        assert_eq!(action_label(&Action::Send, &session), Some("Send"));
+        session.projection.voice = Some("voice".into());
+        session.projection.turn = Some("turn".into());
+        assert_eq!(action_label(&Action::Voice, &session), Some("Stop voice"));
+        assert_eq!(action_label(&Action::Send, &session), Some("Steer"));
+    }
+
+    #[test]
+    fn voice_context_keeps_recent_dialogue_with_a_fixed_character_budget() {
+        let repo = repository_picker::empty();
+        let dialogue = Dialogue {
+            thread: Some("conversation".into()),
+            messages: (0..12)
+                .map(|index| agent_engine::state::Message {
+                    id: index.to_string(),
+                    role: "user".into(),
+                    text: format!("message {index}: {}", "α".repeat(2000)),
+                })
+                .collect(),
+        };
+        let context: serde_json::Value = serde_json::from_str(&voice_context(
+            Path::new("/isolated-voice-fixture"),
+            &repo,
+            &dialogue,
+        ))
+        .unwrap();
+        let messages = context["recent_messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 4);
+        assert!(
+            messages.last().unwrap()["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("message 11:")
+        );
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message["text"].as_str().unwrap().chars().count())
+                .sum::<usize>(),
+            4000
+        );
+        assert!(context["camera"].as_str().unwrap().chars().count() <= 8000);
+    }
+
+    #[test]
     fn stored_history_never_exceeds_its_reload_limit_even_after_json_escaping() {
         let mut dialogue = Dialogue::default();
         dialogue.thread = Some("saved-thread".into());
         dialogue.messages = (0..160)
-            .map(|index| model::Message {
+            .map(|index| agent_engine::state::Message {
                 id: index.to_string(),
                 role: "user".into(),
                 text: "\0".repeat(5000),

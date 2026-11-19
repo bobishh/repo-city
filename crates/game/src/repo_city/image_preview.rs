@@ -7,6 +7,7 @@ use super::*;
 
 const MAX_DIMENSION: u32 = 8192;
 const MAX_PIXELS: u64 = 16 * 1024 * 1024;
+const FORMATS: &str = "PNG, JPEG, WebP, GIF, BMP, ICO, TIFF, TGA, PNM, QOI, DDS and HDR";
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Resource, Default)]
@@ -27,9 +28,10 @@ impl Preview {
     pub(super) fn open(repo: &Repository, index: usize, before: bool) -> Result<Self, String> {
         let file = repo.files.get(index).ok_or("Unknown file")?.clone();
         if !supported(&file.path) {
-            return Err("Image preview supports PNG, JPEG, and WebP.".into());
+            return Err(format!("Image preview supports {FORMATS}."));
         }
         let path = file.path.clone();
+        let image_path = path.clone();
         let snapshot = Repository {
             root: repo.root.clone(),
             revision: repo.revision.clone(),
@@ -40,7 +42,7 @@ impl Preview {
         Ok(Self {
             path,
             pending: Some(native_github::Job::spawn(move || {
-                decode(&snapshot.asset_bytes(0, before)?)
+                decode_named(&image_path, &snapshot.asset_bytes(0, before)?)
             })),
         })
     }
@@ -68,16 +70,36 @@ fn validate_dimensions(width: u32, height: u32) -> Result<(), String> {
 }
 
 pub(super) fn decode(bytes: &[u8]) -> Result<Image, String> {
+    decode_named("", bytes)
+}
+
+pub(super) fn decode_named(path: &str, bytes: &[u8]) -> Result<Image, String> {
     if bytes.len() > repo_world::ASSET_BYTES_LIMIT {
         return Err("Image exceeds the 16 MiB preview limit.".into());
     }
     let format = image::guess_format(bytes)
-        .map_err(|_| "Image data is invalid or unsupported.".to_owned())?;
+        .ok()
+        .or_else(|| {
+            // TGA does not have a dependable magic signature. Never guess it for other files.
+            file_preview::image_format(path).filter(|format| *format == image::ImageFormat::Tga)
+        })
+        .ok_or_else(|| "Image data is invalid or unsupported.".to_owned())?;
     if !matches!(
         format,
-        image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP
+        image::ImageFormat::Png
+            | image::ImageFormat::Jpeg
+            | image::ImageFormat::WebP
+            | image::ImageFormat::Gif
+            | image::ImageFormat::Bmp
+            | image::ImageFormat::Ico
+            | image::ImageFormat::Tiff
+            | image::ImageFormat::Tga
+            | image::ImageFormat::Pnm
+            | image::ImageFormat::Qoi
+            | image::ImageFormat::Dds
+            | image::ImageFormat::Hdr
     ) {
-        return Err("Image preview supports PNG, JPEG, and WebP.".into());
+        return Err(format!("Image preview supports {FORMATS}."));
     }
     // The shared image decoder has the same codecs and allocation limits on every target.
     let mut header = image::ImageReader::with_format(Cursor::new(bytes), format);
@@ -95,7 +117,9 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Image, String> {
     let decoded = reader
         .decode()
         .map_err(|error| format!("Could not decode image: {error}"))?;
-    let mut image = Image::from_dynamic(decoded, true, RenderAssetUsages::default());
+    // UI textures must remain filterable on WebGPU; HDR/16-bit sources use an 8-bit preview.
+    let rgba = image::DynamicImage::ImageRgba8(decoded.into_rgba8());
+    let mut image = Image::from_dynamic(rgba, true, RenderAssetUsages::default());
     image.sampler = ImageSampler::linear();
     Ok(image)
 }
@@ -164,6 +188,107 @@ mod tests {
             .insert_resource(Request(Some((0, false))))
             .add_systems(Update, review_tablet::update);
         (app, root)
+    }
+
+    fn dds_bytes(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = vec![0; 128];
+        bytes[..4].copy_from_slice(b"DDS ");
+        for (at, value) in [
+            (4, 124u32),
+            (8, 0x81007),
+            (12, height),
+            (16, width),
+            (20, width * height / 2),
+            (76, 32),
+            (80, 4),
+            (108, 0x1000),
+        ] {
+            bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[84..88].copy_from_slice(b"DXT1");
+        let color = ((26u16 << 11) | (10u16 << 5) | 21u16).to_le_bytes();
+        for _ in 0..(width / 4) * (height / 4) {
+            bytes.extend_from_slice(&[color[0], color[1], 0, 0, 0, 0, 0, 0]);
+        }
+        bytes
+    }
+
+    #[test]
+    fn shared_codecs_render_extended_formats_with_filterable_eight_bit_pixels() {
+        // Given supported snapshot rasters, desktop and WASM share the same bounded decoder.
+        let original = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            4,
+            4,
+            image::Rgb([210, 40, 170]),
+        ));
+        for (name, format) in [
+            ("sample.gif", image::ImageFormat::Gif),
+            ("sample.bmp", image::ImageFormat::Bmp),
+            ("sample.ico", image::ImageFormat::Ico),
+            ("sample.tiff", image::ImageFormat::Tiff),
+            ("sample.TGA", image::ImageFormat::Tga),
+            ("sample.pnm", image::ImageFormat::Pnm),
+            ("sample.qoi", image::ImageFormat::Qoi),
+            ("sample.hdr", image::ImageFormat::Hdr),
+        ] {
+            let original = if format == image::ImageFormat::Hdr {
+                image::DynamicImage::ImageRgb32F(original.to_rgb32f())
+            } else if format == image::ImageFormat::Ico {
+                image::DynamicImage::ImageRgba8(original.to_rgba8())
+            } else {
+                original.clone()
+            };
+            let mut bytes = Cursor::new(Vec::new());
+            original.write_to(&mut bytes, format).unwrap();
+            let decoded = decode_named(name, bytes.get_ref())
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(decoded.size(), UVec2::new(4, 4), "{name}");
+            assert_eq!(
+                decoded.texture_descriptor.format,
+                bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+                "{name}"
+            );
+            let pixels = decoded.data.unwrap();
+            assert!(
+                pixels[0] > 150 && pixels[1] < 100 && pixels[2] > 100,
+                "{name}"
+            );
+        }
+        let image = decode_named("sample.dds", &dds_bytes(4, 4)).unwrap();
+        assert_eq!(image.size(), UVec2::new(4, 4));
+        assert!(image.data.unwrap()[0] > 150);
+    }
+
+    #[test]
+    fn animated_gif_preview_uses_only_the_first_frame() {
+        let mut bytes = Cursor::new(Vec::new());
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+            for rgba in [[210, 40, 170, 255], [20, 220, 30, 255]] {
+                encoder
+                    .encode_frame(image::Frame::new(image::RgbaImage::from_pixel(
+                        4,
+                        4,
+                        image::Rgba(rgba),
+                    )))
+                    .unwrap();
+            }
+        }
+        let image = decode_named("animated.gif", bytes.get_ref()).unwrap();
+        assert_eq!(&image.data.unwrap()[..4], &[210, 40, 170, 255]);
+    }
+
+    #[test]
+    fn new_codecs_keep_dimension_and_invalid_data_guards() {
+        let mut tga = vec![0; 18];
+        tga[2] = 2;
+        tga[12..14].copy_from_slice(&10000u16.to_le_bytes());
+        tga[14..16].copy_from_slice(&1u16.to_le_bytes());
+        tga[16] = 24;
+        assert!(decode_named("too-wide.tga", &tga).is_err());
+        assert!(decode_named("invalid.tiff", b"bad data").is_err());
+        assert!(decode_named("invalid.gif", b"GIF89a").is_err());
+        assert!(decode_named("drawing.svg", b"<svg width='10' height='10'/>").is_err());
     }
 
     #[test]
