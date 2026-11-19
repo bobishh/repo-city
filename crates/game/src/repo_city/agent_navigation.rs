@@ -281,8 +281,7 @@ impl bevy::app::Plugin for Plugin {
                 Update,
                 update
                     .before(city_navigation::navigate)
-                    .before(listing::find::update)
-                    .after(review_tablet::update),
+                    .before(listing::find::update),
             );
     }
 }
@@ -699,6 +698,29 @@ mod tests {
             .collect();
         repo
     }
+    #[test]
+    fn navigation_integrates_without_cycling_the_existing_control_schedule() {
+        let mut app = App::new();
+        app.add_plugins(Plugin);
+        app.add_systems(
+            Update,
+            (
+                listing::find::update,
+                review_tablet::update,
+                city_navigation::navigate,
+            )
+                .chain(),
+        );
+        let mut schedule = app
+            .world_mut()
+            .resource_mut::<bevy::ecs::schedule::Schedules>()
+            .remove(Update)
+            .unwrap();
+        schedule
+            .initialize(app.world_mut())
+            .expect("agent navigation must fit the existing controls order");
+    }
+
     #[test]
     fn proposed_navigation_waits_for_acceptance_and_dismissal_never_moves() {
         let repo = repository();
