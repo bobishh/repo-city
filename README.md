@@ -227,6 +227,8 @@ and resolved local targets; select a target to fly to its definition line.
 When only the module is known, the target says **module start**. Roads connect
 resolved files in the visible city. Following a link restores hidden buildings
 if **Only changes** would hide the destination.
+On desktop, discovered roads remain visible as you explore other files. Changing
+the repository snapshot or switching between before and after clears these roads.
 
 The native resolver supports static JavaScript/TypeScript imports and Rust
 modules and qualified imports. External packages and ambiguous targets remain

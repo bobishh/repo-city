@@ -26,8 +26,10 @@ pub(super) struct Links {
     pending: Option<(Focus, native_github::Job<FileLinks>)>,
     generation: u64,
     result: Option<Result<FileLinks, String>>,
+    discovered: HashMap<String, FileLinks>,
     destination: Option<review_notes::Destination>,
     version: u64,
+    roads_version: u64,
     rendered: u64,
 }
 
@@ -93,7 +95,17 @@ impl Links {
 
 /// Metadata comparison stays on the game thread; parsing and Git reads run in one worker.
 pub(super) fn update(repo: Res<Repo>, explorer: Res<Explorer>, mut links: ResMut<Links>) {
-    if repo.is_changed() {
+    let snapshot_changed = repo.is_changed();
+    let side_changed = links
+        .focus
+        .as_ref()
+        .is_some_and(|focus| focus.before != explorer.before);
+    if snapshot_changed || side_changed {
+        links.discovered.clear();
+        links.version = links.version.wrapping_add(1);
+        links.roads_version = links.roads_version.wrapping_add(1);
+    }
+    if snapshot_changed {
         links.generation = links.generation.wrapping_add(1);
         links.snapshot = Some(Arc::new(repo.0.clone()));
     }
@@ -106,13 +118,28 @@ pub(super) fn update(repo: Res<Repo>, explorer: Res<Explorer>, mut links: ResMut
         generation: links.generation,
     });
     if focus != links.focus {
+        links.result = focus
+            .as_ref()
+            .and_then(|focus| links.discovered.get(&focus.path).cloned())
+            .map(Ok);
         links.focus = focus;
-        links.result = None;
         links.destination = None;
         links.version = links.version.wrapping_add(1);
     }
     if let Some(result) = links.pending.as_ref().and_then(|(_, job)| job.take()) {
         let (completed, _) = links.pending.take().unwrap();
+        // A finished inspection still belongs to this city's graph after a
+        // flight, but never after a snapshot or comparison-side change.
+        if let Ok(file) = &result
+            && links.focus.as_ref().is_some_and(|focus| {
+                focus.generation == completed.generation
+                    && focus.root == completed.root
+                    && focus.before == completed.before
+            })
+        {
+            links.discovered.insert(file.path.clone(), file.clone());
+            links.roads_version = links.roads_version.wrapping_add(1);
+        }
         if Some(&completed) == links.focus.as_ref() {
             links.result = Some(result);
             links.version = links.version.wrapping_add(1);
@@ -221,17 +248,16 @@ pub(super) fn draw(
             residency_changed |= residents.interested.contains(&building.0);
         }
     }
-    if links.rendered != links.version {
+    if links.rendered != links.roads_version {
         let paths = links
-            .file()
-            .map(|file| {
-                std::iter::once(file.path.as_str())
-                    .chain(file.links.iter().filter_map(|link| {
-                        link.destination.as_ref().map(|target| target.path.as_str())
-                    }))
-                    .collect::<HashSet<_>>()
+            .discovered
+            .values()
+            .flat_map(|file| {
+                std::iter::once(file.path.as_str()).chain(file.links.iter().filter_map(|link| {
+                    link.destination.as_ref().map(|target| target.path.as_str())
+                }))
             })
-            .unwrap_or_default();
+            .collect::<HashSet<_>>();
         residents.interested = repo
             .0
             .files
@@ -240,74 +266,66 @@ pub(super) fn draw(
             .filter_map(|(index, file)| paths.contains(file.path.as_str()).then_some(index))
             .collect();
     }
-    if links.rendered == links.version && !filter_changed && !residency_changed {
+    if links.rendered == links.roads_version && !filter_changed && !residency_changed {
         return;
     }
-    links.rendered = links.version;
+    links.rendered = links.roads_version;
     for entity in &old {
         commands.entity(entity).despawn();
     }
-    let Some(file) = links.file() else {
-        return;
-    };
-    let Some((from_index, from)) = repo
-        .0
-        .files
-        .iter()
-        .enumerate()
-        .find(|(_, source)| source.path == file.path)
-    else {
-        return;
-    };
-    if !filter.includes(from) || !residents.files.contains_key(&from_index) {
-        return;
-    }
-    let mut destinations = HashSet::new();
+    let mut roads = HashSet::new();
     let material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.08, 0.43, 0.45),
         unlit: true,
         ..default()
     });
-    for target in file
-        .links
+    let files = repo
+        .0
+        .files
         .iter()
-        .filter_map(|link| link.destination.as_ref())
-    {
-        if !destinations.insert(&target.path) {
-            continue;
-        }
-        let Some((to_index, to)) = repo
-            .0
-            .files
-            .iter()
-            .enumerate()
-            .find(|(_, file)| file.path == target.path)
-        else {
+        .enumerate()
+        .map(|(index, file)| (file.path.as_str(), (index, file)))
+        .collect::<HashMap<_, _>>();
+    for file in links.discovered.values() {
+        let Some(&(from_index, from)) = files.get(file.path.as_str()) else {
             continue;
         };
-        if to_index == from_index
-            || !filter.includes(to)
-            || !residents.files.contains_key(&to_index)
-        {
+        if !filter.includes(from) || !residents.files.contains_key(&from_index) {
             continue;
         }
-        let points = road_points(
-            Vec2::from_array(from.position),
-            Vec2::from_array(to.position),
-            listing::block_size(from).x.max(listing::block_size(to).x),
-        );
-        for [start, end] in points.windows(2).map(|points| [points[0], points[1]]) {
-            let length = start.distance(end);
-            if length < 0.01 {
+        for target in file
+            .links
+            .iter()
+            .filter_map(|link| link.destination.as_ref())
+        {
+            let Some(&(to_index, to)) = files.get(target.path.as_str()) else {
+                continue;
+            };
+            if to_index == from_index
+                || !filter.includes(to)
+                || !residents.files.contains_key(&to_index)
+                || !roads.insert((from_index.min(to_index), from_index.max(to_index)))
+            {
                 continue;
             }
-            commands.spawn((
-                Road,
-                Mesh3d(meshes.add(Cuboid::new(0.9, 0.035, length))),
-                MeshMaterial3d(material.clone()),
-                Transform::from_translation((start + end) / 2.).looking_at(end, Vec3::Y),
-                bevy::light::NotShadowCaster,
-            ));
+            let points = road_points(
+                Vec2::from_array(from.position),
+                Vec2::from_array(to.position),
+                listing::block_size(from).x.max(listing::block_size(to).x),
+            );
+            for [start, end] in points.windows(2).map(|points| [points[0], points[1]]) {
+                let length = start.distance(end);
+                if length < 0.01 {
+                    continue;
+                }
+                commands.spawn((
+                    Road,
+                    Mesh3d(meshes.add(Cuboid::new(0.9, 0.035, length))),
+                    MeshMaterial3d(material.clone()),
+                    Transform::from_translation((start + end) / 2.).looking_at(end, Vec3::Y),
+                    bevy::light::NotShadowCaster,
+                ));
+            }
         }
     }
 }
@@ -315,6 +333,152 @@ pub(super) fn draw(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn road_app() -> App {
+        let mut repo = repository_picker::empty();
+        repo.files = ["entry.txt", "detail.txt", "other.txt"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, path)| repo_world::File {
+                path: path.into(),
+                before: None,
+                after: None,
+                change: Change::Added,
+                position: [index as f32 * 50., 0.],
+            })
+            .collect();
+        let mut app = App::new();
+        app.insert_resource(Repo(repo))
+            .insert_resource(Explorer::new(0))
+            .init_resource::<Links>()
+            .init_resource::<file_facade::ChangesOnly>()
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .add_systems(Update, (update, draw).chain());
+        for index in 0..3 {
+            app.world_mut().spawn(FileBuilding(index));
+        }
+        app.update();
+        app
+    }
+
+    fn deliver_links(app: &mut App, path: &str, destination: Option<&str>) {
+        let file = FileLinks {
+            path: path.into(),
+            supported: true,
+            links: destination
+                .map(|path| repo_world::links::Link {
+                    line: 1,
+                    import: "mod detail".into(),
+                    symbol: None,
+                    destination: Some(repo_world::links::Destination {
+                        path: path.into(),
+                        line: 1,
+                        exact: false,
+                    }),
+                    reason: None,
+                })
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        deliver_result(app, Ok(file));
+    }
+
+    fn deliver_result(app: &mut App, result: Result<FileLinks, String>) {
+        let mut links = app.world_mut().resource_mut::<Links>();
+        let focus = links.focus.clone().unwrap();
+        links.result = None;
+        links.pending = Some((focus, native_github::Job::spawn(move || result)));
+        drop(links);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.world().resource::<Links>().result.is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "link worker timed out"
+            );
+            app.update();
+            std::thread::yield_now();
+        }
+    }
+
+    fn road_count(app: &mut App) -> usize {
+        app.world_mut()
+            .query_filtered::<Entity, With<Road>>()
+            .iter(app.world())
+            .count()
+    }
+
+    #[test]
+    fn discovered_roads_remain_when_flying_to_a_file_without_imports() {
+        // Given a resolved road, leaving its source must not erase it while the
+        // next file loads, finishes without imports, or fails inspection.
+        let mut app = road_app();
+        deliver_links(&mut app, "entry.txt", Some("detail.txt"));
+        let discovered = road_count(&mut app);
+        assert!(discovered > 0);
+        app.world_mut().resource_mut::<Explorer>().selected = 2;
+        app.update();
+        assert_eq!(
+            road_count(&mut app),
+            discovered,
+            "road vanished on departure"
+        );
+        deliver_links(&mut app, "other.txt", None);
+        assert_eq!(road_count(&mut app), discovered);
+        app.world_mut().resource_mut::<Explorer>().selected = 1;
+        app.update();
+        deliver_result(&mut app, Err("Source unavailable".into()));
+        assert_eq!(road_count(&mut app), discovered);
+    }
+
+    #[test]
+    fn exploring_more_files_accumulates_roads_without_duplicate_reverse_links() {
+        let mut app = road_app();
+        deliver_links(&mut app, "entry.txt", Some("detail.txt"));
+        let first = road_count(&mut app);
+        app.world_mut().resource_mut::<Explorer>().selected = 1;
+        app.update();
+        deliver_links(&mut app, "detail.txt", Some("other.txt"));
+        assert_eq!(road_count(&mut app), first * 2);
+        app.world_mut().resource_mut::<Explorer>().selected = 2;
+        app.update();
+        deliver_links(&mut app, "other.txt", Some("detail.txt"));
+        assert_eq!(road_count(&mut app), first * 2);
+        app.world_mut().resource_mut::<Explorer>().selected = 0;
+        app.update();
+        let links = app.world().resource::<Links>();
+        assert_eq!(links.file().unwrap().path, "entry.txt");
+        assert!(
+            links.pending.is_none(),
+            "known file should not be parsed again"
+        );
+        assert_eq!(road_count(&mut app), first * 2);
+    }
+
+    #[test]
+    fn discovered_roads_do_not_cross_snapshot_or_comparison_side_boundaries() {
+        for change_side in [false, true] {
+            let mut app = road_app();
+            deliver_links(&mut app, "entry.txt", Some("detail.txt"));
+            assert!(road_count(&mut app) > 0);
+            if change_side {
+                app.world_mut().resource_mut::<Explorer>().before = true;
+            } else {
+                app.world_mut()
+                    .resource_mut::<Repo>()
+                    .0
+                    .revision
+                    .push_str("-new");
+            }
+            app.update();
+            assert_eq!(
+                road_count(&mut app),
+                0,
+                "stale road survived a snapshot change"
+            );
+        }
+    }
 
     #[test]
     fn roads_stay_above_street_and_connect_distinct_edges() {
