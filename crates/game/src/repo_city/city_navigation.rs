@@ -6,7 +6,6 @@ use super::*;
 
 const PAGE: usize = 23;
 const PLATFORM_SIZE: Vec3 = Vec3::new(16., 0.5, 7.);
-const PLATFORM_HEIGHT: f32 = listing::MAX_HEIGHT + 28.;
 
 #[derive(Clone, Copy)]
 enum Stop {
@@ -370,11 +369,13 @@ fn stop_position(route: &Route, index: usize, repo: &Repository, selected: usize
     match route.stops[index] {
         Stop::Review { .. } => {
             let [x, z] = repo.files[selected].position;
-            Vec3::new(x, PLATFORM_HEIGHT + index as f32 * 13., z)
+            let roof = listing::block_size(&repo.files[selected]).y;
+            Vec3::new(x, roof + 28. + index as f32 * 13., z)
         }
         Stop::Trace { file, .. } => {
             let [x, z] = repo.files[file].position;
-            Vec3::new(x + (index % 5) as f32 * 12., PLATFORM_HEIGHT, z)
+            let roof = listing::block_size(&repo.files[file]).y;
+            Vec3::new(x + (index % 5) as f32 * 12., roof + 28., z)
         }
     }
 }
@@ -388,9 +389,23 @@ fn fly_to_stop(navigation: &mut Navigation, camera: Transform, repo: &Repository
     navigation.redraw = true;
 }
 
-fn district_view(district: &repo_world::District, aspect: f32) -> Transform {
+pub(super) fn district_view(
+    district: &repo_world::District,
+    repo: &Repository,
+    aspect: f32,
+) -> Transform {
     let min = Vec2::from_array(district.position);
-    overview_view(min, min + Vec2::from_array(district.size), aspect)
+    let max = min + Vec2::from_array(district.size);
+    let roof = repo
+        .files
+        .iter()
+        .filter(|file| {
+            let position = Vec2::from_array(file.position);
+            position.cmpge(min).all() && position.cmple(max).all()
+        })
+        .map(|file| listing::block_size(file).y)
+        .fold(0., f32::max);
+    overview_view(min, max, roof, aspect)
 }
 
 fn project_view(repo: &Repository, aspect: f32) -> Transform {
@@ -404,16 +419,21 @@ fn project_view(repo: &Repository, aspect: f32) -> Transform {
             )
         },
     );
-    overview_view(min, max, aspect)
+    let roof = repo
+        .files
+        .iter()
+        .map(|file| listing::block_size(file).y)
+        .fold(0., f32::max);
+    overview_view(min, max, roof, aspect)
 }
 
-fn overview_view(min: Vec2, max: Vec2, aspect: f32) -> Transform {
+fn overview_view(min: Vec2, max: Vec2, roof: f32, aspect: f32) -> Transform {
     let [x, z] = ((min + max) * 0.5).to_array();
     let [width, depth] = (max - min).to_array();
-    let center = Vec3::new(x, 0., z);
+    let center = Vec3::new(x, roof, z);
     let diameter = (width / aspect.max(0.1)).max(depth) + 28.;
     let half_fov = std::f32::consts::FRAC_PI_8;
-    let height = listing::MAX_HEIGHT + diameter * 0.5 / half_fov.tan();
+    let height = diameter * 0.5 / half_fov.tan();
     let offset = Vec3::new(0., height, height / MAX_LOOK_PITCH.tan());
     Transform::from_translation(center + offset)
         .with_rotation(Quat::from_rotation_x(-MAX_LOOK_PITCH))
@@ -614,7 +634,7 @@ pub(super) fn navigate(
                             .find(|district| district.name == name)
                     })
                     .unwrap_or(&repo.0.districts[0]);
-                district_view(district, aspect)
+                district_view(district, &repo.0, aspect)
             }
             Some(Overview::Project) => project_view(&repo.0, aspect),
             None => origin,
@@ -633,7 +653,7 @@ pub(super) fn navigate(
         navigation.overview = Some((Overview::District, origin));
         navigation.district_from_project = true;
         let aspect = window.width() / window.height().max(1.);
-        navigation.overview_hop(*camera, district_view(district, aspect));
+        navigation.overview_hop(*camera, district_view(district, &repo.0, aspect));
         return;
     }
 
@@ -1332,16 +1352,35 @@ mod tests {
             position: [100., 100.],
             size: [175., 120.],
         };
+        let mut repo = repository_picker::empty();
+        repo.districts.push(district.clone());
+        repo.files.push(repo_world::File {
+            path: "src/large.rs".into(),
+            before: None,
+            after: Some(repo_world::Blob {
+                id: "large".into(),
+                size: 200_000,
+                mode: "100644".into(),
+            }),
+            change: Change::Unchanged,
+            position: [180., 160.],
+        });
+        let roof_height = listing::block_size(&repo.files[0]).y;
+        assert!(roof_height > 1000.);
         for aspect in [0.6, 1., 1.78] {
-            let eye = district_view(&district, aspect);
-            assert!((eye.rotation.to_euler(EulerRot::YXZ).1 + MAX_LOOK_PITCH).abs() < 0.00001);
-            let half_fov = std::f32::consts::FRAC_PI_8.tan();
-            for x in [100., 275.] {
-                for z in [100., 220.] {
-                    let roof = Vec3::new(x, listing::MAX_HEIGHT, z);
-                    let local = eye.rotation.inverse() * (roof - eye.translation);
-                    assert!(local.y.abs() < -local.z * half_fov);
-                    assert!(local.x.abs() < -local.z * half_fov * aspect);
+            for eye in [
+                district_view(&district, &repo, aspect),
+                project_view(&repo, aspect),
+            ] {
+                assert!((eye.rotation.to_euler(EulerRot::YXZ).1 + MAX_LOOK_PITCH).abs() < 0.00001);
+                let half_fov = std::f32::consts::FRAC_PI_8.tan();
+                for x in [100., 275.] {
+                    for z in [100., 220.] {
+                        let roof = Vec3::new(x, roof_height, z);
+                        let local = eye.rotation.inverse() * (roof - eye.translation);
+                        assert!(local.y.abs() < -local.z * half_fov);
+                        assert!(local.x.abs() < -local.z * half_fov * aspect);
+                    }
                 }
             }
         }

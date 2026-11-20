@@ -1,5 +1,6 @@
 //! Agent session contract shared by the city and provider adapters.
 //! Providers own authentication and wire protocols; views consume normalized state/events.
+mod acp;
 mod audio;
 mod codex;
 mod codex_projection;
@@ -15,12 +16,12 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Capabilities {
     pub steer: bool,
     pub voice: bool,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Provider {
     pub id: &'static str,
     pub label: &'static str,
@@ -35,6 +36,28 @@ pub(super) const CODEX: Provider = Provider {
         voice: true,
     },
 };
+
+const TEXT_ONLY: Capabilities = Capabilities {
+    steer: false,
+    voice: false,
+};
+pub(super) const AGY: Provider = Provider {
+    id: "agy",
+    label: "Agy",
+    capabilities: TEXT_ONLY,
+};
+pub(super) const GROK: Provider = Provider {
+    id: "grok",
+    label: "Grok",
+    capabilities: TEXT_ONLY,
+};
+pub(super) const PROVIDERS: [Provider; 3] = [CODEX, AGY, GROK];
+
+impl Default for Provider {
+    fn default() -> Self {
+        CODEX
+    }
+}
 
 pub(super) struct Start {
     pub root: PathBuf,
@@ -101,9 +124,7 @@ pub(super) trait Engine: Send + Sync {
 pub(super) fn connect(provider: Provider, start: Start) -> Result<Box<dyn Engine>, String> {
     match provider.id {
         "codex" => Ok(Box::new(codex::Adapter::start(start))),
-        _ => Err(format!(
-            "Agent provider {} is not installed.",
-            provider.label
-        )),
+        "agy" | "grok" => Ok(Box::new(acp::Adapter::start(provider, start)?)),
+        _ => Err(format!("Unknown agent provider {}.", provider.label)),
     }
 }

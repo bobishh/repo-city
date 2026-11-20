@@ -312,10 +312,14 @@ platforms can set `CC_wasm32_unknown_unknown` to a compatible Clang.
 
 ## Talk to a coding agent
 
-On desktop, open **Tab → Agent** to connect to the locally installed Codex CLI.
-It uses your existing Codex login and keeps a conversation for each checkout.
+On desktop, choose **Settings → Agent provider** in VibePad, then open **Agent**
+to connect to the locally installed Codex, Agy (Antigravity), or Grok CLI.
+Sign in with that CLI first. City keeps a separate conversation for each
+checkout and provider. Agy requires a CLI with `agy acp`; Grok uses
+`grok agent stdio`. Agy and Grok stream text and ask before tool calls that
+require permission. Voice and steering are available with Codex.
 Enter a message and choose **Send**, or press **Cmd/Ctrl+Enter**. During an active
-turn, **Steer** sends new instructions into that same work without restarting it.
+Codex turn, **Steer** sends new instructions into that same work.
 City saves the message locally and shows **Sending** until Codex confirms delivery.
 If another client owns the saved conversation, City forks its history and delivers
 the queued message in the independent conversation. **Restore message** copies the
@@ -352,8 +356,7 @@ message field or terminal has focus.
 
 Agent sessions use a shared engine contract for commands, normalized conversation
 state, capabilities and lifecycle events. The Codex adapter owns its authentication,
-app-server messages and native media. Other providers require their own adapter;
-Grok and Agy are not installed by this integration.
+app-server messages and native media. The Agy and Grok adapters use ACP over stdio.
 
 The local dialogue view and conversation ID persist beside preferences in
 `agent-conversations`. Codex manages the underlying agent conversation. This

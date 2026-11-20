@@ -514,30 +514,43 @@ pub(super) fn embedded_png(png: &[u8]) -> Image {
     .expect("valid bundled city texture")
 }
 
-pub(super) fn facade_overview(bands: impl ExactSizeIterator<Item = Coverage>) -> Image {
+pub(super) fn facade_overview(
+    bands: impl ExactSizeIterator<Item = Coverage>,
+    repeats: usize,
+) -> Image {
     static PRINT: std::sync::OnceLock<Image> = std::sync::OnceLock::new();
     let print = PRINT
         .get_or_init(|| embedded_png(include_bytes!("../../../../assets/city/facade-print.png")));
     let mut image = print.clone();
     let width = image.width() as usize;
-    let height = image.height() as usize;
+    let print_height = image.height() as usize;
+    let height = (print_height * repeats).min(2048);
+    image.resize(Extent3d {
+        width: width as u32,
+        height: height as u32,
+        depth_or_array_layers: 1,
+    });
     let count = bands.len();
     let bands: Vec<_> = bands.collect();
     let pixels = image.data.as_mut().expect("packed facade print");
+    let print_pixels = print.data.as_ref().expect("packed facade print");
     let gutter = width * 91 / LISTING_WIDTH as usize;
     for (y, row) in pixels.chunks_exact_mut(width * 4).enumerate() {
+        let pattern_row = y * print_height * repeats / height % print_height;
         let state = bands[y * count / height];
         let accent = state.accent();
         let stroke = state.stroke();
         for (x, pixel) in row.chunks_exact_mut(4).enumerate() {
+            let source = (pattern_row * width + x) * 4;
             let rgb = if (gutter..gutter + 2).contains(&x) {
                 accent
-            } else if pixel[0] > 0 {
+            } else if print_pixels[source] > 0 {
                 stroke
             } else {
                 FACADE_GLASS
             };
             pixel[..3].copy_from_slice(&rgb);
+            pixel[3] = print_pixels[source + 3];
         }
     }
     image

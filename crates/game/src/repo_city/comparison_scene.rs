@@ -2,12 +2,15 @@
 use super::*;
 #[derive(Component)]
 pub struct HunkBlock(pub usize);
-pub(super) const BASE: f32 = listing::MAX_HEIGHT + 4.;
+pub(super) fn base(file: &repo_world::File) -> f32 {
+    listing::block_size(file).y + 4.
+}
 
 pub fn focus(camera: &mut Transform, repo: &Repository, explorer: &Explorer) {
     let [x, z] = repo.files[explorer.selected].position;
-    *camera = Transform::from_xyz(x, BASE + 8., z + 37.)
-        .looking_at(Vec3::new(x, BASE + 7., z + 3.), Vec3::Y);
+    let base = base(&repo.files[explorer.selected]);
+    *camera = Transform::from_xyz(x, base + 8., z + 37.)
+        .looking_at(Vec3::new(x, base + 7., z + 3.), Vec3::Y);
 }
 pub(super) fn reading_rows(
     file: &repo_world::File,
@@ -17,7 +20,7 @@ pub(super) fn reading_rows(
     let [x, z] = file.position;
     [true, false].into_iter().find_map(|before| {
         let pair_x = x + if before { -7.4 } else { 7.4 };
-        let center = Vec3::new(pair_x, BASE + 6.2, z + 4.);
+        let center = Vec3::new(pair_x, base(file) + 6.2, z + 4.);
         reading::panel_in_focus(camera, center, Vec2::new(13.6, 7.2), 24.)
             .then_some((before, explorer.page * 23..explorer.page * 23 + 23))
     })
@@ -116,7 +119,7 @@ pub fn draw(
     };
     let file = &repo.files[explorer.selected];
     let [x, z] = file.position;
-    let base = BASE;
+    let base = base(file);
     commands.spawn((
         Mesh3d(palette.unit.clone()),
         MeshMaterial3d(palette.plate.clone()),

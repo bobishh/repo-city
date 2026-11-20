@@ -23,7 +23,6 @@ const RETIRING_TILES: usize = 2;
 const TEXTURES_PER_FRAME: usize = 2;
 pub(super) const WIDTH: f32 = 14.;
 const HEADING_RATIO: f32 = 0.055;
-pub(super) const MAX_HEIGHT: f32 = 72.;
 pub(super) const PANEL_OFFSET: f32 = 0.06;
 const OVERVIEW_BANDS: usize = 64;
 const DETAIL_RAY_REACH: f32 = 24.;
@@ -87,6 +86,14 @@ pub(super) fn editor_range_at_line(
 }
 
 pub(super) fn block_size(file: &repo_world::File) -> Vec3 {
+    let mode = file
+        .after
+        .as_ref()
+        .or(file.before.as_ref())
+        .map(|blob| blob.mode.as_str());
+    if matches!(mode, Some("120000" | "160000")) || !file_preview::has_text_size_hint(&file.path) {
+        return Vec3::splat(WIDTH);
+    }
     size_from_rows(estimated_rows(file))
 }
 
@@ -100,9 +107,7 @@ fn estimated_rows(file: &repo_world::File) -> usize {
 fn size_from_rows(rows: usize) -> Vec3 {
     let rows = rows.max(1) as f32;
     let aspect = rows * texture_row_height(1.) + HEADING_RATIO;
-    let height = (WIDTH * aspect).min(MAX_HEIGHT);
-    let width = height / aspect;
-    Vec3::new(width, height, width)
+    Vec3::new(WIDTH, WIDTH * aspect, WIDTH)
 }
 
 pub(super) fn view(file: &repo_world::File, count: usize) -> Transform {
@@ -197,6 +202,7 @@ pub(super) struct Listing {
     partial_source: HashSet<(usize, bool, usize)>,
     reveal_progress: HashMap<(usize, bool), RevealProgress>,
     overview_dirty: HashSet<usize>,
+    facade_prints: HashMap<(usize, bool), Handle<StandardMaterial>>,
     listing_facade: Option<usize>,
     viewing: Option<Face>,
     destination: Option<Face>,
@@ -270,6 +276,13 @@ pub(super) fn overview_material(texture: Handle<Image>) -> StandardMaterial {
     }
 }
 
+fn facade_repeats(height: f32) -> usize {
+    // Reuse a small number of texture sizes. One print covers a 14 by 28 wall.
+    ((height / (2. * WIDTH)).round() as usize)
+        .clamp(1, 64)
+        .next_power_of_two()
+}
+
 pub(super) fn draw_overview(
     repo: Res<Repo>,
     palette: Res<Palette>,
@@ -293,9 +306,14 @@ pub(super) fn draw_overview(
         return;
     }
     let dirty = std::mem::take(&mut listing.overview_dirty);
+    let Listing {
+        reveal_progress,
+        facade_prints,
+        ..
+    } = &mut *listing;
     let progress = |index| {
         let file: &repo_world::File = &repo.0.files[index];
-        listing.reveal_progress.get(&(index, file.after.is_none()))
+        reveal_progress.get(&(index, file.after.is_none()))
     };
     for (rim, mut material) in &mut rims {
         if dirty.contains(&rim.0) {
@@ -316,25 +334,46 @@ pub(super) fn draw_overview(
             material.0 = palette.facade_neutral.clone();
             continue;
         }
-        match progress(index) {
-            None => material.0 = palette.facade_closed.clone(),
-            Some(progress) if progress.opened == progress.rows => {
-                material.0 = palette.facade_open.clone();
+        let repeats = facade_repeats(block_size(&repo.0.files[index]).y);
+        let reading = progress(index);
+        if let Some(reading) = reading.filter(|reading| reading.opened < reading.rows) {
+            let overview = code_texture::facade_overview(reading.bands(), repeats);
+            if material.0 == palette.facade_closed
+                || material.0 == palette.facade_open
+                || material.0 == palette.facade_neutral
+                || facade_prints.values().any(|cached| *cached == material.0)
+            {
+                material.0 = materials.add(overview_material(images.add(overview)));
+            } else if let Some(mut texture) = materials
+                .get(&material.0)
+                .and_then(|material| material.base_color_texture.as_ref())
+                .and_then(|texture| images.get_mut(texture))
+            {
+                *texture = overview;
             }
-            Some(progress) => {
-                let overview = code_texture::facade_overview(progress.bands());
-                if material.0 == palette.facade_closed
-                    || material.0 == palette.facade_open
-                    || material.0 == palette.facade_neutral
-                {
-                    material.0 = materials.add(overview_material(images.add(overview)));
-                } else if let Some(mut texture) = materials
-                    .get(&material.0)
-                    .and_then(|material| material.base_color_texture.as_ref())
-                    .and_then(|texture| images.get_mut(texture))
-                {
-                    *texture = overview;
+        } else {
+            let open = reading.is_some();
+            material.0 = if repeats == 1 {
+                if open {
+                    palette.facade_open.clone()
+                } else {
+                    palette.facade_closed.clone()
                 }
+            } else {
+                facade_prints
+                    .entry((repeats, open))
+                    .or_insert_with(|| {
+                        use code_texture::Coverage;
+                        let coverage = if open {
+                            Coverage::Open
+                        } else {
+                            Coverage::Closed
+                        };
+                        materials.add(overview_material(images.add(
+                            code_texture::facade_overview(std::iter::once(coverage), repeats),
+                        )))
+                    })
+                    .clone()
             }
         }
     }
@@ -401,12 +440,7 @@ fn projected_row(explorer: &Explorer, row: usize, to_diff: bool) -> usize {
 
 impl Listing {
     pub(super) fn building_loaded(&mut self, index: usize) {
-        if self.reveal_progress.contains_key(&(index, true))
-            || self.reveal_progress.contains_key(&(index, false))
-            || self.rendered.is_some_and(|(active, _, _)| active == index)
-        {
-            self.overview_dirty.insert(index);
-        }
+        self.overview_dirty.insert(index);
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -3412,6 +3446,21 @@ mod tests {
     }
 
     #[test]
+    fn tall_facades_repeat_the_print_but_keep_the_reading_bands() {
+        let repeats = facade_repeats(112.);
+        assert_eq!(repeats, 4);
+        let [closed, open] = [code_texture::Coverage::Closed, code_texture::Coverage::Open];
+        let image = code_texture::facade_overview([closed, open].into_iter(), repeats);
+        let stride = image.width() as usize * 4;
+        let rows: Vec<_> = image.data.as_ref().unwrap().chunks_exact(stride).collect();
+        let period = rows.len() / repeats;
+        assert_eq!(&rows[..period], &rows[period..2 * period]);
+        assert_eq!(&rows[2 * period..3 * period], &rows[3 * period..]);
+        assert_ne!(&rows[..period], &rows[2 * period..3 * period]);
+        assert!(rows[..period].windows(2).any(|pair| pair[0] != pair[1]));
+    }
+
+    #[test]
     fn overview_marks_coverage_only_at_a_distance_and_keeps_progress() {
         use code_texture::Coverage;
         let count = 80;
@@ -3427,7 +3476,7 @@ mod tests {
         let rims = Coverage::ALL.map(|_| materials.add(StandardMaterial::default()));
         let [closed, open] = [Coverage::Closed, Coverage::Open].map(|state| {
             materials.add(overview_material(
-                images.add(code_texture::facade_overview(std::iter::once(state))),
+                images.add(code_texture::facade_overview(std::iter::once(state), 1)),
             ))
         });
         let mut app = App::new();
@@ -3733,12 +3782,66 @@ mod tests {
         let short = size_from_rows(23);
         let medium = size_from_rows(329);
         let tall = size_from_rows(724);
-        assert!(short.y < 8. && tall.x < medium.x && tall.y <= MAX_HEIGHT);
+        assert!(short.y < 8. && tall.y > medium.y);
         for rows in [1, 23, 329, 724, 1614] {
             let size = size_from_rows(rows);
             let side = WallSide::new(&file, rows, Face::Source, size);
             assert!((side.width - size.x).abs() < 0.001);
             assert!(side.wall.y(rows as f32).abs() < 0.001);
+        }
+    }
+
+    // Given a large file, its building grows upward without narrowing the source wall.
+    #[test]
+    fn long_files_keep_their_width_and_grow_above_the_former_height_limit() {
+        let mut previous_height = 0.;
+        for rows in [23, 329, 1000, 5000, 25_000] {
+            let size = size_from_rows(rows);
+            assert_eq!(size.x, WIDTH);
+            assert_eq!(size.z, WIDTH);
+            assert!(size.y > previous_height);
+            previous_height = size.y;
+        }
+        assert!(size_from_rows(1000).y > 72.);
+    }
+
+    #[test]
+    fn building_height_uses_byte_size_only_for_text_files() {
+        for path in [
+            "splash.PNG",
+            "photo.jpg",
+            "animation.gif",
+            "screen.webp",
+            "face.ttf",
+            "face.woff2",
+            "poster.pdf",
+            "speech.mp3",
+            "capture.mov",
+            "level.glb",
+            "release.zip",
+            "program.wasm",
+            "unknown.asset-format",
+        ] {
+            let mut small = fixture_with_rows(20);
+            let mut large = fixture_with_rows(25_000);
+            small.path = path.into();
+            large.path = path.into();
+            assert_eq!(block_size(&small), Vec3::splat(WIDTH), "{path}");
+            assert_eq!(block_size(&large), block_size(&small), "{path}");
+        }
+
+        for path in [
+            "main.rs",
+            "server.PY",
+            "guide.md",
+            "config.json",
+            "LICENSE-MIT",
+        ] {
+            let mut file = fixture_with_rows(5_000);
+            file.path = path.into();
+            assert!(block_size(&file).y > 72., "{path}");
+            file.before.as_mut().unwrap().mode = "120000".into();
+            assert_eq!(block_size(&file), Vec3::splat(WIDTH), "{path}");
         }
     }
 

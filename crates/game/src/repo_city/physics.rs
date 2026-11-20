@@ -126,7 +126,7 @@ pub fn fractures(
     };
     let [x, z] = repo.0.files[explorer.selected].position;
     let y = if explorer.comparison_mode > 0 {
-        comparison_scene::BASE + 6.
+        comparison_scene::base(&repo.0.files[explorer.selected]) + 6.
     } else {
         6.
     };

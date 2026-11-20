@@ -18,6 +18,7 @@ pub(super) fn beacon_ink(index: usize) -> [f32; 3] {
 }
 const GLASS_WIDTH: f32 = 11.;
 const GLASS_HEIGHT: f32 = 7.;
+const BEACON_HEIGHT: f32 = 72.;
 
 #[derive(Component)]
 pub(super) struct Glass;
@@ -139,8 +140,11 @@ impl Lights {
             NotShadowCaster,
             Mesh3d(self.beacon.clone()),
             MeshMaterial3d(self.tint[ink].clone()),
-            Transform::from_xyz(min_x, 10. + listing::MAX_HEIGHT / 2., max_z)
-                .with_scale(Vec3::new(0.34, listing::MAX_HEIGHT, 0.34)),
+            Transform::from_xyz(min_x, 10. + BEACON_HEIGHT / 2., max_z).with_scale(Vec3::new(
+                0.34,
+                BEACON_HEIGHT,
+                0.34,
+            )),
         ));
         for side in [-1., 1.] {
             glow(

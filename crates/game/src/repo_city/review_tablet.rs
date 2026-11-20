@@ -224,6 +224,7 @@ enum Action {
     TraceImport,
     TraceFollow,
     TraceSelect(usize),
+    AgentProvider(agent_engine::Provider),
     Ambience,
     Speech,
     FileChangeSound,
@@ -463,7 +464,7 @@ pub(super) fn update(
         mut images,
         mut terminal,
         mut trace,
-        editors,
+        (editors, mut agent),
     ): (
         ResMut<reading::Settings>,
         ResMut<guide::Tour>,
@@ -480,7 +481,10 @@ pub(super) fn update(
         Option<ResMut<Assets<Image>>>,
         Option<ResMut<terminal::Terminal>>,
         Option<ResMut<trace_import::Trace>>,
-        Query<&source_editor::View>,
+        (
+            Query<&source_editor::View>,
+            Option<ResMut<agent_session::Session>>,
+        ),
     ),
 ) {
     let editing = focus
@@ -752,6 +756,16 @@ pub(super) fn update(
                 tablet.show_all_source = !tablet.show_all_source;
                 redraw = true;
             }
+            Some(Action::AgentProvider(provider)) => {
+                tablet.capture_bounds(&fields);
+                if let Some(agent) = agent.as_deref_mut() {
+                    tablet.status = match agent.select_provider(provider) {
+                        Ok(()) => format!("{} selected. Open Agent to connect.", provider.label),
+                        Err(error) => error,
+                    };
+                }
+                redraw = true;
+            }
             Some(Action::Block(kind)) => {
                 tablet.capture_bounds(&fields);
                 tablet.block_kind = kind;
@@ -987,6 +1001,7 @@ pub(super) fn update(
         terminal.as_deref_mut(),
         &repo.0,
         trace.as_deref(),
+        agent.as_deref().map(agent_session::Session::provider),
     );
     tablet.panel = Some(panel);
     focus.set(first, FocusCause::Navigated);
@@ -1081,6 +1096,7 @@ fn draw(
     mut terminal: Option<&mut terminal::Terminal>,
     repository: &Repository,
     trace: Option<&trace_import::Trace>,
+    agent: Option<agent_engine::Provider>,
 ) -> (Entity, Entity) {
     let title = match tablet.view {
         Page::Files => "Changed files",
@@ -1153,12 +1169,27 @@ fn draw(
                             .insert((BackgroundColor(Color::NONE), BorderColor::all(Color::NONE)));
                     }
                 }
-                let settings = add_button(bar, "⚙", Action::Switch(Page::Settings), &mut tab);
-                bar.commands().entity(settings).insert(Node {
-                    margin: UiRect::left(Val::Auto),
-                    padding: UiRect::axes(px(12.), px(8.)),
-                    ..default()
-                });
+                let mut font = native_panel::panel_font();
+                font.font_size = bevy::text::FontSize::Px(27.);
+                let settings = native_panel::button_with_font::<_, Tablet>(
+                    bar,
+                    "⚙",
+                    &font,
+                    native_panel::INK,
+                    Action::Switch(Page::Settings),
+                );
+                bar.commands().entity(settings).insert((
+                    TabIndex(tab),
+                    Node {
+                        margin: UiRect::left(Val::Auto),
+                        min_width: px(48.),
+                        min_height: px(42.),
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    },
+                ));
+                tab += 1;
             });
         match tablet.view {
             Page::Agent => {
@@ -1217,7 +1248,7 @@ fn draw(
                 return;
             }
             Page::Settings => {
-                first = Some(draw_settings(parent, tablet, &mut tab, audio));
+                first = Some(draw_settings(parent, tablet, &mut tab, audio, agent));
                 return;
             }
             Page::Connections => {
@@ -1616,6 +1647,7 @@ fn draw_settings(
     tablet: &mut Tablet,
     tab: &mut i32,
     audio: Option<&city_audio::Settings>,
+    agent: Option<agent_engine::Provider>,
 ) -> Entity {
     let mut first = None;
     let mut inputs = Vec::new();
@@ -1656,6 +1688,20 @@ fn draw_settings(
                 });
             });
             columns.spawn(Node { flex_basis: px(420.), flex_grow: 1., min_width: px(300.), flex_direction: FlexDirection::Column, row_gap: px(20.), ..default() }).with_children(|column| {
+                if let Some(selected) = agent {
+                    let card = settings_card(column, "Agent provider");
+                    column.commands().entity(card).with_children(|form| {
+                        form.spawn(Node { column_gap: px(6.), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|row| {
+                            for provider in agent_engine::PROVIDERS {
+                                let entity = add_button(row, provider.label, Action::AgentProvider(provider), tab);
+                                if provider == selected {
+                                    row.commands().entity(entity).insert(BackgroundColor(Color::srgb_u8(23, 79, 87)));
+                                }
+                            }
+                        });
+                        native_panel::text(form, "Voice is available with Codex.", native_panel::INK);
+                    });
+                }
                 if let Some(audio) = audio {
                     let card = settings_card(column, "Sound");
                     column.commands().entity(card).with_children(|form| {
@@ -2008,6 +2054,7 @@ mod tests {
     fn help_preserves_text_input_and_opens_in_vibepad_after_focus_leaves() {
         let mut app = App::new();
         app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<agent_session::Session>()
             .init_resource::<AccumulatedMouseScroll>()
             .init_resource::<Tablet>()
             .init_resource::<guide::Tour>()
@@ -2088,6 +2135,16 @@ mod tests {
             Some("settings")
         );
         assert!(app.world().resource::<Tablet>().inputs.is_some());
+        let providers: Vec<_> = app
+            .world_mut()
+            .query::<&Action>()
+            .iter(app.world())
+            .filter_map(|action| match action {
+                Action::AgentProvider(provider) => Some(*provider),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(providers, agent_engine::PROVIDERS);
         assert_eq!(
             app.world().resource::<Tablet>().panel,
             screen_root,

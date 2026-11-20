@@ -149,9 +149,22 @@ pub(super) fn button<
     color: Color,
     action: A,
 ) -> Entity {
+    button_with_font::<A, S>(parent, label, &panel_font(), color, action)
+}
+
+pub(super) fn button_with_font<
+    A: Component + Copy,
+    S: Resource<Mutability = bevy::ecs::component::Mutable> + Actions<A>,
+>(
+    parent: &mut ChildSpawnerCommands,
+    label: &str,
+    font: &TextFont,
+    color: Color,
+    action: A,
+) -> Entity {
     parent
         .spawn((
-            file_picker::button(label, &panel_font(), color, AlignSelf::Auto),
+            file_picker::button(label, font, color, AlignSelf::Auto),
             Outline::new(px(2.), px(2.), Color::NONE),
             action,
             observe(

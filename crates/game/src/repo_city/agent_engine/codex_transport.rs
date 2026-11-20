@@ -7,7 +7,7 @@ use super::{
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, VecDeque},
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command as ProcessCommand, Stdio},
     sync::{
@@ -403,17 +403,17 @@ impl Wire {
             let mut reader = BufReader::new(output);
             loop {
                 let mut line = Vec::new();
-                match reader.by_ref().take(1_048_577).read_until(b'\n', &mut line) {
+                match reader.read_until(b'\n', &mut line) {
                     Ok(0) => return,
-                    Ok(_) if line.len() <= 1_048_576 => {
+                    Ok(_) => {
                         let value = serde_json::from_slice(&line)
                             .map_err(|_| "Codex returned invalid JSON.".to_owned());
                         if send.send(value).is_err() {
                             return;
                         }
                     }
-                    _ => {
-                        let _ = send.send(Err("Codex output exceeded its message limit.".into()));
+                    Err(error) => {
+                        let _ = send.send(Err(format!("Could not read Codex output: {error}")));
                         return;
                     }
                 }
@@ -883,7 +883,6 @@ fn fork_thread(
     stop: &AtomicBool,
 ) -> Result<String, String> {
     let mut params = thread_params(root, executable, Some(previous));
-    params["excludeTurns"] = json!(true);
     params["deferGoalContinuation"] = json!(true);
     let result = wire.call("thread/fork", params, events, stop)?;
     let thread = thread_id(&result)?;
@@ -1298,6 +1297,8 @@ pub(super) fn thread_params(root: &Path, executable: &Path, thread: Option<&str>
     }});
     if let Some(thread) = thread {
         params["threadId"] = json!(thread);
+        // City restores its dialogue locally. The server resumes the full conversation internally.
+        params["excludeTurns"] = json!(true);
     }
     params
 }
@@ -1339,7 +1340,7 @@ for line in sys.stdin:
     error = None
     result = {}
     if method == "thread/resume":
-        assert thread == "source"
+        assert thread == "source" and params["excludeTurns"]
         if phase == "resume":
             error = "thread source already has an active writer"
         else:
@@ -1358,6 +1359,13 @@ for line in sys.stdin:
             assert thread == "independent" and phase != "reject"
             assert calls.count(("turn/start", "independent")) == 1
             result = {"turn": {"id": "independent-turn"}}
+            if phase == "turn":
+                print(json.dumps({"method": "item/completed", "params": {
+                    "threadId": thread, "turnId": "independent-turn", "item": {
+                        "type": "commandExecution", "id": "large-command",
+                        "aggregatedOutput": "x" * (2 * 1024 * 1024)
+                    }
+                }}), flush=True)
     else:
         assert method in ("initialize", "thread/realtime/stop"), method
     print(json.dumps({"id": msg["id"], **({"error": {"message": error}} if error else {"result": result})}), flush=True)
@@ -1392,6 +1400,7 @@ for line in sys.stdin:
             });
             let mut switched = false;
             let mut delivery = None;
+            let mut received_large_item = false;
             while let Ok(event) = output.recv_timeout(Duration::from_secs(5)) {
                 match event {
                     Event::Replaced {
@@ -1399,6 +1408,11 @@ for line in sys.stdin:
                         writer_conflict,
                     } => {
                         switched = thread == "independent" && writer_conflict;
+                    }
+                    Event::Notification(method, params) if method == "item/completed" => {
+                        received_large_item = params["item"]["aggregatedOutput"]
+                            .as_str()
+                            .is_some_and(|output| output.len() == 2 * 1024 * 1024);
                     }
                     Event::Delivery { id, result } if id == "queued-1" => {
                         delivery = Some(result);
@@ -1417,6 +1431,7 @@ for line in sys.stdin:
             } else {
                 assert!(switched, "{phase} did not announce a separate conversation");
                 assert_eq!(delivery, Some(Ok(())), "{phase} did not confirm delivery");
+                assert_eq!(received_large_item, phase == "turn");
             }
         }
     }

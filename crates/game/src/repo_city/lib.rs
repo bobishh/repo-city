@@ -773,6 +773,7 @@ pub fn run() {
                     "--smoke-paint" => Some(14),
                     "--smoke-guidance" => Some(15),
                     "--smoke-agent" => Some(23),
+                    "--smoke-overview" => Some(24),
                     "--smoke-empty-diff" => Some(18),
                     "--smoke-frost" => Some(20),
                     _ => None,
@@ -914,7 +915,7 @@ fn setup(
     let [facade_closed, facade_open] =
         [code_texture::Coverage::Closed, code_texture::Coverage::Open].map(|coverage| {
             materials.add(listing::overview_material(
-                images.add(code_texture::facade_overview(std::iter::once(coverage))),
+                images.add(code_texture::facade_overview(std::iter::once(coverage), 1)),
             ))
         });
     let facade_rims = code_texture::Coverage::ALL.map(|state| {
@@ -1724,7 +1725,7 @@ fn flight_speed(altitude: f32, anchored: bool, boost: bool) -> f32 {
     if anchored {
         return if boost { 42. } else { 3. };
     }
-    let scale = 1. + ((altitude - listing::MAX_HEIGHT) / 55.).clamp(0., 11.);
+    let scale = 1. + ((altitude - 72.) / 55.).clamp(0., 11.);
     scale * if boost { 42. } else { 13. }
 }
 
@@ -2482,7 +2483,9 @@ fn smoke(
             explorer.reload(&repo.0);
             assert_eq!(explorer.source, expected);
         }
-        let report = if check.stop == 24 {
+        let report = if check.stop == 25 {
+            "Rendered the district overview above its uncapped buildings."
+        } else if check.stop == 24 {
             "Rendered the Agent tablet."
         } else if check.stop == 23 {
             "Rendered frosted unread source, immediately legible guided ranges and their settled highlight without read credit."
@@ -2579,7 +2582,7 @@ fn smoke(
                 }
                 1 => {
                     explorer.comparison_mode = 2;
-                    let base = comparison_scene::BASE;
+                    let base = comparison_scene::base(&repo.0.files[explorer.selected]);
                     *camera = Transform::from_xyz(x + 19., base + 19., z + 28.)
                         .looking_at(Vec3::new(x, base + 6., z), Vec3::Y);
                 }
@@ -2684,6 +2687,21 @@ fn smoke(
                     .expect("guidance source position");
                 }
                 17 | 23 => tablet.open_page(review_tablet::Page::Agent),
+                24 => {
+                    explorer.anchored = false;
+                    explorer.comparison_mode = 0;
+                    let path = &repo.0.files[explorer.selected].path;
+                    let name = path
+                        .rsplit_once('/')
+                        .map_or("/", |(directory, _)| directory);
+                    let district = repo
+                        .0
+                        .districts
+                        .iter()
+                        .find(|district| district.name == name)
+                        .unwrap_or(&repo.0.districts[0]);
+                    *camera = city_navigation::district_view(district, &repo.0, 1.6);
+                }
                 20 | 21 | 22 => {
                     explorer.anchored = false;
                     explorer.comparison_mode = 0;

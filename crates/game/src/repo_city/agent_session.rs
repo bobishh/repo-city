@@ -22,6 +22,9 @@ pub(super) struct Plugin;
 impl bevy::app::Plugin for Plugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Session>()
+            .add_systems(Startup, |mut session: ResMut<Session>| {
+                session.selected = load_provider();
+            })
             .add_systems(Startup, voice_hud::spawn)
             .add_systems(Update, voice_hud::update.after(update))
             .add_systems(Update, update.after(review_tablet::update))
@@ -69,6 +72,7 @@ struct Approval {
 #[derive(Resource, Default)]
 pub(super) struct Session {
     root: Option<PathBuf>,
+    selected: agent_engine::Provider,
     client: Option<Box<dyn Engine>>,
     projection: Projection,
     prompt: String,
@@ -98,10 +102,39 @@ impl Session {
     pub(super) fn file_activity(&self) -> Option<&agent_engine::state::FileActivity> {
         self.projection.activity.as_ref()
     }
-    fn provider(&self) -> agent_engine::Provider {
+    pub(super) fn provider(&self) -> agent_engine::Provider {
         self.client
             .as_ref()
-            .map_or(agent_engine::CODEX, |client| client.provider())
+            .map_or(self.selected, |client| client.provider())
+    }
+    pub(super) fn select_provider(
+        &mut self,
+        provider: agent_engine::Provider,
+    ) -> Result<(), String> {
+        if self.selected == provider {
+            return Ok(());
+        }
+        if self.pending_send.is_some() || self.projection.turn.is_some() {
+            return Err("Stop the active turn before changing agents.".into());
+        }
+        self.save()?;
+        write_state(
+            &provider_path().ok_or("Could not locate agent settings.")?,
+            provider.id.as_bytes(),
+        )?;
+        self.disconnect();
+        self.selected = provider;
+        self.projection = Projection {
+            dialogue: self
+                .root
+                .as_deref()
+                .map_or_else(Dialogue::default, |root| load(root, provider)),
+            ..default()
+        };
+        self.restored_messages.clear();
+        self.status = "Disconnected".into();
+        self.version = self.version.wrapping_add(1);
+        Ok(())
     }
     pub(super) fn is_speaking(&self) -> bool {
         self.speaking.load(Ordering::Relaxed)
@@ -113,7 +146,7 @@ impl Session {
         if self.client.is_none() {
             let root = self.root.clone().ok_or("Open a local checkout first.")?;
             self.client = Some(agent_engine::connect(
-                agent_engine::CODEX,
+                self.selected,
                 agent_engine::Start {
                     root,
                     conversation: self.projection.dialogue.thread.clone(),
@@ -122,7 +155,7 @@ impl Session {
                         .map(|path| path.with_file_name("voice-status.json")),
                 },
             )?);
-            self.status = "Connecting to local Codex…".into();
+            self.status = format!("Connecting to local {}…", self.selected.label);
         }
         Ok(())
     }
@@ -134,7 +167,7 @@ impl Session {
             .send(command)
     }
     fn submit_prompt(&mut self, context: String) -> Result<(), String> {
-        if self.pending_send.is_some() || self.prompt.trim().is_empty() {
+        if !self.can_send() {
             return Ok(());
         }
         let text = self.prompt.trim().to_owned();
@@ -168,6 +201,12 @@ impl Session {
         }
         self.prompt.clear();
         Ok(())
+    }
+
+    fn can_send(&self) -> bool {
+        self.pending_send.is_none()
+            && !self.prompt.trim().is_empty()
+            && (self.provider().capabilities.steer || self.projection.turn.is_none())
     }
 
     fn restorable_message(&self) -> Option<usize> {
@@ -240,7 +279,7 @@ impl Session {
             return Ok(());
         }
         let root = self.root.as_ref().ok_or("No conversation is open.")?;
-        store(root, &self.projection.dialogue)?;
+        store(root, self.selected, &self.projection.dialogue)?;
         self.dirty = false;
         Ok(())
     }
@@ -614,12 +653,12 @@ fn update(
         session.disconnect();
         session.root = Some(root.clone());
         session.projection = Projection {
-            dialogue: load(root),
+            dialogue: load(root, session.selected),
             ..default()
         };
         session.prompt.clear();
         session.restored_messages.clear();
-        session.status = "Disconnected. Connect uses your existing Codex login.".into();
+        session.status = "Disconnected".into();
         session.version = session.version.wrapping_add(1);
         for (_, mut field, _) in &mut prompts {
             field.editor_mut().set_text("");
@@ -652,7 +691,7 @@ fn update(
         }
         area.previous_y = position.y;
     }
-    if keys.just_pressed(KeyCode::F9) {
+    if keys.just_pressed(KeyCode::F9) && session.provider().capabilities.voice {
         session.action = Some(Action::Voice);
     }
     if prompt_focused
@@ -707,6 +746,9 @@ fn update(
             Event::Delivery { id, result } => session.finish_send(&id, result),
             Event::Changed { status } => {
                 session.dirty = true;
+                if !session.provider().capabilities.steer && session.projection.turn.is_none() {
+                    session.approvals.clear();
+                }
                 if let Some(status) = status {
                     session.status = status;
                 }
@@ -756,7 +798,7 @@ fn update(
                 session.status = "Disconnected".into();
                 Ok(())
             }
-            Action::Send if session.pending_send.is_none() && !session.prompt.trim().is_empty() => {
+            Action::Send if session.can_send() => {
                 let result = session.submit_prompt(context(root, &repo.0));
                 if result.is_ok() {
                     for (_, mut field, _) in &mut prompts {
@@ -773,7 +815,7 @@ fn update(
                 }
                 Ok(())
             }
-            Action::Voice => {
+            Action::Voice if session.provider().capabilities.voice => {
                 session.voice_error = None;
                 session.voice_waiting = false;
                 if session.voice_active() {
@@ -851,7 +893,9 @@ fn update(
             "disconnected"
         }
     );
-    let voice = if session.voice_active() {
+    let voice = if !session.provider().capabilities.voice {
+        "Text only"
+    } else if session.voice_active() {
         if session.voice_waiting {
             "F9 · Waiting for current turn…"
         } else if session.voice_connected {
@@ -866,12 +910,7 @@ fn update(
         .voice_error
         .as_deref()
         .unwrap_or_else(|| match session.status.as_str() {
-            ""
-            | "Connected"
-            | "Disconnected"
-            | "Ready"
-            | "Working"
-            | "Disconnected. Connect uses your existing Codex login." => "",
+            "" | "Connected" | "Disconnected" | "Ready" | "Working" => "",
             other => other,
         });
     let approval = session
@@ -905,7 +944,7 @@ fn update(
         let enabled = match action {
             Action::Connect => session.client.is_none(),
             Action::Disconnect | Action::Stop => session.client.is_some(),
-            Action::Send => session.pending_send.is_none() && !session.prompt.trim().is_empty(),
+            Action::Send => session.can_send(),
             Action::RestoreMessage => session.restorable_message().is_some(),
             Action::Voice => session.provider().capabilities.voice,
             Action::Follow => true,
@@ -1032,27 +1071,47 @@ struct Stored {
 fn codex_provider_id() -> String {
     agent_engine::CODEX.id.into()
 }
-fn path(root: &Path) -> Option<PathBuf> {
+fn provider_path() -> Option<PathBuf> {
+    repository_picker::settings_file().map(|path| path.with_file_name("agent-provider"))
+}
+
+fn load_provider() -> agent_engine::Provider {
+    provider_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|id| {
+            agent_engine::PROVIDERS
+                .into_iter()
+                .find(|provider| provider.id == id.trim())
+        })
+        .unwrap_or_default()
+}
+
+fn path(root: &Path, provider: agent_engine::Provider) -> Option<PathBuf> {
     let hash = root
         .to_string_lossy()
         .bytes()
         .fold(0xcbf29ce484222325_u64, |hash, byte| {
             (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
         });
+    let filename = if provider == agent_engine::CODEX {
+        format!("{hash:016x}.json")
+    } else {
+        format!("{hash:016x}-{}.json", provider.id)
+    };
     Some(
         repository_picker::settings_file()?
             .with_file_name("agent-conversations")
-            .join(format!("{hash:016x}.json")),
+            .join(filename),
     )
 }
-fn load(root: &Path) -> Dialogue {
-    path(root)
+fn load(root: &Path, provider: agent_engine::Provider) -> Dialogue {
+    path(root, provider)
         .filter(|path| std::fs::metadata(path).is_ok_and(|info| info.len() <= 4 * 1024 * 1024))
         .and_then(|path| std::fs::read(path).ok())
         .and_then(|bytes| serde_json::from_slice::<Stored>(&bytes).ok())
         .filter(|stored| {
             stored.version == 1
-                && stored.provider == agent_engine::CODEX.id
+                && stored.provider == provider.id
                 && stored.root == root
                 && stored.dialogue.messages.len() <= 160
                 && stored
@@ -1064,9 +1123,13 @@ fn load(root: &Path) -> Dialogue {
         .map(|stored| stored.dialogue)
         .unwrap_or_default()
 }
-fn store(root: &Path, dialogue: &Dialogue) -> Result<(), String> {
-    let data = encode(root, dialogue)?;
-    let path = path(root).ok_or("Could not locate conversation storage.")?;
+fn store(root: &Path, provider: agent_engine::Provider, dialogue: &Dialogue) -> Result<(), String> {
+    let data = encode(root, provider, dialogue)?;
+    let path = path(root, provider).ok_or("Could not locate conversation storage.")?;
+    write_state(&path, &data)
+}
+
+fn write_state(path: &Path, data: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or("Could not locate conversation directory.")?;
@@ -1083,7 +1146,7 @@ fn store(root: &Path, dialogue: &Dialogue) -> Result<(), String> {
         let mut file = options
             .open(&temporary)
             .map_err(|error| error.to_string())?;
-        file.write_all(&data).map_err(|error| error.to_string())?;
+        file.write_all(data).map_err(|error| error.to_string())?;
         file.flush().map_err(|error| error.to_string())?;
         std::fs::rename(&temporary, &path).map_err(|error| error.to_string())
     })();
@@ -1093,16 +1156,20 @@ fn store(root: &Path, dialogue: &Dialogue) -> Result<(), String> {
     result
 }
 
-fn encode(root: &Path, dialogue: &Dialogue) -> Result<Vec<u8>, String> {
+fn encode(
+    root: &Path,
+    provider: agent_engine::Provider,
+    dialogue: &Dialogue,
+) -> Result<Vec<u8>, String> {
     let data = serde_json::to_vec(&Stored {
         version: 1,
         root: root.into(),
-        provider: agent_engine::CODEX.id.into(),
+        provider: provider.id.into(),
         dialogue: dialogue.clone(),
     })
     .map_err(|error| error.to_string())?;
     if data.len() > 4 * 1024 * 1024 {
-        return Err("Local conversation exceeds 4 MiB. Recent messages remain in memory; the last saved history is unchanged. The full Codex conversation remains in Codex.".into());
+        return Err("Local conversation exceeds 4 MiB. Recent messages remain in memory; the last saved history is unchanged.".into());
     }
     Ok(data)
 }
@@ -1273,10 +1340,12 @@ mod tests {
                 text: "\0".repeat(5000),
             })
             .collect();
-        assert!(encode(Path::new("/repo"), &dialogue).is_err());
+        assert!(encode(Path::new("/repo"), agent_engine::CODEX, &dialogue).is_err());
         dialogue.messages.truncate(1);
-        let stored: Stored =
-            serde_json::from_slice(&encode(Path::new("/repo"), &dialogue).unwrap()).unwrap();
+        let stored: Stored = serde_json::from_slice(
+            &encode(Path::new("/repo"), agent_engine::CODEX, &dialogue).unwrap(),
+        )
+        .unwrap();
         assert_eq!(stored.dialogue.thread.as_deref(), Some("saved-thread"));
     }
 }

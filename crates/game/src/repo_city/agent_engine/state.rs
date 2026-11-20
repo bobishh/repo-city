@@ -43,7 +43,7 @@ pub(crate) struct Projection {
 
 impl Dialogue {
     pub fn message(&mut self, id: &str, role: &str, text: &str, append: bool) {
-        if text.trim().is_empty() {
+        if text.is_empty() || (!append && text.trim().is_empty()) {
             return;
         }
         let position = self
