@@ -38,13 +38,37 @@ node web/build-webgpu.mjs "$output/game/repo_city.js"
 python3 - "$output/game/repo_city_bg.wasm" <<'PYCODE'
 from pathlib import Path
 import gzip
+import hashlib
 import shutil
 import sys
 
 path = Path(sys.argv[1])
+game = path.parent
 packed = path.with_suffix(".wasm.gz")
+packed.unlink(missing_ok=True)
+glue = game / "repo_city.js"
+shader = game / "webgpu-shader.mjs"
+digest = hashlib.sha256(glue.read_bytes())
+
 with path.open("rb") as source, packed.open("wb") as output:
     with gzip.GzipFile(filename="", fileobj=output, mode="wb", compresslevel=9, mtime=0) as gzip_output:
-        shutil.copyfileobj(source, gzip_output)
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+            gzip_output.write(chunk)
+
+digest.update(shader.read_bytes())
+build = digest.hexdigest()[:24]
+versioned = game / build
+versioned.mkdir(exist_ok=True)
+for module in (glue, shader):
+    shutil.copyfile(module, versioned / module.name)
+packed.replace(versioned / packed.name)
+packed.symlink_to(Path(build) / packed.name)
 path.unlink()
+
+index = game.parent / "index.html"
+html = index.read_text()
+html = html.replace('<html lang="en">', f'<html lang="en" data-engine-build="{build}">', 1)
+html = html.replace('src="./app.mjs"', f'src="./app.mjs?v={build}"', 1)
+index.write_text(html)
 PYCODE

@@ -12,8 +12,10 @@ RUN mix deps.get --only prod --check-locked && mix deps.compile
 COPY server/lib/ lib/
 RUN mix compile --warnings-as-errors && mix release
 COPY web/dist/ static/
-RUN test -s static/index.html && test -s static/game/repo_city.js && \
-    test -s static/game/repo_city_bg.wasm.gz && gzip -dfk static/game/repo_city_bg.wasm.gz
+RUN engine=$(sed -n 's/.*data-engine-build="\([0-9a-f]*\)".*/\1/p' static/index.html) && \
+    test "${#engine}" -eq 24 && test -s "static/game/$engine/repo_city.js" && \
+    gzip -dfk "static/game/$engine/repo_city_bg.wasm.gz" && \
+    ln -sf "$engine/repo_city_bg.wasm" static/game/repo_city_bg.wasm
 
 FROM base
 WORKDIR /app

@@ -9,6 +9,8 @@ import { readProgress, rememberExploration, writeProgress } from "./progress.mjs
 import { createReviewParty } from "./review-party-client.mjs";
 import { mountReviewParty } from "./review-party-ui.mjs";
 
+const engineBuild = document.documentElement.dataset.engineBuild;
+const engineDirectory = engineBuild ? `./game/${engineBuild}/` : "./game/";
 const form = document.querySelector("#repository-form");
 const status = document.querySelector("#status");
 const canvas = document.querySelector("#repo-city");
@@ -225,7 +227,7 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
     if (firstOpen) {
       const [repository, engine] = await Promise.all([
         loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest, { exactBase, pinnedComparison }),
-        import("./game/repo_city.js"),
+        import(new URL("repo_city.js", new URL(engineDirectory, import.meta.url)).href),
       ]);
       const graphics = await navigator.gpu?.requestAdapter();
       if (!graphics) throw new Error("WebGPU is unavailable. Open Repo City Web in a browser with WebGPU and graphics acceleration.");
