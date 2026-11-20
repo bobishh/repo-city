@@ -66,13 +66,14 @@ rustup target add wasm32-unknown-unknown
 # Install wasm-bindgen-cli at the wasm-bindgen version in Cargo.lock.
 npm ci --prefix web
 npm test --prefix web
+(cd server && mix deps.get && mix test)
 ./scripts/build-web.sh
 npm exec --prefix web -- playwright install chromium
 npm run test:browser --prefix web
 ```
 
 To serve the browser build locally, run
-`(cd web && node tests/serve.mjs 18791)` and open
+`(cd server && PHX_SERVER=true BIND_ADDRESS=127.0.0.1 PORT=18791 mix run --no-halt)` and open
 [http://127.0.0.1:18791](http://127.0.0.1:18791). Browser tests run the
 compiled WASM against GitHub API fixtures.
 
@@ -83,8 +84,8 @@ unit tests and repository-core tests on Linux with a three-minute job limit.
 It does not build desktop packages or publish after a push. Build and verify
 WASM and desktop packages locally from the same release commit.
 
-[Repo City Web](https://repo-city.meta-uber-engineer.dev/) uses a Node HTTP
-server behind the shared Hetzner `kamal-proxy`. It serves static assets,
+[Repo City Web](https://repo-city.meta-uber-engineer.dev/) uses the Phoenix
+application in `server/` behind the shared Hetzner `kamal-proxy`. It serves static assets,
 precompressed WASM and `/github/` from the same origin. Review rooms are
 disabled. The [manual release workflow](../.github/workflows/release.yml) builds
 and publishes `ghcr.io/bobishh/repo-city:<commit>`, then deploys that image
@@ -117,6 +118,9 @@ in the `production` environment, then deploy. A private PR from a fork
 requires access to the base repository and the head fork. The server keeps
 the user token in an encrypted HttpOnly cookie with an eight-hour lifetime.
 Reuse the current OAuth secret when changing hosts to preserve existing sessions.
+Phoenix uses `PUBLIC_ORIGIN` for callback URLs and origin checks. Its session
+and review contracts follow `web/github-auth.mjs` and `web/pr-review.mjs`
+at `306a6c5`.
 
 The VPS shares an in-memory cache for public Git trees and blobs under
 `/github/public/`. It fetches those objects anonymously and keys them by

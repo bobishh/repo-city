@@ -1,0 +1,11 @@
+**
+!server/
+!server/mix.exs
+!server/mix.lock
+!server/config/
+!server/config/**
+!server/lib/
+!server/lib/**
+!web/
+!web/dist/
+!web/dist/**

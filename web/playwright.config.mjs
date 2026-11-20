@@ -1,6 +1,7 @@
 import { defineConfig } from "@playwright/test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 const port = process.env.REPO_CITY_TEST_PORT ?? "18791";
 const hardware = process.env.REPO_CITY_TEST_GPU === "hardware";
@@ -26,7 +27,15 @@ export default defineConfig({
     viewport: { width: 1280, height: 800 },
   },
   webServer: {
-    command: `node tests/serve.mjs ${port}`,
+    command: "mix run --no-halt",
+    cwd: fileURLToPath(new URL("../server/", import.meta.url)),
+    env: {
+      MIX_ENV: "dev",
+      PHX_SERVER: "true",
+      BIND_ADDRESS: "127.0.0.1",
+      PORT: port,
+      PUBLIC_ORIGIN: `http://127.0.0.1:${port}`,
+    },
     url: `http://127.0.0.1:${port}`,
     reuseExistingServer: false,
   },
