@@ -32,6 +32,7 @@ cp web/assets/robot-head.svg web/assets/apple-touch-icon.png "$output/assets/"
 wasm-bindgen --target web --remove-name-section --remove-producers-section \
   --out-dir "$output/game" --out-name repo_city \
   "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/web-release/repo-city.wasm"
+node web/build-webgpu.mjs "$output/game/repo_city.js"
 
 python3 - "$output/game/repo_city_bg.wasm" <<'PYCODE'
 from pathlib import Path
