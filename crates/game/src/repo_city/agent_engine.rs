@@ -43,9 +43,15 @@ pub(super) struct Start {
     pub diagnostics: Option<PathBuf>,
 }
 
+pub(super) struct Prompt {
+    pub id: String,
+    pub text: String,
+    pub context: String,
+}
+
 pub(super) enum Command {
-    Send { prompt: String, context: String },
-    Steer { prompt: String, context: String },
+    Send(Prompt),
+    Steer(Prompt),
     Voice { id: String, context: String },
     StopVoice,
     Interrupt,
@@ -54,12 +60,31 @@ pub(super) enum Command {
 
 pub(super) enum Event {
     Connected(String),
-    Replaced { conversation: String },
-    Changed { status: Option<String> },
-    Approval { token: String, title: String },
-    Voice { id: String, active: bool },
-    VoiceWaiting { id: String },
-    VoiceStarting { id: String },
+    Replaced {
+        conversation: String,
+        writer_conflict: bool,
+    },
+    Delivery {
+        id: String,
+        result: Result<(), String>,
+    },
+    Changed {
+        status: Option<String>,
+    },
+    Approval {
+        token: String,
+        title: String,
+    },
+    Voice {
+        id: String,
+        active: bool,
+    },
+    VoiceWaiting {
+        id: String,
+    },
+    VoiceStarting {
+        id: String,
+    },
     Error(String),
     VoiceError(String),
     Closed,

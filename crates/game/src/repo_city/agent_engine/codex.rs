@@ -27,8 +27,8 @@ impl Engine for Adapter {
     fn send(&self, command: Command) -> Result<(), String> {
         use transport::Command as Wire;
         self.client.send(match command {
-            Command::Send { prompt, context } => Wire::Send { prompt, context },
-            Command::Steer { prompt, context } => Wire::Steer { prompt, context },
+            Command::Send(prompt) => Wire::Send(prompt),
+            Command::Steer(prompt) => Wire::Steer(prompt),
             Command::Voice { id, context } => Wire::Voice { id, context },
             Command::StopVoice => Wire::StopVoice,
             Command::Interrupt => Wire::Interrupt,
@@ -47,9 +47,14 @@ impl Engine for Adapter {
                     state.dialogue.thread = Some(id.clone());
                     events.push(Event::Connected(id));
                 }
-                Wire::Replaced { thread, .. } => events.push(Event::Replaced {
+                Wire::Replaced {
+                    thread,
+                    writer_conflict,
+                } => events.push(Event::Replaced {
                     conversation: thread,
+                    writer_conflict,
                 }),
+                Wire::Delivery { id, result } => events.push(Event::Delivery { id, result }),
                 Wire::Notification(method, params) => {
                     if let Some(event) = apply_notification(&self.root, state, &method, params) {
                         events.push(event);

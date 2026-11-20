@@ -46,13 +46,21 @@ impl Dialogue {
         if text.trim().is_empty() {
             return;
         }
-        let value = self.messages.iter_mut().find(|message| {
-            message.id == id
-                || (role == "user"
-                    && message.id.starts_with("user-pending-")
-                    && message.text == text)
-        });
-        if let Some(value) = value {
+        let position = self
+            .messages
+            .iter()
+            .position(|message| message.id == id)
+            .or_else(|| {
+                if role != "user" || id.starts_with("user-awaiting-") {
+                    return None;
+                }
+                self.messages.iter().rposition(|message| {
+                    (message.id.starts_with("user-awaiting-")
+                        || message.id.starts_with("user-sent-"))
+                        && message.text == text
+                })
+            });
+        if let Some(value) = position.map(|position| &mut self.messages[position]) {
             value.id = id.into();
             if append {
                 // Bound a streamed item as well as the complete persisted conversation.

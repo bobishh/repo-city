@@ -772,6 +772,7 @@ pub fn run() {
                     "--smoke-tablet" => Some(13),
                     "--smoke-paint" => Some(14),
                     "--smoke-guidance" => Some(15),
+                    "--smoke-agent" => Some(23),
                     "--smoke-empty-diff" => Some(18),
                     "--smoke-frost" => Some(20),
                     _ => None,
@@ -2481,7 +2482,9 @@ fn smoke(
             explorer.reload(&repo.0);
             assert_eq!(explorer.source, expected);
         }
-        let report = if check.stop == 23 {
+        let report = if check.stop == 24 {
+            "Rendered the Agent tablet."
+        } else if check.stop == 23 {
             "Rendered frosted unread source, immediately legible guided ranges and their settled highlight without read credit."
         } else if check.stop == 20 {
             "Rendered readable explanations in the center of unchanged and unavailable diff walls."
@@ -2680,7 +2683,7 @@ fn smoke(
                     )
                     .expect("guidance source position");
                 }
-                17 => tablet.open_page(review_tablet::Page::Agent),
+                17 | 23 => tablet.open_page(review_tablet::Page::Agent),
                 20 | 21 | 22 => {
                     explorer.anchored = false;
                     explorer.comparison_mode = 0;

@@ -33,6 +33,7 @@ impl bevy::app::Plugin for Plugin {
 enum Action {
     Connect,
     Send,
+    RestoreMessage,
     Voice,
     Stop,
     Disconnect,
@@ -71,6 +72,8 @@ pub(super) struct Session {
     client: Option<Box<dyn Engine>>,
     projection: Projection,
     prompt: String,
+    pending_send: Option<String>,
+    restored_messages: HashSet<String>,
     action: Option<Action>,
     approvals: Vec<Approval>,
     speaking: Arc<AtomicBool>,
@@ -130,8 +133,97 @@ impl Session {
             .ok_or("Agent is disconnected.")?
             .send(command)
     }
+    fn submit_prompt(&mut self, context: String) -> Result<(), String> {
+        if self.pending_send.is_some() || self.prompt.trim().is_empty() {
+            return Ok(());
+        }
+        let text = self.prompt.trim().to_owned();
+        if text.chars().count() > 16_000 {
+            return Err("Keep the message within 16000 characters.".into());
+        }
+        let id = format!("user-awaiting-{}", nonce());
+        let prompt = agent_engine::Prompt {
+            id: id.clone(),
+            text,
+            context,
+        };
+        let previous = self.projection.dialogue.clone();
+        self.projection
+            .dialogue
+            .message(&id, "user", &prompt.text, false);
+        self.dirty = true;
+        if let Err(error) = self.save() {
+            self.projection.dialogue = previous;
+            return Err(format!("Could not save the draft for sending: {error}"));
+        }
+        let command = if self.provider().capabilities.steer && self.projection.turn.is_some() {
+            Command::Steer(prompt)
+        } else {
+            Command::Send(prompt)
+        };
+        self.pending_send = Some(id.clone());
+        if let Err(error) = self.send(command) {
+            self.finish_send(&id, Err(error.clone()));
+            return Err(error);
+        }
+        self.prompt.clear();
+        Ok(())
+    }
+
+    fn restorable_message(&self) -> Option<usize> {
+        if self.pending_send.is_some() || !self.prompt.trim().is_empty() {
+            return None;
+        }
+        self.projection.dialogue.messages.iter().rposition(|row| {
+            row.role == "user"
+                && !self.restored_messages.contains(&row.id)
+                && ["user-rejected-", "user-awaiting-", "user-pending-"]
+                    .iter()
+                    .any(|prefix| row.id.starts_with(prefix))
+        })
+    }
+
+    fn restore_message(&mut self) -> bool {
+        let Some(index) = self.restorable_message() else {
+            return false;
+        };
+        let row = &self.projection.dialogue.messages[index];
+        self.prompt.clone_from(&row.text);
+        self.restored_messages.insert(row.id.clone());
+        self.status = "Message restored. Review it before sending again.".into();
+        true
+    }
+
+    fn finish_send(&mut self, id: &str, result: Result<(), String>) {
+        if self.pending_send.as_deref() != Some(id) {
+            return;
+        }
+        self.pending_send = None;
+        if let Some(row) = self
+            .projection
+            .dialogue
+            .messages
+            .iter_mut()
+            .find(|row| row.id == id)
+        {
+            let prefix = if result.is_ok() {
+                "user-sent-"
+            } else {
+                "user-rejected-"
+            };
+            row.id = format!("{prefix}{}", id.trim_start_matches("user-awaiting-"));
+            self.dirty = true;
+        }
+        if let Err(error) = result {
+            self.status = format!("Message not sent: {error}");
+        }
+    }
+
     fn disconnect(&mut self) {
         self.follow_agent = false;
+        if self.pending_send.take().is_some() {
+            self.status = format!("Delivery unconfirmed. {}", self.status);
+        }
         self.client = None;
         self.connected = false;
         self.voice_connected = false;
@@ -393,6 +485,15 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands) -> Entity {
                             flex_grow: 1.,
                             ..default()
                         });
+                        let restore = native_panel::button::<Action, Session>(
+                            row,
+                            "Restore message",
+                            native_panel::INK,
+                            Action::RestoreMessage,
+                        );
+                        row.commands()
+                            .entity(restore)
+                            .insert(bevy::input_focus::tab_navigation::TabIndex(101));
                         let send = native_panel::button::<Action, Session>(
                             row,
                             "Send",
@@ -400,7 +501,7 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands) -> Entity {
                             Action::Send,
                         );
                         row.commands().entity(send).insert((
-                            bevy::input_focus::tab_navigation::TabIndex(101),
+                            bevy::input_focus::tab_navigation::TabIndex(102),
                             BackgroundColor(Color::srgb_u8(26, 86, 88)),
                         ));
                     });
@@ -414,6 +515,7 @@ fn draw_dialogue(
     dialogue: &Dialogue,
     repo: &Repository,
     agent: &str,
+    pending_send: Option<&str>,
 ) {
     if dialogue.messages.is_empty() {
         parent.spawn((
@@ -433,7 +535,10 @@ fn draw_dialogue(
         .rev()
     {
         let (name, accent) = match message.role.as_str() {
-            "user" => ("You", Color::srgb_u8(213, 183, 130)),
+            "user" => (
+                message_label(&message.id, pending_send),
+                Color::srgb_u8(213, 183, 130),
+            ),
             "system" => ("Session", Color::srgb_u8(151, 171, 177)),
             _ => (agent, native_panel::INK),
         };
@@ -459,6 +564,18 @@ fn draw_dialogue(
                 ));
                 agent_navigation::draw_links(card, &message.text, repo);
             });
+    }
+}
+
+fn message_label(id: &str, pending_send: Option<&str>) -> &'static str {
+    if pending_send == Some(id) {
+        "You · Sending"
+    } else if id.starts_with("user-rejected-") {
+        "You · Not sent"
+    } else if id.starts_with("user-awaiting-") || id.starts_with("user-pending-") {
+        "You · Delivery unconfirmed"
+    } else {
+        "You"
     }
 }
 
@@ -501,6 +618,7 @@ fn update(
             ..default()
         };
         session.prompt.clear();
+        session.restored_messages.clear();
         session.status = "Disconnected. Connect uses your existing Codex login.".into();
         session.version = session.version.wrapping_add(1);
         for (_, mut field, _) in &mut prompts {
@@ -570,11 +688,23 @@ fn update(
             }
             Event::Replaced {
                 conversation: thread,
+                writer_conflict,
             } => {
-                session.projection.dialogue.message(&format!("session-boundary:{thread}"), "system", "Previous Codex session unavailable; a new conversation started. Earlier local messages remain above.", false);
-                session.status = "Previous session unavailable; a new conversation started.".into();
+                let notice = if writer_conflict {
+                    "The previous Codex conversation is open in another client. City continued in a separate conversation with its saved history."
+                } else {
+                    "The previous Codex conversation is unavailable. City opened a new conversation. Local history remains above."
+                };
+                session.projection.dialogue.message(
+                    &format!("session-boundary:{thread}"),
+                    "system",
+                    notice,
+                    false,
+                );
+                session.status = notice.into();
                 session.dirty = true;
             }
+            Event::Delivery { id, result } => session.finish_send(&id, result),
             Event::Changed { status } => {
                 session.dirty = true;
                 if let Some(status) = status {
@@ -626,35 +756,22 @@ fn update(
                 session.status = "Disconnected".into();
                 Ok(())
             }
-            Action::Send if !session.prompt.trim().is_empty() => {
-                let prompt = session.prompt.trim().to_owned();
-                let command =
-                    if session.provider().capabilities.steer && session.projection.turn.is_some() {
-                        Command::Steer {
-                            prompt: prompt.clone(),
-                            context: context(root, &repo.0),
-                        }
-                    } else {
-                        Command::Send {
-                            prompt: prompt.clone(),
-                            context: context(root, &repo.0),
-                        }
-                    };
-                let sent = session.send(command);
-                if sent.is_ok() {
-                    session.projection.dialogue.message(
-                        &format!("user-pending-{}", nonce()),
-                        "user",
-                        &prompt,
-                        false,
-                    );
-                    session.dirty = true;
-                    session.prompt.clear();
+            Action::Send if session.pending_send.is_none() && !session.prompt.trim().is_empty() => {
+                let result = session.submit_prompt(context(root, &repo.0));
+                if result.is_ok() {
                     for (_, mut field, _) in &mut prompts {
                         field.editor_mut().set_text("");
                     }
                 }
-                sent
+                result
+            }
+            Action::RestoreMessage => {
+                if session.restore_message() {
+                    for (_, mut field, _) in &mut prompts {
+                        field.editor_mut().set_text(&session.prompt);
+                    }
+                }
+                Ok(())
             }
             Action::Voice => {
                 session.voice_error = None;
@@ -714,6 +831,7 @@ fn update(
                         &session.projection.dialogue,
                         &repo.0,
                         session.provider().label,
+                        session.pending_send.as_deref(),
                     )
                 });
         }
@@ -787,7 +905,8 @@ fn update(
         let enabled = match action {
             Action::Connect => session.client.is_none(),
             Action::Disconnect | Action::Stop => session.client.is_some(),
-            Action::Send => !session.prompt.trim().is_empty(),
+            Action::Send => session.pending_send.is_none() && !session.prompt.trim().is_empty(),
+            Action::RestoreMessage => session.restorable_message().is_some(),
             Action::Voice => session.provider().capabilities.voice,
             Action::Follow => true,
             Action::Approve | Action::Reject => !session.approvals.is_empty(),
@@ -828,13 +947,13 @@ fn action_label(action: &Action, session: &Session) -> Option<&'static str> {
         } else {
             "Start voice"
         }),
-        Action::Send => Some(
-            if session.provider().capabilities.steer && session.projection.turn.is_some() {
-                "Steer"
-            } else {
-                "Send"
-            },
-        ),
+        Action::Send => Some(if session.pending_send.is_some() {
+            "Sending…"
+        } else if session.provider().capabilities.steer && session.projection.turn.is_some() {
+            "Steer"
+        } else {
+            "Send"
+        }),
         _ => None,
     }
 }
@@ -1048,6 +1167,62 @@ mod tests {
         session.projection.turn = Some("turn".into());
         assert_eq!(action_label(&Action::Voice, &session), Some("Stop voice"));
         assert_eq!(action_label(&Action::Send, &session), Some("Steer"));
+    }
+
+    #[test]
+    fn delivery_requires_acknowledgement_and_old_messages_can_be_restored() {
+        let id = "user-awaiting-1";
+        let mut session = Session::default();
+        session.pending_send = Some(id.into());
+        session
+            .projection
+            .dialogue
+            .message("user-pending-old", "user", "older draft", false);
+        session
+            .projection
+            .dialogue
+            .message(id, "user", "current draft", false);
+
+        assert_eq!(
+            message_label(id, session.pending_send.as_deref()),
+            "You · Sending"
+        );
+        assert!(session.restorable_message().is_none());
+        session.finish_send("another-message", Ok(()));
+        assert_eq!(session.pending_send.as_deref(), Some(id));
+        session.finish_send(id, Err("writer unavailable".into()));
+        assert_eq!(
+            message_label(&session.projection.dialogue.messages[1].id, None),
+            "You · Not sent"
+        );
+
+        assert!(session.restore_message());
+        assert_eq!(session.prompt, "current draft");
+        assert!(
+            !session.restore_message(),
+            "restoring cannot overwrite the composer"
+        );
+        session.prompt.clear();
+        assert!(session.restore_message());
+        assert_eq!(session.prompt, "older draft");
+        assert!(session.status.contains("Review it before sending"));
+
+        session.pending_send = Some("user-awaiting-2".into());
+        session
+            .projection
+            .dialogue
+            .message("user-awaiting-2", "user", "another draft", false);
+        session.disconnect();
+        assert_eq!(
+            message_label("user-awaiting-2", session.pending_send.as_deref()),
+            "You · Delivery unconfirmed"
+        );
+        session.pending_send = Some("user-awaiting-2".into());
+        session.finish_send("user-awaiting-2", Ok(()));
+        assert_eq!(
+            message_label(&session.projection.dialogue.messages[2].id, None),
+            "You"
+        );
     }
 
     #[test]

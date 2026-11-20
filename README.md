@@ -315,9 +315,13 @@ platforms can set `CC_wasm32_unknown_unknown` to a compatible Clang.
 On desktop, open **Tab → Agent** to connect to the locally installed Codex CLI.
 It uses your existing Codex login and keeps a conversation for each checkout.
 Enter a message and choose **Send**, or press **Cmd/Ctrl+Enter**. During an active
-turn, **Steer** sends new instructions into that same work without restarting it. Requested
-command and file permissions appear in the same tablet with **Approve once**
-and **Reject**. **Stop work** interrupts the current turn.
+turn, **Steer** sends new instructions into that same work without restarting it.
+City saves the message locally and shows **Sending** until Codex confirms delivery.
+If another client owns the saved conversation, City forks its history and delivers
+the queued message in the independent conversation. **Restore message** copies the
+most recent rejected or unconfirmed message into an empty composer for manual review.
+Requested command and file permissions appear in the same tablet with
+**Approve once** and **Reject**. **Stop work** interrupts the current turn.
 
 Choose **Start voice** in VibePad or press **F9** while flying (some Macs use
 **Fn+F9**). **Connect chat** starts the text connection separately. The app

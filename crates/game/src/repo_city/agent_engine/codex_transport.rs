@@ -1,5 +1,6 @@
 //! Owned stdio app-server process. No provider connection exists before a user action.
 use super::{
+    Prompt,
     audio::{Devices, Opening},
     rtc::Connection,
 };
@@ -19,8 +20,8 @@ use std::{
 };
 
 pub(crate) enum Command {
-    Send { prompt: String, context: String },
-    Steer { prompt: String, context: String },
+    Send(Prompt),
+    Steer(Prompt),
     Voice { id: String, context: String },
     StopVoice,
     Interrupt,
@@ -30,8 +31,12 @@ pub(crate) enum Command {
 pub(crate) enum Event {
     Connected(String),
     Replaced {
-        previous: String,
         thread: String,
+        writer_conflict: bool,
+    },
+    Delivery {
+        id: String,
+        result: Result<(), String>,
     },
     Notification(String, Value),
     Approval {
@@ -76,16 +81,20 @@ impl Client {
         let wanted = wanted_voice.clone();
         thread::spawn(move || {
             let mut diagnostics = Diagnostics::new(diagnostic_path);
-            if let Err(error) = run(
-                root,
-                thread,
-                input,
-                &events,
-                &stopped,
-                &wanted,
-                speaking,
-                &mut diagnostics,
-            ) {
+            diagnostics.record("connecting_agent", || json!({"deadline_seconds":45}));
+            if let Err(error) = Wire::open(&root).and_then(|wire| {
+                run(
+                    wire,
+                    root,
+                    thread,
+                    input,
+                    &events,
+                    &stopped,
+                    &wanted,
+                    speaking,
+                    &mut diagnostics,
+                )
+            }) {
                 diagnostics.record("disconnected", || json!({"error":error}));
                 let _ = events.try_send(Event::Error(error));
             }
@@ -121,10 +130,21 @@ impl Client {
         Ok(())
     }
     pub fn poll(&self) -> Vec<Event> {
-        self.events
-            .lock()
-            .map(|events| events.try_iter().take(64).collect())
-            .unwrap_or_default()
+        let Ok(events) = self.events.lock() else {
+            return vec![Event::Closed];
+        };
+        let mut batch = Vec::new();
+        for _ in 0..64 {
+            match events.try_recv() {
+                Ok(Event::Closed) | Err(mpsc::TryRecvError::Disconnected) => {
+                    batch.push(Event::Closed);
+                    break;
+                }
+                Ok(event) => batch.push(event),
+                Err(mpsc::TryRecvError::Empty) => break,
+            }
+        }
+        batch
     }
 }
 
@@ -215,6 +235,7 @@ struct Wire {
     output: Receiver<Result<Value, String>>,
     next: u64,
     pending: HashMap<u64, (String, Instant)>,
+    deliveries: HashMap<u64, Prompt>,
     sdp: Option<(String, String)>,
     voice_error: Option<(String, String)>,
 }
@@ -224,7 +245,7 @@ struct Work {
     id: Option<String>,
     pending: bool,
     stop: bool,
-    queued: VecDeque<(String, String)>,
+    queued: VecDeque<Prompt>,
 }
 impl Work {
     fn begin(&mut self) {
@@ -246,16 +267,20 @@ impl Work {
     fn finish(&mut self) {
         *self = Self::default();
     }
-    fn queue(&mut self, prompt: String, context: String) -> Result<(), String> {
+    fn queue(&mut self, prompt: Prompt) -> Result<(), (&'static str, Prompt)> {
         if !self.pending {
-            return Err("The active work already finished. Send a new message instead.".into());
+            return Err((
+                "The active work already finished. Send a new message instead.",
+                prompt,
+            ));
         }
         if self.queued.len() >= 8 {
-            return Err(
-                "Eight steering messages are already waiting for the starting turn.".into(),
-            );
+            return Err((
+                "Eight steering messages are already waiting for the starting turn.",
+                prompt,
+            ));
         }
-        self.queued.push_back((prompt, context));
+        self.queued.push_back(prompt);
         Ok(())
     }
 }
@@ -340,8 +365,8 @@ impl DesiredVoice {
 
 fn flush_steers(work: &mut Work, wire: &mut Wire, thread: &str) -> Result<(), String> {
     if let Some(id) = &work.id {
-        while let Some((prompt, context)) = work.queued.pop_front() {
-            wire.request("turn/steer",json!({"threadId":thread,"expectedTurnId":id,"input":[{"type":"text","text":format!("{context}\n\n{prompt}")}]}))?;
+        while let Some(prompt) = work.queued.pop_front() {
+            wire.submit_turn(thread, Some(id), prompt)?;
         }
     }
     Ok(())
@@ -352,6 +377,10 @@ impl Wire {
         let binary = codex_binary().ok_or(
             "Codex is not installed. Install Codex CLI, then run codex login in your terminal.",
         )?;
+        Self::open_with(root, &binary)
+    }
+
+    fn open_with(root: &Path, binary: &Path) -> Result<Self, String> {
         let mut child = ProcessCommand::new(binary)
             .args(["app-server", "--stdio"])
             .current_dir(root)
@@ -401,6 +430,7 @@ impl Wire {
             output: receive,
             next: 1,
             pending: HashMap::new(),
+            deliveries: HashMap::new(),
             sdp: None,
             voice_error: None,
         })
@@ -420,6 +450,31 @@ impl Wire {
         self.pending.insert(id, (method.into(), Instant::now()));
         Ok(id)
     }
+    fn submit_text(&mut self, method: &str, params: Value, prompt: Prompt) -> Result<(), String> {
+        let id = self.request(method, params)?;
+        self.deliveries.insert(id, prompt);
+        Ok(())
+    }
+
+    fn submit_turn(
+        &mut self,
+        thread: &str,
+        turn: Option<&str>,
+        prompt: Prompt,
+    ) -> Result<(), String> {
+        let mut params = json!({
+            "threadId":thread,
+            "input":[{"type":"text","text":format!("{}\n\n{}",prompt.context,prompt.text)}]
+        });
+        let method = if let Some(turn) = turn {
+            params["expectedTurnId"] = json!(turn);
+            "turn/steer"
+        } else {
+            "turn/start"
+        };
+        self.submit_text(method, params, prompt)
+    }
+
     fn call(
         &mut self,
         method: &str,
@@ -527,13 +582,45 @@ impl Wire {
             }
         } else if let Some(id) = value["id"].as_u64() {
             if let Some((method, _)) = self.pending.remove(&id) {
-                if let Err(error) = response(&value) {
+                let result = response(&value);
+                if let Some(prompt) = self.deliveries.remove(&id) {
+                    if value.get("error").is_none() {
+                        let result = result.as_ref().map_err(Clone::clone)?;
+                        if method == "turn/start"
+                            && result.pointer("/turn/id").and_then(Value::as_str).is_none()
+                        {
+                            return Err("Codex did not confirm the new turn.".into());
+                        }
+                    }
+                    let result = result.map(|_| ());
+                    deliver(events, prompt, result)?;
+                } else if let Err(error) = result {
                     let _ = events.try_send(Event::Error(format!("{method}: {error}")));
                 }
             }
         }
         Ok(())
     }
+}
+
+fn deliver(
+    events: &SyncSender<Event>,
+    prompt: Prompt,
+    result: Result<(), String>,
+) -> Result<(), String> {
+    events
+        .try_send(Event::Delivery {
+            id: prompt.id,
+            result,
+        })
+        .map_err(|_| "Agent delivery event could not be recorded.".into())
+}
+
+fn reject_queued(work: &mut Work, events: &SyncSender<Event>, detail: &str) -> Result<(), String> {
+    for prompt in work.queued.drain(..) {
+        deliver(events, prompt, Err(detail.into()))?;
+    }
+    Ok(())
 }
 
 fn response(value: &Value) -> Result<Value, String> {
@@ -785,7 +872,100 @@ fn end_voice(
     Ok(())
 }
 
+// Ecky c48e376 preserves the logical conversation and rotates its writer on conflict.
+// City forks the persisted thread so the independent writer inherits its history.
+fn fork_thread(
+    wire: &mut Wire,
+    root: &Path,
+    executable: &Path,
+    previous: &str,
+    events: &SyncSender<Event>,
+    stop: &AtomicBool,
+) -> Result<String, String> {
+    let mut params = thread_params(root, executable, Some(previous));
+    params["excludeTurns"] = json!(true);
+    params["deferGoalContinuation"] = json!(true);
+    let result = wire.call("thread/fork", params, events, stop)?;
+    let thread = thread_id(&result)?;
+    if thread == previous {
+        return Err("Codex did not create an independent conversation.".into());
+    }
+    announce_thread(events, &thread, Some(true))?;
+    Ok(thread)
+}
+
+fn thread_id(result: &Value) -> Result<String, String> {
+    result
+        .pointer("/thread/id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "Codex did not return a conversation ID.".into())
+}
+
+fn announce_thread(
+    events: &SyncSender<Event>,
+    thread: &str,
+    replaced: Option<bool>,
+) -> Result<(), String> {
+    events
+        .try_send(Event::Connected(thread.into()))
+        .map_err(|_| "Agent view closed.")?;
+    if let Some(writer_conflict) = replaced {
+        events
+            .try_send(Event::Replaced {
+                thread: thread.into(),
+                writer_conflict,
+            })
+            .map_err(|_| "Agent view closed.")?;
+    }
+    Ok(())
+}
+
+fn establish_thread(
+    wire: &mut Wire,
+    root: &Path,
+    executable: &Path,
+    saved: Option<&str>,
+    events: &SyncSender<Event>,
+    stop: &AtomicBool,
+) -> Result<(String, bool), String> {
+    let method = if saved.is_some() {
+        "thread/resume"
+    } else {
+        "thread/start"
+    };
+    let (result, replaced) =
+        match wire.call(method, thread_params(root, executable, saved), events, stop) {
+            Ok(result) => (result, None),
+            Err(error) if saved.is_some() && active_writer(&error) => {
+                return fork_thread(wire, root, executable, saved.unwrap(), events, stop)
+                    .map(|thread| (thread, true));
+            }
+            Err(error) if missing_rollout(&error, saved) => (
+                wire.call(
+                    "thread/start",
+                    thread_params(root, executable, None),
+                    events,
+                    stop,
+                )?,
+                Some(false),
+            ),
+            Err(error) => return Err(error),
+        };
+    let thread = thread_id(&result)?;
+    announce_thread(events, &thread, replaced)?;
+    Ok((thread, false))
+}
+
+fn active_writer(error: &str) -> bool {
+    error
+        .to_ascii_lowercase()
+        .contains("already has an active writer")
+}
+
 fn run(
+    mut wire: Wire,
     root: PathBuf,
     saved_thread: Option<String>,
     commands: Receiver<Command>,
@@ -795,51 +975,17 @@ fn run(
     speaking: Arc<AtomicBool>,
     diagnostics: &mut Diagnostics,
 ) -> Result<(), String> {
-    diagnostics.record("connecting_agent", || json!({"deadline_seconds":45}));
-    let mut wire = Wire::open(&root)?;
     wire.call("initialize",json!({"clientInfo":{"name":"repo_city","version":"0.1.0","title":"Vibe City"},"capabilities":{"experimentalApi":true}}),events,stop)?;
     wire.write(json!({"method":"initialized","params":{}}))?;
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let params = thread_params(&root, &executable, saved_thread.as_deref());
-    let result = wire.call(
-        if saved_thread.is_some() {
-            "thread/resume"
-        } else {
-            "thread/start"
-        },
-        params,
+    let (mut thread, mut forked) = establish_thread(
+        &mut wire,
+        &root,
+        &executable,
+        saved_thread.as_deref(),
         events,
         stop,
-    );
-    let (result, replaced) = match result {
-        Ok(result) => (result, None),
-        Err(error) if missing_rollout(&error, saved_thread.as_deref()) => {
-            let result = wire.call(
-                "thread/start",
-                thread_params(&root, &executable, None),
-                events,
-                stop,
-            )?;
-            (result, saved_thread)
-        }
-        Err(error) => return Err(error),
-    };
-    let thread = result
-        .pointer("/thread/id")
-        .and_then(Value::as_str)
-        .ok_or("Codex did not return a conversation ID.")?
-        .to_owned();
-    events
-        .try_send(Event::Connected(thread.clone()))
-        .map_err(|_| "Agent view closed.".to_owned())?;
-    if let Some(previous) = replaced {
-        events
-            .try_send(Event::Replaced {
-                previous,
-                thread: thread.clone(),
-            })
-            .map_err(|_| "Agent view closed.".to_owned())?;
-    }
+    )?;
     let mut voice = None::<Voice>;
     let mut work = Work::default();
     let mut desired = DesiredVoice::default();
@@ -853,33 +999,37 @@ fn run(
         desired.clear_stale(wanted_voice);
         for command in commands.try_iter().take(16) {
             match command {
-                Command::Steer { prompt, context } => {
+                Command::Steer(prompt) => {
                     if let Some(id) = &work.id {
-                        wire.request("turn/steer",json!({"threadId":thread,"expectedTurnId":id,"input":[{"type":"text","text":format!("{context}\n\n{prompt}")}]}))?;
-                    } else if let Err(error) = work.queue(prompt, context) {
-                        let _ = events.try_send(Event::Error(error));
+                        wire.submit_turn(&thread, Some(id), prompt)?;
+                    } else if let Err((error, prompt)) = work.queue(prompt) {
+                        deliver(events, prompt, Err(error.into()))?;
                     }
                 }
-                Command::Send { prompt, context } => {
-                    // Exact active-turn steering wins even while voice is connected.
+                Command::Send(prompt) => {
                     if let Some(id) = &work.id {
-                        wire.request("turn/steer",json!({"threadId":thread,"expectedTurnId":id,"input":[{"type":"text","text":format!("{context}\n\n{prompt}")}]}))?;
+                        wire.submit_turn(&thread, Some(id), prompt)?;
                     } else if voice.is_some() {
-                        wire.request(
+                        let result = wire.call(
                             "thread/realtime/appendText",
-                            json!({"threadId":thread,"role":"developer","text":context}),
-                        )?;
-                        wire.request(
-                            "thread/realtime/appendText",
-                            json!({"threadId":thread,"role":"user","text":prompt}),
-                        )?;
+                            json!({"threadId":thread,"role":"developer","text":prompt.context}),
+                            events,
+                            stop,
+                        );
+                        if let Err(error) = result {
+                            deliver(events, prompt, Err(error))?;
+                        } else {
+                            let params =
+                                json!({"threadId":thread,"role":"user","text":prompt.text});
+                            wire.submit_text("thread/realtime/appendText", params, prompt)?;
+                        }
                     } else if work.pending {
-                        if let Err(error) = work.queue(prompt, context) {
-                            let _ = events.try_send(Event::Error(error));
+                        if let Err((error, prompt)) = work.queue(prompt) {
+                            deliver(events, prompt, Err(error.into()))?;
                         }
                     } else {
                         work.begin();
-                        wire.request("turn/start",json!({"threadId":thread,"input":[{"type":"text","text":format!("{context}\n\n{prompt}")}]}))?;
+                        wire.submit_turn(&thread, None, prompt)?;
                     }
                 }
                 Command::Voice { id, context } if voice.is_none() => {
@@ -893,6 +1043,7 @@ fn run(
                     end_voice(&mut voice, &mut wire, &thread, events, stop, diagnostics)?;
                 }
                 Command::Interrupt => {
+                    reject_queued(&mut work, events, "Message canceled before sending.")?;
                     if let Some(id) = work.interrupt() {
                         wire.request("turn/interrupt", json!({"threadId":thread,"turnId":id}))?;
                     }
@@ -991,7 +1142,26 @@ fn run(
                     && work.pending
                 {
                     if value.get("error").is_some() {
+                        reject_queued(&mut work, events, "Codex refused the starting turn.")?;
                         work.finish();
+                        let request = value["id"].as_u64().expect("matched a request");
+                        if !forked
+                            && response(&value).is_err_and(|error| active_writer(&error))
+                            && let Some(prompt) = wire.deliveries.remove(&request)
+                        {
+                            wire.pending.remove(&request);
+                            forked = true;
+                            match fork_thread(&mut wire, &root, &executable, &thread, events, stop)
+                            {
+                                Ok(next) => {
+                                    thread = next;
+                                    work.begin();
+                                    wire.submit_turn(&thread, None, prompt)?;
+                                }
+                                Err(error) => deliver(events, prompt, Err(error))?,
+                            }
+                            continue;
+                        }
                     } else if let Some(id) =
                         value.pointer("/result/turn/id").and_then(Value::as_str)
                     {
@@ -1058,7 +1228,14 @@ fn run(
                                 }
                             }
                         }
-                        "turn/completed" => work.finish(),
+                        "turn/completed" => {
+                            reject_queued(
+                                &mut work,
+                                events,
+                                "The turn finished before this message was sent.",
+                            )?;
+                            work.finish();
+                        }
                         _ => {}
                     }
                 }
@@ -1132,6 +1309,117 @@ fn instructions() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn writer_conflict_preserves_and_delivers_the_prompt_to_a_separate_thread() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for phase in ["resume", "turn", "reject"] {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let folder = std::env::temp_dir()
+                .join(format!("repo-city-writer-{}-{unique}", std::process::id()));
+            std::fs::create_dir(&folder).unwrap();
+            let binary = folder.join("codex");
+            let script = r#"#!/usr/bin/env python3
+import json, sys
+phase = "PHASE"
+calls = []
+for line in sys.stdin:
+    msg = json.loads(line)
+    method = msg.get("method")
+    if "id" not in msg:
+        continue
+    params = msg.get("params", {})
+    thread = params.get("threadId")
+    calls.append((method, thread))
+    error = None
+    result = {}
+    if method == "thread/resume":
+        assert thread == "source"
+        if phase == "resume":
+            error = "thread source already has an active writer"
+        else:
+            result = {"thread": {"id": "source"}}
+    elif method == "thread/fork":
+        assert thread == "source" and params["excludeTurns"] and params["deferGoalContinuation"]
+        assert calls.count(("thread/fork", "source")) == 1
+        result = {"thread": {"id": "independent"}}
+    elif method == "turn/start":
+        assert params["input"][0]["text"] == "camera\n\nExplain the file"
+        if thread == "source":
+            assert phase != "resume"
+            assert calls.count(("turn/start", "source")) == 1
+            error = "thread source already has an active writer" if phase == "turn" else "test rejection"
+        else:
+            assert thread == "independent" and phase != "reject"
+            assert calls.count(("turn/start", "independent")) == 1
+            result = {"turn": {"id": "independent-turn"}}
+    else:
+        assert method in ("initialize", "thread/realtime/stop"), method
+    print(json.dumps({"id": msg["id"], **({"error": {"message": error}} if error else {"result": result})}), flush=True)
+"#.replace("PHASE", phase);
+            std::fs::write(&binary, script).unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let wire = Wire::open_with(&folder, &binary).unwrap();
+            let (commands, input) = mpsc::sync_channel(4);
+            let (events, output) = mpsc::sync_channel(32);
+            commands
+                .send(Command::Send(Prompt {
+                    id: "queued-1".into(),
+                    text: "Explain the file".into(),
+                    context: "camera".into(),
+                }))
+                .unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let worker_stop = stop.clone();
+            let worker_root = folder.clone();
+            let worker = thread::spawn(move || {
+                run(
+                    wire,
+                    worker_root,
+                    Some("source".into()),
+                    input,
+                    &events,
+                    &worker_stop,
+                    &Mutex::new(None),
+                    Arc::new(AtomicBool::new(false)),
+                    &mut Diagnostics::new(None),
+                )
+            });
+            let mut switched = false;
+            let mut delivery = None;
+            while let Ok(event) = output.recv_timeout(Duration::from_secs(5)) {
+                match event {
+                    Event::Replaced {
+                        thread,
+                        writer_conflict,
+                    } => {
+                        switched = thread == "independent" && writer_conflict;
+                    }
+                    Event::Delivery { id, result } if id == "queued-1" => {
+                        delivery = Some(result);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            stop.store(true, Ordering::Release);
+            let worker_result = worker.join().unwrap();
+            std::fs::remove_dir_all(folder).unwrap();
+            assert!(worker_result.is_ok(), "{phase}: {worker_result:?}");
+            if phase == "reject" {
+                assert!(!switched);
+                assert_eq!(delivery, Some(Err("test rejection".into())));
+            } else {
+                assert!(switched, "{phase} did not announce a separate conversation");
+                assert_eq!(delivery, Some(Ok(())), "{phase} did not confirm delivery");
+            }
+        }
+    }
     #[test]
     fn reconnects_back_off_stop_after_three_early_failures_and_cancel_immediately() {
         let mut desired = DesiredVoice::default();
@@ -1217,14 +1505,19 @@ mod tests {
     #[test]
     fn pending_turn_steers_are_ordered_bounded_and_cleared_on_stop() {
         let mut work = Work::default();
-        assert!(work.queue("idle".into(), String::new()).is_err());
+        let prompt = |text: &str| Prompt {
+            id: text.into(),
+            text: text.into(),
+            context: String::new(),
+        };
+        assert!(work.queue(prompt("idle")).is_err());
         work.begin();
         for index in 0..8 {
-            work.queue(index.to_string(), String::new()).unwrap();
+            assert!(work.queue(prompt(&index.to_string())).is_ok());
         }
-        assert!(work.queue("overflow".into(), String::new()).is_err());
+        assert!(work.queue(prompt("overflow")).is_err());
         assert!(!work.started("exact-turn".into()));
-        assert_eq!(work.queued.pop_front().unwrap().0, "0");
+        assert_eq!(work.queued.pop_front().unwrap().text, "0");
         work.interrupt();
         assert!(work.queued.is_empty());
     }
