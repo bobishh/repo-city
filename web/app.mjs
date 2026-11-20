@@ -11,6 +11,12 @@ const form = document.querySelector("#repository-form");
 const status = document.querySelector("#status");
 const canvas = document.querySelector("#repo-city");
 const blame = document.querySelector("#blame");
+const cityRepository = document.querySelector("#city-repository");
+const cityFile = document.querySelector("#city-file");
+const cityProgress = document.querySelector("#city-progress");
+const cityComparison = document.querySelector("#city-comparison");
+const cityHint = document.querySelector("#city-hint");
+const [cityCount, comparisonCount] = cityProgress.querySelectorAll(".city-count");
 const startScreen = document.querySelector("#start-screen");
 const startControls = document.querySelector("#start-controls");
 const dialog = document.querySelector("#repository-dialog");
@@ -127,6 +133,12 @@ dialog.addEventListener("keyup", event => event.stopPropagation());
 refreshRepositoryPicker();
 
 
+function showProgress(count, done, total) {
+  count.querySelector(".city-value").textContent = total ? `${done}/${total}` : "—";
+  count.lastElementChild.max = total || 1;
+  count.lastElementChild.value = done;
+}
+
 async function stageRepository(repository, ref, base) {
   await review.load(repository);
   const { review: { repository: name, pull }, progressScope } = repository;
@@ -148,6 +160,9 @@ async function stageRepository(repository, ref, base) {
   const canFilterChanges = Boolean(snapshot.baseline);
   const comparisonLabel = pull ? "PR" : base?.trim() ? "Compare" : snapshot.baseline ? "Last commit" : "Initial";
   active = { repository, blobs: new Map(), blameFiles: new Map(), marks, progressError, canFilterChanges, comparisonLabel };
+  cityRepository.textContent = name;
+  cityRepository.title = name;
+  cityComparison.textContent = comparisonLabel;
   changesOnlyRequested = false;
   progressPanel.hidden = false;
   repositoryVersion++;
@@ -256,6 +271,14 @@ async function openRepository(repo, ref, base, exactBase = false) {
             console.warn("Could not save review progress", error);
           });
         },
+        showCityHud(file, city, total, diffs, totalDiffs, hint) {
+          cityFile.textContent = file;
+          cityFile.title = file;
+          showProgress(cityCount, city, total);
+          showProgress(comparisonCount, diffs, totalDiffs);
+          cityHint.textContent = hint;
+          cityHint.hidden = !hint;
+        },
         showBlame(path, before, line) {
           const href = active.repository.blameURL(path, before, line);
           if (href) blame.href = href;
@@ -294,6 +317,8 @@ async function openRepository(repo, ref, base, exactBase = false) {
       running = true;
       document.documentElement.dataset.playing = "";
       startScreen.hidden = true;
+      cityRepository.hidden = false;
+      cityProgress.hidden = false;
       startControls.hidden = true;
       help.hidden = false;
     } else {

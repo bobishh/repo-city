@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Repo City</title>
   <link rel="icon" type="image/svg+xml" href="./assets/robot-head.svg">
   <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png">
@@ -15,16 +15,29 @@
     <div id="start-screen" aria-hidden="true">
       <img src="./assets/start-screen.webp" alt="" fetchpriority="high">
     </div>
-    <h1><button id="logo" type="button" aria-label="Repo City" aria-haspopup="dialog" aria-controls="repository-dialog" title="Open repository">
-      <img class="android" src="./assets/robot-head.svg" alt="">
-      <span class="wordmark">Repo City</span>
-    </button></h1>
-    <button id="help" type="button" aria-label="How to use Repo City" aria-haspopup="dialog" aria-controls="review-dialog" title="Help · H" hidden>?</button>
+    <header id="city-header">
+      <div class="city-brand">
+        <h1><button id="logo" type="button" aria-label="Repo City" aria-haspopup="dialog" aria-controls="repository-dialog" title="Open repository">
+          <img class="android" src="./assets/robot-head.svg" alt="">
+          <span class="wordmark">Repo City</span>
+        </button></h1>
+        <div id="city-repository" class="city-ellipsis" hidden></div>
+      </div>
+      <div id="city-progress" hidden>
+        <div id="city-file" class="city-ellipsis"></div>
+        <div class="city-count" role="group" aria-label="City progress"><span>City <span class="city-value">—</span></span><progress aria-label="City progress bar" value="0"></progress></div>
+        <div class="city-count" role="group" aria-label="Comparison progress"><span><span id="city-comparison"></span> <span class="city-value">—</span></span><progress aria-label="Comparison progress bar" value="0"></progress></div>
+      </div>
+      <div class="city-commands">
+        <a id="blame" target="_blank" rel="noopener noreferrer" aria-label="Blame on GitHub" hidden>Blame<span> on GitHub</span></a>
+        <button id="help" type="button" aria-label="How to use Repo City" aria-haspopup="dialog" aria-controls="review-dialog" title="Help · H" hidden>?</button>
+      </div>
+      <p id="city-hint" hidden></p>
+    </header>
     <aside id="progress-warning" hidden>
       <span role="status"></span>
       <button type="button" aria-label="Dismiss progress warning">×</button>
     </aside>
-    <a id="blame" target="_blank" rel="noopener noreferrer" aria-label="Blame on GitHub" hidden>Blame<span> on GitHub</span></a>
     <div id="start-controls">
       <form id="repository-form" aria-label="Open repository">
         <div id="repository-search">

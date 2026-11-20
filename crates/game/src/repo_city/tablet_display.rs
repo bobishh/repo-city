@@ -216,6 +216,7 @@ pub(super) fn pointer(
     mut inputs: MessageWriter<PointerInput>,
     mut last: Local<Option<Vec2>>,
     mut touch: Local<Option<(u64, Vec2, Vec2, bool, bool)>>,
+    mut tap_release: Local<Option<Location>>,
     mut scrolling: Option<ResMut<TouchScroll>>,
     scroll_parts: Query<(&UiGlobalTransform, &ComputedNode), With<tablet_scroll::Part>>,
 ) {
@@ -231,6 +232,7 @@ pub(super) fn pointer(
         .map(|point| point * display.size.as_vec2() / SIZE.as_vec2())
     };
     if !review.tablet_open && touch.take().is_some() {
+        *tap_release = None;
         let location = Location {
             target: display.target.clone(),
             position: Vec2::splat(-1.),
@@ -271,6 +273,15 @@ pub(super) fn pointer(
             },
         ));
     }
+    if let Some(location) = tap_release.take() {
+        inputs.write(PointerInput::new(
+            POINTER,
+            location,
+            PointerAction::Release(PointerButton::Primary),
+        ));
+        *touch = None;
+    }
+    let mut started_this_frame = false;
     for event in events.read() {
         // Window resources are updated after First. Consume ordered motion events here so
         // a move and press delivered in one frame hit the current control, not the old one.
@@ -308,6 +319,7 @@ pub(super) fn pointer(
                         local.abs().cmple(node.size() / 2.).all()
                     });
                     *touch = Some((event.id, point, point, false, scrollbar));
+                    started_this_frame = true;
                     inputs.write(PointerInput::new(
                         POINTER,
                         location.clone(),
@@ -351,6 +363,11 @@ pub(super) fn pointer(
                     if let Some((id, _, _, dragged, _)) = *touch
                         && id == event.id
                     {
+                        // Headless buttons need a frame to apply their deferred Pressed state.
+                        if started_this_frame && event.phase == TouchPhase::Ended && !dragged {
+                            *tap_release = Some(location);
+                            continue;
+                        }
                         if event.phase == TouchPhase::Canceled && !dragged {
                             inputs.write(PointerInput::new(
                                 POINTER,
@@ -401,10 +418,13 @@ pub(super) fn resize(
         Vec2::new(window.width(), window.height().max(1.))
     });
     let pose = android::tablet_pose(1., viewport.x / viewport.y);
-    // Size text in CSS pixels independently of whether flight controls are blocked by the pad.
-    let width = android::tablet_corners(&pose, viewport).map_or(SIZE.x, |corners| {
-        (corners[2] - corners[0]).round().clamp(320., 1440.) as u32
+    let width = android::tablet_corners(&pose, viewport).map_or(SIZE.x as f32, |corners| {
+        (corners[2] - corners[0]).clamp(320., SIZE.x as f32)
     });
+    // Give small screens more layout space on the same mesh. Rendering, picking
+    // and scrolling all use the resulting texture size.
+    let compact = ((560. - width) / (560. - 320.)).clamp(0., 1.);
+    let width = (width * (1. + 0.25 * compact)).round() as u32;
     let size = UVec2::new(width, width * SIZE.y / SIZE.x);
     if display.size != size
         && let Ok(mut camera_target) = targets.get_mut(display.ui)

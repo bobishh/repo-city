@@ -105,11 +105,12 @@ export function createTouchControls({ canvas, document = globalThis.document, br
     const hidden = !browser.matchMedia("(pointer: coarse)").matches || canvas.hidden ||
       Boolean(document.querySelector("dialog[open]")) || document.hidden;
     if (hidden) reset();
-    panel.hidden = hidden;
+    if (panel.hidden !== hidden) panel.hidden = hidden;
     canvas.toggleAttribute("data-touch-controls", !hidden);
   }
-  document.body.append(panel);
-  new browser.MutationObserver(refresh).observe(document.querySelector("main"), { attributes: true, subtree: true, attributeFilter: ["open", "hidden", "data-touch-reading"] });
+  const viewport = canvas.parentElement;
+  viewport.append(panel);
+  new browser.MutationObserver(refresh).observe(viewport, { attributes: true, subtree: true, attributeFilter: ["open", "hidden", "data-touch-reading"] });
   browser.addEventListener("blur", reset); document.addEventListener("visibilitychange", refresh);
   browser.matchMedia("(pointer: coarse)").addEventListener("change", refresh);
   refresh();

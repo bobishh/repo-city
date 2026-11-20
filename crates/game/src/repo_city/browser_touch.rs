@@ -7,6 +7,16 @@ use wasm_bindgen::prelude::*;
 extern "C" {
     #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = takeTouchInput)]
     fn take_input() -> String;
+
+    #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = showCityHud)]
+    fn show_city_hud(
+        file: &str,
+        city: usize,
+        total: usize,
+        diffs: usize,
+        total_diffs: usize,
+        hint: &str,
+    );
 }
 
 #[derive(Default, Resource, Deserialize)]
@@ -148,5 +158,25 @@ pub(super) fn viewport(mut windows: Query<&mut Window, With<PrimaryWindow>>) {
         && ((window.width() - width).abs() > 0.5 || (window.height() - height).abs() > 0.5)
     {
         window.resolution.set(width, height);
+    }
+}
+
+#[derive(Default)]
+pub(super) struct Hud {
+    file: String,
+    counts: [usize; 4],
+    hint: String,
+}
+
+impl Hud {
+    pub fn publish(&mut self, file: &str, counts: [usize; 4], hint: String) {
+        if self.file == file && self.counts == counts && self.hint == hint {
+            return;
+        }
+        let [city, total, diffs, total_diffs] = counts;
+        show_city_hud(file, city, total, diffs, total_diffs, &hint);
+        file.clone_into(&mut self.file);
+        self.counts = counts;
+        self.hint = hint;
     }
 }

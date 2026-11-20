@@ -306,16 +306,22 @@ struct Section {
 }
 #[derive(Component)]
 struct Detail;
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Component)]
 struct TopHud;
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Component)]
 struct BottomHud;
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Component)]
 struct StatusHud;
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Component)]
 struct ProgressLabel(bool);
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Component)]
 struct ProgressGauge(bool);
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Component)]
 struct ReviewToast;
 #[derive(Component)]
@@ -1010,28 +1016,22 @@ fn setup(
     ));
     #[cfg(not(target_arch = "wasm32"))]
     repository_picker::spawn(&mut commands, &ui_font(13.), color(set.ink), &mut images);
+    #[cfg(not(target_arch = "wasm32"))]
     commands.spawn((
         Text::new("REPO CITY"),
         ui_font(18.),
         TextColor(color(set.ink)),
         Node {
             position_type: PositionType::Absolute,
-            left: px(if cfg!(target_arch = "wasm32") {
-                24.
-            } else {
-                222.
-            }),
+            left: px(222.),
             max_width: percent(42.),
-            top: px(if cfg!(target_arch = "wasm32") {
-                75.
-            } else {
-                28.
-            }),
+            top: px(28.),
             ..default()
         },
         TopHud,
     ));
-    let _bottom_hud = commands
+    #[cfg(not(target_arch = "wasm32"))]
+    let bottom_hud = commands
         .spawn((
             Text::new(""),
             ui_font(14.),
@@ -1040,22 +1040,9 @@ fn setup(
             Node {
                 position_type: PositionType::Absolute,
                 left: px(24.),
-                top: if cfg!(target_arch = "wasm32") {
-                    Val::Auto
-                } else {
-                    px(92.)
-                },
-                bottom: if cfg!(target_arch = "wasm32") {
-                    px(22.)
-                } else {
-                    Val::Auto
-                },
+                top: px(92.),
                 max_width: percent(90.),
-                display: if cfg!(target_arch = "wasm32") {
-                    Display::Flex
-                } else {
-                    Display::None
-                },
+                display: Display::None,
                 padding: UiRect::all(px(14.)),
                 ..default()
             },
@@ -1063,13 +1050,14 @@ fn setup(
         ))
         .id();
     #[cfg(not(target_arch = "wasm32"))]
-    commands.entity(_bottom_hud).insert((
+    commands.entity(bottom_hud).insert((
         bevy::ui_widgets::Button,
         GlobalZIndex(25),
         file_picker::FileButton,
         bevy::picking::hover::Hovered::default(),
         bevy::ui_widgets::observe(live_worktree::request_focus),
     ));
+    #[cfg(not(target_arch = "wasm32"))]
     commands
         .spawn((
             Node {
@@ -2253,16 +2241,6 @@ fn detail_scene(
         }
     }
 }
-#[cfg(target_arch = "wasm32")]
-fn comparison_label() -> String {
-    #[wasm_bindgen::prelude::wasm_bindgen]
-    extern "C" {
-        #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = comparisonLabel)]
-        fn label() -> String;
-    }
-    label()
-}
-
 fn animate(
     mut commands: Commands,
     time: Res<Time>,
@@ -2284,6 +2262,7 @@ fn hud(
     nearest: Res<Nearest>,
     navigation: Res<city_navigation::Navigation>,
     progress: Res<progress::Progress>,
+    #[cfg(target_arch = "wasm32")] mut browser_hud: Local<browser_touch::Hud>,
     picker: Res<file_picker::FilePicker>,
     #[cfg(not(target_arch = "wasm32"))] repository: Res<repository_picker::RepositoryPicker>,
     #[cfg(not(target_arch = "wasm32"))] native: (
@@ -2292,8 +2271,11 @@ fn hud(
         Res<live_worktree::Live>,
     ),
     mut label: Query<(&mut Text, &mut TextColor, &mut Node), With<TargetLabel>>,
-    mut gauges: Query<(&ProgressGauge, &mut Node), (Without<Text>, Without<TargetLabel>)>,
-    mut texts: Query<
+    #[cfg(not(target_arch = "wasm32"))] mut gauges: Query<
+        (&ProgressGauge, &mut Node),
+        (Without<Text>, Without<TargetLabel>),
+    >,
+    #[cfg(not(target_arch = "wasm32"))] mut texts: Query<
         (
             &mut Text,
             &mut Node,
@@ -2363,11 +2345,23 @@ fn hud(
         }
     }
     let (city, diffs, total_diffs) = progress.visited_counts();
+    let total = repo.0.files.len();
+    let filename = file.path.rsplit('/').next().unwrap_or(&file.path);
+    #[cfg(target_arch = "wasm32")]
+    {
+        let hint = if navigation.overview() {
+            navigation.prompt(&explorer)
+        } else {
+            String::new()
+        };
+        browser_hud.publish(filename, [city, total, diffs, total_diffs], hint);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     for (gauge, mut node) in &mut gauges {
         let (done, total) = if gauge.0 {
             (diffs, total_diffs)
         } else {
-            (city, repo.0.files.len())
+            (city, total)
         };
         let width = percent(if total == 0 {
             0.
@@ -2378,96 +2372,57 @@ fn hud(
             node.width = width;
         }
     }
+    #[cfg(not(target_arch = "wasm32"))]
     for (mut text, mut node, top, bottom, status, toast, counter) in &mut texts {
         if let Some(counter) = counter {
             let value = if counter.0 {
-                #[cfg(target_arch = "wasm32")]
-                let label = comparison_label();
-                #[cfg(not(target_arch = "wasm32"))]
-                let label = "Diff";
                 if total_diffs == 0 {
-                    format!("{label} —")
+                    "Diff —".into()
                 } else {
-                    format!("{label} {diffs}/{total_diffs}")
+                    format!("Diff {diffs}/{total_diffs}")
                 }
             } else {
-                format!("City {city}/{}", repo.0.files.len())
+                format!("City {city}/{total}")
             };
             text.set_if_neq(Text::new(value));
             continue;
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        if top || status || bottom || toast {
-            let (review, time, live) = &native;
-            let value = if top {
-                let name = repository.github.as_ref().map_or_else(
-                    || {
-                        repo.0
-                            .root
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned()
-                    },
-                    native_github::Target::label,
-                );
-                if repo.0.is_worktree() {
-                    format!("{name} · WORKTREE")
-                } else {
-                    name
-                }
-            } else if status {
-                file.path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&file.path)
-                    .to_owned()
-            } else if toast {
-                review
-                    .feedback
-                    .as_ref()
-                    .filter(|(deadline, _)| time.elapsed_secs() < *deadline)
-                    .map(|(_, message)| message.clone())
-                    .or_else(|| review.auto_publish.then(|| "Auto-publish on".into()))
-                    .unwrap_or_default()
-            } else if let Some((path, _)) = live
-                .last_touched(time.elapsed_secs_f64())
-                .filter(|(_, age)| *age < 8)
-            {
-                let filename = path.rsplit('/').next().unwrap_or(path);
-                format!("Updated {filename}    L to fly")
-            } else {
-                String::new()
-            };
-            let display = if value.is_empty() {
-                Display::None
-            } else {
-                Display::Flex
-            };
-            if node.display != display {
-                node.display = display;
-            }
-            if text.0 != value {
-                text.0 = value;
-            }
-            continue;
-        }
-        #[cfg(target_arch = "wasm32")]
-        let _ = (&mut node, toast);
+        let (review, time, live) = &native;
         let value = if top {
-            repo.0.root.to_string_lossy().into_owned()
-        } else if bottom {
-            if navigation.overview() {
-                navigation.prompt(&explorer)
+            let name = repository.github.as_ref().map_or_else(
+                || {
+                    repo.0
+                        .root
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                },
+                native_github::Target::label,
+            );
+            if repo.0.is_worktree() {
+                format!("{name} · WORKTREE")
             } else {
-                String::new()
+                name
             }
         } else if status {
-            file.path
-                .rsplit('/')
-                .next()
-                .unwrap_or(&file.path)
-                .to_owned()
+            filename.to_owned()
+        } else if toast {
+            review
+                .feedback
+                .as_ref()
+                .filter(|(deadline, _)| time.elapsed_secs() < *deadline)
+                .map(|(_, message)| message.clone())
+                .or_else(|| review.auto_publish.then(|| "Auto-publish on".into()))
+                .unwrap_or_default()
+        } else if bottom {
+            live.last_touched(time.elapsed_secs_f64())
+                .filter(|(_, age)| *age < 8)
+                .map(|(path, _)| {
+                    let filename = path.rsplit('/').next().unwrap_or(path);
+                    format!("Updated {filename}    L to fly")
+                })
+                .unwrap_or_default()
         } else {
             continue;
         };
@@ -2479,7 +2434,6 @@ fn hud(
         if node.display != display {
             node.display = display;
         }
-
         if text.0 != value {
             text.0 = value;
         }
