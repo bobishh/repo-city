@@ -86,22 +86,16 @@ pub(super) fn editor_range_at_line(
 }
 
 pub(super) fn block_size(file: &repo_world::File) -> Vec3 {
-    let mode = file
-        .after
-        .as_ref()
-        .or(file.before.as_ref())
-        .map(|blob| blob.mode.as_str());
-    if matches!(mode, Some("120000" | "160000")) || !file_preview::has_text_size_hint(&file.path) {
-        return Vec3::splat(WIDTH);
-    }
-    size_from_rows(estimated_rows(file))
+    estimated_rows(file).map_or(Vec3::splat(WIDTH), size_from_rows)
 }
 
-fn estimated_rows(file: &repo_world::File) -> usize {
-    file.after
-        .as_ref()
-        .or(file.before.as_ref())
-        .map_or(1, |blob| (blob.size / 40).max(1))
+fn estimated_rows(file: &repo_world::File) -> Option<usize> {
+    let blob = file.after.as_ref().or(file.before.as_ref());
+    let mode = blob.map(|blob| blob.mode.as_str());
+    if matches!(mode, Some("120000" | "160000")) || !file_preview::has_text_size_hint(&file.path) {
+        return None;
+    }
+    Some(blob.map_or(1, |blob| (blob.size / 40).max(1)))
 }
 
 fn size_from_rows(rows: usize) -> Vec3 {
@@ -1517,9 +1511,11 @@ impl WallSide {
             Face::Diff => (x + size.x / 2. + PANEL_OFFSET, z, size.z),
             Face::Blame => (x - size.x / 2. - PANEL_OFFSET, z, size.z),
         };
-        // Fill nominal short files; keep sparse content within the existing row-height cap.
-        let row_limit =
-            (texture_row_height(width) * 1.5).max(size.y / (estimated_rows(file) as f32 + 1.));
+        // Allow short, text-sized facades to fill their wall. Default blocks keep compact rows.
+        let compact_pitch = texture_row_height(width) * 1.5;
+        let row_limit = estimated_rows(file).map_or(compact_pitch, |rows| {
+            compact_pitch.max(size.y / (rows as f32 + 1.))
+        });
         let row_height = (size.y / (count.max(1) as f32 + 1.)).min(row_limit);
         let heading_height = row_height;
         let wall = Wall {
@@ -3048,6 +3044,31 @@ mod tests {
         let target = side.top.with_y(below_code);
         let camera = Transform::from_translation(target + Vec3::Z * 2.).looking_at(target, Vec3::Y);
         assert!(side.wash_hit(&camera, count).is_none());
+    }
+
+    #[test]
+    fn extensionless_inventory_keeps_compact_rows_on_every_wall() {
+        let source =
+            "[webservers]\nweb\n[dbservers]\ndb\n\n[datacenters:children]\nwebservers\ndbservers\n";
+        let mut file = fixture_file();
+        file.path = "exercise_7.1/production/inventory".into();
+        file.after = Some(repo_world::Blob {
+            id: String::new(),
+            size: source.len(),
+            mode: "100644".into(),
+        });
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight(&file.path, source));
+        let size = block_size(&file);
+        assert_eq!(size, Vec3::splat(WIDTH));
+        for face in [Face::Source, Face::Diff, Face::Blame] {
+            let side = WallSide::new(&file, explorer.source_layout.len(), face, size);
+            assert!(
+                side.wall.row_height <= texture_row_height(side.width) * 1.5,
+                "inventory rows are too far apart on {face:?}: {}",
+                side.wall.row_height,
+            );
+        }
     }
 
     #[test]
