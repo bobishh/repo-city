@@ -2,7 +2,7 @@
 
 ### Requirement: Follow explicit agent file activity
 
-Vibe City SHALL offer an opt-in Follow agent control. When enabled, activity with an explicit repository-relative file path SHALL navigate to that file and an available source line. The client SHALL NOT infer file activity from generated prose or invent a line number when an event has no line anchor; unanchored activity SHALL use the file start. Rapid events SHALL be coalesced. Disabling follow SHALL stop subsequent automatic navigation. Ordinary MCP proposals SHALL continue to require acceptance.
+Repo City SHALL offer an opt-in Follow agent control. When enabled, activity with an explicit repository-relative file path SHALL navigate to that file and an available source line. The client SHALL NOT infer file activity from generated prose or invent a line number when an event has no line anchor; unanchored activity SHALL use the file start. Rapid events SHALL be coalesced. Disabling follow SHALL stop subsequent automatic navigation. Ordinary MCP proposals SHALL continue to require acceptance.
 
 #### Scenario: Follow a file operation
 

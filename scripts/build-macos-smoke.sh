@@ -8,7 +8,7 @@ from pathlib import Path
 import plistlib, shutil, sys
 root, output = map(Path, sys.argv[1:])
 bundle = root / 'dist/RepoCitySmoke.app'
-shutil.copytree(root / 'dist/Vibe City.app', bundle, dirs_exist_ok=True)
+shutil.copytree(root / 'dist/Repo City.app', bundle, dirs_exist_ok=True)
 info_path = bundle / 'Contents/Info.plist'
 with info_path.open('rb') as f:
     info = plistlib.load(f)

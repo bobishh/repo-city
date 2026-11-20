@@ -90,7 +90,6 @@ pub(super) fn has_text_size_hint(path: &str) -> bool {
             | "yaml"
             | "yml"
             | "xml"
-            | "svg"
             | "csv"
             | "tsv"
             | "lock"
@@ -140,7 +139,7 @@ pub(super) fn format(path: &str) -> Option<Format> {
     if ["md", "markdown", "mdown", "mkd"].contains(&extension) {
         return Some(Format::Markdown);
     }
-    if image_format(path).is_some() {
+    if extension == "svg" || image_format(path).is_some() {
         return Some(Format::Image);
     }
     // The bounded source reader validates UTF-8 and rejects binary data.

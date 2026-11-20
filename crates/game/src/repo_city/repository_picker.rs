@@ -307,7 +307,7 @@ pub(super) fn window_title(set: &WorldSet, repo: &Repository) -> String {
     let name = if cfg!(target_arch = "wasm32") {
         set.name.as_str()
     } else {
-        "Vibe City"
+        APP_NAME
     };
     match repo.root.file_name() {
         Some(repository) => format!("{name} · {}", repository.to_string_lossy()),
@@ -818,6 +818,7 @@ fn show_github(
     picker.view = Some(view);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn spawn(
     commands: &mut Commands,
     font: &TextFont,
@@ -852,7 +853,6 @@ pub(super) fn spawn(
                 padding: UiRect::axes(px(8.), px(5.)),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.02, 0.07, 0.09, 0.95)),
             observe(|_: On<Activate>, mut picker: ResMut<RepositoryPicker>| {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
@@ -871,8 +871,8 @@ pub(super) fn spawn(
                 bevy::picking::Pickable::IGNORE,
             ));
             ui.spawn((
-                Text::new("Vibe City"),
-                TextFont::from_font_size(18.),
+                Text::new(APP_NAME),
+                desktop_splash::wordmark_font(),
                 TextColor(ink),
                 bevy::picking::Pickable::IGNORE,
             ));
@@ -897,7 +897,7 @@ pub(super) fn spawn(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn draw_menu(commands: &mut Commands) -> RepositoryView {
-    let panel = native_panel::panel(commands, "Vibe City", 390.);
+    let panel = native_panel::panel(commands, APP_NAME, 390.);
     commands.entity(panel).with_children(|menu| {
         for (label, action) in [
             ("Open local repository…", PickerAction::Folder),
@@ -1095,7 +1095,7 @@ pub(super) fn open_repository(
                     .unwrap_or_else(|| next.initial_file());
                 let mut explorer = Explorer::new(selected);
                 explorer.open(&next, selected);
-                window.title = format!("Vibe City · {}", snapshot.target.label());
+                window.title = format!("{APP_NAME} · {}", snapshot.target.label());
                 picker.comments = native_github::pull_comments(
                     &snapshot.target,
                     &next,

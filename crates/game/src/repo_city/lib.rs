@@ -21,6 +21,8 @@ mod city_navigation;
 mod city_stream;
 mod code_texture;
 mod comparison_scene;
+#[cfg(not(target_arch = "wasm32"))]
+mod desktop_splash;
 mod district;
 mod file_facade;
 #[cfg(not(target_arch = "wasm32"))]
@@ -80,6 +82,7 @@ type PlayerCamera = (
 
 const CAMERA_FLOOR: f32 = 0.05;
 const MAX_LOOK_PITCH: f32 = 1.5;
+const APP_NAME: &str = "Repo City";
 
 #[derive(Resource)]
 struct Repo(Repository);
@@ -483,7 +486,7 @@ pub fn run() {
     }
     if !repo.files.is_empty() {
         println!(
-            "REPO CITY: {} files, {} districts, commit {}",
+            "{APP_NAME}: {} files, {} districts, commit {}",
             repo.files.len(),
             repo.districts.len(),
             &repo.revision[..8]
@@ -667,6 +670,7 @@ pub fn run() {
     .add_systems(Update, file_links::draw.after(file_links::update))
     .init_resource::<review_notes::ReviewUi>()
     .init_resource::<review_tablet::Tablet>()
+    .add_plugins(desktop_splash::Plugin)
     .init_resource::<terminal::Terminal>()
     .add_systems(Update, terminal::update.after(review_tablet::update))
     .init_resource::<markdown_preview::Request>()
@@ -1032,7 +1036,7 @@ fn setup(
     repository_picker::spawn(&mut commands, &ui_font(13.), color(set.ink), &mut images);
     #[cfg(not(target_arch = "wasm32"))]
     commands.spawn((
-        Text::new("REPO CITY"),
+        Text::new(""),
         ui_font(18.),
         TextColor(color(set.ink)),
         Node {
@@ -1043,6 +1047,7 @@ fn setup(
             ..default()
         },
         TopHud,
+        desktop_splash::CityOverlay,
     ));
     #[cfg(not(target_arch = "wasm32"))]
     let bottom_hud = commands
@@ -1074,6 +1079,7 @@ fn setup(
     #[cfg(not(target_arch = "wasm32"))]
     commands
         .spawn((
+            desktop_splash::CityOverlay,
             Node {
                 position_type: PositionType::Absolute,
                 right: px(24.),

@@ -16,23 +16,23 @@ binary="$target_dir/$target/$profile_dir/vibe-city"
 output="${VIBE_CITY_OUTPUT_DIR:-$project_dir/dist}"
 mkdir -p "$output"
 output="$(cd "$output" && pwd)"
-name="VibeCity-$target"
+name="RepoCity-$target"
 bundle="$output/$name"
 mkdir -p "$bundle/licenses"
-cp "$binary" "$bundle/vibe-city-bin"
+cp "$binary" "$bundle/repo-city-bin"
 cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY.md "$bundle/licenses/"
 cp licenses/*.txt assets/fonts/*-LICENSE "$bundle/licenses/"
-cp web/assets/apple-touch-icon.png "$bundle/vibe-city.png"
-cat > "$bundle/vibe-city" <<'LAUNCHER'
+cp web/assets/apple-touch-icon.png "$bundle/repo-city.png"
+cat > "$bundle/repo-city" <<'LAUNCHER'
 #!/usr/bin/env sh
 set -eu
 bundle_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec "$bundle_dir/vibe-city-bin" "$@"
+exec "$bundle_dir/repo-city-bin" "$@"
 LAUNCHER
-chmod +x "$bundle/vibe-city"
+chmod +x "$bundle/repo-city"
 cat > "$bundle/README.txt" <<'USAGE'
-Run ./vibe-city, then choose Open local repository from the robot logo.
-Enter the checkout path, or launch ./vibe-city --repo /path/to/checkout --live.
+Run ./repo-city, then choose Open local repository from the Repo City logo.
+Enter the checkout path, or launch ./repo-city --repo /path/to/checkout --live.
 Git must be on PATH. The app needs a Vulkan-capable graphics driver.
 Debian/Ubuntu runtime packages: git, xdg-utils, libasound2, libudev1,
 libfontconfig1, libwayland-client0, libwayland-cursor0, libxkbcommon0,

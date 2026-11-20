@@ -1,15 +1,17 @@
 # Repo City
 
-[Repo City](https://repo-city.meta-uber-engineer.dev/) opens GitHub repositories
-and pull requests as a 3D city in your browser. **Vibe City** opens local Git
-checkouts on desktop, including live worktrees, an integrated terminal and
+[Repo City Web](https://repo-city.meta-uber-engineer.dev/) opens GitHub repositories
+and pull requests as a 3D city in your browser. The desktop app opens local Git
+checkouts, including live worktrees, an integrated terminal and
 local review notes shared through MCP.
 
 Directories become districts; files become buildings with source, diff, and
 blame walls. Both applications use the same Rust engine in this workspace.
 Licensed under **MIT OR Apache-2.0**; choose either license.
 
-![VibePad renders sound and reading settings with Bevy UI](docs/vibe-city.png)
+![Repo City Web’s repository picker](docs/repo-city-web.webp)
+
+![Repo City desktop flying between file buildings](docs/repo-city-desktop.webp)
 
 ## Workspace
 
@@ -27,16 +29,17 @@ The former `bobishh/vibe-city` repository is superseded by this workspace.
 
 ### On your Mac
 
-The desktop app is called **Vibe City**. Install Rust and CMake to build the app and its bundled Opus codec.
+Download the desktop package from [GitHub Releases](https://github.com/bobishh/repo-city/releases),
+or install Rust and CMake to build the app and its bundled Opus codec.
 
 ```sh
 git clone https://github.com/bobishh/repo-city.git
 cd repo-city
 ./scripts/build-macos.sh
-open "dist/Vibe City.app"
+open "dist/Repo City.app"
 ```
 
-Click the robot **Vibe City** logo and choose **Open local repository…**, or
+Click the **Repo City** logo and choose **Open local repository…**, or
 press **Cmd+O**. The same menu opens **Revisions…**, **GitHub…**, and file search.
 **Revisions…** lists branches, tags, and recent commits. You can view a commit
 without switching your working tree. For terminal use, `./scripts/run-native.sh`
@@ -51,10 +54,10 @@ tablet and see earlier changes. Press **F** to show only changed buildings and
 **G** at a changed file to read its diff. From the command line,
 run `./scripts/run-native.sh /path/to/checkout --live`.
 The script runs the Rust development build. The watcher updates the city when
-the inspected checkout changes. Restart the program to load changes to Repo
-City's own Rust code. The desktop tablet uses watcher times or file modification
-times in a worktree and commit times for Git comparisons. The browser uses
-GitHub commit history where available.
+the inspected checkout changes. Restart the program to load changes to Repo City's
+Rust code. The desktop tablet uses watcher or file modification times for worktrees
+and commit times for Git comparisons. The browser uses GitHub commit history
+where available.
 
 Choose **GitHub…** from the logo menu to find a repository or paste a GitHub repository or pull
 request URL. **Sign in with GitHub** opens the verification page. Click the
@@ -84,8 +87,8 @@ sudo apt install build-essential cmake pkg-config libasound2-dev libudev-dev \
 ./scripts/build-linux.sh
 ```
 
-The script creates `dist/VibeCity-<target>.tar.gz`. Extract it and launch
-`vibe-city`; the package lists its runtime dependencies. Build with Rust 1.98
+The script creates `dist/RepoCity-<target>.tar.gz`. Extract it and launch
+`repo-city`; the package lists its runtime dependencies. Build with Rust 1.98
 or newer. On Windows, install Rust with the MSVC toolchain, Visual Studio C++
 Build Tools, CMake, and Git for Windows, then run:
 
@@ -93,12 +96,12 @@ Build Tools, CMake, and Git for Windows, then run:
 ./scripts/build-windows.ps1
 ```
 
-Extract the resulting `dist/VibeCity-x86_64-pc-windows-msvc.zip` and launch
-`VibeCity.exe`. The Windows script accepts `-Target`, `-BuildProfile`, and
+Extract the resulting `dist/RepoCity-x86_64-pc-windows-msvc.zip` and launch
+`RepoCity.exe`. The Windows script accepts `-Target`, `-BuildProfile`, and
 `-OutputDirectory`. The Linux script accepts `CARGO_BUILD_TARGET`,
 `VIBE_CITY_BUILD_PROFILE`, and `VIBE_CITY_OUTPUT_DIR`; cross builds need a
 matching C compiler and platform libraries. Both packages include license
-notices. These build scripts do not add CI jobs.
+notices.
 
 Settings and local notes use `%APPDATA%/Repo City` on Windows and
 `${XDG_CONFIG_HOME:-~/.config}/Repo City` on Linux. System voice speech and
@@ -107,7 +110,7 @@ keep the GitHub session for the current app run.
 
 ### In your browser
 
-Open [Repo City](https://repo-city.meta-uber-engineer.dev/) in a browser with
+Open [Repo City Web](https://repo-city.meta-uber-engineer.dev/) in a browser with
 WebGPU. Paste an `owner/repository` name, a GitHub repository URL, or a GitHub
 pull request URL. For a repository, choose a branch, tag, or commit from the
 suggestions. Pick a comparison base to review a branch from its merge base.
@@ -137,7 +140,7 @@ The first city visit offers a controls tour. Open **H** to take it again.
 | Action | Control |
 | --- | --- |
 | Find a file by name or path | **P** in the browser, **⌘P** on Mac |
-| Preview a document or image | Aim at its building and press **P**. VibePad renders Markdown, plain text and code, and raster images (formats below). |
+| Preview a document or image | Aim at its building and press **P**. VibePad renders Markdown, plain text and code, and images including SVG (formats below). |
 | Fly | **WASD**, **Space** and **Ctrl** for altitude, **Shift** to boost |
 | Capture or release the cursor | Click the scene to capture. **Esc** releases. |
 | Use the actions menu | Right-click to open or close it. Scroll or use the arrow keys to highlight an action. Click or press **Enter** to select it. |
@@ -151,16 +154,16 @@ The first city visit offers a controls tour. Open **H** to take it again.
 | Turn to the diff or blame wall | **G** for diff, **B** for blame. Up close, **Left/Right** cycles source, diff and blame. Sign in with GitHub for line attribution in the browser. |
 | Follow a file’s changes | **C** starts the review. Scroll up or press **W** for the next stop. Scroll down or press **S** for the previous stop. **Q** returns to the diff wall. |
 | Fold a code block | **Z** collapses the aimed function; **X** expands it. Fixed-line blocks are used when syntax boundaries are unavailable. |
-| Open controls | **H** opens and puts away VibePad Help. Choose **Start tour** to practice flying and washing source. |
+| Open controls | **H** opens and puts away VibePad Help. Choose **Start tour** to practice flying and thawing source. |
 
 Source, diff and blame walls wrap long code to their available text width for
 every language. Blame reserves space for attribution while history loads.
 Continuation rows keep the original line number for notes, search and links.
 
 **Reading block** chooses whole functions where syntax boundaries are available,
-or fixed-line blocks. **Lines per wash block** sets the fallback/fixed block size
+or fixed-line blocks. **Lines per reading block** sets the fallback/fixed block size
 (default: 6). Set it to 1 to clear individual rows. **Auto-advance** smoothly
-scrolls downward to the next unread block while water remains on. This setting is independent of the
+scrolls downward to the next unread block while the heat tool stays on. This setting is independent of the
 delay bounds. Wrapped continuations count as displayed rows; the original
 source line is saved as read only after all its continuations are cleared.
 Reading a close diff, blame wall, or hunk stop uses the same timer and reveals only its visible source lines on the correct comparison side. Flying past or looking away does not complete a block.
@@ -194,10 +197,12 @@ Reach the end of a Markdown or text preview to reveal the file's source wall.
 with unknown extensions as plain text. Binary and non-UTF-8 data show an error
 inside VibePad. The image viewer supports PNG, JPEG, WebP, GIF, BMP, ICO,
 TIFF (`.tif` / `.tiff`), TGA, PNM (`.pnm`, `.pbm`, `.pgm`, `.ppm`, `.pam`), QOI,
-DDS and Radiance HDR (`.hdr` / `.rgbe`). GIF previews show the first frame.
+DDS, Radiance HDR (`.hdr` / `.rgbe`) and SVG. GIF previews show the first frame.
 HDR and 16-bit images use an 8-bit display preview. DDS support covers DXT1,
-DXT3 and DXT5 textures; unsupported layouts show a decoding error. SVG remains
-available as text. All raster formats use the same bounded Rust decoder on desktop
+DXT3 and DXT5 textures; unsupported layouts show a decoding error. SVG fits in a
+2048-pixel preview and uses the bundled font for generic text. The renderer
+loads vector shapes and labels from the SVG document itself. Raster formats
+use the same bounded Rust decoder on desktop
 and in the browser: 16 MiB input, 8192 pixels per side and 16 megapixels total.
 Repo City saves revealed lines and reviewed files in IndexedDB in your browser or
 SQLite on your Mac. Reading ranges carry their source content identity. After edits,
@@ -344,7 +349,7 @@ failures. F9 cancels pending reconnects. It does not support interrupting the ag
 by speaking over it.
 
 The agent receives the selected repository context and can read camera focus and
-local notes through Repo City's MCP tools. Focus reports whether the window is
+local notes through Repo City’s MCP tools. Focus reports whether the window is
 active; it is not eye tracking. Public tool events with explicit file paths
 draw blue beacons at those buildings, including activity from identified child
 agents. Unresolved activity is not assigned to a guessed building.
@@ -364,7 +369,7 @@ integration is native-only; the deployed browser does not start local agents.
 
 ## Sound and preferences
 
-The gear at the right of VibePad's navigation opens **Settings**. Valid changes save automatically; invalid fields show a reason and keep the last valid settings. Set the water
+The gear at the right of VibePad's navigation opens **Settings**. Valid changes save automatically; invalid fields show a reason and keep the last valid settings. Set the
 reading delay there, mute the city, adjust volume, or turn robot speech off.
 Sound and narration start disabled. Wind, spray, construction, and occasional sirens are synthesized locally when enabled.
 Choose **Radio** in Sound settings for **Space trance** or **Techno**. Each station
@@ -376,7 +381,7 @@ The browser starts its AudioWorklet after the first click or keypress. Preferenc
 persist on the device; opening the repository picker or hiding the page silences it.
 The robot reads the current readable block from start to end, in source order.
 Choose an installed local voice in Settings; the default prefers Daniel.
-Water is muted and other city sounds are quieter during speech. Leaving the
+City sounds are quieter during speech. Leaving the
 block lets the current utterance finish; mute, opening a menu, or hiding the
 application stops speech. macOS uses system voices; desktop speech is currently
 unavailable on Linux and Windows. Browser voice availability depends on installed
@@ -408,7 +413,7 @@ the app; the tablet shows installation guidance rather than closing the app.
 
 Without a mouse, **arrows** turn the camera in flight. Near a wall, **Up/Down**
 scrolls and **Left/Right** changes its face; hold **Shift** for free look. **K**
-uses the selected tool: tap to toggle water or hold to paint.
+uses the selected tool: tap to toggle heating or hold to paint.
 
 **Alt+0** opens repository selection. **Shift+F10** opens the actions menu.
 
@@ -430,7 +435,7 @@ remain required. Landscape provides more reading space.
 
 ## Leave review notes
 
-Wash the source or use the readable diff wall. Pick a paint with **U** and
+Thaw the source or use the readable diff wall. Pick a paint with **U** and
 drag over lines to color them and save a draft with that paint's reusable
 prompt. Each draft keeps its original file, revision, and line range.
 Change a paint's name, color, spray text, or reusable prompt in **Paints**.

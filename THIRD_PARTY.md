@@ -25,8 +25,10 @@ comes from GitHub Linguist revision `14ac04abe3e3722e42c52489b377d9d4118fc8b6`.
 The local projection keeps only names, scopes, extensions, filenames and interpreters;
 see `licenses/linguist-MIT.txt`.
 
-Caveat (`web/assets/caveat-latin-wght.woff2`) is licensed under the SIL Open Font License 1.1.
-Copyright 2014 The Caveat Project Authors. See `web/assets/OFL-Caveat.txt`.
+Caveat is licensed under the SIL Open Font License 1.1. Copyright 2014 The
+Caveat Project Authors. The desktop font (`assets/fonts/Caveat-Latin.ttf`) is
+the TrueType form of the web font (`web/assets/caveat-latin-wght.woff2`). See
+`assets/fonts/Caveat-LICENSE` and `web/assets/OFL-Caveat.txt`.
 
 ## GPU Markdown dependencies
 
@@ -54,8 +56,9 @@ and `licenses/bevy-markup-APACHE.txt`.
 
 ## Project artwork
 
-The repository cover (`web/assets/start-screen.webp`) and facade texture
-(`assets/city/facade-print.png`) are original artwork created for this project.
+The startup covers (`web/assets/repo-city-start.webp` and
+`assets/repo-city-tablet.webp`) and facade texture (`assets/city/facade-print.png`)
+are original artwork created for this project.
 They are distributed under the project's MIT or Apache-2.0 license.
 
 ## Native terminal
@@ -108,3 +111,5 @@ Image preview uses image-rs 0.25.10 (MIT OR Apache-2.0). Additional GIF, TIFF an
 QOI decoding uses color_quant 1.1.0, fax 0.2.7, gif 0.14.2, qoi 0.4.1,
 tiff 0.11.3 and weezl 0.1.12, under MIT or MIT OR Apache-2.0 as declared by
 each package. Distribution bundles include the complete source notices.
+
+SVG preview uses resvg 0.50.0 (MIT OR Apache-2.0). See `licenses/resvg-MIT.txt`.

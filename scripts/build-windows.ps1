@@ -18,15 +18,15 @@ try {
     $Binary = Join-Path $TargetDirectory "$Target/$ProfileDirectory/vibe-city.exe"
     if (-not (Test-Path $Binary -PathType Leaf)) { throw "Missing Windows executable: $Binary" }
     if (-not $OutputDirectory) { $OutputDirectory = Join-Path $ProjectDirectory "dist" }
-    $Name = "VibeCity-$Target"
+    $Name = "RepoCity-$Target"
     $Bundle = Join-Path $OutputDirectory $Name
     $Licenses = Join-Path $Bundle "licenses"
     New-Item -ItemType Directory -Force $Licenses | Out-Null
-    Copy-Item $Binary (Join-Path $Bundle "VibeCity.exe")
+    Copy-Item $Binary (Join-Path $Bundle "RepoCity.exe")
     Copy-Item LICENSE-MIT, LICENSE-APACHE, THIRD_PARTY.md, licenses/*.txt, assets/fonts/*-LICENSE $Licenses
     @'
-Launch VibeCity.exe, then choose Open local repository from the robot logo.
-Enter a checkout path, or run VibeCity.exe --repo C:\path\to\checkout --live.
+Launch RepoCity.exe, then choose Open local repository from the Repo City logo.
+Enter a checkout path, or run RepoCity.exe --repo C:\path\to\checkout --live.
 Install Git for Windows and allow applications to use Git from PATH.
 A DirectX 12 or Vulkan-capable graphics driver is required. No gh command is needed.
 System voice speech is currently available on macOS only.

@@ -190,7 +190,7 @@ pub(super) fn propose(
 pub(super) fn displayed_repository(scope: &str) -> Result<(Repository, u32), String> {
     let focus = focus_context::read(scope);
     let snapshot = &focus["snapshot"];
-    let process = snapshot["process"].as_u64().and_then(|value| u32::try_from(value).ok()).filter(|value| *value != 0).ok_or("No fresh city window is available for this checkout. Open the repository in Vibe City first.")?;
+    let process = snapshot["process"].as_u64().and_then(|value| u32::try_from(value).ok()).filter(|value| *value != 0).ok_or("No fresh city window is available for this checkout. Open the repository in Repo City first.")?;
     let revision = snapshot["comparison"]["revision"]
         .as_str()
         .ok_or("The city comparison is unavailable.")?;

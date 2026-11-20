@@ -82,7 +82,7 @@ impl Opening {
             }
             Err(mpsc::TryRecvError::Empty) if self.started.elapsed() >= Duration::from_secs(12) => {
                 self.active.store(false, Ordering::Release);
-                Some(Err("Microphone or speaker did not open within 12 seconds. Check microphone access for Vibe City in System Settings, then start voice again.".into()))
+                Some(Err("Microphone or speaker did not open within 12 seconds. Check microphone access for Repo City in System Settings, then start voice again.".into()))
             }
             Err(mpsc::TryRecvError::Empty) => None,
         }

@@ -1,5 +1,8 @@
 //! Bounded snapshot image loading for VibePad; decoding happens off the render thread.
-use std::io::Cursor;
+use std::{
+    io::Cursor,
+    sync::{Arc, OnceLock},
+};
 
 use bevy::{asset::RenderAssetUsages, image::ImageSampler};
 
@@ -7,7 +10,7 @@ use super::*;
 
 const MAX_DIMENSION: u32 = 8192;
 const MAX_PIXELS: u64 = 16 * 1024 * 1024;
-const FORMATS: &str = "PNG, JPEG, WebP, GIF, BMP, ICO, TIFF, TGA, PNM, QOI, DDS and HDR";
+const FORMATS: &str = "PNG, JPEG, WebP, GIF, BMP, ICO, TIFF, TGA, PNM, QOI, DDS, HDR and SVG";
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Resource, Default)]
@@ -77,6 +80,9 @@ pub(super) fn decode_named(path: &str, bytes: &[u8]) -> Result<Image, String> {
     if bytes.len() > repo_world::ASSET_BYTES_LIMIT {
         return Err("Image exceeds the 16 MiB preview limit.".into());
     }
+    if file_facade::extension(path).eq_ignore_ascii_case("svg") {
+        return decode_svg(bytes);
+    }
     let format = image::guess_format(bytes)
         .ok()
         .or_else(|| {
@@ -117,16 +123,84 @@ pub(super) fn decode_named(path: &str, bytes: &[u8]) -> Result<Image, String> {
     let decoded = reader
         .decode()
         .map_err(|error| format!("Could not decode image: {error}"))?;
-    // UI textures must remain filterable on WebGPU; HDR/16-bit sources use an 8-bit preview.
-    let rgba = image::DynamicImage::ImageRgba8(decoded.into_rgba8());
-    let mut image = Image::from_dynamic(rgba, true, RenderAssetUsages::default());
+    Ok(texture(decoded.into_rgba8()))
+}
+
+fn texture(rgba: image::RgbaImage) -> Image {
+    // The in-game tablet samples filterable 8-bit RGBA on both render backends.
+    let mut image = Image::from_dynamic(
+        image::DynamicImage::ImageRgba8(rgba),
+        true,
+        RenderAssetUsages::default(),
+    );
     image.sampler = ImageSampler::linear();
-    Ok(image)
+    image
+}
+
+fn decode_svg(bytes: &[u8]) -> Result<Image, String> {
+    use resvg::{tiny_skia, usvg};
+    const MAX_SIDE: u32 = 2048;
+    static FONTS: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
+    let fontdb = FONTS.get_or_init(|| {
+        let mut fonts = usvg::fontdb::Database::new();
+        fonts.load_font_data(
+            include_bytes!("../../../../assets/fonts/FiraMono-Medium.ttf").to_vec(),
+        );
+        fonts.set_serif_family("Fira Mono");
+        fonts.set_sans_serif_family("Fira Mono");
+        fonts.set_monospace_family("Fira Mono");
+        Arc::new(fonts)
+    });
+    let options = usvg::Options {
+        font_family: "Fira Mono".into(),
+        fontdb: fontdb.clone(),
+        image_href_resolver: usvg::ImageHrefResolver {
+            resolve_data: Box::new(|_, _, _| None),
+            resolve_string: Box::new(|_, _| None),
+        },
+        ..Default::default()
+    };
+    let tree = usvg::Tree::from_data(bytes, &options)
+        .map_err(|error| format!("Could not read SVG: {error}"))?;
+    let size = tree.size();
+    let scale = (MAX_SIDE as f32 / size.width().max(size.height())).min(1.);
+    let extent = |side: f32| ((side * scale).ceil() as u32).clamp(1, MAX_SIDE);
+    let (width, height) = (extent(size.width()), extent(size.height()));
+    let mut pixmap =
+        tiny_skia::Pixmap::new(width, height).ok_or("Could not allocate SVG preview.")?;
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    let bytes = pixmap
+        .pixels()
+        .iter()
+        .flat_map(|pixel| {
+            let pixel = pixel.demultiply();
+            [pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()]
+        })
+        .collect();
+    let rgba = image::RgbaImage::from_raw(width, height, bytes)
+        .ok_or("Invalid SVG preview dimensions.")?;
+    Ok(texture(rgba))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn svg_preview_renders_vector_pixels_and_scales_large_viewports() {
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100000" height="50000" viewBox="0 0 2 1"><rect width="2" height="1" fill="red" fill-opacity="0.5"/></svg>"#;
+        assert!(supported("diagram.SVG"));
+        let preview = decode_named("diagram.SVG", svg).unwrap();
+        assert_eq!(preview.size(), UVec2::new(2048, 1024));
+        let pixels = preview.data.unwrap();
+        assert_eq!(&pixels[..3], &[255, 0, 0]);
+        assert!((127..=128).contains(&pixels[3]));
+        assert!(decode_named("broken.svg", b"not SVG").is_err());
+    }
 
     struct Fixture(std::path::PathBuf);
 
@@ -288,7 +362,6 @@ mod tests {
         assert!(decode_named("too-wide.tga", &tga).is_err());
         assert!(decode_named("invalid.tiff", b"bad data").is_err());
         assert!(decode_named("invalid.gif", b"GIF89a").is_err());
-        assert!(decode_named("drawing.svg", b"<svg width='10' height='10'/>").is_err());
     }
 
     #[test]

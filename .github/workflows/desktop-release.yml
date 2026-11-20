@@ -39,26 +39,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake pkg-config libasound2-dev libudev-dev libfontconfig-dev libwayland-dev libxkbcommon-dev libx11-dev libxkbcommon-x11-0
           VIBE_CITY_BUILD_PROFILE=dev ./scripts/build-linux.sh
-          tar -tzf dist/VibeCity-*.tar.gz >/dev/null
+          tar -tzf dist/RepoCity-*.tar.gz >/dev/null
       - if: runner.os == 'Windows'
         shell: pwsh
         run: |
           ./scripts/build-windows.ps1 -BuildProfile dev
-          tar -tf dist/VibeCity-x86_64-pc-windows-msvc.zip | Out-Null
+          tar -tf dist/RepoCity-x86_64-pc-windows-msvc.zip | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "Invalid Windows archive" }
       - if: runner.os == 'macOS'
         run: |
           ./scripts/build-macos.sh --locked
-          codesign --force --sign - 'dist/Vibe City.app'
-          codesign --verify --strict 'dist/Vibe City.app'
-          ditto -c -k --keepParent 'dist/Vibe City.app' "dist/VibeCity-$(uname -m)-apple-darwin.zip"
-          unzip -tq dist/VibeCity-*.zip
+          codesign --force --sign - 'dist/Repo City.app'
+          codesign --verify --strict 'dist/Repo City.app'
+          ditto -c -k --keepParent 'dist/Repo City.app' "dist/RepoCity-$(uname -m)-apple-darwin.zip"
+          unzip -tq dist/RepoCity-*.zip
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-${{ runner.os }}
           path: |
-            dist/VibeCity-*.tar.gz
-            dist/VibeCity-*.zip
+            dist/RepoCity-*.tar.gz
+            dist/RepoCity-*.zip
           if-no-files-found: error
 
   publish:
@@ -81,5 +81,5 @@ jobs:
         run: |
           [[ "$TAG" =~ ^desktop-preview-[0-9]{4}-[0-9]{2}-[0-9]{2}([-a-z0-9]*)$ ]]
           test "$(find . -maxdepth 1 -type f | wc -l)" -eq 3
-          sha256sum VibeCity-* > SHA256SUMS
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --generate-notes VibeCity-* SHA256SUMS
+          sha256sum RepoCity-* > SHA256SUMS
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --generate-notes RepoCity-* SHA256SUMS

@@ -31,6 +31,7 @@ pub(crate) fn spawn_reticle(commands: &mut Commands) {
                     BackgroundColor(Color::WHITE),
                     Node {
                         position_type: PositionType::Absolute,
+                        display: Display::None,
                         left: px(20. - width / 2.),
                         top: px(20. - height / 2.),
                         width: px(width),
@@ -111,7 +112,8 @@ pub(crate) fn draw(
         });
     let remaining = listing.wash_fraction_remaining();
     for (part, mut color, mut node) in &mut reticle {
-        let shown = pilot.captured
+        let shown = !repo.0.files.is_empty()
+            && pilot.captured
             && !review.blocked
             && match part.0 {
                 None => true,

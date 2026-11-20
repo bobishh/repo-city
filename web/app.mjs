@@ -192,7 +192,7 @@ async function openRepository(repo, ref, base, exactBase = false) {
         import("./game/repo_city.js"),
       ]);
       const graphics = await navigator.gpu?.requestAdapter();
-      if (!graphics) throw new Error("WebGPU is unavailable. Open Repo City in a browser with WebGPU and graphics acceleration.");
+      if (!graphics) throw new Error("WebGPU is unavailable. Open Repo City Web in a browser with WebGPU and graphics acceleration.");
       await stageRepository(repository, ref, base);
       globalThis.repoCity = {
         tourCommand: () => tourCommand,
@@ -226,7 +226,7 @@ async function openRepository(repo, ref, base, exactBase = false) {
           const { repository } = active;
           const snapshot = JSON.parse(repository.snapshot);
           const blob = snapshot[before ? "before" : "after"][path];
-          const image = /\.(png|jpe?g|webp|gif|bmp|ico|tiff?|tga|p[bnpg]m|pam|qoi|dds|hdr|rgbe)$/i.test(path);
+          const image = /\.(png|jpe?g|webp|gif|bmp|ico|tiff?|tga|p[bnpg]m|pam|qoi|dds|hdr|rgbe|svg)$/i.test(path);
           const markdown = /\.(md|markdown|mdown|mkd)$/i.test(path);
           review.previewMarkdown(path, async () => {
             if (!blob || blob.mode === "120000") throw new Error("No readable source in this snapshot.");

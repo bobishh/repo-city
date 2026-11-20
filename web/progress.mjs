@@ -7,7 +7,7 @@ function database() {
   const request = indexedDB.open("repo-city-progress", 2);
   open = new Promise((resolve, reject) => {
     const wait = setTimeout(() => reject(new Error(
-      "The progress database is taking too long to open. If another Repo City tab is open, reload it, then reload this page.",
+      "The progress database is taking too long to open. If another Repo City Web tab is open, reload it, then reload this page.",
     )), 3000);
     request.onupgradeneeded = event => {
       if (event.oldVersion === 0) request.result.createObjectStore(table);
@@ -16,7 +16,7 @@ function database() {
     // Keep one pending upgrade. Starting another open here would queue behind it.
     request.onblocked = () => {
       clearTimeout(wait);
-      reject(new Error("Another Repo City tab is blocking the progress update. Reload the other Repo City tabs, then reload this page to restore saved progress."));
+      reject(new Error("Another Repo City Web tab is blocking the progress update. Reload the other Repo City Web tabs, then reload this page to restore saved progress."));
     };
     request.onerror = () => {
       clearTimeout(wait);

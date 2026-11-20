@@ -3812,6 +3812,7 @@ mod tests {
             "photo.jpg",
             "animation.gif",
             "screen.webp",
+            "diagram.SVG",
             "face.ttf",
             "face.woff2",
             "poster.pdf",

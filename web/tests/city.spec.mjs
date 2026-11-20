@@ -73,6 +73,19 @@ test("opens a rendered Markdown document with P and follows its relative link", 
   await expectClosed(page);
 });
 
+test("opens under the Repo City Web name with the city artwork", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await expect(page).toHaveTitle("Repo City Web");
+  await expect(page.getByRole("button", { name: "Repo City Web", exact: true })).toBeVisible();
+  await expect(page.locator("#logo .wordmark-edition")).toBeVisible();
+  const cover = page.locator("#start-screen img");
+  await expect(cover).toHaveAttribute("src", "./assets/repo-city-start.webp");
+  await expect.poll(() => cover.evaluate(image => image.naturalWidth)).toBeGreaterThan(1000);
+  await expect(page.getByRole("combobox", { name: "GitHub repository" })).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+  await page.screenshot({ path: testInfo.outputPath("repo-city-web.png") });
+});
+
 test("shows the guide once and keeps it available from the help button", async ({ page }, testInfo) => {
   const faults = []; page.on("pageerror", error => faults.push(error.message));
   let releaseTree;
@@ -185,7 +198,7 @@ test("opens a public repository and fetches source after the WASM city starts", 
   });
   await page.goto("/");
   const cover = page.locator("#start-screen");
-  await expect(page.getByRole("button", { name: "Repo City", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Repo City Web", exact: true })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "GitHub repository" })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("landing.png") });
   const syntax = page.waitForResponse(response => new URL(response.url()).pathname === "/syntax-worker.mjs");
@@ -359,7 +372,7 @@ test("reports missing repositories and keeps the form usable", async ({ page }) 
   await page.getByRole("button", { name: "Open city" }).click();
   await expect(page.getByRole("status")).toHaveText("Repository, revision, or file not found. Private repositories need GitHub access.");
   await expect(page.getByRole("button", { name: "Open city" })).toBeEnabled();
-  await expect(page.getByRole("button", { name: "Repo City", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Repo City Web", exact: true })).toBeVisible();
   await expect(page.getByRole("dialog", { name: "Help" })).toBeHidden();
   await expect(page.getByRole("button", { name: "How to use Repo City" })).toBeHidden();
 });
@@ -397,7 +410,7 @@ test("opens the city while an older tab blocks the progress database upgrade", a
   });
   await page.goto("/?repo=owner%2Fdemo");
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 20_000 });
-  await expect(page.locator("#progress-warning")).toContainText("Another Repo City tab is blocking the progress update.");
+  await expect(page.locator("#progress-warning")).toContainText("Another Repo City Web tab is blocking the progress update.");
   expect(await legacy.evaluate(() => globalThis.legacyProgress.version)).toBe(1);
   await legacy.close();
   await expect.poll(() => page.evaluate(async key => {

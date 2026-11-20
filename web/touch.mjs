@@ -1,5 +1,5 @@
 // Adapted from Feed the Poor touch.ts at beabe03f5aef648717fa175693cb9a76c953d9d5.
-// Vibe City adds altitude, independent look, and tablet actions; no pointer lock is required.
+// Repo City adds altitude, independent look, and tablet actions; no pointer lock is required.
 // Circular controls follow Feed the Poor style.css at 6b1b2eed8a660bfb9dea2a4259175056d0718e06.
 export function createTouchControls({ canvas, document = globalThis.document, browser = globalThis, onPad } = {}) {
   const panel = document.createElement("nav");
