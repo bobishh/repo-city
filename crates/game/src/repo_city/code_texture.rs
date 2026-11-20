@@ -563,21 +563,67 @@ pub(super) fn listing_preview<'a>(
             let change = WIDTH * 102 / LISTING_WIDTH as usize * 4;
             pixels[change..change + 3].copy_from_slice(&ink);
         }
-        if let Some(line) = line.filter(|line| !line.text.trim().is_empty()) {
-            let start_y = (index * height).div_ceil(count);
-            let end_y = ((index + 1) * height).div_ceil(count);
-            if y != (start_y + end_y - 1) / 2 {
-                continue;
+    }
+    let mut canvas = Canvas {
+        pixels,
+        width: WIDTH as u32,
+        height: height as u32,
+        context: ScaleContext::new(),
+    };
+    let ratio = WIDTH as f32 / LISTING_WIDTH as f32;
+    // Sample at most 512 real source rows in the distant preview; nearby tiles retain every glyph.
+    let stride = count.div_ceil(512).max(1);
+    for index in (0..count).step_by(stride) {
+        let (line, _) = row(index);
+        let Some(line) = line else { continue };
+        let row_height = height as f32 / count.max(1) as f32;
+        let scale = Vec2::new(
+            ratio * glyph_scale.x,
+            (row_height / LISTING_ROW_PIXELS as f32).clamp(0.06, 0.35),
+        );
+        let baseline = (index as f32 + 0.5) * row_height + 5. * scale.y;
+        canvas.scaled_text_to(
+            &line.text,
+            106. * ratio,
+            baseline,
+            20.,
+            scale,
+            WIDTH as f32 - 2.,
+            |byte| {
+                ink(line
+                    .spans
+                    .iter()
+                    .find(|span| span.bytes.contains(&byte))
+                    .map_or(Kind::Plain, |span| span.kind))
+            },
+        );
+    }
+    let original = canvas.pixels.clone();
+    let code_start = (106. * ratio).ceil() as usize;
+    for y in 0..height {
+        let index = y * count / height;
+        if revealed(index + 1) {
+            continue;
+        }
+        for x in code_start..WIDTH {
+            let mut sum = [0u32; 3];
+            let mut samples = 0;
+            for yy in y.saturating_sub(1)..=(y + 1).min(height - 1) {
+                for xx in (x - 1).max(code_start)..=(x + 1).min(WIDTH - 1) {
+                    let offset = (yy * WIDTH + xx) * 4;
+                    for channel in 0..3 {
+                        sum[channel] += original[offset + channel] as u32;
+                    }
+                    samples += 1;
+                }
             }
-            let stroke = coverage.stroke();
-            let (start, end) = covered_span(&line.text, glyph_scale.x);
-            let start = start * WIDTH / LISTING_WIDTH as usize;
-            let end = (end * WIDTH / LISTING_WIDTH as usize).max(start + 1);
-            for x in start..end {
-                pixels[x * 4..x * 4 + 3].copy_from_slice(&stroke);
+            let offset = (y * WIDTH + x) * 4;
+            for channel in 0..3 {
+                canvas.pixels[offset + channel] = (sum[channel] / samples) as u8;
             }
         }
     }
+    let pixels = canvas.pixels;
     let mut image = Image::new(
         Extent3d {
             width: WIDTH as u32,
@@ -589,7 +635,7 @@ pub(super) fn listing_preview<'a>(
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::default(),
     );
-    image.sampler = ImageSampler::nearest();
+    image.sampler = ImageSampler::linear();
     image
 }
 
