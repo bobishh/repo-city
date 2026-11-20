@@ -83,13 +83,29 @@ unit tests and repository-core tests on Linux with a three-minute job limit.
 It does not build desktop packages or publish after a push. Build and verify
 WASM and desktop packages locally from the same release commit.
 
-The Cloudflare Worker serves static assets and the compressed WASM module at
-[repo-city.meta-uber-engineer.dev](https://repo-city.meta-uber-engineer.dev/).
-Run Wrangler from `web` after `scripts/build-web.sh` completes. Keep existing
-Worker variables and secrets when uploading a version, then deploy that
-version and compare the live assets with the tested build. The optional
-manual publication workflow accepts a previously uploaded `browser-build`
-Actions artifact; normal local releases use Wrangler directly.
+[Repo City Web](https://repo-city.meta-uber-engineer.dev/) uses a Node HTTP
+server behind the shared Hetzner `kamal-proxy`. It serves static assets,
+precompressed WASM and `/github/` from the same origin. Review rooms are
+disabled. The [manual release workflow](../.github/workflows/release.yml) builds
+and publishes `ghcr.io/bobishh/repo-city-web:<commit>`, then deploys that image
+through Kamal. `use_published_image` reuses a verified image tagged with the
+same commit. The VPS checks run against the deployed container. A normal
+release also checks the public origin; select `preflight` during a DNS migration.
+
+Set `DEPLOY_SERVER_IP` as a production environment variable and configure
+`DEPLOY_SSH_PRIVATE_KEY` and `DEPLOY_SSH_KNOWN_HOSTS` from the shared VPS setup.
+GitHub authorizes the workflow's GHCR reads and writes. Kamal uses automatic
+Let's Encrypt TLS by default. To verify the current hostname before changing
+its A record, set `REPO_CITY_TLS_CERTIFICATE` and `REPO_CITY_TLS_PRIVATE_KEY`
+as production secrets with a matching DNS-validated certificate and PEM key.
+Use the automatic certificate after the hostname points to the VPS.
+
+For a cutover, check HTTPS directly against the VPS with `curl --resolve`
+using the public hostname. Preserve the Worker and its deployed version.
+Detach the Worker custom domain and create a DNS-only A record for the VPS.
+To roll back, remove that A record and attach the same custom domain to the
+preserved `repo-city` Worker. Keep the existing GitHub App configuration and
+OAuth secret on both hosts throughout the switch.
 
 For GitHub sign-in, register a public [GitHub App](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app)
 with callback `https://repo-city.meta-uber-engineer.dev/github/callback`.
@@ -98,15 +114,16 @@ and account Starring. Leave the webhook and OAuth authorization during
 installation disabled. Set `REPO_CITY_GITHUB_CLIENT_ID`,
 `REPO_CITY_GITHUB_CLIENT_SECRET`, and `REPO_CITY_GITHUB_APP_SLUG` as secrets
 in the `production` environment, then deploy. A private PR from a fork
-requires access to the base repository and the head fork. The Worker keeps
+requires access to the base repository and the head fork. The server keeps
 the user token in an encrypted HttpOnly cookie with an eight-hour lifetime.
+Reuse the current OAuth secret when changing hosts to preserve existing sessions.
 
 The browser does not send usage analytics or telemetry. Builds and deployments
 do not inject event collectors or browser tracking keys.
 
 The optional GitHub App needs **Pull requests: write** for explicit PR
 comment publication. Read access still permits private drafts and GitHub
-thread viewing. The Worker accepts review writes only from the site origin
+thread viewing. The server accepts review writes only from the site origin
 with a valid user session, and checks that the comment still targets the
 current PR head and an available GitHub diff range.
 

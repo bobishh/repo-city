@@ -1,0 +1,7 @@
+**
+!Dockerfile
+!server.mjs
+!github-auth.mjs
+!pr-review.mjs
+!dist/
+!dist/**

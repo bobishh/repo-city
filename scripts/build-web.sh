@@ -37,16 +37,13 @@ node web/build-webgpu.mjs "$output/game/repo_city.js"
 python3 - "$output/game/repo_city_bg.wasm" <<'PYCODE'
 from pathlib import Path
 import gzip
+import shutil
 import sys
 
 path = Path(sys.argv[1])
 packed = path.with_suffix(".wasm.gz")
-if path.stat().st_size > 25 * 1024 * 1024:
-    data = gzip.compress(path.read_bytes(), compresslevel=9, mtime=0)
-    if len(data) > 25 * 1024 * 1024:
-        raise SystemExit("Compressed WASM exceeds the Cloudflare static asset limit.")
-    packed.write_bytes(data)
-    path.unlink()
-else:
-    packed.unlink(missing_ok=True)
+with path.open("rb") as source, packed.open("wb") as output:
+    with gzip.GzipFile(filename="", fileobj=output, mode="wb", compresslevel=9, mtime=0) as gzip_output:
+        shutil.copyfileobj(source, gzip_output)
+path.unlink()
 PYCODE

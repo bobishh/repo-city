@@ -3,103 +3,121 @@ name: Publish web build
 on:
   workflow_dispatch:
     inputs:
-      build_run:
-        description: Run containing the verified browser-build artifact
-        type: string
-        required: true
+      use_published_image:
+        description: Reuse the verified GHCR image for this commit
+        type: boolean
+        default: false
+      preflight:
+        description: Verify on the VPS before the production DNS switch
+        type: boolean
+        default: false
 
 permissions:
   contents: read
-  actions: read
+  packages: write
 
 concurrency:
-  group: production
+  group: repo-city-web-production
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: Deploy to Cloudflare
+  package:
+    if: ${{ github.ref == 'refs/heads/main' && !inputs.use_published_image }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 3
-    environment:
-      name: production
-      url: https://repo-city.meta-uber-engineer.dev
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 2
     steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          name: browser-build
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.build_run }}
-          path: release
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
-      - name: Check the Worker module in the deployment artifact
-        working-directory: release
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.98.0
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+        with:
+          cache-bin: true
+      - run: npm ci
+        working-directory: web
+      - name: Build browser assets
         run: |
-          node --input-type=module -e 'const { default: worker } = await import("./worker.mjs"); if (typeof worker.fetch !== "function") process.exit(1);'
-      - name: Deploy the tested build
-        working-directory: release
+          version=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/"/, "", $3); print $3 }' Cargo.lock)
+          if [[ "$(wasm-bindgen --version 2>/dev/null || true)" != "wasm-bindgen $version" ]]; then
+            cargo install --locked --version "$version" wasm-bindgen-cli
+          fi
+          ./scripts/build-web.sh
+      - name: Publish the commit image to GHCR
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          GITHUB_CLIENT_ID: ${{ secrets.REPO_CITY_GITHUB_CLIENT_ID }}
-          GITHUB_CLIENT_SECRET: ${{ secrets.REPO_CITY_GITHUB_CLIENT_SECRET }}
-          GITHUB_APP_SLUG: ${{ secrets.REPO_CITY_GITHUB_APP_SLUG }}
-          WRANGLER_SEND_METRICS: "false"
+          REGISTRY_PASSWORD: ${{ github.token }}
         run: |
-          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
-            echo "::error::Set CLOUDFLARE_API_TOKEN in the production environment."
-            exit 1
-          fi
-          export WRANGLER_OUTPUT_FILE_PATH="$RUNNER_TEMP/wrangler-output.ndjson"
-          auth_args=()
-          if [ -n "$GITHUB_CLIENT_ID" ] && [ -n "$GITHUB_CLIENT_SECRET" ]; then
-            secret_file=$(mktemp "$RUNNER_TEMP/github-app.XXXXXX")
-            trap 'rm -f "$secret_file"' EXIT
-            python3 - "$secret_file" <<'PYCODE'
-          import json
-          import os
-          import sys
-          with open(sys.argv[1], "w") as output:
-              json.dump({key: os.environ[key] for key in (
-                  "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "GITHUB_APP_SLUG",
-              )}, output)
-          PYCODE
-            auth_args=(--secrets-file "$secret_file")
-          fi
-          npx --yes wrangler@4.162.0 versions upload --config wrangler.jsonc --message "$GITHUB_SHA" "${auth_args[@]}"
-          version_id=$(jq -er 'select(.type == "version-upload") | .version_id | strings' "$WRANGLER_OUTPUT_FILE_PATH")
-          npx --yes wrangler@4.162.0 versions deploy "$version_id@100%" --config wrangler.jsonc --yes
-      - name: Verify the live assets match the tested build
-        working-directory: release
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/repo-city-web:$GITHUB_SHA"
+          docker build --build-arg "REPO_CITY_REVISION=$GITHUB_SHA" -t "$image" web
+          printf '%s' "$REGISTRY_PASSWORD" | docker login ghcr.io --username "$GITHUB_REPOSITORY_OWNER" --password-stdin
+          docker push "$image"
+
+  deploy:
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && (needs.package.result == 'success' || inputs.use_published_image) }}
+    needs: package
+    name: Deploy to Hetzner through Kamal
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    permissions:
+      contents: read
+      packages: read
+    environment:
+      name: production
+      url: https://repo-city.meta-uber-engineer.dev
+    env:
+      SERVER_IP: ${{ vars.DEPLOY_SERVER_IP }}
+      DOCKER_REGISTRY_USERNAME: ${{ github.repository_owner }}
+      DOCKER_REGISTRY_PASSWORD: ${{ github.token }}
+      DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+      DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+      REPO_CITY_GITHUB_CLIENT_ID: ${{ secrets.REPO_CITY_GITHUB_CLIENT_ID }}
+      REPO_CITY_GITHUB_CLIENT_SECRET: ${{ secrets.REPO_CITY_GITHUB_CLIENT_SECRET }}
+      REPO_CITY_GITHUB_APP_SLUG: ${{ secrets.REPO_CITY_GITHUB_APP_SLUG }}
+      REPO_CITY_TLS_CERTIFICATE: ${{ secrets.REPO_CITY_TLS_CERTIFICATE }}
+      REPO_CITY_TLS_PRIVATE_KEY: ${{ secrets.REPO_CITY_TLS_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1
+        with:
+          ruby-version: '3.4.7'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+      - name: Prepare the shared VPS connection
         run: |
-          base=https://repo-city.meta-uber-engineer.dev
-          wasm=dist/game/repo_city_bg.wasm
-          if [ -f "$wasm.gz" ]; then
-            gzip -dc "$wasm.gz" > "$RUNNER_TEMP/expected.wasm"
-            wasm="$RUNNER_TEMP/expected.wasm"
-          fi
-          check_live() {
-            local route=$1 expected=$2
-            for attempt in 1 2 3 4 5 6; do
-              if curl --fail --silent --show-error --compressed --max-time 20 \
-                  "$base$route?release=$GITHUB_SHA" -o "$RUNNER_TEMP/live-asset" &&
-                  cmp -s "$expected" "$RUNNER_TEMP/live-asset"; then
-                return 0
-              fi
-              if [ "$attempt" -lt 6 ]; then sleep 5; fi
-            done
-            echo "::error::Live asset $route does not match $GITHUB_SHA"
-            return 1
-          }
-          check_live / dist/index.html
-          check_live /style.css dist/style.css
-          check_live /app.mjs dist/app.mjs
-          check_live /github-picker.mjs dist/github-picker.mjs
-          check_live /pointer.mjs dist/pointer.mjs
-          check_live /progress.mjs dist/progress.mjs
-          check_live /assets/robot-head.svg dist/assets/robot-head.svg
-          check_live /assets/apple-touch-icon.png dist/assets/apple-touch-icon.png
-          check_live /game/repo_city_bg.wasm "$wasm"
-          curl --fail --silent --show-error --max-time 20 "$base/github/session" |
-            jq -e '.enabled | type == "boolean"'
+          for name in SERVER_IP DEPLOY_SSH_PRIVATE_KEY DEPLOY_SSH_KNOWN_HOSTS REPO_CITY_GITHUB_CLIENT_ID REPO_CITY_GITHUB_CLIENT_SECRET; do
+            test -n "${!name}" || { echo "Missing production setting: $name"; exit 1; }
+          done
+          gem install kamal -v 2.10.1 --no-document
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/repo-city-deploy.key"
+          eval "$(ssh-agent -s)"
+          ssh-add "$RUNNER_TEMP/repo-city-deploy.key"
+          printf 'SSH_AUTH_SOCK=%s\n' "$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "root@$SERVER_IP" true
+      - name: Deploy and verify the immutable image on the VPS
+        run: |
+          kamal deploy --skip-push --skip-hooks --version "$GITHUB_SHA"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/repo-city-web:$GITHUB_SHA"
+          container=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "root@$SERVER_IP" \
+            "docker ps --filter label=service=repo-city --filter ancestor=$image --format '{{.ID}}'")
+          [[ "$container" =~ ^[a-f0-9]+$ ]]
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "root@$SERVER_IP" \
+            "docker exec -i $container node --input-type=module - http://127.0.0.1:8080 $GITHUB_SHA" \
+            < scripts/verify-web.mjs
+      - name: Verify production after the DNS switch
+        if: ${{ !inputs.preflight }}
+        run: node scripts/verify-web.mjs https://repo-city.meta-uber-engineer.dev "$GITHUB_SHA"

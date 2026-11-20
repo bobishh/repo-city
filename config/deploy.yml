@@ -1,0 +1,39 @@
+service: repo-city
+image: "<%= ENV.fetch('DOCKER_REGISTRY_USERNAME') %>/repo-city-web"
+minimum_version: 2.10.1
+deploy_timeout: 120
+servers:
+  web:
+    - "<%= ENV.fetch('SERVER_IP') %>"
+
+proxy:
+  host: repo-city.meta-uber-engineer.dev
+<% if !ENV.fetch('REPO_CITY_TLS_CERTIFICATE', '').empty? %>
+  ssl:
+    certificate_pem: REPO_CITY_TLS_CERTIFICATE
+    private_key_pem: REPO_CITY_TLS_PRIVATE_KEY
+<% else %>
+  ssl: true
+<% end %>
+  app_port: 8080
+  healthcheck:
+    path: /up
+
+registry:
+  server: ghcr.io
+  username: "<%= ENV.fetch('DOCKER_REGISTRY_USERNAME') %>"
+  password:
+    - DOCKER_REGISTRY_PASSWORD
+
+builder:
+  arch: amd64
+  context: web
+  dockerfile: web/Dockerfile
+
+env:
+  clear:
+    PUBLIC_ORIGIN: https://repo-city.meta-uber-engineer.dev
+    GITHUB_APP_SLUG: "<%= ENV.fetch('REPO_CITY_GITHUB_APP_SLUG', '') %>"
+  secret:
+    - GITHUB_CLIENT_ID:REPO_CITY_GITHUB_CLIENT_ID
+    - GITHUB_CLIENT_SECRET:REPO_CITY_GITHUB_CLIENT_SECRET
