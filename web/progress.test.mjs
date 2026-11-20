@@ -18,3 +18,27 @@ test("carries file and diff visits across new heads only when their content stil
     [visit("same.rs", true), true], [visit("new-base.rs", false), true],
   ]);
 });
+
+test("carries identity-bound read fragments for Rust to validate against an updated PR", () => {
+  const reveal = JSON.stringify({
+    reveal: { path: "changed.rs", before: false, start: 0, end: 1, rows: 1 },
+    source: { blob: "head-1", lines: ["fn unchanged() {}"] },
+  });
+  const legacy = JSON.stringify({
+    reveal: { path: "changed.rs", before: false, start: 0, end: 1, rows: 1 },
+  });
+  const document = JSON.stringify({
+    read_document: { path: "guide.md", blob: "doc-1", before: false, rows: 1 },
+    source: { blob: "doc-1", lines: ["Read paragraph"] },
+  });
+  const previous = { before: {}, after: {
+    "changed.rs": { id: "head-1" }, "guide.md": { id: "doc-1" },
+  } };
+  const current = { before: {}, after: {
+    "changed.rs": { id: "head-2" }, "guide.md": { id: "doc-2" },
+  } };
+  assert.deepEqual(carryVisits([reveal, legacy, document], previous, current), [
+    [reveal, true], [document, true],
+  ]);
+  assert.deepEqual(carryVisits([reveal], previous, { before: {}, after: {} }), []);
+});

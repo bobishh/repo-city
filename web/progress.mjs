@@ -94,8 +94,18 @@ export const deleteReview = (scope, id) => updateReview(scope, id, null);
 export function carryVisits(marks, previous, current) {
   const visits = [];
   for (const mark of marks) {
-    let visited;
-    try { ({ visited } = JSON.parse(mark)); } catch { continue; }
+    let saved;
+    try { saved = JSON.parse(mark); } catch { continue; }
+    if (!saved || typeof saved !== "object") continue;
+    const interval = saved.reveal ?? saved.read_document;
+    if (interval && saved.source && typeof saved.source.blob === "string"
+      && Array.isArray(saved.source.lines) && saved.source.lines.every(line => typeof line === "string")) {
+      const side = interval.before ? "before" : "after";
+      if (current[side][interval.path]) visits.push([mark, true]);
+      // Rust checks exact blob identity or maps unique unchanged source lines.
+      continue;
+    }
+    const { visited } = saved;
     if (!visited) continue;
     const { path, diff } = visited;
     const before = current.before[path]?.id;

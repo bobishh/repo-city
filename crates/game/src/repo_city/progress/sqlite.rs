@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 pub(super) struct Store(Connection);
 
@@ -14,6 +14,14 @@ impl Store {
                 scope TEXT NOT NULL,
                 mark TEXT NOT NULL,
                 PRIMARY KEY (scope, mark)
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS initialized_scopes (
+                scope TEXT PRIMARY KEY
+            ) WITHOUT ROWID;
+            INSERT OR IGNORE INTO initialized_scopes SELECT DISTINCT scope FROM marks;
+            CREATE TABLE IF NOT EXISTS last_scopes (
+                checkout TEXT PRIMARY KEY,
+                scope TEXT NOT NULL
             ) WITHOUT ROWID;",
         )
         .map_err(|error| error.to_string())?;
@@ -22,6 +30,48 @@ impl Store {
 
     pub(super) fn read(&self, scope: &str) -> Result<Vec<String>, String> {
         self.read_marks(scope).map_err(|error| error.to_string())
+    }
+
+    pub(super) fn load(&mut self, scope: &str, checkout: &str) -> Result<Vec<String>, String> {
+        self.carry(scope, checkout)
+            .map_err(|error| error.to_string())?;
+        self.read(scope)
+    }
+
+    fn carry(&mut self, scope: &str, checkout: &str) -> rusqlite::Result<()> {
+        let tx = self.0.transaction()?;
+        let initialized: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM initialized_scopes WHERE scope = ?1)",
+            [scope],
+            |row| row.get(0),
+        )?;
+        if !initialized {
+            let previous: Option<String> = tx
+                .query_row(
+                    "SELECT scope FROM last_scopes WHERE checkout = ?1",
+                    [checkout],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(previous) = previous {
+                let mut query = tx.prepare("SELECT mark FROM marks WHERE scope = ?1")?;
+                let marks = query
+                    .query_map([previous], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                let mut insert = tx.prepare("INSERT OR IGNORE INTO marks VALUES (?1, ?2)")?;
+                for mark in marks {
+                    if super::content::can_carry(&mark) {
+                        insert.execute(params![scope, mark])?;
+                    }
+                }
+            }
+            tx.execute("INSERT INTO initialized_scopes VALUES (?1)", [scope])?;
+        }
+        tx.execute(
+            "INSERT INTO last_scopes VALUES (?1, ?2) ON CONFLICT(checkout) DO UPDATE SET scope = excluded.scope",
+            params![checkout, scope],
+        )?;
+        tx.commit()
     }
 
     fn read_marks(&self, scope: &str) -> rusqlite::Result<Vec<String>> {
@@ -57,6 +107,11 @@ impl Store {
         } else {
             tx.execute("DELETE FROM marks WHERE scope = ?1", [scope])?;
         }
+        // An explicitly empty scope remains empty when reopened after another comparison.
+        tx.execute(
+            "INSERT OR IGNORE INTO initialized_scopes VALUES (?1)",
+            [scope],
+        )?;
         tx.commit()
     }
 }
@@ -64,6 +119,42 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn carries_only_bound_read_credit_within_a_checkout_and_keeps_reset_scopes_empty() {
+        let mut store = Store::open(Path::new(":memory:")).unwrap();
+        let reveal = r#"{"reveal":{"path":"code.rs","before":false,"start":0,"end":1,"rows":1},"source":{"blob":"old","lines":["read"]}}"#;
+        let document = r#"{"read_document":{"path":"guide.md","before":false,"rows":1,"blob":"old"},"source":{"blob":"old","lines":["paragraph"]}}"#;
+        let legacy = r#"{"reveal":{"path":"legacy.rs","before":false,"start":0,"end":1,"rows":1}}"#;
+        assert!(store.load("first", "checkout").unwrap().is_empty());
+        store
+            .write(
+                "first",
+                Some(&[
+                    (reveal.into(), true),
+                    (document.into(), true),
+                    (legacy.into(), true),
+                    (r#"{"reviewed":"code.rs"}"#.into(), true),
+                    (r#"{"visited":{"path":"code.rs","diff":true}}"#.into(), true),
+                ]),
+            )
+            .unwrap();
+        let mut carried = store.load("second", "checkout").unwrap();
+        carried.sort();
+        let mut expected = vec![reveal, document];
+        expected.sort();
+        assert_eq!(carried, expected);
+        assert!(
+            store
+                .load("other", "different-checkout")
+                .unwrap()
+                .is_empty()
+        );
+        store.write("second", None).unwrap();
+        assert!(!store.load("first", "checkout").unwrap().is_empty());
+        assert!(store.load("second", "checkout").unwrap().is_empty());
+        assert!(store.load("third", "checkout").unwrap().is_empty());
+    }
 
     #[test]
     fn restores_marks_after_reopen_and_resets_only_the_active_comparison() {

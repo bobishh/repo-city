@@ -1,7 +1,9 @@
-//! Persists reveal ranges and review marks for one immutable comparison.
+//! Persists content-bound reveal ranges and comparison review marks.
 use serde::{Deserialize, Serialize};
 
 use super::*;
+
+mod content;
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -9,6 +11,8 @@ pub(super) enum Mark {
     Reveal {
         path: String,
         before: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blob: Option<String>,
         start: usize,
         end: usize,
         rows: usize,
@@ -94,10 +98,11 @@ impl Progress {
                 &repo.baseline,
             ))
             .expect("comparison key contains only strings");
-            self.read_native().unwrap_or_else(|error| {
-                warn!("Could not load review progress: {error}");
-                vec![]
-            })
+            self.read_native(&format!("{:?}", repo.root))
+                .unwrap_or_else(|error| {
+                    warn!("Could not load review progress: {error}");
+                    vec![]
+                })
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -124,9 +129,9 @@ impl Progress {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn read_native(&mut self) -> Result<Vec<String>, String> {
+    fn read_native(&mut self, checkout: &str) -> Result<Vec<String>, String> {
         let scope = self.scope.clone();
-        self.native_store()?.read(&scope)
+        self.native_store()?.load(&scope, checkout)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -173,50 +178,49 @@ pub(super) fn restore(
         .enumerate()
         .map(|(index, file)| (file.path.as_str(), index))
         .collect();
+    let mut sources = content::Sources::default();
     for entry in progress.load(&repo.0) {
-        match serde_json::from_str(&entry) {
-            Ok(Mark::Reveal {
-                path,
-                before,
-                start,
-                end,
-                rows,
-            }) => {
+        let Ok(entry) = serde_json::from_str::<content::StoredMark>(&entry) else {
+            continue;
+        };
+        match &entry.mark {
+            Mark::Reveal { path, before, .. } => {
                 if let Some(&index) = paths.get(path.as_str()) {
                     let file = &repo.0.files[index];
-                    if if before {
-                        file.before.is_some()
-                    } else {
-                        file.after.is_some()
-                    } {
-                        listing.reveal(index, before, file, start..end, rows);
+                    for (range, rows) in entry.reveals(&repo.0, index, &mut sources) {
+                        listing.reveal(index, *before, file, range, rows);
                         progress.visited.insert(index);
                     }
                 }
             }
-            Ok(Mark::Reviewed(path)) => {
+            Mark::Reviewed(path) => {
                 if let Some(&index) = paths.get(path.as_str()) {
                     explorer.reviewed.insert(index);
                     progress.visited.insert(index);
                 }
             }
-            Ok(Mark::ReadDocument(document)) => {
-                if let Some(&index) = paths.get(document.path.as_str())
-                    && document.matches(&repo.0.files[index])
-                {
-                    listing.reveal_document(index, document.before, document.rows);
-                    progress.visited.insert(index);
+            Mark::ReadDocument(document) => {
+                if let Some(&index) = paths.get(document.path.as_str()) {
+                    let file = &repo.0.files[index];
+                    if document.matches(file) {
+                        listing.reveal_document(index, document.before, document.rows);
+                        progress.visited.insert(index);
+                    } else {
+                        for (range, rows) in entry.reveals(&repo.0, index, &mut sources) {
+                            listing.reveal(index, document.before, file, range, rows);
+                            progress.visited.insert(index);
+                        }
+                    }
                 }
             }
-            Ok(Mark::Visited { path, diff }) => {
+            Mark::Visited { path, diff } => {
                 if let Some(&index) = paths.get(path.as_str()) {
                     progress.visited.insert(index);
-                    if diff && repo.0.files[index].change != Change::Unchanged {
+                    if *diff && repo.0.files[index].change != Change::Unchanged {
                         progress.visited_diffs.insert(index);
                     }
                 }
             }
-            Err(_) => {}
         }
     }
 }
@@ -290,7 +294,7 @@ pub(super) fn sync(
         }
     }
     if !progress.changes.is_empty() {
-        let changes = std::mem::take(&mut progress.changes);
+        let changes = content::bind_changes(&repo.0, std::mem::take(&mut progress.changes));
         if let Err(error) = progress.write(Some(&changes)) {
             // Report disk failure without retrying I/O every frame.
             warn!("Could not save review progress: {error}");
@@ -320,6 +324,150 @@ mod sqlite;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn committing_new_code_keeps_read_unchanged_lines_without_thawing_new_code() {
+        struct Checkout(std::path::PathBuf);
+        impl Drop for Checkout {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let checkout = Checkout(std::env::temp_dir().join(format!(
+            "repo-city-progress-commit-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        )));
+        std::fs::create_dir_all(&checkout.0).unwrap();
+        let git = |args: &[&str]| {
+            let result = std::process::Command::new("git")
+                .current_dir(&checkout.0)
+                .args([
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.test",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        };
+        git(&["init", "--quiet"]);
+        let old = "fn already_read() {}\nfn old_body() {}\nfn never_read() {}\n";
+        std::fs::write(checkout.0.join("code.rs"), old).unwrap();
+        git(&["add", "code.rs"]);
+        git(&["commit", "--quiet", "-m", "original"]);
+        let previous = Repository::open_worktree(&checkout.0).unwrap();
+        let mut progress = Progress {
+            store: Some(std::sync::Mutex::new(
+                sqlite::Store::open(std::path::Path::new(":memory:")).unwrap(),
+            )),
+            ..default()
+        };
+        assert!(progress.load(&previous).is_empty());
+        let saved = content::bind_changes(
+            &previous,
+            vec![(
+                serde_json::to_string(&Mark::Reveal {
+                    path: "code.rs".into(),
+                    before: false,
+                    blob: previous.files[0].after.as_ref().map(|blob| blob.id.clone()),
+                    start: 0,
+                    end: 2,
+                    rows: 3,
+                })
+                .unwrap(),
+                true,
+            )],
+        );
+        progress.write(Some(&saved)).unwrap();
+        let new = "// new code\nfn already_read() {}\nfn changed_body() {}\nfn never_read() {}\n";
+        std::fs::write(checkout.0.join("code.rs"), new).unwrap();
+        git(&["add", "code.rs"]);
+        git(&["commit", "--quiet", "-m", "new code"]);
+        let current = Repository::open_worktree(&checkout.0).unwrap();
+        assert_ne!(current.revision, previous.revision);
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight("code.rs", new));
+        let mut app = App::new();
+        app.insert_resource(Repo(current))
+            .insert_resource(progress)
+            .insert_resource(explorer)
+            .init_resource::<listing::Listing>()
+            .add_systems(Update, restore);
+        app.update();
+        let listing = app.world().resource::<listing::Listing>();
+        let explorer = app.world().resource::<Explorer>();
+        assert_eq!(listing.counts(explorer), (1, 4));
+        assert!(listing.source_row_is_readable(explorer, 1));
+        for unread in [0, 2, 3] {
+            assert!(!listing.source_row_is_readable(explorer, unread));
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn live_worktree_does_not_restore_legacy_reveals_without_content_identity() {
+        let file = repo_world::File {
+            path: "changed.rs".into(),
+            before: None,
+            after: Some(repo_world::Blob {
+                id: "worktree:new-content".into(),
+                size: 8,
+                mode: "100644".into(),
+            }),
+            change: Change::Modified,
+            position: [0., 0.],
+        };
+        let repo = Repository {
+            root: "/example".into(),
+            revision: "worktree:head".into(),
+            baseline: Some("head".into()),
+            files: vec![file],
+            districts: Vec::new(),
+        };
+        let mut progress = Progress::default();
+        let scope =
+            serde_json::to_string(&(format!("{:?}", repo.root), &repo.revision, &repo.baseline))
+                .unwrap();
+        let mut store = sqlite::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let mark = serde_json::to_string(&Mark::Reveal {
+            path: "changed.rs".into(),
+            before: false,
+            blob: None,
+            start: 0,
+            end: 1,
+            rows: 1,
+        })
+        .unwrap();
+        store.write(&scope, Some(&[(mark, true)])).unwrap();
+        progress.store = Some(std::sync::Mutex::new(store));
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight("changed.rs", "new code"));
+        let mut app = App::new();
+        app.insert_resource(Repo(repo))
+            .insert_resource(progress)
+            .insert_resource(explorer)
+            .init_resource::<listing::Listing>()
+            .add_systems(Update, restore);
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<listing::Listing>()
+                .counts(app.world().resource::<Explorer>()),
+            (0, 1),
+            "an old reveal cannot certify rewritten worktree bytes"
+        );
+    }
 
     #[test]
     fn exploration_counts_unique_files_and_only_changed_diffs() {

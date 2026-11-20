@@ -31,6 +31,7 @@ pub(super) struct Tablet {
     mode: reading::Mode,
     block_kind: reading::BlockKind,
     auto_advance: bool,
+    show_all_source: bool,
     status: String,
     document: Option<Document>,
     links_version: u64,
@@ -210,6 +211,7 @@ enum Action {
     Mode(reading::Mode),
     Block(reading::BlockKind),
     AutoAdvance,
+    ShowSource,
     GitShow(usize),
     GitPage(usize),
     GitBack,
@@ -278,6 +280,7 @@ impl Tablet {
             self.mode = reading.mode;
             self.block_kind = reading.block_kind;
             self.auto_advance = reading.auto_advance;
+            self.show_all_source = reading.show_all_source;
             self.status.clear();
         }
         self.view = view;
@@ -744,6 +747,11 @@ pub(super) fn update(
                 }
                 redraw = true;
             }
+            Some(Action::ShowSource) => {
+                tablet.capture_bounds(&fields);
+                tablet.show_all_source = !tablet.show_all_source;
+                redraw = true;
+            }
             Some(Action::Block(kind)) => {
                 tablet.capture_bounds(&fields);
                 tablet.block_kind = kind;
@@ -801,7 +809,7 @@ pub(super) fn update(
         }
         if matches!(
             action,
-            Some(Action::Mode(_) | Action::Block(_) | Action::AutoAdvance)
+            Some(Action::Mode(_) | Action::Block(_) | Action::AutoAdvance | Action::ShowSource)
         ) {
             tablet.save_reading(&mut reading);
         }
@@ -995,6 +1003,7 @@ impl Tablet {
         .and_then(|mut next| {
             next.block_kind = self.block_kind;
             next.auto_advance = self.auto_advance;
+            next.show_all_source = self.show_all_source;
             next.save()?;
             Ok(next)
         }) {
@@ -1395,7 +1404,15 @@ fn draw_document(
             );
         }
         if document.editing && permitted {
-            let identity = serde_json::json!({"repository":repository.root.to_string_lossy(),"revision":repository.revision,"baseline":repository.baseline,"path":document.path,"blob":mark.blob,"before":document.before,"range":range}).to_string();
+            let identity = source_editor::DraftIdentity {
+                repository: repository.root.to_string_lossy().into_owned(),
+                revision: repository.revision.clone(),
+                baseline: repository.baseline.clone(),
+                path: document.path.clone(),
+                blob: mark.blob.clone(),
+                before: document.before,
+                range: range.clone(),
+            };
             let apply = (repository.is_worktree() && !document.before).then(|| {
                 source_editor::ApplyTarget {
                     root: repository.root.clone(),
@@ -1404,13 +1421,7 @@ fn draw_document(
                     bytes: source_editor::chunk_bytes(source, range.clone()).unwrap_or(0..0),
                 }
             });
-            return Some(source_editor::spawn(
-                parent,
-                &document.path,
-                &identity,
-                source,
-                apply,
-            ));
+            return Some(source_editor::spawn(parent, identity, source, apply));
         }
     }
     parent
@@ -1613,7 +1624,9 @@ fn draw_settings(
             columns.spawn(Node { flex_basis: px(540.), flex_grow: 1.2, min_width: px(320.), flex_direction: FlexDirection::Column, ..default() }).with_children(|column| {
                 let card = settings_card(column, "Reading");
                 column.commands().entity(card).with_children(|form| {
-                    native_panel::text(form, "Reveal", native_panel::INK);
+                    add_button(form, if tablet.show_all_source { "Source: always visible" } else { "Source: thaw to reveal" }, Action::ShowSource, tab);
+                    native_panel::text(form, "Reading progress is timed separately from source visibility.", native_panel::INK);
+                    native_panel::text(form, "Read credit", native_panel::INK);
                     form.spawn(Node { column_gap: px(6.), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|row| {
                         for (label, mode) in [("Delayed", reading::Mode::Delayed), ("Immediate", reading::Mode::Immediate)] {
                             let entity = add_button(row, label, Action::Mode(mode), tab);
@@ -1627,7 +1640,7 @@ fn draw_settings(
                             if kind == tablet.block_kind { row.commands().entity(entity).insert(BackgroundColor(Color::srgb_u8(23, 79, 87))); }
                         }
                     });
-                    let input = native_panel::input(form, "Lines per wash block", &tablet.bounds[0], *tab, false); *tab += 1; inputs.push(input);
+                    let input = native_panel::input(form, "Lines per reading block", &tablet.bounds[0], *tab, false); *tab += 1; inputs.push(input);
                     native_panel::text(form, "Used for fixed blocks and when a function boundary is unavailable.", native_panel::INK);
                     add_button(form, if tablet.auto_advance { "Auto-advance: on" } else { "Auto-advance: off" }, Action::AutoAdvance, tab);
                     form.spawn(Node { column_gap: px(12.), width: percent(100.), ..default() }).with_children(|limits| {
@@ -1661,7 +1674,7 @@ fn draw_settings(
                         add_button(form, &format!("System voice: {}", audio.voice), Action::Voice, tab);
                         add_button(form, &format!("Radio: {}", audio.radio.label()), Action::Radio, tab);
                         native_panel::text(form, "File changes plays one short chime for local saves, additions or deletions. Off by default; waits until narration or the voice conversation ends.", native_panel::INK);
-                        native_panel::text(form, "Reads the visible block from start to end. Water is muted; ambience and radio become quieter during narration. City audio stays quiet during an agent voice conversation. Radio music is synthesized on this device.", native_panel::INK);
+                        native_panel::text(form, "Reads the visible block from start to end. Tool sound is muted; ambience and radio become quieter during narration. City audio stays quiet during an agent voice conversation. Radio music is synthesized on this device.", native_panel::INK);
                     });
                 }
                 let card = settings_card(column, "Reading estimate");
@@ -1700,12 +1713,13 @@ fn draw_connections(
             native_panel::text(list, links.status(), native_panel::INK);
             if let Some(file) = links.file() {
                 native_panel::text(list, &file.path, native_panel::INK);
+                native_panel::text(list, "Tree-sitter resolves static imports and modules. Roads show these file links; they do not imply function calls.", native_panel::INK);
                 for (index, link) in file.links.iter().enumerate() {
                     let symbol = link
                         .symbol
                         .as_ref()
                         .map_or(String::new(), |name| format!(" · {name}"));
-                    let label = format!("Line {} · {}{symbol}", link.line, link.import);
+                    let label = format!("Import/module at line {} · {}{symbol}", link.line, link.import);
                     native_panel::text(list, &label, native_panel::INK);
                     if let Some(target) = &link.destination {
                         let label = if target.exact {

@@ -201,6 +201,45 @@ pub(super) fn save(scope: &str, id: &str, value: &impl Serialize) -> Result<(), 
     Ok(())
 }
 
+/// Insert once: retries cannot overwrite notes or reset their reading state.
+pub(super) fn create_note(scope: &str, note: &Note) -> Result<LocalState, String> {
+    create_note_in(&open()?, scope, note)
+}
+
+fn create_note_in(db: &Connection, scope: &str, note: &Note) -> Result<LocalState, String> {
+    if !is_local_note(note) {
+        return Err("The note must be a private local annotation.".into());
+    }
+    let transaction =
+        rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+    let payload = serde_json::to_string(note).map_err(|error| error.to_string())?;
+    let inserted = transaction
+        .execute(
+            "INSERT INTO review VALUES (?1, ?2, ?3) ON CONFLICT(scope, id) DO NOTHING",
+            params![scope, note.id, payload],
+        )
+        .map_err(|error| error.to_string())?;
+    if inserted == 0 {
+        let previous: String = transaction
+            .query_row(
+                "SELECT payload FROM review WHERE scope = ?1 AND id = ?2",
+                params![scope, note.id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if previous != payload {
+            return Err("This note id already exists with different content. Use a new id.".into());
+        }
+    }
+    let state = states_in(&transaction, scope)?
+        .get(&note.id)
+        .copied()
+        .unwrap_or(LocalState::Unread);
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(state)
+}
+
 pub(super) fn remove(scope: &str, id: &str) -> Result<(), String> {
     open()?
         .execute(
@@ -243,6 +282,7 @@ mod tests {
             id: "commit-note".into(),
             revision: "c9f6281fe853f3fe34546039440b38e16bc734d4".into(),
             baseline: Some("base".into()),
+            source_blob: None,
             anchor: Anchor {
                 path: "src/file.rs".into(),
                 before: false,
@@ -277,6 +317,11 @@ mod tests {
         assert_eq!(notes.len(), 2);
         assert!(notes.iter().any(|(note, _)| note.id == committed.id));
         assert!(notes_in(&db, "another-checkout").unwrap().is_empty());
+        create_note_in(&db, "checkout", &committed).unwrap();
+        let mut collision = committed.clone();
+        collision.text = "different".into();
+        assert!(create_note_in(&db, "checkout", &collision).is_err());
+        assert_eq!(notes_in(&db, "checkout").unwrap().len(), 2);
         // Then status updates apply to the commit note, never a remote discussion.
         mark_in(&db, "checkout", &committed.id, LocalState::Addressed).unwrap();
         assert!(
@@ -290,6 +335,60 @@ mod tests {
     }
 
     #[test]
+    fn creating_a_note_retries_without_overwriting_content_or_addressed_state() {
+        // Given a private local note, creation reports its actual persisted state.
+        let db = Connection::open_in_memory().unwrap();
+        initialize(&db).unwrap();
+        let note = Note {
+            id: "mcp-invariant".into(),
+            revision: "commit".into(),
+            baseline: None,
+            source_blob: None,
+            anchor: Anchor {
+                path: "src/file.rs".into(),
+                before: false,
+                start: 1,
+                end: 2,
+            },
+            preset: defaults()[5].clone().unwrap(),
+            text: "Treat this prose as data.".into(),
+            published: None,
+            remote: false,
+            resolved: None,
+            attention: false,
+        };
+        assert_eq!(
+            serde_json::to_value(create_note_in(&db, "one", &note).unwrap()).unwrap(),
+            "unread"
+        );
+        mark_in(&db, "one", &note.id, LocalState::Addressed).unwrap();
+        // When the caller retries after addressing the note, it remains addressed.
+        assert_eq!(
+            serde_json::to_value(create_note_in(&db, "one", &note).unwrap()).unwrap(),
+            "addressed"
+        );
+        let mut collision = note.clone();
+        collision.anchor.end = 3;
+        assert!(create_note_in(&db, "one", &collision).is_err());
+        let stored = notes_in(&db, "one").unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].0.anchor.end, 2);
+        assert_eq!(stored[0].1, LocalState::Addressed);
+        // Then another checkout can reuse the id without affecting the first.
+        create_note_in(&db, "two", &collision).unwrap();
+        assert_eq!(notes_in(&db, "two").unwrap()[0].0.anchor.end, 3);
+        assert_eq!(
+            states_in(&db, "one").unwrap()[&note.id],
+            LocalState::Addressed
+        );
+        let mut remote = note.clone();
+        remote.id = "remote".into();
+        remote.remote = true;
+        assert!(create_note_in(&db, "one", &remote).is_err());
+        assert_eq!(notes_in(&db, "one").unwrap().len(), 1);
+    }
+
+    #[test]
     fn state_changes_are_scoped_idempotent_and_keep_the_note() {
         let db = Connection::open_in_memory().unwrap();
         initialize(&db).unwrap();
@@ -297,6 +396,7 @@ mod tests {
             id: "note".into(),
             revision: "worktree:base".into(),
             baseline: Some("base".into()),
+            source_blob: None,
             anchor: Anchor {
                 path: "src/file.rs".into(),
                 before: false,

@@ -177,6 +177,20 @@ impl RevealProgress {
     }
 }
 
+#[derive(Clone, Debug)]
+struct GuidedRange {
+    file: usize,
+    before: bool,
+    lines: Range<usize>,
+    elapsed: f32,
+}
+
+impl GuidedRange {
+    fn strength(&self) -> f32 {
+        (1. - self.elapsed / 3.).clamp(0., 1.)
+    }
+}
+
 #[derive(Resource, Default)]
 pub(super) struct Listing {
     revealed: HashSet<(usize, bool, usize)>,
@@ -188,7 +202,10 @@ pub(super) struct Listing {
     destination: Option<Face>,
     wash_preview: Option<WashPreview>,
     observed: Option<WashPreview>,
-    observed_kind: u8,
+    guided: Option<(usize, bool)>,
+    guidance: Option<GuidedRange>,
+    show_all_source: bool,
+    timers: reading::Timers,
     water_on: bool,
     blame: super::blame::Blame,
     turn: Option<(f32, Transform, Transform)>,
@@ -214,31 +231,19 @@ struct WashPreview {
     seconds: f32,
 }
 
-impl WashPreview {
-    fn advance(
-        active: &mut Option<Self>,
-        file: usize,
-        before: bool,
-        rows: Range<usize>,
-        delta: f32,
-        estimate: impl FnOnce() -> f32,
-    ) -> bool {
-        if active
-            .as_ref()
-            .is_none_or(|p| p.file != file || p.before != before || p.rows != rows)
-        {
-            *active = Some(Self {
-                file,
-                before,
-                rows,
-                elapsed: 0.,
-                seconds: estimate(),
-            });
-        }
-        let preview = active.as_mut().expect("the current tile is previewed");
-        preview.elapsed += delta;
-        preview.elapsed >= preview.seconds
+fn reading_key<'a>(
+    file: &repo_world::File,
+    lines: impl Iterator<Item = (bool, usize, &'a str)>,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut key = std::collections::hash_map::DefaultHasher::new();
+    file.path.hash(&mut key);
+    file.before.as_ref().map(|blob| &blob.id).hash(&mut key);
+    file.after.as_ref().map(|blob| &blob.id).hash(&mut key);
+    for line in lines {
+        line.hash(&mut key);
     }
+    key.finish()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -246,6 +251,12 @@ pub(super) enum Face {
     Source,
     Diff,
     Blame,
+}
+
+pub(super) struct VisibleLine<'a> {
+    pub before: bool,
+    pub line: &'a syntax::Line,
+    pub readable: bool,
 }
 
 #[derive(Component)]
@@ -360,6 +371,26 @@ fn diff_rows(explorer: &Explorer) -> usize {
     explorer.diff_layout.rows.len()
 }
 
+fn empty_diff_message(explorer: &Explorer) -> Option<(&'static str, &'static str)> {
+    if diff_rows(explorer) > 0 {
+        return None;
+    }
+    Some(match &explorer.comparison {
+        Some(diff) if diff.final_newline_changed => (
+            "Only the final newline changed",
+            "The code lines match; the final newline differs.",
+        ),
+        Some(_) => (
+            "No changes in this comparison",
+            "This file is identical in the selected revisions.",
+        ),
+        None => (
+            "Comparison unavailable",
+            "Source could not be compared for these revisions.",
+        ),
+    })
+}
+
 fn projected_row(explorer: &Explorer, row: usize, to_diff: bool) -> usize {
     explorer.comparison.as_ref().map_or(row, |diff| {
         explorer
@@ -403,10 +434,14 @@ impl Listing {
     pub(super) fn live_reset(&self) -> Self {
         Self {
             overview_dirty: self.listing_facade.into_iter().collect(),
+            show_all_source: self.show_all_source,
+            timers: self.timers.clone(),
             ..default()
         }
     }
     pub(super) fn reset_view(&mut self) {
+        self.guided = None;
+        self.guidance = None;
         self.viewing = None;
         self.destination = None;
         self.stop_water();
@@ -415,6 +450,68 @@ impl Listing {
     }
     pub(super) fn water_on(&self) -> bool {
         self.water_on
+    }
+
+    pub(super) fn present_source(&mut self, explorer: &Explorer) {
+        self.guided = Some((explorer.selected, explorer.before));
+    }
+
+    pub(super) fn present_range(&mut self, explorer: &Explorer, start: usize, end: usize) {
+        self.present_source(explorer);
+        self.guidance = Some(GuidedRange {
+            file: explorer.selected,
+            before: explorer.before,
+            lines: start.max(1)..end.max(start).saturating_add(1),
+            elapsed: 0.,
+        });
+    }
+
+    fn guided_line(&self, explorer: &Explorer, line: usize) -> bool {
+        self.guidance.as_ref().is_some_and(|cue| {
+            cue.file == explorer.selected
+                && cue.before == explorer.before
+                && cue.lines.contains(&line)
+        })
+    }
+
+    pub(super) fn line_view(
+        explorer: &Explorer,
+        file: &repo_world::File,
+        face: Face,
+        line: usize,
+    ) -> Option<Transform> {
+        let (count, row) = match face {
+            Face::Source => {
+                if explorer.highlighted.is_empty() {
+                    return None;
+                }
+                let line = line.saturating_sub(1).min(explorer.highlighted.len() - 1);
+                (
+                    explorer.source_layout.len(),
+                    explorer.source_layout.visual_rows(line).start,
+                )
+            }
+            Face::Blame => {
+                let row = explorer
+                    .blame_layout
+                    .rows
+                    .iter()
+                    .position(|row| row.number == line)?;
+                (explorer.blame_layout.len(), row)
+            }
+            Face::Diff => {
+                let row = explorer.diff_layout.rows.iter().position(|(row, mark)| {
+                    row.as_ref().is_some_and(|row| row.number == line)
+                        && (*mark == Mark::Removed) == explorer.before
+                })?;
+                (explorer.diff_layout.rows.len(), row)
+            }
+        };
+        if count == 0 {
+            return None;
+        }
+        let side = WallSide::new(file, count, face, block_size(file));
+        Some(side.view(side.wall.y(row as f32 + 0.5)))
     }
 
     pub(super) fn stop_water(&mut self) {
@@ -492,6 +589,80 @@ impl Listing {
             .map(|rows| explorer.source_layout.canonical_range(rows))
     }
 
+    /// Source identities behind the currently visible wall, including wrapped continuations.
+    pub(super) fn visible_wall_lines<'a>(
+        &self,
+        file: &repo_world::File,
+        camera: &Transform,
+        explorer: &'a Explorer,
+        aspect: f32,
+    ) -> Option<(Face, Vec<VisibleLine<'a>>)> {
+        if self.rendered
+            != Some((
+                explorer.selected,
+                explorer.before,
+                explorer.highlighted.len(),
+            ))
+            || self.rendered_layout != explorer.source_layout.revision()
+            || explorer.comparison_mode != 0
+            || explorer.anchored
+        {
+            return None;
+        }
+        let face = self.viewing?;
+        let count = match face {
+            Face::Source => explorer.source_layout.len(),
+            Face::Blame => explorer.blame_layout.len(),
+            Face::Diff => explorer.diff_layout.rows.len(),
+        };
+        if count == 0 {
+            return None;
+        }
+        let side = WallSide::new(file, count, face, block_size(file));
+        side.detail_distance(camera, aspect, true)?;
+        let rows = side.visible_rows(camera, count, aspect);
+        let lines = rows
+            .filter_map(|row| match face {
+                Face::Source => Some(VisibleLine {
+                    before: explorer.before,
+                    line: &explorer.source_layout.rows[row],
+                    readable: self.source_display_row_is_readable(explorer, row),
+                }),
+                Face::Blame => Some(VisibleLine {
+                    before: explorer.before,
+                    line: &explorer.blame_layout.rows[row],
+                    readable: true,
+                }),
+                Face::Diff => {
+                    let (line, mark) = &explorer.diff_layout.rows[row];
+                    Some(VisibleLine {
+                        before: *mark == Mark::Removed,
+                        line: line.as_ref()?,
+                        readable: true,
+                    })
+                }
+            })
+            .collect();
+        Some((face, lines))
+    }
+
+    pub(super) fn visible_focus_rows(
+        &self,
+        file: &repo_world::File,
+        camera: &Transform,
+        explorer: &Explorer,
+        aspect: f32,
+    ) -> Option<Range<usize>> {
+        let (_, lines) = self.visible_wall_lines(file, camera, explorer, aspect)?;
+        let mut numbers = lines
+            .iter()
+            .filter(|line| line.before == explorer.before)
+            .map(|line| line.line.number);
+        let first = numbers.next()?;
+        let (start, end) = numbers.fold((first, first), |(a, b), n| (a.min(n), b.max(n)));
+        Some(start.saturating_sub(1)..end)
+    }
+
     pub(super) fn visible_source_fragments<'a>(
         &self,
         file: &repo_world::File,
@@ -556,7 +727,13 @@ impl Listing {
     }
 
     fn source_display_row_is_readable(&self, explorer: &Explorer, row: usize) -> bool {
-        self.source_display_row_committed(explorer, row)
+        self.show_all_source
+            || explorer
+                .source_layout
+                .rows
+                .get(row)
+                .is_some_and(|line| self.guided_line(explorer, line.number))
+            || self.source_display_row_committed(explorer, row)
             || self.wash_preview.as_ref().is_some_and(|preview| {
                 preview.file == explorer.selected
                     && preview.before == explorer.before
@@ -729,22 +906,23 @@ impl Listing {
             self.wash_preview = None;
             return None;
         }
-        if settings.mode == reading::Mode::Immediate
-            || WashPreview::advance(
-                &mut self.wash_preview,
-                explorer.selected,
-                explorer.before,
-                rows.clone(),
-                delta,
-                || {
-                    settings.seconds(
-                        explorer.source_layout.rows[rows.clone()]
-                            .iter()
-                            .map(|line| line.text.as_str()),
-                    )
-                },
-            )
-        {
+        let lines = &explorer.source_layout.rows[rows.clone()];
+        let seconds = settings.seconds(lines.iter().map(|line| line.text.as_str()));
+        let key = reading_key(
+            file,
+            lines
+                .iter()
+                .map(|line| (explorer.before, line.number, line.text.as_str())),
+        );
+        let elapsed = self.timers.advance(key, delta, seconds);
+        self.wash_preview = Some(WashPreview {
+            file: explorer.selected,
+            before: explorer.before,
+            rows: rows.clone(),
+            elapsed,
+            seconds,
+        });
+        if elapsed >= seconds {
             let mark = self.wash(explorer, file, rows);
             self.wash_preview = None;
             return mark;
@@ -780,7 +958,7 @@ impl Listing {
                     && explorer
                         .source_layout
                         .visual_rows(line)
-                        .all(|row| self.source_display_row_is_readable(explorer, row))
+                        .all(|row| self.source_display_row_committed(explorer, row))
             })
             .collect::<Vec<_>>();
         let range = *completed.first()?..completed.last()? + 1;
@@ -793,6 +971,13 @@ impl Listing {
         )
         .then(|| progress::Mark::Reveal {
             path: file.path.clone(),
+            blob: (if explorer.before {
+                &file.before
+            } else {
+                &file.after
+            })
+            .as_ref()
+            .map(|blob| blob.id.clone()),
             before: explorer.before,
             start: range.start,
             end: range.end,
@@ -863,6 +1048,8 @@ impl Listing {
 
     pub(super) fn clear_progress(&mut self) {
         self.stop_water();
+        self.observed = None;
+        self.timers.clear();
         self.overview_dirty
             .extend(self.reveal_progress.keys().map(|&(index, _)| index));
         self.revealed.clear();
@@ -1181,6 +1368,10 @@ pub(super) fn wash_stream(
     search: Res<find::Search>,
     settings: Res<reading::Settings>,
 ) {
+    if listing.show_all_source || listing.guided == Some((explorer.selected, explorer.before)) {
+        listing.water_on = false;
+        return;
+    }
     let Ok((camera, pilot)) = camera.single() else {
         listing.stop_water();
         return;
@@ -1243,13 +1434,12 @@ pub(super) fn wash_stream(
         }
     }
     if review.nozzle >= 0.85 {
-        physics::spray_stream(
+        physics::heat_pulse(
             &mut gizmos,
             camera,
             hit,
             side.wall.row_height,
             time.elapsed_secs(),
-            None,
             review.nozzle,
         );
     }
@@ -1513,12 +1703,14 @@ struct TileDetails<'a> {
     mask: &'a dyn Fn(Range<usize>) -> u32,
     metadata: &'a dyn Fn(Range<usize>, u32) -> cover::CoverRows,
     paint: &'a dyn Fn(Range<usize>) -> [Vec4; TILE_ROWS],
+    glow: &'a dyn Fn(Range<usize>) -> [f32; TILE_ROWS],
 }
 
 impl TileDetails<'_> {
     fn build(&self, rows: Range<usize>) -> cover::CoverRows {
         let mut data = (self.metadata)(rows.clone(), (self.mask)(rows.clone()));
-        data.set_paint((self.paint)(rows));
+        data.set_paint((self.paint)(rows.clone()));
+        data.set_glow((self.glow)(rows));
         data
     }
 }
@@ -1631,6 +1823,21 @@ impl WallRender<'_, '_, '_> {
         )
     }
 
+    fn notice(&mut self, side: &WallSide, state: &mut Tiles, lines: [&str; 3]) {
+        let height = (side.width / 3.).min(side.wall.top * 0.8);
+        let tile = self.plane(
+            side,
+            code_texture::wall_notice(lines, height / side.width),
+            side.wall.top / 2.,
+            height,
+            Layer::Tile,
+            None,
+            1.,
+        );
+        // Reuse the wall's preview lifecycle so a refreshed comparison removes this image too.
+        state.preview = Some(tile.image);
+    }
+
     fn preview(
         &mut self,
         side: &WallSide,
@@ -1717,7 +1924,9 @@ impl WallRender<'_, '_, '_> {
                         let data = material.extension.data;
                         let mut updated = data;
                         updated.set_mask((details.mask)(rows.clone()));
-                        updated.set_paint((details.paint)(rows));
+                        updated.advance(self.dt);
+                        updated.set_paint((details.paint)(rows.clone()));
+                        updated.set_glow((details.glow)(rows));
                         if updated != data
                             && let Some(mut material) = self.covered.get_mut(handle)
                         {
@@ -1797,12 +2006,20 @@ pub(super) fn draw(
     mut images: ResMut<Assets<Image>>,
     time: Option<Res<Time>>,
     mut covered: ResMut<Assets<cover::Material>>,
-    (review, focus): (
+    (review, focus, settings): (
         Option<Res<review_notes::Review>>,
         Option<Res<file_facade::ChangesOnly>>,
+        Option<Res<reading::Settings>>,
     ),
     #[cfg(not(target_arch = "wasm32"))] live: Option<Res<live_worktree::Live>>,
 ) {
+    let show_all_source = settings
+        .as_ref()
+        .is_some_and(|settings| settings.show_all_source);
+    if listing.show_all_source != show_all_source {
+        listing.show_all_source = show_all_source;
+        listing.source_tiles.preview_dirty = true;
+    }
     let visible = Listing::visible(&explorer, &navigation)
         && repo
             .0
@@ -1908,20 +2125,20 @@ pub(super) fn draw(
         render.header(&source, &title, set.ink);
     }
     if diff_changed {
-        let title = if diff_count > 0 {
-            format!("DIFF / BASE → SNAPSHOT / {diff_count} rows")
-        } else if explorer
-            .comparison
-            .as_ref()
-            .is_some_and(|diff| diff.final_newline_changed)
-        {
-            "DIFF / Only the final newline changed".into()
-        } else if explorer.comparison.is_some() {
-            "DIFF / No changed lines between these revisions".into()
-        } else {
-            "DIFF / Comparison unavailable".into()
-        };
+        let message = empty_diff_message(&explorer);
+        let title = message.map_or_else(
+            || format!("DIFF / BASE → SNAPSHOT / {diff_count} rows"),
+            |(title, _)| format!("DIFF / {title}"),
+        );
         render.header(&diff, &title, set.added);
+        if let Some((title, reason)) = message {
+            let hint = if repo.0.is_worktree() {
+                "Live worktree compares saved files with HEAD."
+            } else {
+                "Local edits are shown in Live worktree."
+            };
+            render.notice(&diff, &mut listing.diff_tiles, [title, reason, hint]);
+        }
     }
 
     let fallback = view(file, source_count);
@@ -1968,6 +2185,27 @@ pub(super) fn draw(
         let tiles = &mut listing.blame_tiles;
         tiles.dirty.extend(tiles.resident.keys().copied());
     }
+    if !navigation.is_flying()
+        && viewed == Some(Face::Source)
+        && let Some(cue) = &mut listing.guidance
+    {
+        cue.elapsed += time.as_ref().map_or(0., |time| time.delta_secs());
+    }
+    let guidance = listing
+        .guidance
+        .clone()
+        .filter(|cue| cue.file == explorer.selected && cue.before == explorer.before);
+    let source_glow = |rows: Range<usize>| {
+        let mut glow = [0.; TILE_ROWS];
+        if let Some(cue) = &guidance {
+            for (slot, row) in rows.enumerate() {
+                if cue.lines.contains(&explorer.source_layout.rows[row].number) {
+                    glow[slot] = cue.strength();
+                }
+            }
+        }
+        glow
+    };
     let Listing {
         source_tiles,
         diff_tiles,
@@ -2022,13 +2260,16 @@ pub(super) fn draw(
         .filter(|preview| preview.file == explorer.selected && preview.before == explorer.before);
     let display_revealed = |visual: usize| {
         let row = visual - 1;
-        is_revealed(explorer.source_layout.rows[row].number)
+        show_all_source
+            || guidance
+                .as_ref()
+                .is_some_and(|cue| cue.lines.contains(&explorer.source_layout.rows[row].number))
+            || is_revealed(explorer.source_layout.rows[row].number)
             || partial_source.contains(&(explorer.selected, explorer.before, row))
             || active_wash.is_some_and(|preview| preview.rows.contains(&row))
     };
     let mask = |rows| cover::mask(rows, &display_revealed);
-    let metadata =
-        |rows, bits| cover::CoverRows::new(&source_rows(rows), bits, source.glyph_scale());
+    let metadata = |rows: Range<usize>, bits| cover::CoverRows::new(rows.len(), bits);
     let tone = |[r, g, b]: [u8; 3], alpha| {
         Vec4::new(r as f32 / 255., g as f32 / 255., b as f32 / 255., alpha)
     };
@@ -2144,6 +2385,7 @@ pub(super) fn draw(
                     mask: &mask,
                     metadata: &metadata,
                     paint: &source_paint,
+                    glow: &source_glow,
                 }),
             ),
             Face::Diff if show_diff => render.tiles(
@@ -2155,10 +2397,9 @@ pub(super) fn draw(
                 |rows| code_texture::listing(&diff_lines[rows], Face::Diff, diff.glyph_scale()),
                 Some(TileDetails {
                     mask: &|_| u32::MAX,
-                    metadata: &|rows, bits| {
-                        cover::CoverRows::new(&diff_lines[rows], bits, diff.glyph_scale())
-                    },
+                    metadata: &|rows, bits| cover::CoverRows::new(rows.len(), bits),
                     paint: &diff_paint,
+                    glow: &|_| [0.; TILE_ROWS],
                 }),
             ),
             Face::Blame if show_blame => render.tiles(
@@ -2221,6 +2462,11 @@ pub(super) fn smoke_source_ready(listing: &Listing) -> bool {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+pub(super) fn smoke_empty_diff_ready(listing: &Listing) -> bool {
+    listing.diff_tiles.preview.is_some() && listing.diff_tiles.resident.is_empty()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn smoke_blame_ready(listing: &Listing, count: usize) -> bool {
     listing
         .blame
@@ -2232,6 +2478,27 @@ pub(super) fn smoke_blame_ready(listing: &Listing, count: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guided_range_opens_all_target_lines_without_granting_read_credit() {
+        // Given unread code, an accepted comment or MCP range must be legible on arrival.
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight(
+            "test.rs",
+            "first\nsecond\nthird\nfourth\n",
+        ));
+        let mut listing = Listing::default();
+        listing.present_range(&explorer, 2, 3);
+        assert!(!listing.source_row_is_readable(&explorer, 0));
+        assert!(listing.source_row_is_readable(&explorer, 1));
+        assert!(listing.source_row_is_readable(&explorer, 2));
+        assert!(!listing.source_row_is_readable(&explorer, 3));
+        assert_eq!(listing.counts(&explorer).0, 0);
+        // Leaving the file discards presentation, never fabricating completed reading.
+        listing.reset_view();
+        assert!(!listing.source_row_is_readable(&explorer, 1));
+        assert_eq!(listing.counts(&explorer).0, 0);
+    }
 
     #[test]
     fn long_diff_lines_expand_into_continuations_instead_of_clipping_at_the_wall_edge() {
@@ -2300,6 +2567,57 @@ mod tests {
             image.height() >= TILE_ROWS as u32 * code_texture::LISTING_ROW_PIXELS,
             "renderer must use continuation rows instead of clipping the original long row"
         );
+    }
+
+    #[test]
+    fn always_visible_source_requires_earned_time_for_every_continuation() {
+        // Given one source line spanning several independently timed display blocks.
+        let (file, explorer) = wrapped_fixture();
+        let rows = explorer.source_layout.visual_rows(0);
+        assert!(rows.len() > 1);
+        let settings = reading::Settings {
+            block_lines: 1,
+            block_kind: reading::BlockKind::Lines,
+            min_seconds: Some(1.),
+            max_seconds: Some(1.),
+            ..default()
+        };
+        let mut listing = Listing {
+            show_all_source: true,
+            ..default()
+        };
+        assert!(listing.source_row_is_readable(&explorer, 0));
+
+        // When only the first continuation has earned its reading time.
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, rows.start, 1., settings)
+                .is_none()
+        );
+        assert_eq!(listing.counts(&explorer).0, 0);
+        assert!(!listing.revealed.contains(&(0, false, 1)));
+
+        // Then visibility grants no credit for the remaining continuations.
+        for row in rows.start + 1..rows.end - 1 {
+            assert!(
+                listing
+                    .advance_wash(&explorer, &file, row, 1., settings)
+                    .is_none()
+            );
+            assert_eq!(listing.counts(&explorer).0, 0);
+        }
+        let mark = listing.advance_wash(&explorer, &file, rows.end - 1, 1., settings);
+        assert!(matches!(
+            mark,
+            Some(progress::Mark::Reveal {
+                start: 0,
+                end: 1,
+                ..
+            })
+        ));
+        assert_eq!(listing.counts(&explorer).0, 1);
+        assert!(listing.revealed.contains(&(0, false, 1)));
+        assert!(!listing.revealed.contains(&(0, false, 2)));
     }
 
     #[test]
@@ -2499,6 +2817,86 @@ mod tests {
     }
 
     #[test]
+    fn empty_diff_explains_its_state_in_the_wall_body_and_clears_after_a_change() {
+        // Given an unchanged file or unavailable comparison, the reason belongs in the wall body.
+        for comparison in [
+            Some(Comparison::new("test.rs", "let x = 1;\n", "let x = 1;\n").unwrap()),
+            None,
+        ] {
+            let file = fixture_with_rows(40);
+            let size = block_size(&file);
+            let center = WallSide::new(&file, 0, Face::Diff, size).wall.top / 2.;
+            let mut repo = repository_picker::empty();
+            repo.files.push(file);
+            let mut explorer = Explorer::new(0);
+            explorer.set_highlighted(syntax::highlight("test.rs", "let x = 1;\n"));
+            explorer.comparison = comparison;
+            explorer.refresh_diff_layout();
+            let mut app = App::new();
+            app.insert_resource(Repo(repo))
+                .insert_resource(explorer)
+                .insert_resource(WorldSet::load(None).unwrap())
+                .init_resource::<Assets<Mesh>>()
+                .init_resource::<Assets<StandardMaterial>>()
+                .init_resource::<Assets<cover::Material>>()
+                .init_resource::<Assets<Image>>()
+                .init_resource::<city_navigation::Navigation>()
+                .init_resource::<Listing>()
+                .add_systems(Update, draw);
+            app.update();
+            let mut surfaces = app.world_mut().query::<(
+                &ListingSurface,
+                &Transform,
+                &MeshMaterial3d<StandardMaterial>,
+            )>();
+            let (_, _, material) = surfaces
+                .iter(app.world())
+                .find(|(surface, pose, _)| {
+                    surface.0 == Face::Diff && (pose.translation.y - center).abs() < 0.001
+                })
+                .expect("empty diff must show a reason at reading height, not only in its heading");
+            let image = app
+                .world()
+                .resource::<Assets<StandardMaterial>>()
+                .get(&material.0)
+                .unwrap()
+                .base_color_texture
+                .as_ref()
+                .unwrap();
+            let pixels = app
+                .world()
+                .resource::<Assets<Image>>()
+                .get(image)
+                .unwrap()
+                .data
+                .as_ref()
+                .unwrap();
+            assert!(
+                pixels
+                    .chunks_exact(4)
+                    .filter(|pixel| pixel[1] > 120)
+                    .count()
+                    > 100,
+                "the body explanation must contain visible text"
+            );
+
+            // When a real change arrives, the empty state must disappear instead of covering code.
+            let mut explorer = app.world_mut().resource_mut::<Explorer>();
+            explorer.comparison =
+                Some(Comparison::new("test.rs", "let x = 1;\n", "let x = 2;\n").unwrap());
+            explorer.refresh_diff_layout();
+            app.world_mut().resource_mut::<Listing>().invalidated = true;
+            app.update();
+            assert!(
+                surfaces.iter(app.world()).all(|(surface, pose, _)| {
+                    surface.0 != Face::Diff || (pose.translation.y - center).abs() > 0.001
+                }),
+                "the previous empty body must be removed when diff rows load"
+            );
+        }
+    }
+
+    #[test]
     fn filtering_out_the_last_file_removes_its_detailed_walls_and_textures() {
         let mut file = fixture_with_rows(40);
         file.change = Change::Unchanged;
@@ -2668,7 +3066,118 @@ mod tests {
     }
 
     #[test]
-    fn one_line_formula_washing_saves_only_completed_rows_and_discards_interrupted_focus() {
+    fn open_source_is_visible_without_automatically_granting_read_credit() {
+        let file = fixture_with_rows(24);
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight(
+            "test.rs",
+            "let value = 1;\nlet other = 2;\n",
+        ));
+        let settings = reading::Settings {
+            block_lines: 1,
+            min_seconds: Some(1.),
+            max_seconds: Some(1.),
+            ..default()
+        };
+        let mut listing = Listing::default();
+        listing.present_source(&explorer);
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 0, 0.4, settings)
+                .is_none()
+        );
+        assert!(listing.source_row_is_readable(&explorer, 0));
+        assert!(!listing.source_row_is_readable(&explorer, 1));
+        assert_eq!(listing.counts(&explorer).0, 0);
+        listing.stop_water();
+        listing.show_all_source = true;
+        assert!(listing.source_row_is_readable(&explorer, 1));
+        assert_eq!(listing.counts(&explorer).0, 0);
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 0, 0.61, settings)
+                .is_some()
+        );
+        assert_eq!(listing.counts(&explorer).0, 1);
+    }
+
+    #[test]
+    fn camera_context_reports_blame_and_diff_source_lines_on_their_actual_sides() {
+        let file = fixture_with_rows(24);
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight("test.rs", "let new = 2;\n"));
+        explorer.set_comparison(Some(
+            Comparison::new("test.rs", "let old = 1;\n", "let new = 2;\n").unwrap(),
+        ));
+        let mut listing = Listing {
+            rendered: Some((0, false, 1)),
+            rendered_layout: explorer.source_layout.revision(),
+            ..default()
+        };
+        for face in [Face::Blame, Face::Diff] {
+            listing.viewing = Some(face);
+            let camera = Listing::line_view(&explorer, &file, face, 1).unwrap();
+            let (actual_face, lines) = listing
+                .visible_wall_lines(&file, &camera, &explorer, 1.6)
+                .unwrap();
+            assert_eq!(actual_face, face);
+            assert!(
+                lines
+                    .iter()
+                    .all(|line| line.line.number == 1 && line.readable)
+            );
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| !line.before && line.line.text == "let new = 2;")
+            );
+            if face == Face::Diff {
+                assert!(
+                    lines
+                        .iter()
+                        .any(|line| line.before && line.line.text == "let old = 1;")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reading_resumes_after_looking_away_without_marking_unfinished_lines() {
+        // Given an unread block with a one-second reading estimate.
+        let file = fixture_with_rows(24);
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight("test.rs", "let value = 1;\n"));
+        let settings = reading::Settings {
+            min_seconds: Some(1.),
+            max_seconds: Some(1.),
+            ..default()
+        };
+        let mut listing = Listing::default();
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 0, 0.4, settings)
+                .is_none()
+        );
+        // When focus leaves and later returns, only focused time counts.
+        listing.stop_water();
+        assert_eq!(listing.counts(&explorer).0, 0);
+        assert!(!listing.source_row_is_readable(&explorer, 0));
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 0, 0.5, settings)
+                .is_none()
+        );
+        // Then the remaining tenth of a second completes that same block.
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 0, 0.11, settings)
+                .is_some()
+        );
+        assert_eq!(listing.counts(&explorer).0, 1);
+    }
+
+    #[test]
+    fn one_line_formula_washing_resumes_each_unfinished_block() {
         let file = fixture_with_rows(24);
         let mut explorer = Explorer::new(0);
         explorer.set_highlighted(syntax::highlight(
@@ -2710,19 +3219,14 @@ mod tests {
         assert!(listing.wash_fraction_remaining().is_none());
         assert!(
             listing
-                .advance_wash(&explorer, &file, 1, second / 2., settings)
+                .advance_wash(&explorer, &file, 1, second / 4., settings)
                 .is_none()
         );
         listing.stop_water();
         assert!(!listing.source_row_is_readable(&explorer, 1));
         assert!(
             listing
-                .advance_wash(&explorer, &file, 1, second / 2., settings)
-                .is_none()
-        );
-        assert!(
-            listing
-                .advance_wash(&explorer, &file, 1, second / 2., settings)
+                .advance_wash(&explorer, &file, 1, second / 4. + 0.001, settings)
                 .is_some()
         );
         assert_eq!(listing.counts(&explorer), (2, 3));
@@ -2800,48 +3304,41 @@ mod tests {
     }
 
     #[test]
-    fn washing_only_saves_a_tile_after_continuous_focus() {
-        let mut preview = None;
-        assert!(!WashPreview::advance(
-            &mut preview,
-            0,
-            false,
-            0..16,
-            4.,
-            || 6.
-        ));
-        assert!(!WashPreview::advance(
-            &mut preview,
-            0,
-            false,
-            16..17,
-            2.,
-            || 3.
-        ));
-        assert!(!WashPreview::advance(
-            &mut preview,
-            0,
-            false,
-            0..16,
-            3.,
-            || 6.
-        ));
-        assert!(WashPreview::advance(
-            &mut preview,
-            0,
-            false,
-            0..16,
-            3.,
-            || panic!("recounted tile")
-        ));
-        let mut listing = Listing {
-            water_on: true,
-            wash_preview: preview,
+    fn changed_content_and_other_comparison_sides_do_not_inherit_reading_time() {
+        let file = fixture_with_rows(24);
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight("test.rs", "let first = 1;\n"));
+        let settings = reading::Settings {
+            min_seconds: Some(1.),
+            max_seconds: Some(1.),
             ..default()
         };
+        let mut listing = Listing::default();
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 0, 0.4, settings)
+                .is_none()
+        );
         listing.stop_water();
-        assert!(listing.wash_preview.is_none());
-        assert!(!listing.water_on());
+        explorer.set_highlighted(syntax::highlight("test.rs", "let second = 2;\n"));
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 0, 0.7, settings)
+                .is_none()
+        );
+        explorer.before = true;
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 0, 0.7, settings)
+                .is_none()
+        );
+        explorer.before = false;
+        explorer.set_highlighted(syntax::highlight("test.rs", "let first = 1;\n"));
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 0, 0.61, settings)
+                .is_some()
+        );
     }
 
     #[test]

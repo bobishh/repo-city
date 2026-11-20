@@ -156,6 +156,7 @@ pub(super) struct Navigation {
     district_from_project: bool,
     history: History,
     review_line: Option<(usize, f32)>,
+    review_face: Option<listing::Face>,
     pub overview_requested: bool,
 }
 
@@ -471,6 +472,11 @@ pub(super) fn navigate(
     }
 
     let destination = review_notes::take_destination(review.as_deref_mut());
+    #[allow(unused_mut)]
+    let mut guided = destination.is_some();
+    if guided {
+        focus.enabled = false;
+    }
     #[cfg(not(target_arch = "wasm32"))]
     let destination = destination.or_else(|| {
         let destination = links
@@ -488,6 +494,7 @@ pub(super) fn navigate(
             .and_then(|navigation| navigation.take_destination(&repo.0));
         if destination.is_some() {
             focus.enabled = false;
+            guided = true;
         }
         destination
     });
@@ -514,6 +521,14 @@ pub(super) fn navigate(
         }
         explorer.rebuild = true;
         listing.reset_view();
+        navigation.review_face = if guided {
+            Some(listing::Face::Source)
+        } else {
+            None
+        };
+        if guided {
+            listing.present_range(&explorer, destination.anchor.start, destination.anchor.end);
+        }
         navigation.review_line = Some((destination.anchor.start, time.elapsed_secs() + 10.));
     }
     if let Some((line, deadline)) = navigation.review_line {
@@ -522,7 +537,12 @@ pub(super) fn navigate(
             .source_layout
             .unfold(&highlighted, line.saturating_sub(1));
         let file = &repo.0.files[explorer.selected];
-        if let Some(end) = listing::Listing::review_line_view(&explorer, file, line) {
+        let end = if let Some(face) = navigation.review_face {
+            listing::Listing::line_view(&explorer, file, face, line)
+        } else {
+            listing::Listing::review_line_view(&explorer, file, line)
+        };
+        if let Some(end) = end {
             navigation.review_line = None;
             navigation.hop = Some(
                 if camera

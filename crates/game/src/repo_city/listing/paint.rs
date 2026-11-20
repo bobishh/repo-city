@@ -382,7 +382,7 @@ pub(crate) fn draw(
                     Err(error) => explorer.notice = error,
                 }
             } else {
-                explorer.notice = "Wash these lines first, or mark them on the diff wall.".into();
+                explorer.notice = "Thaw these lines first, or mark them on the diff wall.".into();
             }
         }
         if let Some((start, phrase)) = &review.phrase {

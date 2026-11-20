@@ -3,6 +3,7 @@
 mod audio;
 mod codex;
 mod codex_projection;
+mod codex_protocol;
 mod codex_transport;
 mod opus_codec;
 mod rtc;

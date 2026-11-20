@@ -398,6 +398,30 @@ pub(super) fn heading(title: &str, tint: [f32; 3], aspect: f32, glyph_scale: f32
     )
 }
 
+/// Explain an empty wall at its reading height, independently of its roof heading.
+pub(super) fn wall_notice(lines: [&str; 3], aspect: f32) -> Image {
+    let width = LISTING_WIDTH;
+    let height = (width as f32 * aspect).round().clamp(96., 768.) as u32;
+    let mut canvas = Canvas::new(width, height);
+    canvas.rect(0, 0, width, height, [13, 23, 32]);
+    let scale = (height as f32 / 260.).min(1.);
+    for (index, (text, size, tint)) in [
+        (lines[0], 42., [0.82, 0.95, 0.91]),
+        (lines[1], 28., [0.65, 0.76, 0.81]),
+        (lines[2], 26., [0.48, 0.67, 0.72]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let advance: f32 = text.chars().map(source_advance).sum();
+        let size = (size * scale).min((width as f32 - 96.) * 20. / advance.max(1.));
+        let x = (width as f32 - advance * size / 20.) / 2.;
+        let y = height as f32 / 2. + (index as f32 - 1.) * 58. * scale + size * 0.35;
+        canvas.text(text, x, y, size, |_| tint);
+    }
+    canvas.image()
+}
+
 pub(super) const LISTING_WIDTH: u32 = 1536;
 pub(super) const LISTING_ROW_PIXELS: u32 = 27;
 pub(super) const HEADING_LEFT: f32 = 32.;
@@ -653,14 +677,6 @@ pub(super) fn source_change_ink(face: Face, mark: Mark) -> Option<[u8; 3]> {
         (Face::Source, Mark::Removed) => Some([208, 107, 128]),
         _ => None,
     }
-}
-
-pub(super) fn covered_span(text: &str, x_scale: f32) -> (usize, usize) {
-    let indent = (text.len() - text.trim_start().len()).min(40);
-    let start = 106 + (indent as f32 * 12. * x_scale) as usize;
-    let end = (106 + (text.len().min(128) as f32 * 12. * x_scale) as usize)
-        .min((LISTING_WIDTH - 16) as usize);
-    (start, end)
 }
 
 pub fn listing(rows: &[(Option<Line>, Mark)], face: Face, glyph_scale: Vec2) -> Image {

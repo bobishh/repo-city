@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct Identity {
+pub(crate) struct Identity {
     pub repository: String,
     pub revision: String,
     pub baseline: Option<String>,
@@ -12,16 +12,20 @@ pub(super) struct Identity {
     pub range: std::ops::Range<usize>,
 }
 impl Identity {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.repository.is_empty() || self.revision.is_empty() || self.blob.is_empty() {
+            return Err("Source draft identity does not match this file.".into());
+        }
+        Ok(())
+    }
+
     pub fn parse(value: &str, path: &str) -> Result<Self, String> {
         let identity: Self =
             serde_json::from_str(value).map_err(|_| "Invalid source draft identity.")?;
-        if identity.path != path
-            || identity.repository.is_empty()
-            || identity.revision.is_empty()
-            || identity.blob.is_empty()
-        {
+        if identity.path != path {
             return Err("Source draft identity does not match this file.".into());
         }
+        identity.validate()?;
         Ok(identity)
     }
     pub fn key(&self) -> String {

@@ -1,6 +1,8 @@
 //! Reading preferences belong to the player, independently of saved progress.
 use super::*;
 use serde::{Deserialize, Serialize};
+mod timers;
+pub(super) use timers::Timers;
 
 #[derive(Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -25,6 +27,7 @@ pub(super) struct Settings {
     pub block_lines: u32,
     pub block_kind: BlockKind,
     pub auto_advance: bool,
+    pub show_all_source: bool,
     pub min_seconds: Option<f32>,
     pub max_seconds: Option<f32>,
 }
@@ -36,6 +39,7 @@ impl Default for Settings {
             block_lines: 6,
             block_kind: BlockKind::Function,
             auto_advance: true,
+            show_all_source: false,
             min_seconds: Some(3.),
             max_seconds: Some(6.),
         }

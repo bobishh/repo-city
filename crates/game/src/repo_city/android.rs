@@ -10,10 +10,15 @@ pub(super) const TABLET_SIZE: UVec2 = UVec2::new(1440, 909);
 const SPRAYER_TIP: f32 = 0.23;
 
 fn sprayer_view(raised: f32, can: bool) -> Transform {
-    let y = -0.48 + 0.22 * (raised * raised * (3. - 2. * raised));
-    Transform::from_xyz(0.24, y, -0.76)
+    let ease = raised * raised * (3. - 2. * raised);
+    let (x, y, scale) = if can {
+        (0.24, -0.48 + 0.22 * ease, 0.61)
+    } else {
+        (0.31, -0.39 + 0.05 * ease, 0.34)
+    };
+    Transform::from_xyz(x, y, -0.76)
         .with_rotation(Quat::from_rotation_y(std::f32::consts::PI) * Quat::from_rotation_z(-0.18))
-        .with_scale(Vec3::splat(if can { 0.61 } else { 0.66 }))
+        .with_scale(Vec3::splat(scale))
 }
 
 #[derive(Component, Clone, Copy)]
@@ -161,7 +166,7 @@ impl Workshop {
         self.block(
             commands,
             parent,
-            Blue,
+            Dark,
             [0., 0., -0.023],
             [0.15, 0.112, 0.26],
         );
@@ -201,7 +206,7 @@ impl Workshop {
             commands,
             parent,
             &self.pin,
-            Blue,
+            Dark,
             [0., -0.118, -0.101],
             [0.103, 0.116, 0.103],
             Quat::IDENTITY,

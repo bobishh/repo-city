@@ -145,7 +145,7 @@ The first city visit offers a controls tour. Open **H** to take it again.
 | Return to a building | **Ctrl+O** goes back in jump history and **Ctrl+I** goes forward. |
 | Browse changes | **Tab** opens and puts away VibePad. **Viewed** limits the list to changes you visited. Select a file to fly there. **Ctrl+Tab** moves to the next control; **Shift+Tab** moves to the previous one. |
 | Approach a wall | Far away, left-click a building to fly to its nearest covered lines or the top of its source wall. Press **E** to fly to the aimed face. Scroll to move along the wall. |
-| Wash or paint lines | **0** equips water. Click close to a source wall to start or stop water. Code appears while you aim at the block. In VibePad **Settings**, choose **Immediate** to save the reveal right away or **Delayed** to wait for the reading estimate. **1–9** equip paints; drag from one readable line to another on the same side of the file. |
+| Thaw or paint lines | **0** equips the heat tool. Click close to a source wall to start or stop heating. Blurred code becomes clear while you aim at the block. In VibePad **Settings**, choose **Immediate** to save the reveal right away or **Delayed** to wait for the reading estimate. **1–9** equip paints; drag from one readable line to another on the same side of the file. |
 | Edit paints and notes | **U** opens paints; **⌘ + scroll** cycles tools on Mac. **J** opens the note you are aiming at or the review list. |
 | Find text on the current wall | **/** or **Find in file** in the actions menu. **Enter** keeps results; **N** and **Shift+N** visit matches. |
 | Turn to the diff or blame wall | **G** for diff, **B** for blame. Up close, **Left/Right** cycles source, diff and blame. Sign in with GitHub for line attribution in the browser. |
@@ -167,8 +167,16 @@ Reading a close diff, blame wall, or hunk stop uses the same timer and reveals o
 Function blocks do not nest: an outer function owns its entire source interval,
 including callbacks inside it. Moving between those lines keeps the same block
 and reading estimate. Fixed fallback blocks stop at function boundaries.
-While washing, code is visible immediately. Leaving an unfinished block covers
-it again. A ring around the tool-colored reticle shrinks as the delay expires.
+Unread source remains visible through blurred glass, including its indentation and
+syntax colors. The heat tool clears the current reading block; leaving an unfinished
+block frosts it again. The countdown around the cursor shows the remaining reading
+time. Completed reading persists; unfinished time pauses and resumes within the session.
+The compact heater and its short warm pulse leave the code clear of a water stream.
+
+Accepted agent navigation and comment **Fly to line** actions open the target range
+immediately. A warm highlight fades after arrival; showing code does not mark it read.
+Native **Follow agent** opts into navigation from explicit file activity. **Source
+always visible** in Settings shows all code while retaining separate reading progress.
 
 Delayed mode estimates seconds as `effective non-whitespace characters × 60 / (238 × 4.6)`
 for the selected block. Consecutive copies of one character count once, so a
@@ -191,8 +199,10 @@ HDR and 16-bit images use an 8-bit display preview. DDS support covers DXT1,
 DXT3 and DXT5 textures; unsupported layouts show a decoding error. SVG remains
 available as text. All raster formats use the same bounded Rust decoder on desktop
 and in the browser: 16 MiB input, 8192 pixels per side and 16 megapixels total.
-Repo City saves revealed lines and reviewed files in your browser or on your
-Mac. The same repository and comparison restore those marks. Press **V** to
+Repo City saves revealed lines and reviewed files in IndexedDB in your browser or
+SQLite on your Mac. Reading ranges carry their source content identity. After edits,
+only uniquely matched unchanged lines retain prior read credit; new or ambiguous
+lines remain frosted. The same repository and comparison restore those marks. Press **V** to
 toggle the selected file’s review mark. To start over on the open comparison,
 choose **Reset progress** in the browser’s repository dialog or the Mac
 **Files** menu.
@@ -470,9 +480,15 @@ as a stdio MCP server. `list_notes` reads private local notes from both commits 
 checkout. Each note includes its revision and comparison base. `mark_note` sets a note to `unread`, `read`, or `addressed`.
 `get_focus` returns the current file, wall side, camera, and the source lines
 that are visible and readable. `list_notes` includes the same focus context.
-Context expires after six seconds; diff and blame currently report their side
-without a visible line range. Replace the MCP executable and restart the server
-after updating the app.
+Context expires after six seconds. Source, diff and blame report visible lines on
+their actual comparison sides. Focus includes the source blob for stale-content checks.
+`create_note` writes a private local note with `id`, `revision`, `path`, `line`,
+optional `end_line`, `before`, `text` and optional `expected_blob`. New notes appear
+in the running native city. Identical retries preserve their local status; conflicting
+reuse of an id fails. `propose_navigation` accepts `line` and optional `end_line`;
+the city flies and reveals the range only after **Y** or **Fly**. **N** dismisses it.
+Creating a note never moves the camera. Replace the MCP executable and restart the
+server after updating the app to expose new tools.
 An addressed note stays in the review list and its paint disappears from
 the city. Local note tools do not publish to GitHub.
 

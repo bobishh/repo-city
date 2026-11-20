@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use bevy::{
     clipboard::Clipboard,
     input_focus::{FocusCause, InputFocus, tab_navigation::TabIndex},
@@ -54,7 +52,7 @@ pub(crate) struct ReviewUi {
     scroll: f32,
     empty_until: f32,
     status_scope: String,
-    status_job: Option<native_github::Job<HashMap<String, native::LocalState>>>,
+    status_job: Option<native_github::Job<Vec<(Note, native::LocalState)>>>,
     status_due: f32,
 }
 
@@ -79,16 +77,28 @@ impl ReviewUi {
         let mut changed = false;
         if let Some(result) = self.status_job.as_ref().and_then(native_github::Job::take) {
             self.status_job = None;
-            if let Ok(states) = result
-                && states != review.local_states
-            {
-                review.local_states = states;
-                changed = true;
+            if let Ok(notes) = result {
+                let states = notes
+                    .iter()
+                    .map(|(note, state)| (note.id.clone(), *state))
+                    .collect();
+                if states != review.local_states {
+                    review.local_states = states;
+                    changed = true;
+                }
+                for (note, _) in notes {
+                    if !review.notes.iter().any(|existing| existing.id == note.id) {
+                        review.notes.push(note);
+                        changed = true;
+                    }
+                }
             }
         }
         if self.status_job.is_none() && now >= self.status_due {
             let scope = review.scope.clone();
-            self.status_job = Some(native_github::Job::spawn(move || native::states(&scope)));
+            self.status_job = Some(native_github::Job::spawn(move || {
+                native::local_notes(&scope)
+            }));
             self.status_due = now + 1.;
         }
         changed
@@ -264,7 +274,7 @@ fn draw(
                                 .checked_sub(1_usize)
                                 .and_then(|i| review.palette[i].as_ref());
                             let name = if slot == 0 {
-                                "Water"
+                                "Heat"
                             } else {
                                 preset.map_or("Note", |paint| paint.label.as_str())
                             };
@@ -1076,7 +1086,6 @@ pub(crate) fn update(
         }
     }
     if picker.as_ref().is_none_or(|picker| picker.github.is_none())
-        && !review.notes.is_empty()
         && ui.refresh_local_states(&mut review, time.elapsed_secs())
     {
         redraw |= matches!(ui.view, Some(View::Notes { editing: false }));
@@ -1176,6 +1185,7 @@ mod tests {
             id: "viewed-note".into(),
             revision: repo.revision.clone(),
             baseline: repo.baseline.clone(),
+            source_blob: None,
             anchor: Anchor {
                 path: "demo.rs".into(),
                 before: false,
@@ -1237,6 +1247,7 @@ mod tests {
             id: "editing-note".into(),
             revision: repo.revision.clone(),
             baseline: repo.baseline.clone(),
+            source_blob: None,
             anchor: Anchor {
                 path: "demo.rs".into(),
                 before: false,
@@ -1289,6 +1300,7 @@ mod tests {
                 id: id.into(),
                 revision: repo.revision.clone(),
                 baseline: repo.baseline.clone(),
+                source_blob: None,
                 anchor: Anchor {
                     path: "demo.rs".into(),
                     before: false,

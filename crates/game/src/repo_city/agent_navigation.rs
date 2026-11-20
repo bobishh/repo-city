@@ -26,6 +26,10 @@ struct Target {
     baseline: Option<String>,
     path: String,
     line: usize,
+    #[serde(default)]
+    end_line: Option<usize>,
+    #[serde(default)]
+    source_blob: Option<String>,
     before: bool,
 }
 
@@ -56,6 +60,10 @@ impl Target {
             baseline: repo.baseline.clone(),
             path,
             line,
+            end_line: None,
+            source_blob: (if before { &file.before } else { &file.after })
+                .as_ref()
+                .map(|blob| blob.id.clone()),
             before,
         })
     }
@@ -63,7 +71,14 @@ impl Target {
         self.repository == repo.root
             && self.revision == repo.revision
             && self.baseline == repo.baseline
-            && Self::checked(repo, &self.path, self.line, self.before).is_ok()
+            && Self::checked(repo, &self.path, self.line, self.before).is_ok_and(|current| {
+                self.source_blob
+                    .as_ref()
+                    .is_none_or(|blob| current.source_blob.as_ref() == Some(blob))
+                    && self.end_line.is_none_or(|end| {
+                        checked_anchor(repo, &self.path, self.line, end, self.before).is_ok()
+                    })
+            })
     }
     fn destination(&self) -> review_notes::Destination {
         review_notes::Destination {
@@ -72,7 +87,7 @@ impl Target {
                 path: self.path.clone(),
                 before: self.before,
                 start: self.line,
-                end: self.line,
+                end: self.end_line.unwrap_or(self.line),
             },
         }
     }
@@ -169,6 +184,10 @@ pub(super) fn propose(
     if reason.chars().count() > 240 {
         return Err("Keep the navigation explanation within 240 characters.".into());
     }
+    propose_range(scope, path, line, None, before, reason)
+}
+
+pub(super) fn displayed_repository(scope: &str) -> Result<(Repository, u32), String> {
     let focus = focus_context::read(scope);
     let snapshot = &focus["snapshot"];
     let process = snapshot["process"].as_u64().and_then(|value| u32::try_from(value).ok()).filter(|value| *value != 0).ok_or("No fresh city window is available for this checkout. Open the repository in Vibe City first.")?;
@@ -188,7 +207,55 @@ pub(super) fn propose(
                 .into(),
         );
     }
-    let target = Target::checked(&repo, path, line, before)?;
+    Ok((repo, process))
+}
+
+pub(super) fn checked_anchor(
+    repo: &Repository,
+    path: &str,
+    line: usize,
+    end: usize,
+    before: bool,
+) -> Result<review_notes::Anchor, String> {
+    let target = Target::checked(repo, path, line, before)?;
+    if end < line || end > 1_000_000 {
+        return Err("The last source line must not precede the first.".into());
+    }
+    let index = repo
+        .files
+        .iter()
+        .position(|file| file.path == target.path)
+        .expect("validated path");
+    let source = repo.source(index, target.before)?;
+    if end > source.lines().count().max(1) {
+        return Err("The requested source range is outside this file.".into());
+    }
+    Ok(review_notes::Anchor {
+        path: target.path,
+        before: target.before,
+        start: line,
+        end,
+    })
+}
+
+pub(super) fn propose_range(
+    scope: &str,
+    path: &str,
+    line: usize,
+    end_line: Option<usize>,
+    before: bool,
+    reason: &str,
+) -> Result<Value, String> {
+    safe_path(path)?;
+    if reason.chars().count() > 240 {
+        return Err("Keep the navigation explanation within 240 characters.".into());
+    }
+    let (repo, process) = displayed_repository(scope)?;
+    let mut target = Target::checked(&repo, path, line, before)?;
+    if let Some(end) = end_line {
+        checked_anchor(&repo, path, line, end, before)?;
+        target.end_line = Some(end);
+    }
     if line > 1 {
         let index = repo
             .files
@@ -219,8 +286,12 @@ pub(super) fn propose(
         .ok_or("Could not locate local city communication storage.")?;
     write_packet(&directory, &proposal)?;
     Ok(
-        json!({"status":"awaiting_user","request_id":proposal.id,"path":proposal.target.path,"line":line,"expires_in_seconds":60,"message":"The city will show a proposal. It moves only after the user accepts with Y or Fly; N dismisses it."}),
+        json!({"status":"awaiting_user","request_id":proposal.id,"path":proposal.target.path,"line":line,"end_line":target_end(&proposal.target),"expires_in_seconds":60,"message":"The city will show a proposal. It moves only after the user accepts with Y or Fly; N dismisses it."}),
     )
+}
+
+fn target_end(target: &Target) -> usize {
+    target.end_line.unwrap_or(target.line)
 }
 
 #[derive(Clone, Copy, Component)]
@@ -235,8 +306,34 @@ pub(super) struct Navigation {
     destination: Option<Target>,
     decision: Option<Decision>,
     next_poll: f64,
+    followed: Option<(PathBuf, u64)>,
+    next_follow: f64,
 }
 impl Navigation {
+    fn follow_activity(
+        &mut self,
+        repo: &Repository,
+        activity: &agent_engine::state::FileActivity,
+        now: f64,
+    ) -> bool {
+        if now < self.next_follow
+            || self
+                .followed
+                .as_ref()
+                .is_some_and(|(root, serial)| root == &repo.root && *serial == activity.serial)
+        {
+            return false;
+        }
+        let Ok(target) = Target::checked(repo, &activity.path, activity.line, false) else {
+            return false;
+        };
+        if !self.follow(&target, repo) {
+            return false;
+        }
+        self.followed = Some((repo.root.clone(), activity.serial));
+        self.next_follow = now + 1.5;
+        true
+    }
     pub(super) fn take_destination(
         &mut self,
         repo: &Repository,
@@ -350,6 +447,8 @@ fn update(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut tablet: ResMut<review_tablet::Tablet>,
     mut navigation: ResMut<Navigation>,
+    mut session: ResMut<agent_session::Session>,
+    city: Res<city_navigation::Navigation>,
     mut toasts: Query<&mut Node, With<Toast>>,
     mut labels: Query<&mut Text, With<ToastText>>,
 ) {
@@ -395,6 +494,29 @@ fn update(
             KeyCode::ShiftLeft,
             KeyCode::ShiftRight,
         ]);
+    if keyboard_allowed
+        && keys.any_just_pressed([
+            KeyCode::Escape,
+            KeyCode::KeyW,
+            KeyCode::KeyA,
+            KeyCode::KeyS,
+            KeyCode::KeyD,
+            KeyCode::Space,
+            KeyCode::ArrowUp,
+            KeyCode::ArrowDown,
+            KeyCode::ArrowLeft,
+            KeyCode::ArrowRight,
+        ])
+    {
+        session.pause_following();
+    }
+    if keyboard_allowed && session.follows_agent() && !city.guides_camera() {
+        if let Some(activity) = session.file_activity()
+            && navigation.follow_activity(&repo.0, activity, time.elapsed_secs_f64())
+        {
+            tablet.request_close();
+        }
+    }
     if keyboard_allowed && navigation.pending.is_some() {
         if keys.just_pressed(KeyCode::KeyY) {
             navigation.decision = Some(Decision::Accept);
@@ -698,6 +820,142 @@ mod tests {
             .collect();
         repo
     }
+    struct Checkout(PathBuf);
+
+    impl Checkout {
+        fn new() -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let checkout = Self(std::env::temp_dir().join(format!(
+                "repo-city-range-navigation-{}-{nonce}",
+                std::process::id()
+            )));
+            std::fs::create_dir_all(checkout.0.join("src")).unwrap();
+            let git = |args: &[&str]| {
+                let output = std::process::Command::new("git")
+                    .current_dir(&checkout.0)
+                    .args([
+                        "-c",
+                        "commit.gpgsign=false",
+                        "-c",
+                        "core.hooksPath=/dev/null",
+                    ])
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            };
+            git(&["init", "-q"]);
+            std::fs::write(
+                checkout.0.join("src/main.rs"),
+                "first\nsecond\nthird\nfourth\n",
+            )
+            .unwrap();
+            git(&["add", "."]);
+            git(&[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-qm",
+                "source",
+            ]);
+            checkout
+        }
+
+        fn proposal(&self, repo: &Repository) -> Proposal {
+            let mut target = Target::checked(repo, "src/main.rs", 2, false).unwrap();
+            target.end_line = Some(3);
+            assert!(checked_anchor(repo, &target.path, target.line, 3, false).is_ok());
+            let proposal = Proposal {
+                version: 1,
+                id: "range-request".into(),
+                process: 42,
+                created: 1000,
+                target,
+                reason: "Explain these two lines".into(),
+            };
+            // Exercise the same packet representation that the MCP writes.
+            serde_json::from_slice(&serde_json::to_vec(&proposal).unwrap()).unwrap()
+        }
+    }
+
+    impl Drop for Checkout {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_range_proposal_reveals_the_full_range_only_after_acceptance() {
+        // Given a source range from a real live repository, carried through MCP's packet format.
+        let checkout = Checkout::new();
+        let repo = Repository::open_worktree(&checkout.0).unwrap();
+        let proposal = checkout.proposal(&repo);
+        let mut navigation = Navigation {
+            pending: Some(proposal.clone()),
+            ..default()
+        };
+        assert!(navigation.take_destination(&repo).is_none());
+        // When N dismisses it, no destination is ever exposed.
+        assert!(!navigation.decide(false, &repo, 42, 1001));
+        assert!(navigation.pending.is_none());
+        assert!(navigation.take_destination(&repo).is_none());
+        // When Y accepts the unchanged source, both range ends survive.
+        navigation.pending = Some(proposal);
+        assert!(navigation.decide(true, &repo, 42, 1001));
+        let destination = navigation.take_destination(&repo).unwrap();
+        assert_eq!(destination.revision, repo.revision);
+        assert_eq!(destination.anchor.path, "src/main.rs");
+        assert_eq!((destination.anchor.start, destination.anchor.end), (2, 3));
+        assert!(!destination.anchor.before);
+        assert!(navigation.take_destination(&repo).is_none());
+    }
+
+    #[test]
+    fn pending_and_accepted_ranges_reject_changed_worktree_bytes() {
+        // Given a pending cue and a separately accepted destination on the same source bytes.
+        let checkout = Checkout::new();
+        let repo = Repository::open_worktree(&checkout.0).unwrap();
+        let proposal = checkout.proposal(&repo);
+        let mut pending = Navigation {
+            pending: Some(proposal.clone()),
+            ..default()
+        };
+        let mut accepted = Navigation {
+            pending: Some(proposal.clone()),
+            ..default()
+        };
+        assert!(accepted.decide(true, &repo, 42, 1001));
+        // When content changes without changing HEAD, line count, or the proposed range.
+        std::fs::write(
+            checkout.0.join("src/main.rs"),
+            "first\nnew-second\nthird\nfourth\n",
+        )
+        .unwrap();
+        let changed = Repository::open_worktree(&checkout.0).unwrap();
+        assert_eq!(repo.revision, changed.revision);
+        assert_eq!(repo.baseline, changed.baseline);
+        // Then Y cannot accept the stale cue; an unconsumed destination is rejected too.
+        assert!(!pending.decide(true, &changed, 42, 1001));
+        assert!(pending.take_destination(&changed).is_none());
+        assert!(accepted.take_destination(&changed).is_none());
+        assert!(pending.pending.is_none());
+        // Malformed ranges must also be revalidated at acceptance, even with a matching blob.
+        let mut invalid = proposal;
+        invalid.target.end_line = Some(99);
+        pending.pending = Some(invalid);
+        assert!(!pending.decide(true, &repo, 42, 1001));
+        assert!(pending.take_destination(&repo).is_none());
+    }
+
     #[test]
     fn navigation_integrates_without_cycling_the_existing_control_schedule() {
         let mut app = App::new();
@@ -719,6 +977,30 @@ mod tests {
         schedule
             .initialize(app.world_mut())
             .expect("agent navigation must fit the existing controls order");
+    }
+
+    #[test]
+    fn following_coalesces_activity_and_waits_for_a_resolvable_file() {
+        let repo = repository();
+        let mut navigation = Navigation::default();
+        let mut activity = agent_engine::state::FileActivity {
+            serial: 1,
+            path: "src/main.rs".into(),
+            line: 7,
+        };
+        assert!(navigation.follow_activity(&repo, &activity, 0.));
+        assert_eq!(navigation.take_destination(&repo).unwrap().anchor.start, 7);
+        assert!(!navigation.follow_activity(&repo, &activity, 2.));
+        activity.serial = 2;
+        activity.line = 10;
+        assert!(!navigation.follow_activity(&repo, &activity, 0.1));
+        assert!(navigation.take_destination(&repo).is_none());
+        assert!(navigation.follow_activity(&repo, &activity, 2.));
+        assert_eq!(navigation.take_destination(&repo).unwrap().anchor.start, 10);
+        activity.serial = 3;
+        activity.path = "../other/private.rs".into();
+        assert!(!navigation.follow_activity(&repo, &activity, 4.));
+        assert!(navigation.take_destination(&repo).is_none());
     }
 
     #[test]

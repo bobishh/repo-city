@@ -2,7 +2,6 @@
 use super::*;
 
 struct Viewed {
-    kind: u8,
     rows: Range<usize>,
     lines: Vec<(bool, syntax::Line)>,
 }
@@ -25,20 +24,22 @@ impl Listing {
             self.observed = None;
             return Vec::new();
         }
-        if self.observed_kind != view.kind {
-            self.observed = None;
-            self.observed_kind = view.kind;
-        }
-        if settings.mode != reading::Mode::Immediate
-            && !WashPreview::advance(
-                &mut self.observed,
-                explorer.selected,
-                explorer.before,
-                view.rows,
-                delta,
-                || settings.seconds(view.lines.iter().map(|(_, line)| line.text.as_str())),
-            )
-        {
+        let seconds = settings.seconds(view.lines.iter().map(|(_, line)| line.text.as_str()));
+        let key = reading_key(
+            file,
+            view.lines
+                .iter()
+                .map(|(before, line)| (*before, line.number, line.text.as_str())),
+        );
+        let elapsed = self.timers.advance(key, delta, seconds);
+        self.observed = Some(WashPreview {
+            file: explorer.selected,
+            before: explorer.before,
+            rows: view.rows,
+            elapsed,
+            seconds,
+        });
+        if elapsed < seconds {
             return Vec::new();
         }
         self.observed = None;
@@ -73,6 +74,9 @@ impl Listing {
                 if self.reveal(explorer.selected, before, file, range.clone(), total) {
                     marks.push(progress::Mark::Reveal {
                         path: file.path.clone(),
+                        blob: (if before { &file.before } else { &file.after })
+                            .as_ref()
+                            .map(|blob| blob.id.clone()),
                         before,
                         start: range.start,
                         end: range.end,
@@ -86,12 +90,7 @@ impl Listing {
     }
 }
 
-fn aligned(
-    explorer: &Explorer,
-    kind: u8,
-    rows: Range<usize>,
-    side: Option<bool>,
-) -> Option<Viewed> {
+fn aligned(explorer: &Explorer, rows: Range<usize>, side: Option<bool>) -> Option<Viewed> {
     let diff = explorer.comparison.as_ref()?;
     let lines = rows
         .clone()
@@ -113,7 +112,7 @@ fn aligned(
                 })
         })
         .collect();
-    Some(Viewed { kind, rows, lines })
+    Some(Viewed { rows, lines })
 }
 
 pub(crate) fn update(
@@ -131,6 +130,7 @@ pub(crate) fn update(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut progress: ResMut<progress::Progress>,
 ) {
+    let mut guided_focus = false;
     let view = (|| {
         let (camera, window) = (camera.single().ok()?, windows.single().ok()?);
         if !window.focused
@@ -144,11 +144,11 @@ pub(crate) fn update(
         }
         let file = repo.0.files.get(explorer.selected)?;
         if let Some(rows) = navigation.reading_rows(&repo.0, explorer.selected, camera) {
-            return aligned(&explorer, 3, rows, None);
+            return aligned(&explorer, rows, None);
         }
         if explorer.comparison_mode > 0 {
             let (before, rows) = comparison_scene::reading_rows(file, &explorer, camera)?;
-            return aligned(&explorer, if before { 4 } else { 5 }, rows, Some(before));
+            return aligned(&explorer, rows, Some(before));
         }
         if !Listing::visible(&explorer, &navigation) || listing.turning() {
             return None;
@@ -156,6 +156,20 @@ pub(crate) fn update(
         let aspect = window.width() / window.height().max(1.);
         let face = listing.close_face(file, camera, &explorer, aspect)?;
         if face == Face::Source {
+            if (settings.show_all_source
+                || listing.guided == Some((explorer.selected, explorer.before)))
+                && !review.tablet_open
+            {
+                let count = explorer.source_layout.len();
+                let side = WallSide::new(file, count, face, block_size(file));
+                let row = side.wall.row(side.look_height(camera), count);
+                guided_focus = true;
+                if let Some(mark) =
+                    listing.advance_wash(&explorer, file, row, time.delta_secs(), *settings)
+                {
+                    progress.mark(mark, true);
+                }
+            }
             return None;
         }
         let count = if face == Face::Diff {
@@ -234,12 +248,11 @@ pub(crate) fn update(
                 *line = original.clone();
             }
         }
-        Some(Viewed {
-            kind: if face == Face::Diff { 1 } else { 2 },
-            rows,
-            lines,
-        })
+        Some(Viewed { rows, lines })
     })();
+    if (settings.show_all_source || listing.guided.is_some()) && !guided_focus {
+        listing.wash_preview = None;
+    }
     if let Some(view) = view {
         let file = &repo.0.files[explorer.selected];
         for mark in listing.advance_seen(&explorer, file, view, time.delta_secs(), *settings) {
@@ -255,7 +268,6 @@ mod tests {
     use super::*;
     fn view() -> Viewed {
         Viewed {
-            kind: 3,
             rows: 0..1,
             lines: vec![
                 (true, syntax::highlight("test.rs", "old value\n").remove(0)),
@@ -264,7 +276,7 @@ mod tests {
         }
     }
     #[test]
-    fn reading_a_diff_requires_continuous_focus_then_reveals_only_the_seen_lines_on_each_side() {
+    fn reading_a_diff_resumes_then_reveals_only_the_seen_lines_on_each_side() {
         let file = super::super::tests::fixture_file();
         let mut explorer = Explorer::new(0);
         explorer.set_highlighted(syntax::highlight("test.rs", "new value\nunseen\n"));
@@ -284,11 +296,6 @@ mod tests {
         );
         assert!(!listing.revealed.contains(&(0, false, 1)));
         listing.observed = None;
-        assert!(
-            listing
-                .advance_seen(&explorer, &file, view(), 0.5, settings)
-                .is_empty()
-        );
         let marks = listing.advance_seen(&explorer, &file, view(), 0.5, settings);
         assert_eq!(marks.len(), 2);
         assert!(listing.revealed.contains(&(0, true, 1)));

@@ -33,6 +33,8 @@ struct Comparison {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Line {
+    #[serde(default)]
+    before: bool,
     number: usize,
     text: String,
     truncated: bool,
@@ -42,6 +44,8 @@ struct Line {
 struct Focus {
     path: String,
     before: bool,
+    #[serde(default)]
+    source_blob: Option<String>,
     face: Option<String>,
     visible_lines: Option<[usize; 2]>,
     readable_lines: Vec<Line>,
@@ -259,38 +263,53 @@ fn publish(
     let focus = selected
         .filter(|file| !review.blocked && !review.tablet_open && filter.includes(file))
         .and_then(|file| {
-            let rows = listing.visible_source_rows(
+            let (face, lines) = listing.visible_wall_lines(
                 file,
                 camera,
                 &explorer,
                 window.width() / window.height().max(1.),
             )?;
-            let fragments = listing.visible_source_fragments(
-                file,
-                camera,
-                &explorer,
-                window.width() / window.height().max(1.),
-            );
-            let mut grouped: Vec<(usize, String)> = Vec::new();
-            for (number, text) in fragments {
-                if let Some((last_number, last_text)) = grouped.last_mut()
+            let numbers = lines
+                .iter()
+                .filter(|line| line.before == explorer.before)
+                .map(|line| line.line.number);
+            let visible_lines = numbers.fold(None::<[usize; 2]>, |range, number| {
+                Some(match range {
+                    None => [number, number],
+                    Some([a, b]) => [a.min(number), b.max(number)],
+                })
+            });
+            let mut grouped: Vec<(bool, usize, String)> = Vec::new();
+            for fragment in lines.into_iter().filter(|line| line.readable) {
+                let before = fragment.before;
+                let number = fragment.line.number;
+                let text = fragment.line.text.as_str();
+                if let Some((last_before, last_number, last_text)) = grouped.last_mut()
+                    && *last_before == before
                     && *last_number == number
                 {
                     last_text.push_str(text);
                 } else {
-                    grouped.push((number, text.to_owned()));
+                    grouped.push((before, number, text.to_owned()));
                 }
             }
             let omitted = grouped.len() > MAX_LINES;
             let readable_lines = grouped
                 .into_iter()
                 .take(MAX_LINES)
-                .map(|(number, text)| {
-                    let whole_line = explorer
-                        .highlighted
+                .map(|(before, number, text)| {
+                    let original =
+                        explorer
+                            .comparison
+                            .as_ref()
+                            .map_or(&explorer.highlighted, |diff| {
+                                if before { &diff.before } else { &diff.after }
+                            });
+                    let whole_line = original
                         .get(number.saturating_sub(1))
                         .map(|line| line.text.as_str());
                     Line {
+                        before,
                         number,
                         truncated: whole_line != Some(text.as_str())
                             || text.chars().count() > MAX_LINE_CHARACTERS,
@@ -302,8 +321,22 @@ fn publish(
             Some(Focus {
                 path: file.path.clone(),
                 before: explorer.before,
-                face: Some("source".into()),
-                visible_lines: Some([rows.start + 1, rows.end]),
+                source_blob: (if explorer.before {
+                    &file.before
+                } else {
+                    &file.after
+                })
+                .as_ref()
+                .map(|blob| blob.id.clone()),
+                face: Some(
+                    match face {
+                        listing::Face::Source => "source",
+                        listing::Face::Diff => "diff",
+                        listing::Face::Blame => "blame",
+                    }
+                    .into(),
+                ),
+                visible_lines,
                 readable_lines,
                 text_truncated,
             })
@@ -379,9 +412,11 @@ mod tests {
             focus: Some(Focus {
                 path: "src/a.rs".into(),
                 before: false,
+                source_blob: None,
                 face: Some("source".into()),
                 visible_lines: Some([4, 8]),
                 readable_lines: vec![Line {
+                    before: false,
                     number: 4,
                     text: "let x = 1;".into(),
                     truncated: false,

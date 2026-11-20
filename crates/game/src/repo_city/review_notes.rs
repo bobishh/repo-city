@@ -116,6 +116,8 @@ pub(super) struct Note {
     pub id: String,
     pub revision: String,
     pub baseline: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_blob: Option<String>,
     pub anchor: Anchor,
     pub preset: Preset,
     #[serde(default)]
@@ -139,10 +141,23 @@ impl Note {
         }
     }
 
-    fn duplicate_key(&self) -> (&str, Option<&str>, &str, bool, usize, usize, &str, &str) {
+    fn duplicate_key(
+        &self,
+    ) -> (
+        &str,
+        Option<&str>,
+        Option<&str>,
+        &str,
+        bool,
+        usize,
+        usize,
+        &str,
+        &str,
+    ) {
         (
             &self.revision,
             self.baseline.as_deref(),
+            self.source_blob.as_deref(),
             &self.anchor.path,
             self.anchor.before,
             self.anchor.start,
@@ -351,6 +366,18 @@ impl Review {
             id: new_id(),
             revision: repo.revision.clone(),
             baseline: repo.baseline.clone(),
+            source_blob: repo
+                .files
+                .iter()
+                .find(|file| file.path == anchor.path)
+                .and_then(|file| {
+                    if anchor.before {
+                        file.before.as_ref()
+                    } else {
+                        file.after.as_ref()
+                    }
+                })
+                .map(|blob| blob.id.clone()),
             anchor,
             text: String::new(),
             preset,
@@ -377,7 +404,21 @@ impl Review {
     }
 
     pub fn on_snapshot(note: &Note, repo: &Repository) -> bool {
-        note.revision == repo.revision && note.baseline == repo.baseline
+        note.revision == repo.revision
+            && note.baseline == repo.baseline
+            && note.source_blob.as_ref().is_none_or(|expected| {
+                repo.files
+                    .iter()
+                    .find(|file| file.path == note.anchor.path)
+                    .and_then(|file| {
+                        if note.anchor.before {
+                            file.before.as_ref()
+                        } else {
+                            file.after.as_ref()
+                        }
+                    })
+                    .is_some_and(|blob| blob.id == *expected)
+            })
     }
 
     fn write_note(&self, note: &Note) -> Result<(), String> {
@@ -653,6 +694,7 @@ mod tests {
             id: "existing".into(),
             revision: repo.revision.clone(),
             baseline: repo.baseline.clone(),
+            source_blob: None,
             anchor: anchor.clone(),
             preset,
             text: "Keep this explanation.".into(),

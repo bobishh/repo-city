@@ -166,6 +166,7 @@ impl PullComment {
                 String::new()
             },
             baseline: baseline.clone(),
+            source_blob: None,
             anchor: Anchor {
                 path: self.path,
                 start,
@@ -1034,6 +1035,7 @@ mod tests {
             id: "test".into(),
             revision: "a".repeat(40),
             baseline: None,
+            source_blob: None,
             anchor: Anchor {
                 path: "src/lib.rs".into(),
                 before: true,

@@ -106,7 +106,7 @@ pub(super) fn advance(
         Step::Travel => "2 / 3   Aim at a building and press E to fly there.",
         Step::Arriving => "2 / 3   Flying to the wall…",
         Step::Wash if !pilot.captured => "3 / 3   Click to capture the cursor again.",
-        Step::Wash => "3 / 3   Aim at a line. Click to turn water on or off (0).",
+        Step::Wash => "3 / 3   Aim at a line. Click to turn heat on or off (0).",
         Step::Finish(_) => {
             if cfg!(target_arch = "wasm32") {
                 "U opens paints. Sign in for PR notes. Publishing needs Pull requests: write."
@@ -166,8 +166,8 @@ const READING: &[(&str, &str)] = &[
 
 #[cfg(not(target_arch = "wasm32"))]
 const REVIEW: &[(&str, &str)] = &[
-    ("0", "Water tool"),
-    ("K", "Use water or hold to paint"),
+    ("0", "Heat tool"),
+    ("K", "Use heat or hold to paint"),
     ("1–9", "Select a paint"),
     ("Cmd+scroll", "Cycle tools"),
     ("U", "Edit paints and templates"),

@@ -688,7 +688,11 @@ pub fn run() {
     app.add_plugins(agent_navigation::Plugin);
     #[cfg(not(target_arch = "wasm32"))]
     {
-        app.insert_resource(reading::Settings::load());
+        let mut reading = reading::Settings::load();
+        if args.iter().any(|argument| argument == "--show-source") {
+            reading.show_all_source = true;
+        }
+        app.insert_resource(reading);
     }
     #[cfg(target_arch = "wasm32")]
     app.init_resource::<browser_touch::Touch>()
@@ -767,6 +771,9 @@ pub fn run() {
                     "--smoke-review" => Some(12),
                     "--smoke-tablet" => Some(13),
                     "--smoke-paint" => Some(14),
+                    "--smoke-guidance" => Some(15),
+                    "--smoke-empty-diff" => Some(18),
+                    "--smoke-frost" => Some(20),
                     _ => None,
                 })
                 .unwrap_or(0);
@@ -774,7 +781,12 @@ pub fn run() {
                 directory: directory.into(),
                 elapsed: 0.,
                 stage,
-                stop: (stage + 1).max(9),
+                stop: match stage {
+                    15 => 18,
+                    18 => 20,
+                    20 => 23,
+                    _ => (stage + 1).max(9),
+                },
                 pending: false,
                 prepared: false,
                 expected_draft: None,
@@ -2454,7 +2466,11 @@ fn smoke(
     mut listing: ResMut<listing::Listing>,
     mut picker: ResMut<repository_picker::RepositoryPicker>,
     window: Query<Entity, With<PrimaryWindow>>,
-    (mut tablet, mut review): (ResMut<review_tablet::Tablet>, ResMut<review_notes::Review>),
+    (mut tablet, mut review, mut reading): (
+        ResMut<review_tablet::Tablet>,
+        ResMut<review_notes::Review>,
+        ResMut<reading::Settings>,
+    ),
 ) {
     if check.pending || repo.0.files.is_empty() {
         return;
@@ -2465,7 +2481,13 @@ fn smoke(
             explorer.reload(&repo.0);
             assert_eq!(explorer.source, expected);
         }
-        let report = if check.stop == 15 {
+        let report = if check.stop == 23 {
+            "Rendered frosted unread source, immediately legible guided ranges and their settled highlight without read credit."
+        } else if check.stop == 20 {
+            "Rendered readable explanations in the center of unchanged and unavailable diff walls."
+        } else if check.stop == 18 {
+            "Rendered guided reading, always-visible source and Follow agent controls without premature read credit."
+        } else if check.stop == 15 {
             "Rendered the paint color picker."
         } else if check.stop == 14 {
             "Rendered the changed files tablet."
@@ -2502,6 +2524,7 @@ fn smoke(
                     id: id.into(),
                     revision: repo.0.revision.clone(),
                     baseline: repo.0.baseline.clone(),
+                    source_blob: None,
                     anchor: review_notes::Anchor {
                         path: path.clone(),
                         before: false,
@@ -2638,6 +2661,64 @@ fn smoke(
                     }
                     *camera = listing::view(file, count);
                 }
+                15 | 16 => {
+                    explorer.anchored = false;
+                    explorer.comparison_mode = 0;
+                    reading.min_seconds = Some(60.);
+                    reading.max_seconds = Some(60.);
+                    reading.mode = reading::Mode::Delayed;
+                    reading.show_all_source = check.stage == 16;
+                    listing.reset_view();
+                    if check.stage == 15 {
+                        listing.present_source(&explorer);
+                    }
+                    *camera = listing::Listing::line_view(
+                        &explorer,
+                        &repo.0.files[explorer.selected],
+                        listing::Face::Source,
+                        1,
+                    )
+                    .expect("guidance source position");
+                }
+                17 => tablet.open_page(review_tablet::Page::Agent),
+                20 | 21 | 22 => {
+                    explorer.anchored = false;
+                    explorer.comparison_mode = 0;
+                    reading.show_all_source = false;
+                    reading.min_seconds = Some(60.);
+                    reading.max_seconds = Some(60.);
+                    listing.reset_view();
+                    if check.stage > 20 {
+                        listing.present_range(&explorer, 24, 26);
+                    }
+                    *camera = listing::Listing::line_view(
+                        &explorer,
+                        &repo.0.files[explorer.selected],
+                        listing::Face::Source,
+                        25,
+                    )
+                    .expect("frost source wall");
+                }
+                18 | 19 => {
+                    explorer.anchored = false;
+                    explorer.comparison_mode = 0;
+                    explorer.comparison = if check.stage == 18 {
+                        Some(
+                            Comparison::new(
+                                &repo.0.files[explorer.selected].path,
+                                &explorer.original,
+                                &explorer.original,
+                            )
+                            .expect("unchanged smoke comparison"),
+                        )
+                    } else {
+                        None
+                    };
+                    explorer.refresh_diff_layout();
+                    listing.reset_view();
+                    *camera =
+                        listing::smoke_side(&explorer, &repo.0.files[explorer.selected], false);
+                }
                 7 | 8 => {
                     *camera = listing::smoke_side(
                         &explorer,
@@ -2652,6 +2733,17 @@ fn smoke(
         check.elapsed = 0.;
         check.prepared = true;
         return;
+    }
+    if matches!(check.stage, 20..=22)
+        && let Ok(mut camera) = camera.single_mut()
+    {
+        *camera = listing::Listing::line_view(
+            &explorer,
+            &repo.0.files[explorer.selected],
+            listing::Face::Source,
+            25,
+        )
+        .expect("stable frost view");
     }
     let previous = check.elapsed;
     check.elapsed += time.delta_secs();
@@ -2670,7 +2762,8 @@ fn smoke(
             window: window.single().expect("primary smoke window"),
         });
     }
-    if check.elapsed < 4. {
+    let settle = if check.stage == 21 { 0.8 } else { 4. };
+    if check.elapsed < settle {
         return;
     }
     if check.stage == 3 {
@@ -2697,6 +2790,38 @@ fn smoke(
     }
     if check.stage == 9 {
         assert!(listing::smoke_source_ready(&listing), "source rows missing");
+    }
+    if matches!(check.stage, 20..=22) {
+        assert!(
+            listing::smoke_source_ready(&listing),
+            "frost source tiles missing"
+        );
+        assert_eq!(
+            listing.counts(&explorer).0,
+            0,
+            "frost presentation granted read credit"
+        );
+    }
+    if matches!(check.stage, 18 | 19) {
+        assert!(
+            listing::smoke_empty_diff_ready(&listing),
+            "empty diff body explanation missing"
+        );
+    }
+    if matches!(check.stage, 15 | 16) {
+        let file = &repo.0.files[explorer.selected];
+        let (_, lines) = listing
+            .visible_wall_lines(file, camera.single().expect("smoke camera"), &explorer, 1.6)
+            .expect("guided source wall in view");
+        assert!(
+            lines.iter().any(|line| line.readable),
+            "guided code stayed covered"
+        );
+        assert_eq!(
+            listing.counts(&explorer).0,
+            0,
+            "preview granted premature read credit"
+        );
     }
     std::fs::create_dir_all(&check.directory).expect("smoke output");
     let path = check.directory.join(format!("{:02}.png", check.stage));

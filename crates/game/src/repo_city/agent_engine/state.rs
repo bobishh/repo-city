@@ -22,23 +22,31 @@ pub(crate) struct Presence {
     pub path: String,
 }
 
+#[derive(Clone)]
+pub(crate) struct FileActivity {
+    pub serial: u64,
+    pub path: String,
+    pub line: usize,
+}
+
 #[derive(Default)]
 pub(crate) struct Projection {
     pub dialogue: Dialogue,
     pub turn: Option<String>,
     pub presence: Vec<Presence>,
+    pub activity: Option<FileActivity>,
     pub agents: HashMap<String, String>,
     pub approvals: HashMap<String, String>,
     pub voice: Option<String>,
     pub status: String,
 }
 
-impl Projection {
+impl Dialogue {
     pub fn message(&mut self, id: &str, role: &str, text: &str, append: bool) {
         if text.trim().is_empty() {
             return;
         }
-        let value = self.dialogue.messages.iter_mut().find(|message| {
+        let value = self.messages.iter_mut().find(|message| {
             message.id == id
                 || (role == "user"
                     && message.id.starts_with("user-pending-")
@@ -54,14 +62,14 @@ impl Projection {
                 value.text = text.chars().take(16_000).collect();
             }
         } else {
-            self.dialogue.messages.push(Message {
+            self.messages.push(Message {
                 id: id.into(),
                 role: role.into(),
                 text: text.chars().take(16_000).collect(),
             });
         }
-        if self.dialogue.messages.len() > 160 {
-            self.dialogue.messages.remove(0);
+        if self.messages.len() > 160 {
+            self.messages.remove(0);
         }
     }
 }

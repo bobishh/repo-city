@@ -36,6 +36,7 @@ enum Action {
     Voice,
     Stop,
     Disconnect,
+    Follow,
     Approve,
     Reject,
 }
@@ -74,6 +75,7 @@ pub(super) struct Session {
     approvals: Vec<Approval>,
     speaking: Arc<AtomicBool>,
     connected: bool,
+    follow_agent: bool,
     voice_connected: bool,
     voice_waiting: bool,
     dirty: bool,
@@ -84,6 +86,15 @@ pub(super) struct Session {
 }
 
 impl Session {
+    pub(super) fn follows_agent(&self) -> bool {
+        self.follow_agent
+    }
+    pub(super) fn pause_following(&mut self) {
+        self.follow_agent = false;
+    }
+    pub(super) fn file_activity(&self) -> Option<&agent_engine::state::FileActivity> {
+        self.projection.activity.as_ref()
+    }
     fn provider(&self) -> agent_engine::Provider {
         self.client
             .as_ref()
@@ -120,6 +131,7 @@ impl Session {
             .send(command)
     }
     fn disconnect(&mut self) {
+        self.follow_agent = false;
         self.client = None;
         self.connected = false;
         self.voice_connected = false;
@@ -217,6 +229,34 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands) -> Entity {
                         bevy::input_focus::tab_navigation::TabIndex(20 + index as i32),
                     );
                 }
+            });
+            body.spawn(Node {
+                min_height: px(38.),
+                flex_shrink: 0.,
+                align_items: AlignItems::Center,
+                column_gap: px(12.),
+                ..default()
+            })
+            .with_children(|bar| {
+                let button = native_panel::button::<Action, Session>(
+                    bar,
+                    "Follow agent",
+                    native_panel::INK,
+                    Action::Follow,
+                );
+                bar.commands().entity(button).insert((
+                    bevy::input_focus::tab_navigation::TabIndex(24),
+                    Node {
+                        width: px(170.),
+                        min_height: px(32.),
+                        ..default()
+                    },
+                ));
+                bar.spawn((
+                    Text::new("Show code while following. Esc pauses."),
+                    native_panel::panel_font(),
+                    TextColor(native_panel::INK),
+                ));
             });
             body.spawn(Node {
                 height: px(38.),
@@ -531,7 +571,7 @@ fn update(
             Event::Replaced {
                 conversation: thread,
             } => {
-                session.projection.message(&format!("session-boundary:{thread}"), "system", "Previous Codex session unavailable; a new conversation started. Earlier local messages remain above.", false);
+                session.projection.dialogue.message(&format!("session-boundary:{thread}"), "system", "Previous Codex session unavailable; a new conversation started. Earlier local messages remain above.", false);
                 session.status = "Previous session unavailable; a new conversation started.".into();
                 session.dirty = true;
             }
@@ -576,6 +616,10 @@ fn update(
     if let Some(action) = session.action.take() {
         session.version = session.version.wrapping_add(1);
         let result = match action {
+            Action::Follow => {
+                session.follow_agent = !session.follow_agent;
+                Ok(())
+            }
             Action::Connect => session.connect(),
             Action::Disconnect => {
                 session.disconnect();
@@ -598,7 +642,7 @@ fn update(
                     };
                 let sent = session.send(command);
                 if sent.is_ok() {
-                    session.projection.message(
+                    session.projection.dialogue.message(
                         &format!("user-pending-{}", nonce()),
                         "user",
                         &prompt,
@@ -745,6 +789,7 @@ fn update(
             Action::Disconnect | Action::Stop => session.client.is_some(),
             Action::Send => !session.prompt.trim().is_empty(),
             Action::Voice => session.provider().capabilities.voice,
+            Action::Follow => true,
             Action::Approve | Action::Reject => !session.approvals.is_empty(),
         };
         if enabled && disabled.is_some() {
@@ -773,6 +818,11 @@ fn update(
 
 fn action_label(action: &Action, session: &Session) -> Option<&'static str> {
     match action {
+        Action::Follow => Some(if session.follow_agent {
+            "Pause following"
+        } else {
+            "Follow agent"
+        }),
         Action::Voice => Some(if session.voice_active() {
             "Stop voice"
         } else {

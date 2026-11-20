@@ -212,7 +212,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     for (const [keys, purpose] of [
       ["WASD / Space / Ctrl", "Fly and change altitude"],
       ["Arrows / Shift+Arrows", "Look around; up close, scroll or turn to another wall. Shift keeps free look."],
-      ["K", "Use water or hold to paint"],
+      ["K", "Use heat or hold to paint"],
       ["E / M", "Fly to the aimed wall or switch overview"],
       ["Tab / Cmd+P / P", "Open VibePad, find a file, or preview the aimed file"],
       ["Z / X", "Collapse or expand the aimed code block"],
@@ -223,7 +223,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       ["Left / Right", "Cycle source, diff and blame at a close wall"],
       ["Touch swipe", "Up/down reads along the wall; sideways turns to another face. The joystick flies away."],
       ["Scroll", "Read along a wall or move between review stops"],
-      ["0 / 1–9 / U", "Select water, select paint, or edit paints"],
+      ["0 / 1–9 / U", "Select heat, select paint, or edit paints"],
       ["C / J", "Follow changed lines or open review comments"],
     ]) controls.append(make("dt", keys), make("dd", purpose));
     dialog.append(controls);
@@ -234,7 +234,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
 
   function readingError(values) {
     if (!Number.isInteger(values.block_lines) || values.block_lines < 1 || values.block_lines > 4294967295) {
-      return "Lines per wash block must be a positive whole number.";
+      return "Lines per reading block must be a positive whole number.";
     }
     if (!["delayed", "immediate"].includes(values.mode) ||
         [values.min_seconds, values.max_seconds].some(value => value !== null &&
@@ -291,7 +291,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       voice.addEventListener("change", () => apply({ voice: voice.value }));
       section.append(field("Voice", voice));
     }
-    section.append(make("p", "Reads the current block from start to end. Water is muted; ambience and radio become quieter during speech. Radio music is synthesized on this device."));
+    section.append(make("p", "Reads the current block from start to end. Tool sound is muted; ambience and radio become quieter during speech. Radio music is synthesized on this device."));
     return section;
   }
 
@@ -310,6 +310,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     for (const [value, label] of [["function", "Whole function"], ["lines", "Fixed lines"]]) kind.append(make("option", label, { value }));
     kind.value = reading.block_kind ?? "function";
     const auto = make("input", undefined, { type: "checkbox" }); auto.checked = reading.auto_advance ?? true;
+    const showSource = make("input", undefined, { type: "checkbox" }); showSource.checked = reading.show_all_source ?? false;
     const block = make("input", undefined, { type: "number", min: "1", step: "1", value: reading.block_lines });
     const bound = value => make("input", undefined, { type: "text", inputmode: "decimal", value: value ?? "", placeholder: "No limit" });
     const min = bound(reading.min_seconds), max = bound(reading.max_seconds);
@@ -317,7 +318,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     form.noValidate = true;
     const limits = make("div", undefined, { class: "reading-limits" });
     limits.append(field("Minimum delay (seconds)", min), field("Maximum delay (seconds)", max));
-    form.append(make("h3", "Reading"), field("Reveal", mode), field("Reading block", kind), field("Lines per wash block", block),
+    form.append(make("h3", "Reading"), field("Source always visible", showSource), field("Read credit", mode), field("Reading block", kind), field("Lines per reading block", block),
       make("p", "Used for fixed blocks and when function boundaries are unavailable."),
       field("Auto-advance downward", auto), limits,
       make("p", "Block size and time limits are independent. Leave either limit blank to use the calculated time."), status);
@@ -329,7 +330,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     const side = make("div", undefined, { class: "settings-side" }); side.append(soundSettings(), estimate);
     const applyReading = () => {
       const seconds = input => input.value.trim() === "" ? null : Number(input.value);
-      const next = { mode: mode.value, block_kind: kind.value, auto_advance: auto.checked, block_lines: Number(block.value), min_seconds: seconds(min), max_seconds: seconds(max) };
+      const next = { mode: mode.value, block_kind: kind.value, auto_advance: auto.checked, show_all_source: showSource.checked, block_lines: Number(block.value), min_seconds: seconds(min), max_seconds: seconds(max) };
       const error = readingError(next);
       if (error) { status.textContent = error; return; }
       reading = next;
@@ -538,13 +539,13 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
   function paintsPanel() {
     dialog.dataset.view = "paints";
     view("Paints");
-    dialog.append(make("p", "Pick a tool. Wash source first, then mark a range with a paint."));
+    dialog.append(make("p", "Pick a tool. Thaw source first, then mark a range with a paint."));
     const grid = make("div", undefined, { class: "paint-slots" });
     const palette = session?.palette.length ? session.palette : defaults;
     for (let i = 0; i <= 9; i++) {
       const paint = palette[i - 1];
       const row = make("div");
-      const equip = button(i === 0 ? "0 · Water" : `${i} · ${paint?.label ?? "Empty"}`, () => {
+      const equip = button(i === 0 ? "0 · Heat" : `${i} · ${paint?.label ?? "Empty"}`, () => {
         pendingSlot = i;
         close();
       });

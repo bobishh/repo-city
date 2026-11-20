@@ -1,4 +1,4 @@
-//! Water effects and physical fragments from private drafts.
+//! Tool effects and physical fragments from private drafts.
 use super::*;
 use avian3d::prelude::*;
 #[derive(Component)]
@@ -32,6 +32,40 @@ pub(super) fn splashes(mut gizmos: Gizmos, flashes: Query<(&Splash, &Lifetime)>)
         }
     }
 }
+/// A compact warm pulse near the emitter and target; leave the reading area clear.
+pub(super) fn heat_pulse(
+    gizmos: &mut Gizmos,
+    camera: &Transform,
+    hit: Vec3,
+    row_height: f32,
+    time: f32,
+    raised: f32,
+) {
+    let origin = android::spray_origin(camera, raised, false);
+    let forward = camera.forward().as_vec3();
+    let right = camera.right().as_vec3();
+    let up = camera.up().as_vec3();
+    for ray in 0..5 {
+        let phase = (time * 2. + ray as f32 / 5.).fract();
+        let angle = ray as f32 * std::f32::consts::TAU / 5.;
+        let spread = (right * angle.cos() + up * angle.sin()) * 0.012;
+        gizmos.line_gradient(
+            origin + forward * phase * 0.10,
+            origin + forward * (phase + 0.3) * 0.10 + spread,
+            Color::srgba(1., 0.24, 0.035, 0.65),
+            Color::srgba(1., 0.55, 0.12, 0.),
+        );
+        let radius = row_height.min(0.12) * (0.4 + phase * 0.3);
+        let point = hit - forward * 0.02 + (right * angle.cos() + up * angle.sin()) * radius;
+        gizmos.line_gradient(
+            point,
+            point + up * radius * 0.25,
+            Color::srgba(1., 0.38, 0.08, (1. - phase) * 0.5),
+            Color::srgba(1., 0.55, 0.12, 0.),
+        );
+    }
+}
+
 /// A short fan of cyan streaks. It has no bodies, emitters, or persistent particles.
 pub(super) fn spray_stream(
     gizmos: &mut Gizmos,

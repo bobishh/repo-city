@@ -11,7 +11,7 @@ use bevy::{
     picking::events::{PointerDrag, PointerPress},
     ui_widgets::{Activate, observe},
 };
-pub(super) use drafts::ApplyTarget;
+pub(super) use drafts::{ApplyTarget, Identity as DraftIdentity};
 const FONT: f32 = 18.;
 const CELL: f32 = 10.8;
 const ROW: f32 = 25.;
@@ -366,13 +366,12 @@ struct Unsaved(std::collections::HashMap<String, String>);
 
 pub(super) fn spawn(
     parent: &mut ChildSpawnerCommands,
-    path: &str,
-    identity: &str,
+    mut identity: DraftIdentity,
     source: &str,
     apply: Option<ApplyTarget>,
 ) -> Entity {
     let create = || -> Result<View, String> {
-        let mut identity = drafts::Identity::parse(identity, path)?;
+        identity.validate()?;
         let count = source.split_inclusive('\n').count();
         identity.range.end = identity.range.end.min(count);
         let bytes = chunk_bytes(source, identity.range.clone())?;
@@ -825,11 +824,19 @@ mod tests {
     #[test]
     fn native_editor_renders_only_its_chunk_with_shared_syntax_and_unicode_fonts() {
         let source = "// prefix\nfn chosen() {\n    let α = \"∀ x, x ∈ ℕ\";\n}\n// unseen tail\n";
-        let identity=serde_json::json!({"repository":"native-render-fixture","revision":"immutable","baseline":null,"path":"example.rs","blob":format!("native-pixels-{}",std::process::id()),"before":false,"range":{"start":1,"end":4}}).to_string();
+        let identity = DraftIdentity {
+            repository: "native-render-fixture".into(),
+            revision: "immutable".into(),
+            baseline: None,
+            path: "example.rs".into(),
+            blob: format!("native-pixels-{}", std::process::id()),
+            before: false,
+            range: 1..4,
+        };
         let mut world = World::new();
         let root = world.spawn(Node::default()).id();
         world.commands().entity(root).with_children(|parent| {
-            spawn(parent, "example.rs", &identity, source, None);
+            spawn(parent, identity, source, None);
         });
         world.flush();
         let mut query = world.query::<&mut View>();

@@ -147,7 +147,14 @@ fn draw(parent: &mut ChildSpawnerCommands, node: &NodeView, order: &mut i32) {
                 });
         }
         "editor" => {
-            let entity = source_editor::spawn(parent, &node.name, &node.source, &node.text, None);
+            let identity = match source_editor::DraftIdentity::parse(&node.source, &node.name) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    native_panel::text(parent, &error, native_panel::INK);
+                    return;
+                }
+            };
+            let entity = source_editor::spawn(parent, identity, &node.text, None);
             parent.commands().entity(entity).insert((
                 binding(),
                 bevy::input_focus::tab_navigation::TabIndex(*order),

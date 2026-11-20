@@ -23,11 +23,9 @@ fn frost(uv: vec2<f32>) -> vec3<f32> {
 struct CoverRows {
     info: vec4<u32>,
     glass: vec4<f32>,
-    source_changes: array<vec4<f32>, 3>,
-    closed_accent: vec4<f32>,
-    closed_stroke: vec4<f32>,
-    spans: array<vec4<f32>, 16>,
+    glow: array<vec4<f32>, 4>,
     paint: array<vec4<f32>, 16>,
+    clarity: array<vec4<f32>, 4>,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100)
@@ -40,7 +38,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
     if (cover.info.y > 0u) {
         let row = min(u32(in.uv.y * f32(cover.info.y)), cover.info.y - 1u);
         let paint = cover.paint[row];
-        if ((cover.info.x >> row) & 1u) == 0u {
+        let clarity = cover.clarity[row / 4u][row % 4u];
+        if clarity < 1.0 {
             let x = in.uv.x * f32(cover.info.z);
             let glass = srgb_to_linear(cover.glass.rgb / 255.0);
             let blurred = frost(in.uv);
@@ -48,8 +47,17 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
             let icy = mix(glass, vec3<f32>(0.15, 0.25, 0.31), 0.12 + grain * 0.05);
             // Preserve clear line numbers and change markers; frost only the code.
             if x >= 106.0 {
-                ink = vec4<f32>(mix(blurred * vec3<f32>(0.75, 0.95, 1.12), icy, 0.24), ink.a);
+                let frozen = mix(blurred * vec3<f32>(0.75, 0.95, 1.12), icy, 0.24);
+                ink = vec4<f32>(mix(frozen, ink.rgb, clarity), ink.a);
             }
+        }
+        let glow = cover.glow[row / 4u][row % 4u];
+        if glow > 0.0 {
+            let y = fract(in.uv.y * f32(cover.info.y));
+            let underline = smoothstep(0.74, 0.82, y) * (1.0 - smoothstep(0.91, 0.98, y));
+            let gutter = 1.0 - smoothstep(0.075, 0.095, in.uv.x);
+            let warmth = vec3<f32>(1.0, 0.24, 0.035);
+            ink = vec4<f32>(ink.rgb + warmth * glow * (0.07 + 0.52 * underline + 0.30 * gutter), ink.a);
         }
         if paint.a > 0.0 {
             let x = in.uv.x;
