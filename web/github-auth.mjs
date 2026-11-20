@@ -1,5 +1,6 @@
 // The Worker holds GitHub credentials; reads and review-comment writes are allowlisted.
 import { readSmallJson, writeReviewComment } from "./pr-review.mjs";
+import { readPublicGitObject } from "./github-public.mjs";
 const API = "https://api.github.com";
 const SESSION = "__Host-repo-city";
 const FLOW = "__Host-repo-city-oauth";
@@ -100,6 +101,7 @@ function github(token) {
 export async function handleGitHub(request, env, upstream = fetch) {
   const url = new URL(request.url);
   const path = url.pathname;
+  if (path.startsWith("/github/public/")) return readPublicGitObject(request, upstream);
   const { GITHUB_CLIENT_ID: id, GITHUB_CLIENT_SECRET: secret, GITHUB_APP_SLUG: slug } = env;
   const enabled = Boolean(id && secret);
   try {

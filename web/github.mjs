@@ -18,8 +18,8 @@ export function parsePullRequest(input) {
 
 const headers = { Accept: "application/vnd.github+json" };
 
-async function readGitHub(request, path) {
-  const response = await request(API + path, { headers });
+async function readGitHub(request, path, publicObject = false) {
+  const response = await request(API + path, publicObject ? { headers, publicObject } : { headers });
   if (!response.ok) {
     if (response.status === 403 || response.status === 429) throw new Error("GitHub request limit or access restriction. Try again later.");
     if (response.status === 404) throw new Error("Repository, revision, or file not found. Private repositories need GitHub access.");
@@ -111,8 +111,15 @@ export async function loadLibrary(login, request) {
 export async function loadGitHub(input, ref, base, request = fetch, { exactBase = false } = {}) {
   const pull = parsePullRequest(input);
   const name = pull?.name ?? parseRepository(input);
-  const read = async (path, repository = name) =>
-    (await readGitHub(request, `/repos/${repository}${path}`)).json();
+  const publicRepositories = new Set();
+  const noteVisibility = (repository, info) => {
+    if (info?.private === false && (info.visibility == null || info.visibility === "public")) {
+      publicRepositories.add(repository.toLowerCase());
+    }
+  };
+  const read = async (path, repository = name, publicObject = false) =>
+    (await readGitHub(request, `/repos/${repository}${path}`, publicObject)).json();
+  const readObject = (path, repository) => read(path, repository, publicRepositories.has(repository.toLowerCase()));
 
   let head, baseline, comparison, comparePath, status = null, headRepository = name;
   async function compare(base, revision) {
@@ -126,10 +133,17 @@ export async function loadGitHub(input, ref, base, request = fetch, { exactBase 
     head = details.head;
     if (!head?.sha || !details.base?.sha) throw new Error("Pull request revisions unavailable.");
     if (head.repo?.full_name) headRepository = parseRepository(head.repo.full_name);
+    noteVisibility(name, details.base.repo);
+    noteVisibility(headRepository, head.repo);
     baseline = await compare(details.base.sha, head.sha);
     if (!baseline?.sha) throw new Error("Pull request merge base unavailable.");
   } else {
-    const revision = ref?.trim() || (await read("")).default_branch;
+    let revision = ref?.trim();
+    if (!revision) {
+      const info = await read("");
+      noteVisibility(name, info);
+      revision = info.default_branch;
+    }
     if (!revision) throw new Error("This repository has no default branch.");
     head = await read(`/commits/${encodeURIComponent(revision)}`);
     baseline = base?.trim()
@@ -140,13 +154,13 @@ export async function loadGitHub(input, ref, base, request = fetch, { exactBase 
   const subtrees = new Map();
   function subtree(repository, sha) {
     const key = `${repository}:${sha}`;
-    if (!subtrees.has(key)) subtrees.set(key, read(`/git/trees/${sha}`, repository));
+    if (!subtrees.has(key)) subtrees.set(key, readObject(`/git/trees/${sha}`, repository));
     return subtrees.get(key);
   }
 
   async function inventory(commit, repository) {
     if (!commit) return {};
-    const tree = await read(`/git/trees/${commit.sha}?recursive=1`, repository);
+    const tree = await readObject(`/git/trees/${commit.sha}?recursive=1`, repository);
     const blob = entry => ({ id: entry.sha, mode: entry.mode, size: entry.size });
     if (!tree.truncated) return Object.fromEntries(tree.tree
       .filter(entry => entry.type === "blob").map(entry => [entry.path, blob(entry)]));
@@ -269,7 +283,7 @@ export async function loadGitHub(input, ref, base, request = fetch, { exactBase 
       return notes.some(Boolean) ? { notes } : { error: "unavailable" };
     },
     async blob(sha) {
-      const blob = await read(`/git/blobs/${sha}`, forkBlobs?.has(sha) ? headRepository : name);
+      const blob = await readObject(`/git/blobs/${sha}`, forkBlobs?.has(sha) ? headRepository : name);
       if (blob.encoding !== "base64" || blob.size > MAX_BLOB_SIZE) throw new Error("Source unavailable within the 1 MiB text limit.");
       return Uint8Array.from(atob(blob.content), char => char.charCodeAt(0));
     },

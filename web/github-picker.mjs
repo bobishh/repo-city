@@ -26,6 +26,17 @@ const pullCache = new Map();
 
 export async function githubRequest(url, options) {
   await ready;
+  if (options?.publicObject && url.startsWith(publicAPI + "/repos/")) {
+    try {
+      const response = await fetch("/github/public" + url.slice(publicAPI.length), {
+        credentials: "omit", signal: options.signal,
+      });
+      if (response.ok) return response;
+      await response.body?.cancel();
+    } catch (error) {
+      if (options.signal?.aborted) throw error;
+    }
+  }
   if (session?.login && url.startsWith(publicAPI + "/")) {
     const path = url.slice(publicAPI.length);
     const response = await fetch("/github/api" + path, options);

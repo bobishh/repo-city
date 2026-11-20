@@ -118,6 +118,13 @@ requires access to the base repository and the head fork. The server keeps
 the user token in an encrypted HttpOnly cookie with an eight-hour lifetime.
 Reuse the current OAuth secret when changing hosts to preserve existing sessions.
 
+The VPS shares an in-memory cache for public Git trees and blobs under
+`/github/public/`. It fetches those objects anonymously and keys them by
+repository, object ID and tree representation. Concurrent reads of the same
+key share a request. Reuse requires a public conditional response from GitHub.
+If validation fails, clients fall back to the ordinary GitHub read path.
+Private objects, credentials, account lists, and review data stay outside this cache.
+
 The browser does not send usage analytics or telemetry. Builds and deployments
 do not inject event collectors or browser tracking keys.
 
