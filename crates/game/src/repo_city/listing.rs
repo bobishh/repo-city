@@ -1652,9 +1652,12 @@ impl WallSide {
         // Keep the left gutter in view when compressed rows require a closer approach.
         let leading = self.width * (1. - self.glyph_scale().x) / 2.;
         let target = self.top.with_y(y) - Vec3::Y.cross(self.normal()) * leading;
-        let eye = target + self.normal() * (self.width * 0.84 * self.glyph_scale().x).max(0.18);
-        // Clear district curbs when framing a very short file near the ground.
-        Transform::from_translation(eye.with_y(eye.y.max(1.))).looking_at(target, Vec3::Y)
+        let height = y.max(city_navigation::STREET_EYE_HEIGHT);
+        let distance = (self.width * 0.84 * self.glyph_scale().x)
+            .max(0.18)
+            .max((height - y) * 1.45);
+        let eye = target.with_y(height) + self.normal() * distance;
+        Transform::from_translation(eye).looking_at(target, Vec3::Y)
     }
 
     fn window(&self, visible: Range<usize>, focus: usize, count: usize) -> Range<usize> {
@@ -2752,6 +2755,21 @@ mod tests {
             side.heading_height <= side.wall.row_height * 1.01,
             "the heading must not consume more height than a source row"
         );
+    }
+
+    #[test]
+    fn low_wall_arrival_keeps_the_eye_above_street_level_and_aimed_at_the_row() {
+        let (file, explorer) = four_line_file();
+        let side = WallSide::new(
+            &file,
+            explorer.source_layout.len(),
+            Face::Source,
+            block_size(&file),
+        );
+        let row_height = side.wall.y(3.5);
+        let eye = side.view(row_height);
+        assert!(eye.translation.y >= 1.65);
+        assert!((side.look_height(&eye) - row_height).abs() < 0.001);
     }
 
     #[test]

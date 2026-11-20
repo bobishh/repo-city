@@ -211,6 +211,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     const controls = make("dl", undefined, { class: "review-controls" });
     for (const [keys, purpose] of [
       ["WASD / Space / Ctrl", "Fly and change altitude"],
+      ["O", "Land and walk; O or Space to fly again"],
       ["Arrows / Shift+Arrows", "Look around; up close, scroll or turn to another wall. Shift keeps free look."],
       ["K", "Use heat or hold to paint"],
       ["E / M", "Fly to the aimed wall or switch overview"],

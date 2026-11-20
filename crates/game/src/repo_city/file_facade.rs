@@ -196,7 +196,10 @@ impl Aim {
             (target, width, Vec3::Y)
         };
         let position = target + normal * (width * 0.84).max(0.18);
-        Transform::from_translation(position.with_y(position.y.max(1.))).looking_at(target, up)
+        Transform::from_translation(
+            position.with_y(position.y.max(city_navigation::STREET_EYE_HEIGHT)),
+        )
+        .looking_at(target, up)
     }
 }
 

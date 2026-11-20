@@ -6,6 +6,61 @@ use super::*;
 
 const PAGE: usize = 23;
 const PLATFORM_SIZE: Vec3 = Vec3::new(16., 0.5, 7.);
+pub(super) const STREET_EYE_HEIGHT: f32 = 1.65;
+
+pub(super) struct Walk {
+    start_height: f32,
+    elapsed: f32,
+    duration: f32,
+}
+
+impl Walk {
+    pub(super) fn new(height: f32) -> Self {
+        Self {
+            start_height: height,
+            elapsed: 0.,
+            duration: ((height - STREET_EYE_HEIGHT).abs() / 70. + 0.4).clamp(0.4, 2.4),
+        }
+    }
+
+    pub(super) fn step(
+        &mut self,
+        camera: &mut Transform,
+        direction: Vec3,
+        dt: f32,
+        clear: impl Fn(Vec2) -> bool,
+    ) {
+        self.elapsed += dt;
+        let t = (self.elapsed / self.duration).min(1.);
+        camera.translation.y = self
+            .start_height
+            .lerp(STREET_EYE_HEIGHT, t * t * (3. - 2. * t));
+        let movement = direction.xz().clamp_length_max(1.) * 4.5 * dt;
+        let target = camera.translation.xz() + movement;
+        if clear(target) {
+            camera.translation.x = target.x;
+            camera.translation.z = target.y;
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn walking_lands_smoothly_then_stays_at_eye_height_and_blocks_walls() {
+    let mut eye = Transform::from_xyz(0., 40., 0.);
+    let mut walk = Walk::new(eye.translation.y);
+    walk.step(&mut eye, Vec3::ZERO, 0.1, |_| true);
+    assert!((STREET_EYE_HEIGHT..40.).contains(&eye.translation.y));
+    for _ in 0..20 {
+        walk.step(&mut eye, Vec3::ZERO, 0.1, |_| true);
+    }
+    assert_eq!(eye.translation.y, STREET_EYE_HEIGHT);
+    walk.step(&mut eye, Vec3::X, 0.1, |_| false);
+    assert_eq!(eye.translation.x, 0.);
+    walk.step(&mut eye, Vec3::X + Vec3::Y, 0.1, |_| true);
+    assert!(eye.translation.x > 0.);
+    assert_eq!(eye.translation.y, STREET_EYE_HEIGHT);
+}
 
 #[derive(Clone, Copy)]
 enum Stop {

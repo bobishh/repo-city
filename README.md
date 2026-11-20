@@ -142,6 +142,7 @@ The first city visit offers a controls tour. Open **H** to take it again.
 | Find a file by name or path | **P** in the browser, **⌘P** on Mac |
 | Preview a document or image | Aim at its building and press **P**. VibePad renders Markdown, plain text and code, and images including SVG (formats below). |
 | Fly | **WASD**, **Space** and **Ctrl** for altitude, **Shift** to boost |
+| Walk | Over a street, press **O** to descend and walk with **WASD**. Press **O** or **Space** to fly again. |
 | Capture or release the cursor | Click the scene to capture. **Esc** releases. |
 | Use the actions menu | Right-click to open or close it. Scroll or use the arrow keys to highlight an action. Click or press **Enter** to select it. |
 | See the city from above | Press **M** for the district, then the whole project. On the project map, click a district first, then a building. The cursor stays free in map views. **M** returns to your original view after a district jump. Fly freely after each move. |
@@ -211,6 +212,9 @@ lines remain frosted. The same repository and comparison restore those marks. Pr
 toggle the selected file’s review mark. To start over on the open comparison,
 choose **Reset progress** in the browser’s repository dialog or the Mac
 **Files** menu.
+
+Reopening the same comparison returns to the last file you viewed, with the camera near
+the same place and facing the same wall.
 
 The city shows counts and progress bars for visited files and changed files
 whose diff you opened. In the browser, a pull request or branch update keeps visits to

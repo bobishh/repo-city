@@ -1088,12 +1088,13 @@ pub(super) fn open_repository(
         match result {
             Ok(snapshot) => {
                 let next = snapshot.repository;
-                let selected = picker
+                let requested = picker
                     .github_file
                     .take()
-                    .and_then(|path| next.files.iter().position(|file| file.path == path))
-                    .unwrap_or_else(|| next.initial_file());
+                    .and_then(|path| next.files.iter().position(|file| file.path == path));
+                let selected = requested.unwrap_or_else(|| next.initial_file());
                 let mut explorer = Explorer::new(selected);
+                explorer.resume_on_open = requested.is_none();
                 explorer.open(&next, selected);
                 window.title = format!("{APP_NAME} · {}", snapshot.target.label());
                 picker.comments = native_github::pull_comments(

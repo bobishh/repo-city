@@ -22,6 +22,10 @@ impl Store {
             CREATE TABLE IF NOT EXISTS last_scopes (
                 checkout TEXT PRIMARY KEY,
                 scope TEXT NOT NULL
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS last_views (
+                scope TEXT PRIMARY KEY,
+                view TEXT NOT NULL
             ) WITHOUT ROWID;",
         )
         .map_err(|error| error.to_string())?;
@@ -30,6 +34,27 @@ impl Store {
 
     pub(super) fn read(&self, scope: &str) -> Result<Vec<String>, String> {
         self.read_marks(scope).map_err(|error| error.to_string())
+    }
+
+    pub(super) fn read_view(&self, scope: &str) -> Result<Option<String>, String> {
+        self.0
+            .query_row(
+                "SELECT view FROM last_views WHERE scope = ?1",
+                [scope],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())
+    }
+
+    pub(super) fn write_view(&self, scope: &str, view: &str) -> Result<(), String> {
+        self.0
+            .execute(
+                "INSERT INTO last_views VALUES (?1, ?2) ON CONFLICT(scope) DO UPDATE SET view = excluded.view",
+                params![scope, view],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     pub(super) fn load(&mut self, scope: &str, checkout: &str) -> Result<Vec<String>, String> {

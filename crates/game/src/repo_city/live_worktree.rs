@@ -644,6 +644,7 @@ mod tests {
         })
         .insert_resource(Explorer::new(0))
         .init_resource::<listing::Listing>()
+        .init_resource::<progress::Progress>()
         .init_resource::<Assets<Mesh>>()
         .init_resource::<Assets<StandardMaterial>>()
         .init_resource::<Assets<Image>>()

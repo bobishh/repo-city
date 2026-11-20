@@ -89,6 +89,7 @@ struct Repo(Repository);
 #[derive(Resource)]
 struct Explorer {
     selected: usize,
+    resume_on_open: bool,
     before: bool,
     source: String,
     original: String,
@@ -118,6 +119,7 @@ impl Explorer {
     fn new(index: usize) -> Self {
         Self {
             selected: index,
+            resume_on_open: true,
             before: false,
             source: String::new(),
             original: String::new(),
@@ -337,6 +339,8 @@ struct Pilot {
     firing: bool,
     shot: bool,
     map_click: bool,
+    walk: Option<city_navigation::Walk>,
+    landing_warning_until: f32,
 }
 impl Pilot {
     fn update_fire(&mut self, mouse: &ButtonInput<MouseButton>) {
@@ -440,8 +444,8 @@ pub fn run() {
         eprintln!("World set: {e}");
         std::process::exit(1)
     });
-    let initial = arg("--file")
-        .filter(|_| !repo.files.is_empty())
+    let requested_file = arg("--file").filter(|_| !repo.files.is_empty());
+    let initial = requested_file
         .map(|path| {
             repo.files
                 .iter()
@@ -453,6 +457,7 @@ pub fn run() {
         })
         .unwrap_or_else(|| repo.initial_file());
     let mut explorer = Explorer::new(initial);
+    explorer.resume_on_open = requested_file.is_none();
     if !repo.files.is_empty() {
         explorer.open(&repo, explorer.selected);
     }
@@ -1274,7 +1279,8 @@ fn spawn_city(
     mut commands: Commands,
     repo: Res<Repo>,
     set: Res<WorldSet>,
-    explorer: Res<Explorer>,
+    mut explorer: ResMut<Explorer>,
+    mut progress: ResMut<progress::Progress>,
     palette: Res<Palette>,
     mut camera: Query<(&mut Transform, &mut Pilot), PlayerCamera>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -1313,11 +1319,17 @@ fn spawn_city(
         && !keep_camera
         && let Ok((mut pose, mut pilot)) = camera.single_mut()
     {
-        *pose = listing::view(
-            &repo.0.files[explorer.selected],
-            explorer.source_layout.len(),
-        );
+        *pose = progress
+            .resume_camera(&repo.0, &mut explorer)
+            .unwrap_or_else(|| {
+                listing::view(
+                    &repo.0.files[explorer.selected],
+                    explorer.source_layout.len(),
+                )
+            });
         pilot.captured = false;
+        pilot.walk = None;
+        pilot.landing_warning_until = 0.;
     }
     if let Some(files) = refreshed_files.as_ref() {
         stream.refresh_files(files);
@@ -1536,14 +1548,19 @@ fn flight(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
-    motion: Res<AccumulatedMouseMotion>,
+    (motion, wheel): (Res<AccumulatedMouseMotion>, Res<AccumulatedMouseScroll>),
     mut explorer: ResMut<Explorer>,
     navigation: Res<city_navigation::Navigation>,
     mut camera: Query<(&mut Transform, &mut Pilot), PlayerCamera>,
     windows: Query<&Window, With<PrimaryWindow>>,
     picker: Res<file_picker::FilePicker>,
     menu: Res<city_menu::Menu>,
-    (listing, repo): (Res<listing::Listing>, Res<Repo>),
+    (listing, repo, focus, facades): (
+        Res<listing::Listing>,
+        Res<Repo>,
+        Res<file_facade::ChangesOnly>,
+        Query<&Facade>,
+    ),
     file_buttons: Query<&bevy::picking::hover::Hovered, With<file_picker::FileButton>>,
     review: Res<review_notes::Review>,
     search: Res<listing::find::Search>,
@@ -1657,10 +1674,15 @@ fn flight(
         mouse.pressed(MouseButton::Left) || keys.pressed(KeyCode::KeyK),
         mouse.just_pressed(MouseButton::Left) || keys.just_pressed(KeyCode::KeyK),
     );
-    if pointer_ui_open || listing.turning() || !focused {
-        return;
+    if navigation.guides_camera()
+        || listing.turning()
+        || map_open
+        || explorer.anchored
+        || explorer.comparison_mode != 0
+    {
+        pilot.walk = None;
     }
-    if navigation.is_flying() {
+    if pointer_ui_open || listing.turning() || !focused || navigation.is_flying() {
         return;
     }
     // This frame may contain movement from before the capture click.
@@ -1696,9 +1718,58 @@ fn flight(
     if navigation.guides_camera() {
         return;
     }
+    let clear = |point: Vec2| {
+        let half_width = listing::WIDTH * 0.5 + 0.35;
+        facades.iter().all(|facade| {
+            let file = &repo.0.files[facade.index];
+            !focus.includes(file)
+                || (point - Vec2::from_array(file.position))
+                    .abs()
+                    .max_element()
+                    >= half_width
+        })
+    };
+    if !map_open
+        && !explorer.anchored
+        && explorer.comparison_mode == 0
+        && keys.just_pressed(KeyCode::KeyO)
+        && !keys.any_pressed([
+            KeyCode::ControlLeft,
+            KeyCode::ControlRight,
+            KeyCode::SuperLeft,
+            KeyCode::SuperRight,
+            KeyCode::AltLeft,
+            KeyCode::AltRight,
+        ])
+    {
+        pilot.landing_warning_until = 0.;
+        if pilot.walk.take().is_none() {
+            if clear(camera.translation.xz()) {
+                pilot.walk = Some(city_navigation::Walk::new(camera.translation.y));
+            } else {
+                pilot.landing_warning_until = time.elapsed_secs() + 3.;
+            }
+        }
+    }
+    if keys.any_pressed([
+        KeyCode::Space,
+        KeyCode::Home,
+        KeyCode::PageUp,
+        KeyCode::PageDown,
+    ]) || close_wall && keys.any_pressed([KeyCode::ArrowUp, KeyCode::ArrowDown])
+        || wheel.delta.y != 0. && close_wall
+    {
+        pilot.walk = None;
+    }
+    let (forward, right) = if pilot.walk.is_some() {
+        let right = camera.right().as_vec3().with_y(0.).normalize_or(Vec3::X);
+        (Vec3::Y.cross(right), right)
+    } else {
+        (camera.forward().as_vec3(), camera.right().as_vec3())
+    };
     let axis = |p, n| f32::from(keys.pressed(p)) - f32::from(keys.pressed(n));
-    let mut direction = camera.forward().as_vec3() * axis(KeyCode::KeyW, KeyCode::KeyS)
-        + camera.right().as_vec3() * axis(KeyCode::KeyD, KeyCode::KeyA)
+    let mut direction = forward * axis(KeyCode::KeyW, KeyCode::KeyS)
+        + right * axis(KeyCode::KeyD, KeyCode::KeyA)
         + Vec3::Y
             * if city_navigation::history_direction(&keys).is_some() {
                 0.
@@ -1714,8 +1785,12 @@ fn flight(
     }
     #[cfg(target_arch = "wasm32")]
     {
-        direction += camera.forward().as_vec3() * touch.r#move[1].clamp(-1., 1.)
-            + camera.right().as_vec3() * touch.r#move[0].clamp(-1., 1.);
+        direction +=
+            forward * touch.r#move[1].clamp(-1., 1.) + right * touch.r#move[0].clamp(-1., 1.);
+    }
+    if let Some(walk) = &mut pilot.walk {
+        walk.step(&mut camera, direction, time.delta_secs(), clear);
+        return;
     }
     let speed = flight_speed(
         camera.translation.y,
@@ -2282,12 +2357,13 @@ fn hud(
     nearest: Res<Nearest>,
     navigation: Res<city_navigation::Navigation>,
     progress: Res<progress::Progress>,
+    time: Res<Time>,
+    pilot: Query<&Pilot, PlayerCamera>,
     #[cfg(target_arch = "wasm32")] mut browser_hud: Local<browser_touch::Hud>,
     picker: Res<file_picker::FilePicker>,
     #[cfg(not(target_arch = "wasm32"))] repository: Res<repository_picker::RepositoryPicker>,
     #[cfg(not(target_arch = "wasm32"))] native: (
         Res<review_notes::Review>,
-        Res<Time>,
         Res<live_worktree::Live>,
     ),
     mut label: Query<(&mut Text, &mut TextColor, &mut Node), With<TargetLabel>>,
@@ -2367,12 +2443,20 @@ fn hud(
     let (city, diffs, total_diffs) = progress.visited_counts();
     let total = repo.0.files.len();
     let filename = file.path.rsplit('/').next().unwrap_or(&file.path);
+    let walk_hint = pilot.single().ok().and_then(|pilot| {
+        if pilot.walk.is_some() {
+            Some("Walking · O or Space to fly")
+        } else {
+            (time.elapsed_secs() < pilot.landing_warning_until)
+                .then_some("Move over a street to land")
+        }
+    });
     #[cfg(target_arch = "wasm32")]
     {
         let hint = if navigation.overview() {
             navigation.prompt(&explorer)
         } else {
-            String::new()
+            walk_hint.unwrap_or_default().into()
         };
         browser_hud.publish(filename, [city, total, diffs, total_diffs], hint);
     }
@@ -2407,7 +2491,7 @@ fn hud(
             text.set_if_neq(Text::new(value));
             continue;
         }
-        let (review, time, live) = &native;
+        let (review, live) = &native;
         let value = if top {
             let name = repository.github.as_ref().map_or_else(
                 || {
@@ -2442,6 +2526,7 @@ fn hud(
                     let filename = path.rsplit('/').next().unwrap_or(path);
                     format!("Updated {filename}    L to fly")
                 })
+                .or_else(|| walk_hint.map(str::to_owned))
                 .unwrap_or_default()
         } else {
             continue;

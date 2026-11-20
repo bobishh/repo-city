@@ -137,6 +137,7 @@ const NAVIGATION: &[(&str, &str)] = &[
     ("W A S D", "Fly"),
     ("Arrows", "Look around; Shift+Arrows near a wall"),
     ("Space / Ctrl", "Change altitude"),
+    ("O", "Land and walk; O or Space to fly again"),
     ("Shift", "Fly faster"),
     ("E", "Fly to aimed wall"),
     ("M", "Cycle district, project, and return"),

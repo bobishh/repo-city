@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use super::*;
 
 mod content;
+mod view;
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -33,6 +34,7 @@ pub(super) struct Progress {
     visited: HashSet<usize>,
     visited_diffs: HashSet<usize>,
     total_diffs: usize,
+    camera: view::Checkpoint,
     #[cfg(not(target_arch = "wasm32"))]
     store: Option<std::sync::Mutex<sqlite::Store>>,
     #[cfg(target_arch = "wasm32")]
@@ -90,14 +92,13 @@ impl Progress {
     }
 
     fn load(&mut self, repo: &Repository) -> Vec<String> {
+        let scope = comparison_scope(repo);
+        if self.scope != scope {
+            self.scope = scope;
+            self.camera = view::Checkpoint::default();
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.scope = serde_json::to_string(&(
-                format!("{:?}", repo.root),
-                &repo.revision,
-                &repo.baseline,
-            ))
-            .expect("comparison key contains only strings");
             self.read_native(&format!("{:?}", repo.root))
                 .unwrap_or_else(|error| {
                     warn!("Could not load review progress: {error}");
@@ -106,8 +107,6 @@ impl Progress {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = repo;
-            self.scope = browser_scope();
             self.reset_version = browser_reset_version();
             self.reported = None;
             serde_json::from_str(&browser_marks()).unwrap_or_default()
@@ -149,6 +148,17 @@ impl Progress {
             .expect("progress store opened")
             .get_mut()
             .map_err(|error| error.to_string())
+    }
+}
+
+fn comparison_scope(repo: &Repository) -> String {
+    #[cfg(not(target_arch = "wasm32"))]
+    return serde_json::to_string(&(format!("{:?}", repo.root), &repo.revision, &repo.baseline))
+        .expect("comparison key contains only strings");
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = repo;
+        browser_scope()
     }
 }
 
@@ -226,6 +236,7 @@ pub(super) fn restore(
 }
 
 pub(super) fn sync(
+    time: Res<Time>,
     mut progress: ResMut<Progress>,
     mut explorer: ResMut<Explorer>,
     mut listing: ResMut<listing::Listing>,
@@ -273,6 +284,7 @@ pub(super) fn sync(
         listing.clear_progress();
     } else if !review.blocked
         && listing::Listing::visible(&explorer, &navigation)
+        && !navigation.overview()
         && !listing.turning()
         && let Ok((eye, pilot)) = camera.single()
         && pilot.captured
@@ -283,6 +295,7 @@ pub(super) fn sync(
             listing::Face::at_camera(file, size, eye, listing::tool_range(size.x) * 1.4)
         {
             progress.visit(explorer.selected, file, face == listing::Face::Diff);
+            progress.record_view(file, eye, time.elapsed_secs_f64());
         }
     }
     #[cfg(target_arch = "wasm32")]
