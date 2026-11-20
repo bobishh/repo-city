@@ -576,7 +576,9 @@ test("selects a closed PR in the picker and permits a signed-in viewer to annota
     const url = new URL(route.request().url());
     const path = url.pathname;
     if (path.endsWith("/pulls")) {
-      seen.push(url.searchParams.get("state"));
+      const state = url.searchParams.get("state");
+      seen.push(state);
+      if (state === "open") return route.fulfill({ json: [{ number: 1, state: "open", title: "Older open PR" }] });
       return route.fulfill({ json: [
         { number: 7, state: "closed", title: "Retired approach" },
         { number: 8, state: "closed", merged_at: "2026-11-15T18:00:00Z", title: "Shipped approach" },
@@ -597,11 +599,12 @@ test("selects a closed PR in the picker and permits a signed-in viewer to annota
   });
   await page.goto("/?picker=1&repo=owner%2Fdemo");
   await page.getByRole("button", { name: "Pull requests" }).click();
+  await expect(page.getByRole("option", { name: /Open · Older open PR/ })).toBeVisible();
   await expect(page.getByRole("option", { name: /Merged · Shipped approach/ })).toBeVisible();
   await page.getByRole("option", { name: /Closed · Retired approach/ }).click();
   await page.getByRole("button", { name: "Open city" }).click();
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
-  expect(seen).toEqual(["all"]);
+  expect(seen.sort()).toEqual(["closed", "open"]);
   const snapshot = await page.evaluate(() => JSON.parse(globalThis.repoCity.snapshot()));
   expect(snapshot).toMatchObject({ name: "owner/demo#7", revision: after, baseline: before });
   expect(await page.evaluate(() => globalThis.repoCity.reviewCanPaint())).toBe(true);
