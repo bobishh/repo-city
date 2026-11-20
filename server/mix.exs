@@ -12,7 +12,8 @@ defmodule RepoCity.MixProject do
         {:bandit, "~> 1.10"},
         {:req, "~> 0.7"},
         {:jason, "~> 1.4"},
-        {:plug, "~> 1.19"}
+        {:plug, "~> 1.19"},
+        {:websock_adapter, "~> 0.7"}
       ]
     ]
   end

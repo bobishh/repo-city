@@ -502,10 +502,11 @@ extern "C" {
 }
 
 pub(super) fn navigate(
-    (time, keys, mut trace): (
+    (time, keys, mut trace, mut party): (
         Res<Time>,
         Res<ButtonInput<KeyCode>>,
         Option<ResMut<trace_import::Trace>>,
+        Option<ResMut<review_party::Party>>,
     ),
     wheel: Res<AccumulatedMouseScroll>,
     repo: Res<Repo>,
@@ -573,6 +574,13 @@ pub(super) fn navigate(
         }
         destination
     });
+    let mut requested_face = None;
+    let destination = destination.or_else(|| {
+        let (destination, face) = party.as_deref_mut()?.take_destination(&repo.0)?;
+        focus.enabled = false;
+        requested_face = Some(face);
+        Some(destination)
+    });
     if let Some(destination) = destination
         && destination.revision == repo.0.revision
         && let Some(index) = repo
@@ -599,7 +607,7 @@ pub(super) fn navigate(
         navigation.review_face = if guided {
             Some(listing::Face::Source)
         } else {
-            None
+            requested_face
         };
         if guided {
             listing.present_range(&explorer, destination.anchor.start, destination.anchor.end);

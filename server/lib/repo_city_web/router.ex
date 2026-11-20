@@ -18,15 +18,7 @@ defmodule RepoCityWeb.Router do
 
   defp dispatch(%{path_info: ["github" | _]} = conn), do: GitHub.call(conn)
 
-  defp dispatch(%{path_info: ["party", "config"], method: "GET"} = conn) do
-    conn
-    |> put_resp_header("cache-control", "no-store")
-    |> json(200, %{enabled: false, layout_version: 1})
-  end
-
-  defp dispatch(%{path_info: ["party" | _]} = conn) do
-    json(conn, 503, %{error: "Review parties are not enabled on this server."})
-  end
+  defp dispatch(%{path_info: ["party" | _]} = conn), do: RepoCityWeb.ReviewParty.call(conn)
 
   defp dispatch(%{method: method} = conn) when method not in ["GET", "HEAD"] do
     conn |> put_resp_header("allow", "GET, HEAD") |> send_resp(405, "")

@@ -19,6 +19,7 @@
 - [ ] 3.3 Reproduce the design's payload calculations with recorded `N`, `K`, `b`, `r`, and `p`; measure actual wire overhead, endpoint uplink/downlink, service fanout, and client CPU/frame cost for direct mesh, TURN mesh, and an SFU candidate before selecting supported configurations.
 - [ ] 3.4 Collect browser `getStats()` and native equivalents. Establish configurable sampling windows, headroom, quality targets, and operational ceilings from load tests. Verify missing metrics remain unknown, peer bandwidth estimates are not summed as independent uplinks, and audio checks do not depend on video-only statistics.
 - [ ] 3.5 Verify adaptive pose rate and media quality, visible voice-only degradation, and resource-budget rejection/recovery without evicting healthy members or delaying access revocation and line cues.
+- [ ] 3.6 Add independent party and agent destinations with visible remote-voice sharing consent. Verify both agents can receive both participants, absent agents receive nothing, agent output never loops into inputs, and human conversation survives agent disconnection.
 
 ## 4. Mac and rollout
 

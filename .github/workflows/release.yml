@@ -58,11 +58,12 @@ jobs:
           docker build --file server/Dockerfile --build-arg "REPO_CITY_REVISION=$GITHUB_SHA" -t "$image" .
           test "$(docker image inspect --format '{{ index .Config.Labels "service" }}' "$image")" = repo-city
           container=$(docker run --rm --detach --publish 127.0.0.1::8080 \
-            --env GITHUB_CLIENT_ID=verify --env GITHUB_CLIENT_SECRET=verify "$image")
+            --env GITHUB_CLIENT_ID=verify --env GITHUB_CLIENT_SECRET=verify \
+            --env REVIEW_PARTIES_ENABLED=true "$image")
           trap 'docker stop "$container" >/dev/null' EXIT
           endpoint="http://$(docker port "$container" 8080/tcp)"
           curl --fail --silent --retry 5 --retry-all-errors "$endpoint/up"
-          node scripts/verify-web.mjs "$endpoint" "$GITHUB_SHA"
+          node scripts/verify-web.mjs "$endpoint" "$GITHUB_SHA" true
       - name: Publish the commit image to GHCR
         env:
           REGISTRY_PASSWORD: ${{ github.token }}
@@ -92,6 +93,9 @@ jobs:
       REPO_CITY_GITHUB_CLIENT_ID: ${{ secrets.REPO_CITY_GITHUB_CLIENT_ID }}
       REPO_CITY_GITHUB_CLIENT_SECRET: ${{ secrets.REPO_CITY_GITHUB_CLIENT_SECRET }}
       REPO_CITY_GITHUB_APP_SLUG: ${{ secrets.REPO_CITY_GITHUB_APP_SLUG }}
+      REVIEW_PARTIES_ENABLED: ${{ vars.REVIEW_PARTIES_ENABLED || 'false' }}
+      REVIEW_PARTY_ICE_SERVERS: ${{ secrets.REVIEW_PARTY_ICE_SERVERS }}
+      REVIEW_PARTY_TURN_SECRET: ${{ secrets.REVIEW_PARTY_TURN_SECRET }}
       REPO_CITY_TLS_CERTIFICATE: ${{ secrets.REPO_CITY_TLS_CERTIFICATE }}
       REPO_CITY_TLS_PRIVATE_KEY: ${{ secrets.REPO_CITY_TLS_PRIVATE_KEY }}
     steps:
@@ -118,6 +122,16 @@ jobs:
           ssh-add "$RUNNER_TEMP/repo-city-deploy.key"
           printf 'SSH_AUTH_SOCK=%s\n' "$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "root@$SERVER_IP" true
+      - name: Ensure the authenticated TURN relay is running
+        if: ${{ env.REVIEW_PARTY_TURN_SECRET != '' }}
+        run: |
+          relay=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "root@$SERVER_IP" \
+            "docker ps --all --filter 'name=^repo-city-turn$' --format '{{.State}}'")
+          case "$relay" in
+            running) ;;
+            "") kamal accessory boot turn ;;
+            *) kamal accessory start turn ;;
+          esac
       - name: Deploy and verify the immutable image on the VPS
         run: |
           kamal deploy --skip-push --skip-hooks --version "$GITHUB_SHA"
@@ -133,4 +147,4 @@ jobs:
           grep -Fqi "x-repo-city-revision: $GITHUB_SHA" <<< "$headers"
       - name: Verify production after the DNS switch
         if: ${{ !inputs.preflight }}
-        run: node scripts/verify-web.mjs https://repo-city.meta-uber-engineer.dev "$GITHUB_SHA"
+        run: node scripts/verify-web.mjs https://repo-city.meta-uber-engineer.dev "$GITHUB_SHA" "$REVIEW_PARTIES_ENABLED"

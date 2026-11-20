@@ -47,6 +47,7 @@ mod progress;
 mod reading;
 mod repository_picker;
 mod review_notes;
+mod review_party;
 #[cfg(not(target_arch = "wasm32"))]
 mod review_tablet;
 #[path = "../shapes.rs"]
@@ -691,6 +692,7 @@ pub fn run() {
     .add_systems(Update, live_worktree::highlight.after(animate));
     markdown_preview::register(&mut app);
     source_editor::register(&mut app);
+    app.add_plugins(review_party::Plugin);
     #[cfg(not(target_arch = "wasm32"))]
     app.add_plugins(agent_session::Plugin);
     #[cfg(not(target_arch = "wasm32"))]

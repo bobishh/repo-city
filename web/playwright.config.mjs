@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const port = process.env.REPO_CITY_TEST_PORT ?? "18791";
+const partyFixture = process.env.REPO_CITY_TEST_PARTY === "1";
 const hardware = process.env.REPO_CITY_TEST_GPU === "hardware";
 const browserName = process.env.REPO_CITY_TEST_BROWSER ?? "chromium";
 const graphicsArgs = hardware
@@ -27,10 +28,10 @@ export default defineConfig({
     viewport: { width: 1280, height: 800 },
   },
   webServer: {
-    command: "mix run --no-halt",
+    command: partyFixture ? "mix run --no-halt scripts/party_fixture.exs" : "mix run --no-halt",
     cwd: fileURLToPath(new URL("../server/", import.meta.url)),
     env: {
-      MIX_ENV: "dev",
+      MIX_ENV: partyFixture ? "test" : "dev",
       PHX_SERVER: "true",
       BIND_ADDRESS: "127.0.0.1",
       PORT: port,

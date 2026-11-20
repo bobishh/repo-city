@@ -7,8 +7,10 @@ defmodule RepoCity.GitHub.Client do
   ]
 
   def api(path, token, options \\ []) do
+    headers = if token, do: [{"authorization", "Bearer " <> token} | @headers], else: @headers
+
     options
-    |> Keyword.put(:headers, [{"authorization", "Bearer " <> token} | @headers])
+    |> Keyword.put(:headers, headers)
     |> request(@api <> path)
   end
 

@@ -45,7 +45,7 @@ impl Drop for OpeningPermit {
     }
 }
 
-pub(super) struct Opening {
+pub(crate) struct Opening {
     result: Receiver<Result<Devices, String>>,
     active: Arc<AtomicBool>,
     started: Instant,
@@ -142,7 +142,7 @@ impl Ring {
     }
 }
 
-pub(super) struct Devices {
+pub(crate) struct Devices {
     _input: cpal::Stream,
     _output: cpal::Stream,
     capture: Arc<Ring>,

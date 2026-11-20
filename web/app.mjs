@@ -6,6 +6,8 @@ import { setupPointer } from "./pointer.mjs";
 import { createTouchControls } from "./touch.mjs";
 import { createReview } from "./review.mjs";
 import { readProgress, rememberExploration, writeProgress } from "./progress.mjs";
+import { createReviewParty } from "./review-party-client.mjs";
+import { mountReviewParty } from "./review-party-ui.mjs";
 
 const form = document.querySelector("#repository-form");
 const status = document.querySelector("#status");
@@ -47,6 +49,36 @@ const review = createReview({
     try { localStorage.setItem(guideKey, "seen"); } catch { /* Available for this session. */ }
   },
 });
+let partyDestination;
+const party = createReviewParty({
+  async loadComparison(comparison) {
+    const name = `${comparison.owner}/${comparison.repo}`;
+    const current = active?.repository.review;
+    if (current?.repository.toLowerCase() === name.toLowerCase() && current.revision === comparison.head_sha && current.baseline === comparison.base_sha) return;
+    await openRepository(comparison.pr_number ? `https://github.com/${name}/pull/${comparison.pr_number}` : name,
+      comparison.head_sha, comparison.base_sha, true, comparison);
+    if (active?.repository.review.revision !== comparison.head_sha || (active?.repository.review.baseline ?? null) !== comparison.base_sha) {
+      throw new Error("The pinned room comparison could not be loaded.");
+    }
+  },
+  navigate(anchor) { partyDestination = anchor; review.dismissTablet(); focusCanvas(); },
+});
+function partyComparison() {
+  const current = active?.repository.review;
+  if (!current) return null;
+  const [owner, repo] = current.repository.split("/");
+  return { owner, repo, head_sha: current.revision, base_sha: current.baseline, layout_version: 1,
+    ...(current.pull ? { pr_number: current.pull } : {}) };
+}
+review.setPartyRenderer(root => mountReviewParty(root, party, { comparison: partyComparison }));
+window.addEventListener("blur", () => party.suspend());
+document.addEventListener("visibilitychange", () => { if (document.hidden) party.suspend(); });
+window.addEventListener("pagehide", () => party.dispose());
+window.addEventListener("keydown", event => {
+  if (event.code !== "F8" || event.repeat || event.target !== canvas || !party.state().voice) return;
+  event.preventDefault(); party.talk(true);
+});
+window.addEventListener("keyup", event => { if (event.code === "F8") { event.preventDefault(); party.talk(false); } });
 let sourceVersion = 0;
 let repositoryVersion = 0;
 let progressResetVersion = 0;
@@ -178,8 +210,12 @@ function queryFor(repo, ref, base) {
   return query;
 }
 
-async function openRepository(repo, ref, base, exactBase = false) {
+async function openRepository(repo, ref, base, exactBase = false, pinnedComparison) {
   if (submit.disabled) return;
+  if (party.state().room && !pinnedComparison) {
+    status.textContent = "Leave the party before opening a different comparison.";
+    return;
+  }
   const pull = parsePullRequest(repo);
   submit.disabled = true;
   form.setAttribute("aria-busy", "true");
@@ -188,13 +224,17 @@ async function openRepository(repo, ref, base, exactBase = false) {
     const firstOpen = !running;
     if (firstOpen) {
       const [repository, engine] = await Promise.all([
-        loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest, { exactBase }),
+        loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest, { exactBase, pinnedComparison }),
         import("./game/repo_city.js"),
       ]);
       const graphics = await navigator.gpu?.requestAdapter();
       if (!graphics) throw new Error("WebGPU is unavailable. Open Repo City Web in a browser with WebGPU and graphics acceleration.");
       await stageRepository(repository, ref, base);
       globalThis.repoCity = {
+        partyUpdate(value) { party.update(JSON.parse(value)); },
+        partyActive: () => Boolean(party.state().room),
+        partyPeers: () => JSON.stringify(party.state().members.filter(member => member.id !== party.state().member?.id)),
+        takePartyDestination() { const destination = partyDestination; partyDestination = undefined; return destination ? JSON.stringify(destination) : ""; },
         tourCommand: () => tourCommand,
         reviewVersion: review.version,
         reviewRead: review.snapshot,
@@ -322,7 +362,7 @@ async function openRepository(repo, ref, base, exactBase = false) {
       startControls.hidden = true;
       help.hidden = false;
     } else {
-      await stageRepository(await loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest, { exactBase }), ref, base);
+      await stageRepository(await loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest, { exactBase, pinnedComparison }), ref, base);
     }
     const query = queryFor(repo, ref, base);
     if (exactBase) query.set("exact", "1");
@@ -384,3 +424,4 @@ if (parameters.get("github") === "connected") {
   history.replaceState(null, "", clean);
 }
 if (initial && !parameters.has("picker")) openRepository(initial, parameters.get("ref"), parameters.get("base"), parameters.get("exact") === "1");
+else if (parameters.get("party")) review.partyPanel();

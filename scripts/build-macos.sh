@@ -25,7 +25,7 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSMicrophoneUsageDescription</key><string>Use the microphone to talk to your coding agent after pressing F9 or choosing Start voice.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Use the microphone for a review room or coding agent after you enable voice.</string>
 </dict></plist>
 PLIST
 printf '%s\n' "$bundle"

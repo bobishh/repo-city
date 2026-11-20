@@ -1,1 +1,1 @@
-[inputs: ["mix.exs", "{config,lib,test}/**/*.{ex,exs}"]]
+[inputs: ["mix.exs", "{config,lib,scripts,test}/**/*.{ex,exs}"]]

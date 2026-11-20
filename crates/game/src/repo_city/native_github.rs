@@ -872,6 +872,46 @@ pub(super) fn open(
     Job::spawn(move || Snapshot::load(target, token.as_deref(), &revision, &base))
 }
 
+/// Room comparisons use exact object IDs. Normal branch selection may resolve a
+/// merge base; this path must preserve the room's pinned base and fork identity.
+pub(super) fn open_pinned(
+    target: Target,
+    token: Option<String>,
+    revision: String,
+    base: String,
+    head_repository: Option<Target>,
+) -> Job<Snapshot> {
+    Job::spawn(move || {
+        sha(&revision)?;
+        sha(&base)?;
+        let root = target.cache()?;
+        std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+        if !root.join("HEAD").exists() {
+            git(&root, &["init", "--bare", "--quiet"], None)?;
+        }
+        let head_target = head_repository.as_ref().unwrap_or(&target);
+        let head = fetch_revision(
+            &root,
+            &format!("https://github.com/{}.git", head_target.slug()),
+            head_target,
+            token.as_deref(),
+            &revision,
+        )?;
+        let baseline = fetch_revision(
+            &root,
+            &format!("https://github.com/{}.git", target.slug()),
+            &target,
+            token.as_deref(),
+            &base,
+        )?;
+        if head != revision || baseline != base {
+            return Err("The room's pinned comparison is unavailable.".into());
+        }
+        let repository = repository_picker::load(&root, &head, Some(&baseline))?;
+        Ok(Snapshot { target, repository })
+    })
+}
+
 fn review_comment(note: &Note, body: String) -> Value {
     let anchor = &note.anchor;
     let side = if anchor.before { "LEFT" } else { "RIGHT" };

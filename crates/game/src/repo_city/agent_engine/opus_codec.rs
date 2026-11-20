@@ -5,14 +5,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(super) const SAMPLE_RATE: u32 = 48_000;
-pub(super) const FRAME_SAMPLES: usize = 960;
+pub(crate) const SAMPLE_RATE: u32 = 48_000;
+pub(crate) const FRAME_SAMPLES: usize = 960;
 const MAX_SAMPLES: usize = 5760; // Opus permits up to 120 ms in one packet.
 const MAX_PACKET: usize = 1275;
 const REORDER_DELAY: Duration = Duration::from_millis(40);
 const MAX_PENDING: usize = 16;
 
-pub(super) struct Encoder(opus::Encoder);
+pub(crate) struct Encoder(opus::Encoder);
 impl Encoder {
     pub fn new() -> Result<Self, String> {
         let mut encoder = opus::Encoder::new(SAMPLE_RATE, Channels::Mono, Application::Voip)
@@ -78,7 +78,7 @@ struct Packet {
 }
 /// A small reorder window, followed by Opus FEC/PLC. Never fabricates unbounded
 /// audio across DTX gaps or reconnects; RTP timestamps are owned by the sender.
-pub(super) struct Playout {
+pub(crate) struct Playout {
     decoder: Decoder,
     pending: VecDeque<Packet>,
     expected: Option<u16>,

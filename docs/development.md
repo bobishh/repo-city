@@ -79,6 +79,60 @@ compiled WASM against GitHub API fixtures.
 
 ## Deploy
 
+### Review room service
+
+Phoenix owns one process per room on the shared Hetzner VPS. The browser uses a
+WebSocket on the application origin and desktop posts events and polls the same
+room over HTTP. `GET /party/config` reports whether room creation and joining are
+enabled. Set `REVIEW_PARTIES_ENABLED` to `true` in Kamal or as a GitHub Actions
+production environment variable.
+
+Room IDs identify individual sessions. The comparison ID is a SHA-256 hash of
+the GitHub repository ID, base commit, head commit, and layout version. Invites
+bind to a verified GitHub account. Their secret is in the URL fragment so it
+does not travel in HTTP requests for the page. Phoenix keeps only hashes of
+invite and room secrets. Each participant verifies and loads repository contents
+using their own GitHub authorization.
+
+Membership renews GitHub access every five minutes. Rooms last at most 24 hours
+and the host has a 60-second reconnect window. A backend restart ends active
+rooms. The server holds presence and line cues in memory. It discards directed
+SDP and ICE messages after delivery or 30 seconds. Audio travels over WebRTC.
+
+Kamal runs the TURN relay as the `turn` accessory on the VPS. Set
+`REVIEW_PARTY_TURN_SECRET` as a deployment secret with at least 32 random bytes
+encoded as lowercase hex. The app and relay share this secret. Phoenix uses it
+to issue one-hour TURN credentials to admitted members and refreshes them at
+membership renewal. The relay listens on port 3478 (UDP and TCP) and uses UDP
+ports 49160–49223 for allocations. Allow those ports on the VPS public IPv4
+interface. Use `kamal accessory reboot turn` to rotate the relay configuration
+and redeploy the app with the same secret.
+
+`REVIEW_PARTY_ICE_SERVERS` optionally supplies a JSON array of additional ICE
+servers. For example, use `[{"urls":["stun:stun.example:3478"]}]` for a separate
+STUN service.
+
+`REVIEW_PARTY_ACTIVE_ROOMS` (default 256), `REVIEW_PARTY_ROOM_BYTES` (131072),
+`REVIEW_PARTY_MESSAGES_PER_SECOND` (120), and
+`REVIEW_PARTY_PENDING_INVITES` (256) protect service resources. These safeguards
+are configurable in the Phoenix process environment and do not represent
+measured participant capacity. Phoenix emits request duration, action, and
+status through the `[:repo_city, :party, :request]` telemetry event.
+
+Run the room protocol checks with `(cd server && mix test test/review_party_test.exs)`.
+After building web assets, run the browser room fixture with
+`REPO_CITY_TEST_PARTY=1 npm run test:browser --prefix web -- review-party.spec.mjs`.
+With a running TURN relay, pass its `REVIEW_PARTY_TURN_URLS` and matching secret
+through the environment and set `REPO_CITY_TEST_RELAY=1` to require relay-only
+audio in the Phoenix browser test.
+
+For isolated native development, `VIBE_CITY_PARTY_SERVICE` may select a
+loopback HTTP origin with an unused port. Normal clients use the hosted Repo
+City HTTPS origin. Room tokens authorize only their member and room; GitHub
+tokens are sent only to the service for verified create/join/renew operations.
+
+### Application deployment
+
 [GitHub Actions](../.github/workflows/ci.yml) runs formatting, browser-service
 unit tests and repository-core tests on Linux with a three-minute job limit.
 It does not build desktop packages or publish after a push. Build and verify
@@ -86,8 +140,7 @@ WASM and desktop packages locally from the same release commit.
 
 [Repo City Web](https://repo-city.meta-uber-engineer.dev/) uses the Phoenix
 application in `server/` behind the shared Hetzner `kamal-proxy`. It serves static assets,
-precompressed WASM and `/github/` from the same origin. Review rooms are
-disabled. The [manual release workflow](../.github/workflows/release.yml) builds
+precompressed WASM, `/github/`, and `/party/` from the same origin. The [manual release workflow](../.github/workflows/release.yml) builds
 and publishes `ghcr.io/bobishh/repo-city:<commit>`, then deploys that image
 through Kamal. `use_published_image` reuses a verified image tagged with the
 same commit. The VPS checks run against the deployed container. A normal

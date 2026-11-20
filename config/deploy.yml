@@ -33,7 +33,33 @@ builder:
 env:
   clear:
     PUBLIC_ORIGIN: https://repo-city.meta-uber-engineer.dev
+    REVIEW_PARTIES_ENABLED: "<%= ENV.fetch('REVIEW_PARTIES_ENABLED', 'false') %>"
+    REVIEW_PARTY_TURN_URLS: "turn:repo-city.meta-uber-engineer.dev:3478?transport=udp,turn:repo-city.meta-uber-engineer.dev:3478?transport=tcp"
     GITHUB_APP_SLUG: "<%= ENV.fetch('REPO_CITY_GITHUB_APP_SLUG', '') %>"
   secret:
     - GITHUB_CLIENT_ID:REPO_CITY_GITHUB_CLIENT_ID
     - GITHUB_CLIENT_SECRET:REPO_CITY_GITHUB_CLIENT_SECRET
+<% if !ENV.fetch('REVIEW_PARTY_ICE_SERVERS', '').empty? %>
+    - REVIEW_PARTY_ICE_SERVERS
+<% end %>
+<% if !ENV.fetch('REVIEW_PARTY_TURN_SECRET', '').empty? %>
+    - REVIEW_PARTY_TURN_SECRET
+
+accessories:
+  turn:
+    image: docker.io/coturn/coturn:4.8.0@sha256:10514b502709263f3e7216873f42b48b7f8a2679090eedb5be0954fd1bba9f94
+    host: "<%= ENV.fetch('SERVER_IP') %>"
+    network: host
+    env:
+      clear:
+        TURN_LISTEN_IP: "<%= ENV.fetch('SERVER_IP') %>"
+      secret:
+        - REVIEW_PARTY_TURN_SECRET
+    files:
+      - scripts/run-turn.sh:/usr/local/bin/repo-city-turn:ro
+    options:
+      entrypoint: /bin/sh
+      memory: 256m
+      cpus: 1
+    cmd: /usr/local/bin/repo-city-turn
+<% end %>

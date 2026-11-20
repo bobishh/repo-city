@@ -1,12 +1,12 @@
 //! Agent session contract shared by the city and provider adapters.
 //! Providers own authentication and wire protocols; views consume normalized state/events.
 mod acp;
-mod audio;
+pub(super) mod audio;
 mod codex;
 mod codex_projection;
 mod codex_protocol;
 mod codex_transport;
-mod opus_codec;
+pub(super) mod opus_codec;
 mod rtc;
 pub(super) mod state;
 

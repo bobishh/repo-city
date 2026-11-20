@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en"><main id="party"></main><script type="module">
+  import { createReviewParty } from "/review-party-client.mjs";
+  import { mountReviewParty } from "/review-party-ui.mjs";
+  const sockets = [], peers = [];
+  const relayOnly = new URLSearchParams(location.search).get("relay") === "1";
+  let capture;
+  const client = createReviewParty({
+    WebSocket: class extends WebSocket {
+      constructor(...args) { super(...args); sockets.push(this); }
+    },
+    RTCPeerConnection: class extends RTCPeerConnection {
+      constructor(configuration) {
+        super(relayOnly ? { ...configuration, iceTransportPolicy: "relay" } : configuration);
+        peers.push(this);
+      }
+    },
+    async getUserMedia() {
+      const audio = new AudioContext();
+      const tone = audio.createOscillator();
+      const output = audio.createMediaStreamDestination();
+      tone.connect(output); tone.start(); await audio.resume();
+      capture = output.stream;
+      return capture;
+    },
+    playRemote: () => ({ muted: false, play: async () => {}, remove() {} }),
+    async loadComparison(comparison) { window.pinned = comparison; }
+  });
+  const comparison = { owner: "owner", repo: "demo", head_sha: "a".repeat(40),
+    base_sha: "b".repeat(40), layout_version: 1 };
+  mountReviewParty(document.querySelector("#party"), client, { comparison: () => comparison });
+  window.party = { client, peers, sockets, captureStopped: () => capture?.getTracks().every(t => t.readyState === "ended") };
+</script></html>

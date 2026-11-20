@@ -508,6 +508,33 @@ server after updating the app to expose new tools.
 An addressed note stays in the review list and its paint disappears from
 the city. Local note tools do not publish to GitHub.
 
+## Cooperative review rooms
+
+Review rooms are in preview. They pin a GitHub
+repository comparison, with or without a pull request. Each participant signs in
+with GitHub and loads source using their own access. Invitations name one GitHub
+account; forwarding a link does not admit a different account. Worktrees and
+private drafts are not shared.
+
+To start a room, open **Party** in the browser's VibePad or **F10**
+on desktop. Create a room, enter your teammate's GitHub login, and copy their invitation
+link. Invitees sign in with the named GitHub account and open the link in the
+browser or paste it into **Invitation link** on desktop.
+Enable reading focus to share the current file and wall; select a teammate in
+the roster to fly to their view. **Share current lines** sends a separate cue.
+Joining suspends automatic comment publication.
+
+Voice requires a separate microphone action. Hold **F8** to speak; release to
+mute. Leaving the window disables capture. Individual peers can be muted.
+Browser capture requests echo cancellation. Desktop currently suppresses its
+microphone while playing remote speech, so overlapping speech is not yet full
+duplex. Sending conversation to an agent requires a connected audio adapter
+and each speaker's sharing consent; unavailable adapters are not connected by
+enabling human voice. Native/browser audio and relay interoperability still
+require verification before production rollout.
+
+See [Development](docs/development.md#review-room-service) for hosting settings.
+
 ## License
 
 Choose the [MIT license](LICENSE-MIT) or [Apache License 2.0](LICENSE-APACHE).

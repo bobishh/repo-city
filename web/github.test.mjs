@@ -104,6 +104,21 @@ test("closed and merged PRs open the historical head and merge base", async () =
   }
 });
 
+test("a party keeps a fork comparison pinned when the PR head moves", async () => {
+  const seen = [];
+  const loaded = await loadGitHub("https://github.com/owner/project/pull/17", "", "", async url => {
+    const path = new URL(url).pathname; seen.push(path);
+    if (path.endsWith("/pulls/17")) return Response.json({ state: "open", base: { sha: "new-base" }, head: { sha: "new-head", repo: { full_name: "contributor/project" } } });
+    if (path.endsWith("/commits/pinned-head")) return Response.json({ sha: "pinned-head" });
+    if (path.endsWith("/commits/pinned-base")) return Response.json({ sha: "pinned-base" });
+    return Response.json({ tree: [{ path: "a.rs", type: "blob", mode: "100644", sha: "blob", size: 1 }] });
+  }, { pinnedComparison: { head_sha: "pinned-head", base_sha: "pinned-base", head_owner: "contributor", head_repo: "project" } });
+  assert.equal(loaded.review.revision, "pinned-head");
+  assert.equal(loaded.review.baseline, "pinned-base");
+  assert.ok(seen.includes("/repos/contributor/project/git/trees/pinned-head"));
+  assert.ok(!seen.some(path => path.includes("/compare/")));
+});
+
 test("the PR picker fetches and labels both active and historical pull requests", async () => {
   const entries = await loadPullRequests("owner/project", async url => {
     assert.equal(new URL(url).searchParams.get("state"), "all");

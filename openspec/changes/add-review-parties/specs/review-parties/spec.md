@@ -2,7 +2,7 @@
 
 ### Requirement: Invite a GitHub account to a review party
 
-Repo City SHALL let a signed-in reviewer start a private party for an open or historical GitHub pull request they can read. Admission SHALL follow measured network, client, and room-service budgets rather than a hard-coded account count. Each invitation SHALL be time limited, revocable by the host, and bound to one verified GitHub account ID.
+Repo City SHALL let a signed-in reviewer start a private party for a pinned GitHub repository comparison, including an open or historical pull request, that they can read. Admission SHALL follow measured network, client, and room-service budgets rather than a hard-coded account count. Each invitation link SHALL be time limited, revocable by the host, and bound to one verified GitHub account ID.
 
 #### Scenario: Invited reviewer joins
 
@@ -48,7 +48,7 @@ Repo City SHALL evaluate room admission and voice availability using the deploye
 
 ### Requirement: Keep participants on a pinned comparison
 
-Members SHALL enter a room only after loading its exact PR base and head and selecting a compatible layout. Each member SHALL load source through their own GitHub access. The room SHALL verify continued access before renewing membership.
+Members SHALL enter the shared view only after loading its exact repository base and head and selecting a compatible layout. Each member SHALL load source through their own GitHub access. The room SHALL verify continued access before renewing membership.
 
 #### Scenario: PR head changes during review
 
@@ -124,6 +124,22 @@ Where voice is available, Repo City SHALL request microphone access only when a 
 
 - **WHEN** the transmitting client leaves the room or loses window focus
 - **THEN** audio transmission stops and any later transmission requires a fresh push-to-talk press
+
+### Requirement: Route conversation independently to party and agent
+
+Repo City SHALL provide independent party and local agent audio destinations. An enabled and connected agent MAY receive both the local participant and remote participants after the room visibly indicates that the conversation is forwarded to that agent and participants have enabled sharing their voice with party agents. Disconnected or disabled agents SHALL receive no audio. Agent-generated speech SHALL NOT be fed to any agent input or sent to the party. Human conversation SHALL continue when an agent disconnects.
+
+#### Scenario: Two participants connect their agents
+
+- **GIVEN** two participants have enabled party voice and consented to sharing it with party agents
+- **WHEN** both enable conversation input to their connected local agents
+- **THEN** both agents receive the two participants' speech without duplicate forwarding or agent-generated speech
+
+#### Scenario: One participant has no agent
+
+- **GIVEN** both participants have enabled human party voice
+- **WHEN** one participant has no connected agent
+- **THEN** the participants still hear each other and no audio is sent to that absent agent
 
 ### Requirement: Keep draft notes and publication under the author's control
 

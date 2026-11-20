@@ -1,12 +1,12 @@
 ## Context
 
-Repo City already signs in with its GitHub App on web and Mac. Each client loads a GitHub PR comparison and stores its own review drafts. The web Worker keeps GitHub credentials in an encrypted session cookie and calls GitHub on behalf of the signed-in reviewer.
+Repo City already signs in with its GitHub App on web and Mac. Each client loads a GitHub repository comparison and stores its own review drafts. Phoenix keeps web GitHub credentials in an encrypted session cookie and calls GitHub on behalf of the signed-in reviewer.
 
 Paket's session at source revision `7027ef350c4428805b2bd8f06f8d24fad57d7688` uses Iroh and MetaMesh gossip to share delivery events and actor poses. Its links encode a street origin, peer address, and room. Its native worker coalesces recent poses and polls independently of the game loop. Its two-peer tests cover receiving a pose and receiving a delivery after a pose burst. Repo City can apply the same coalescing and test pattern to flying and review cues.
 
 ## Goals / Non-Goals
 
-The first supported party is an invite-only review of one GitHub pull request. Members can see who's present, share their live reading focus, point to a specific line range, and speak on demand. Supported capacity follows measured network, client, and service budgets; it is not a fixed number of GitHub accounts or a claim of unlimited scale.
+The first supported party is an invite-only review of one pinned GitHub repository comparison, with or without a pull request. An account-bound invitation link opens the same repository, revision and comparison base after access verification. Members can see who's present, share their live reading focus, point to a specific line range, and speak on demand. Supported capacity follows measured network, client, and service budgets; it is not a fixed number of GitHub accounts or a claim of unlimited scale.
 
 Worktree sharing, persistent party history, shared draft editing, voice recording, and user discovery outside the invite picker are outside this proposal.
 
@@ -20,21 +20,27 @@ Check each member's access with their own GitHub credential, using the same PR a
 
 ### One pinned comparison
 
-Store one comparison key with the base repository ID, PR number, merge base SHA, and head SHA. Each member loads those exact GitHub snapshots with their own authorization. Use a shared layout version for coordinate compatibility. For jumps, the client resolves the file path and side locally and uses the line anchor when available. A newer PR head is available for a new room, while the open room keeps its original comparison. If a pinned snapshot becomes unavailable, show an error and keep the user outside the shared view.
+Store one comparison key with the base repository owner/name, optional PR number, exact base SHA, exact head SHA, and layout version. Fork pull requests also retain the head repository identity. Each member loads those exact GitHub snapshots with their own authorization. Use a shared layout version for coordinate compatibility. For jumps, the client resolves the file path and side locally and uses the line anchor when available. A newer PR head is available for a new room, while the open room keeps its original comparison. If a pinned snapshot becomes unavailable, show an error and keep the user outside the shared view.
 
 ### Room ownership and updates
 
 Use one hosted authority per room for invites, membership, signaling, and presence. Start from the existing authenticated web entry point and validate the room implementation behind it. The host can admit invited accounts, revoke unused invites, remove members, and close the room. A temporary disconnect leaves a short reconnect window, after which the host's absence ends the room. Members reconnect with the same account and a valid membership.
 
-Use an authenticated socket for presence and review cues. Keep the latest pose per participant with a sequence number, interpolate remote movement on the client, and discard stale updates. Use bounded queues and give joins, removals, focus changes, and shared line ranges priority over pose updates. Paket's render/transport boundary can inform the adapter and tests. Record provenance if implementation copies any code.
+Use an authenticated socket for browser presence and review cues. Desktop uses equivalent room-scoped HTTP event submission and cursor polling; these endpoints enforce the same membership lease. Keep the latest pose per participant with a sequence number, interpolate remote movement on the client, and discard stale updates. Use bounded queues and give joins, removals, focus changes, and shared line ranges priority over pose updates. Paket's render/transport boundary can inform the adapter and tests. Record provenance if implementation copies any code.
 
-Using Paket's peer gossip directly would also require a separate service for identity, read permissions, and revocation. A small room already has a place to enforce those rules. Start with the room socket and evaluate Iroh if direct native transport solves a measured connectivity or latency problem. Evaluate MetaMesh if multiple product features later need shared discovery or distributed state.
+Using Paket's peer gossip directly would also require a separate service for identity, read permissions, and revocation. Phoenix runs the room authority on Hetzner with one supervised process per room. It serializes membership changes and enforces access for both transports. Active rooms live in memory and end on a backend restart. Each room has an independent ID and a comparison hash derived from repository ID, base, head, and layout version. The media topology is authorized peer WebRTC mesh with optional STUN/TURN.
 
 ### Push-to-talk
 
 Use WebRTC audio with room-authorized signaling and STUN/TURN. The browser already provides media capture and playback APIs. The Mac implementation must pass an interoperability and microphone permission test before voice becomes available there. Enable the microphone only after the member chooses voice and grants permission. Send audio while push-to-talk is held, and stop the local track on focus loss, leave, removal, or explicit disable. Show who is speaking and let each member mute individual peers. The existing room authority tears down authorized media connections on removal. [W3C WebRTC specification](https://www.w3.org/TR/webrtc/).
 
 Neither the room nor its media relay stores audio, SDP, ICE candidates, or the contents of review cues after use. Evaluate direct peer mesh, TURN-relayed mesh, and an SFU against the capacity model below. TURN addresses reachability; a relay-only ICE policy can avoid sharing direct candidates. It does not remove mesh stream duplication. An SFU forwards media through a server and has a different bandwidth and encryption trust boundary, which must be documented before enabling that topology. [TURN specification](https://www.rfc-editor.org/rfc/rfc8656.html).
+
+### Party conversation and local coding agents
+
+Keep party voice and agent voice as independent destinations. Capture the local microphone once and fan out its clean samples to the enabled destinations. A member who enables party conversation input for their connected agent supplies local microphone audio and authorized remote participants' audio to that agent. Each member controls their own agent destination; two members can enable it and both agents then receive both participants. Expose this routing to everyone in the room before forwarding remote voices. Agent disconnection stops that destination immediately and does not stop human conversation.
+
+Feed decoded remote participant streams before speaker playback; never recapture the loudspeaker mix. Exclude agent-generated speech from all agent inputs and party uplinks to prevent agent feedback loops and duplicate forwarding. Preserve participant identity through the routing boundary. Agent output is local-only in this first version. Validate echo cancellation, simultaneous speech and voice gating before claiming full-duplex interoperability; the current solo voice path pauses capture during agent playback.
 
 ### Capacity and connection health
 

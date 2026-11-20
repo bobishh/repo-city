@@ -108,7 +108,7 @@ export async function loadLibrary(login, request) {
   };
 }
 
-export async function loadGitHub(input, ref, base, request = fetch, { exactBase = false } = {}) {
+export async function loadGitHub(input, ref, base, request = fetch, { exactBase = false, pinnedComparison } = {}) {
   const pull = parsePullRequest(input);
   const name = pull?.name ?? parseRepository(input);
   const publicRepositories = new Set();
@@ -135,7 +135,12 @@ export async function loadGitHub(input, ref, base, request = fetch, { exactBase 
     if (head.repo?.full_name) headRepository = parseRepository(head.repo.full_name);
     noteVisibility(name, details.base.repo);
     noteVisibility(headRepository, head.repo);
-    baseline = await compare(details.base.sha, head.sha);
+    if (pinnedComparison) {
+      headRepository = pinnedComparison.head_owner && pinnedComparison.head_repo
+        ? parseRepository(`${pinnedComparison.head_owner}/${pinnedComparison.head_repo}`) : headRepository;
+      head = await read(`/commits/${encodeURIComponent(pinnedComparison.head_sha)}`, headRepository);
+      baseline = pinnedComparison.base_sha ? await read(`/commits/${encodeURIComponent(pinnedComparison.base_sha)}`) : null;
+    } else baseline = await compare(details.base.sha, head.sha);
     if (!baseline?.sha) throw new Error("Pull request merge base unavailable.");
   } else {
     let revision = ref?.trim();

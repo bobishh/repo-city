@@ -54,6 +54,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
   let traceText = "", traceBuiltText = "", traceSelected, traceRequest, traceReport, tracePending = false;
   const repaint = () => { version++; };
   let defaults = [];
+  let renderParty = () => {}, partyPanelView;
 
   dialog.addEventListener("close", () => {
     if (dialog.open) return;
@@ -101,6 +102,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
         ["Comments", "notes", () => { notesPanel(); show(); }],
         ["Help", "help", help],
         ["Trace", "trace", tracePanel],
+        ["Party", "party", partyPanel],
       ]) {
         const tab = button(label, open);
         tab.setAttribute("aria-pressed", String(page === dialog.dataset.view));
@@ -121,6 +123,14 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     release();
     if ("tablet" in dialog.dataset) tablet.open();
     else if (!dialog.open) dialog.showModal();
+  }
+  function partyPanel() {
+    partyPanelView?.dispose();
+    dialog.dataset.view = "party";
+    if (!canvas.hidden) dialog.dataset.tablet = "";
+    view("Party");
+    partyPanelView = renderParty(dialog);
+    show();
   }
   function close() {
     if (!tablet.close()) dialog.close();
@@ -1167,6 +1177,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       else if (dialog.open && dialog.dataset.view === "trace") tracePanel();
     },
     selectTab, load, version: () => version, snapshot, add, panel, changedFiles, fileSearch, help, helpVisible: () => dialog.open && dialog.dataset.view === "help", previewMarkdown, dismissTablet,
+    partyPanel, setPartyRenderer(render) { renderParty = render; },
     takeMarkdownRead() {
       const mark = markdownRead;
       markdownRead = undefined;

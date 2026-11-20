@@ -234,6 +234,66 @@ impl RepositoryPicker {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn party_credentials(&self) -> Option<(native_github::Target, String)> {
+        Some((
+            self.github.as_ref()?.clone(),
+            native_github::token(self.session.as_ref())?,
+        ))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn party_token(&self) -> Option<String> {
+        native_github::token(self.session.as_ref())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn open_party(&mut self, comparison: &serde_json::Value) -> Result<(), String> {
+        let owner = comparison["owner"]
+            .as_str()
+            .ok_or("Missing room repository.")?;
+        let name = comparison["repo"]
+            .as_str()
+            .ok_or("Missing room repository.")?;
+        let mut url = format!("{owner}/{name}");
+        if let Some(number) = comparison["pr_number"].as_u64() {
+            url.push_str(&format!("/pull/{number}"));
+        }
+        let target = native_github::Target::parse(&url)?;
+        let head_repository = match (
+            comparison["head_owner"].as_str(),
+            comparison["head_repo"].as_str(),
+        ) {
+            (Some(owner), Some(name)) => {
+                Some(native_github::Target::parse(&format!("{owner}/{name}"))?)
+            }
+            _ => None,
+        };
+        let head = comparison["head_sha"]
+            .as_str()
+            .ok_or("Missing room revision.")?
+            .to_owned();
+        let base = comparison["base_sha"]
+            .as_str()
+            .ok_or("Missing room base.")?
+            .to_owned();
+        self.status = "Loading the room's exact comparison…".into();
+        self.pending = Some(native_github::open_pinned(
+            target,
+            self.party_token(),
+            head,
+            base,
+            head_repository,
+        ));
+        self.github_file = None;
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn party_loading(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn compare_commits(&mut self, root: PathBuf, before: String, after: String) {
         self.status = "Loading selected commits…".into();
         self.local = Some(native_github::Job::spawn(move || {
