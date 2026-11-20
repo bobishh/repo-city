@@ -128,11 +128,9 @@ jobs:
           container_ip=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "root@$SERVER_IP" \
             "docker inspect --format '{{ (index .NetworkSettings.Networks \"kamal\").IPAddress }}' $container")
           [[ "$container_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          tunnel="$RUNNER_TEMP/repo-city-tunnel"
-          ssh -M -S "$tunnel" -fNT -o ExitOnForwardFailure=yes -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes -L "127.0.0.1:18792:$container_ip:8080" "root@$SERVER_IP"
-          trap 'ssh -S "$tunnel" -O exit "root@$SERVER_IP"' EXIT
-          node scripts/verify-web.mjs http://127.0.0.1:18792 "$GITHUB_SHA"
+          headers=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "root@$SERVER_IP" \
+            "curl --fail --silent --show-error --max-time 10 --head http://$container_ip:8080/up")
+          grep -Fqi "x-repo-city-revision: $GITHUB_SHA" <<< "$headers"
       - name: Verify production after the DNS switch
         if: ${{ !inputs.preflight }}
         run: node scripts/verify-web.mjs https://repo-city.meta-uber-engineer.dev "$GITHUB_SHA"
