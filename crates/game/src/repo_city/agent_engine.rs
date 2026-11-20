@@ -110,6 +110,7 @@ pub(super) enum Event {
     VoiceStarting {
         id: String,
     },
+    StopUnconfirmed(String),
     Error(String),
     VoiceError(String),
     Closed,

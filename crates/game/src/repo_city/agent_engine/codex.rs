@@ -85,6 +85,7 @@ impl Engine for Adapter {
                 Wire::Voice { id, active } => events.push(Event::Voice { id, active }),
                 Wire::VoiceWaiting { id } => events.push(Event::VoiceWaiting { id }),
                 Wire::VoiceStarting { id } => events.push(Event::VoiceStarting { id }),
+                Wire::StopUnconfirmed(error) => events.push(Event::StopUnconfirmed(error)),
                 Wire::Error(error) => events.push(Event::Error(error)),
                 Wire::VoiceError(error) => events.push(Event::VoiceError(error)),
                 Wire::Closed => events.push(Event::Closed),
@@ -102,10 +103,12 @@ fn apply_notification(
 ) -> Option<Event> {
     match protocol::notification(root, method, params) {
         Ok(Some(notification)) => {
-            let status_changed = matches!(
-                notification.update,
-                protocol::Update::TurnStarted { .. } | protocol::Update::TurnCompleted { .. }
-            );
+            let status_changed = state.dialogue.thread.as_deref()
+                == Some(notification.thread.as_str())
+                && matches!(
+                    notification.update,
+                    protocol::Update::TurnStarted { .. } | protocol::Update::TurnCompleted { .. }
+                );
             state.apply(notification).then(|| Event::Changed {
                 status: status_changed.then(|| state.status.clone()),
             })

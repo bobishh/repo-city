@@ -46,8 +46,8 @@ without switching your working tree. For terminal use, `./scripts/run-native.sh`
 opens Repo City's checkout by default and accepts another checkout path as its
 first argument.
 
-Choose **Revisions… → Live worktree** to compare the working directory with
-`HEAD`. Saves update changed buildings, and new non-ignored files appear in
+Local folders open in **Live worktree** by default, comparing the working directory
+with `HEAD`. **Revisions…** still lets you choose a frozen commit. Saves update changed buildings, and new non-ignored files appear in
 the city. An update appears briefly above the city controls. Click it or press
 **L** to fly to the last changed file. Press **Tab** to open the changed files
 tablet and see earlier changes. Press **F** to show only changed buildings and
@@ -153,7 +153,7 @@ The first city visit offers a controls tour. Open **H** to take it again.
 | Edit paints and notes | **U** opens paints; **⌘ + scroll** cycles tools on Mac. **J** opens the note you are aiming at or the review list. |
 | Find text on the current wall | **/** or **Find in file** in the actions menu. **Enter** keeps results; **N** and **Shift+N** visit matches. |
 | Turn to the diff or blame wall | **G** for diff, **B** for blame. Up close, **Left/Right** cycles source, diff and blame. Sign in with GitHub for line attribution in the browser. |
-| Follow a file’s changes | **C** starts the review. Scroll up or press **W** for the next stop. Scroll down or press **S** for the previous stop. **Q** returns to the diff wall. |
+| Review changed roofs on desktop | **C** visits changed files from the lowest building to the highest. **W / ↑ / scroll up** visits the next building; **S / ↓ / scroll down** returns. Choose hunks with their labeled buttons or **[ / ]**. **Previous hunks / Next hunks** exposes further groups of eight buttons. **Q** leaves the tour at the current diff. |
 | Fold a code block | **Z** collapses the aimed function; **X** expands it. Fixed-line blocks are used when syntax boundaries are unavailable. |
 | Open controls | **H** opens and puts away VibePad Help. Choose **Start tour** to practice flying and thawing source. |
 
@@ -161,13 +161,18 @@ Source, diff and blame walls wrap long code to their available text width for
 every language. Blame reserves space for attribution while history loads.
 Continuation rows keep the original line number for notes, search and links.
 
+On desktop, **F4** or **Settings → Reading → Reading mode** toggles reading off
+and on. While off, source is visible and timers pause without changing saved
+progress. **F10** mutes all application output, including room and agent voice;
+press it again to restore sound. It does not mute microphone capture.
+
 **Reading block** chooses whole functions where syntax boundaries are available,
 or fixed-line blocks. **Lines per reading block** sets the fallback/fixed block size
 (default: 6). Set it to 1 to clear individual rows. **Auto-advance** smoothly
 scrolls downward to the next unread block while the heat tool stays on. This setting is independent of the
 delay bounds. Wrapped continuations count as displayed rows; the original
 source line is saved as read only after all its continuations are cleared.
-Reading a close diff, blame wall, or hunk stop uses the same timer and reveals only its visible source lines on the correct comparison side. Flying past or looking away does not complete a block.
+Reading a close diff or blame wall uses the same timer and reveals only its visible source lines on the correct comparison side. Flying past or looking away does not complete a block.
 Function blocks do not nest: an outer function owns its entire source interval,
 including callbacks inside it. Moving between those lines keeps the same block
 and reading estimate. Fixed fallback blocks stop at function boundaries.
@@ -343,26 +348,27 @@ Agent requests take priority over flight proposals. **Settings → Agent provide
 selects who reviews Codex permission requests. The default uses Codex's
 automatic review. Codex applies the setting on the next connection. Repo City
 shows any requests the provider sends to the user. These preferences are stored
-in `agent-interaction.json` beside desktop preferences. **Stop work** interrupts
-the current turn.
+in `agent-interaction.json` beside desktop preferences. **Stop work** shows
+**Stopping…** until the provider reports the outcome. If only voice is active,
+it requests that the voice session close.
 
 **F7** toggles Follow agent, including while VibePad is put away. Settings can
 assign **F8** instead; native party push-to-talk then uses **F7**.
 
-Choose **Start voice** in VibePad or press **F9** while flying (some Macs use
-**Fn+F9**). **Connect chat** starts the text connection separately. The app
+Choose **Start voice** in VibePad or press **F5** while flying (some Macs use
+**Fn+F5**). **Connect chat** starts the text connection separately. The app
 requests microphone access only after that action. If a turn is running, voice
-waits for it to finish; **F9** cancels that pending start. The HUD shows a drawn
+waits for it to finish; **F5** cancels that pending start. The HUD shows a drawn
 microphone, connection animation and speaking bars while VibePad is put away.
 Voice requires Codex
 app-server realtime support and uses native audio devices. The microphone pauses
-while the agent speaks; use headphones. **F9** stops voice, and **Disconnect**
+while the agent speaks; use headphones. **F5** stops voice, and **Disconnect**
 closes the agent connection. Putting away VibePad keeps the conversation active.
 **H** lists the voice and terminal controls. City audio pauses for the voice conversation.
 The native transport uses Opus at 48 kHz with 20 ms microphone frames. A short
 playout buffer and packet-loss recovery smooth network bursts. The session retries
 transient connection loss after 1, 2 and 4 seconds, then stops after three early
-failures. F9 cancels pending reconnects. It does not support interrupting the agent
+failures. F5 cancels pending reconnects. It does not support interrupting the agent
 by speaking over it.
 
 The agent receives the selected repository context and can read camera focus and
@@ -535,7 +541,7 @@ with GitHub and loads source using their own access. Invitations name one GitHub
 account; forwarding a link does not admit a different account. Worktrees and
 private drafts are not shared.
 
-To start a room, open **Chat** in the browser's VibePad or press **F10**
+To start a room, open **Chat** in the browser's VibePad or press **F3**
 on desktop. Create a room, enter your teammate's GitHub login, and copy their invitation
 link. Invitees sign in with the named GitHub account and open the link in the
 browser or paste it into **Invitation link** on desktop.

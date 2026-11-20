@@ -15,13 +15,20 @@ use std::{
     ops::Range,
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use synthesis::{Levels, Synth};
 
 pub(super) struct Plugin;
+
+static OUTPUT_MUTED: AtomicBool = AtomicBool::new(false);
+
+/// Shared output gate for city synthesis, agent voice and room playback.
+pub(crate) fn output_muted() -> bool {
+    OUTPUT_MUTED.load(Ordering::Relaxed)
+}
 
 impl bevy::app::Plugin for Plugin {
     fn build(&self, app: &mut App) {
@@ -36,6 +43,7 @@ impl bevy::app::Plugin for Plugin {
 #[derive(Resource, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub(super) struct Settings {
+    pub muted: bool,
     pub ambience: bool,
     pub speech: bool,
     pub file_changes: bool,
@@ -80,6 +88,7 @@ impl Station {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            muted: false,
             ambience: false,
             speech: false,
             file_changes: false,
@@ -91,6 +100,9 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub(super) fn toggle_mute(&mut self) {
+        self.muted = !self.muted;
+    }
     fn path() -> Option<PathBuf> {
         Some(repository_picker::settings_file()?.with_file_name("audio.json"))
     }
@@ -188,7 +200,7 @@ impl Iterator for Decoder {
     type Item = f32;
     fn next(&mut self) -> Option<f32> {
         if let Some(right) = self.right.take() {
-            return Some(right);
+            return Some(if output_muted() { 0. } else { right });
         }
         let cue = self.controls.cue.load(Ordering::Relaxed);
         if cue != self.cue {
@@ -200,7 +212,11 @@ impl Iterator for Decoder {
         ));
         let [left, right] = self.synth.frame(self.controls.load());
         self.right = Some((right + tone).clamp(-1., 1.));
-        Some((left + tone).clamp(-1., 1.))
+        Some(if output_muted() {
+            0.
+        } else {
+            (left + tone).clamp(-1., 1.)
+        })
     }
 }
 impl Source for Decoder {
@@ -279,6 +295,7 @@ fn update(
     live: Res<live_worktree::Live>,
     agent: Option<Res<agent_session::Session>>,
 ) {
+    OUTPUT_MUTED.store(settings.muted, Ordering::Relaxed);
     let (Ok(camera), Ok(window)) = (camera.single(), windows.single()) else {
         return;
     };
@@ -343,8 +360,12 @@ fn update(
         },
         radio: settings.radio.code(),
     });
-    let enabled =
-        active && settings.speech && settings.volume > 0. && !review.blocked && !conversation;
+    let enabled = active
+        && !settings.muted
+        && settings.speech
+        && settings.volume > 0.
+        && !review.blocked
+        && !conversation;
     if enabled != runtime.speech_enabled {
         runtime.voice.stop();
         runtime.focus = None;

@@ -15,6 +15,10 @@ impl Listing {
         delta: f32,
         settings: reading::Settings,
     ) -> Vec<progress::Mark> {
+        if !settings.enabled {
+            self.observed = None;
+            return Vec::new();
+        }
         if view.lines.is_empty()
             || view.lines.iter().all(|(before, line)| {
                 self.revealed
@@ -130,6 +134,11 @@ pub(crate) fn update(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut progress: ResMut<progress::Progress>,
 ) {
+    if !settings.enabled {
+        listing.observed = None;
+        listing.wash_preview = None;
+        return;
+    }
     let mut guided_focus = false;
     let view = (|| {
         let (camera, window) = (camera.single().ok()?, windows.single().ok()?);
@@ -143,9 +152,6 @@ pub(crate) fn update(
             return None;
         }
         let file = repo.0.files.get(explorer.selected)?;
-        if let Some(rows) = navigation.reading_rows(&repo.0, explorer.selected, camera) {
-            return aligned(&explorer, rows, None);
-        }
         if explorer.comparison_mode > 0 {
             let (before, rows) = comparison_scene::reading_rows(file, &explorer, camera)?;
             return aligned(&explorer, rows, Some(before));
@@ -274,6 +280,41 @@ mod tests {
                 (false, syntax::highlight("test.rs", "new value\n").remove(0)),
             ],
         }
+    }
+
+    #[test]
+    fn disabling_reading_pauses_diff_and_blame_credit_without_resetting_time() {
+        let file = super::super::tests::fixture_file();
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight("test.rs", "new value\n"));
+        let enabled = reading::Settings {
+            min_seconds: Some(1.),
+            max_seconds: Some(1.),
+            ..default()
+        };
+        let disabled = reading::Settings {
+            enabled: false,
+            ..enabled
+        };
+        let mut listing = Listing::default();
+        assert!(
+            listing
+                .advance_seen(&explorer, &file, view(), 0.4, enabled)
+                .is_empty()
+        );
+        assert!(
+            listing
+                .advance_seen(&explorer, &file, view(), 30., disabled)
+                .is_empty()
+        );
+        assert!(listing.observed.is_none());
+        assert!(listing.revealed.is_empty());
+        assert_eq!(
+            listing
+                .advance_seen(&explorer, &file, view(), 0.61, enabled)
+                .len(),
+            2
+        );
     }
     #[test]
     fn reading_a_diff_resumes_then_reveals_only_the_seen_lines_on_each_side() {

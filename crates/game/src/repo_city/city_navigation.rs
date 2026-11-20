@@ -3,6 +3,8 @@
 use bevy::input::mouse::MouseScrollUnit;
 
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
+mod review_route;
 
 const PAGE: usize = 23;
 const PLATFORM_SIZE: Vec3 = Vec3::new(16., 0.5, 7.);
@@ -65,6 +67,7 @@ fn walking_lands_smoothly_then_stays_at_eye_height_and_blocks_walls() {
 #[derive(Clone, Copy)]
 enum Stop {
     Review {
+        file: usize,
         hunk: usize,
         row: usize,
         count: usize,
@@ -197,15 +200,13 @@ impl Hop {
 #[derive(Component)]
 pub(super) struct RouteVisual;
 
-#[derive(Component)]
-pub(super) struct ReviewedPlatform(usize);
-
 #[derive(Resource, Default)]
 pub(super) struct Navigation {
+    #[cfg(not(target_arch = "wasm32"))]
+    review_job: Option<native_github::Job<(Route, String)>>,
     route: Option<Route>,
     hop: Option<Hop>,
     redraw: bool,
-    broken: HashSet<usize>,
     overview: Option<(Overview, Transform)>,
     district_from_project: bool,
     history: History,
@@ -265,6 +266,25 @@ pub(super) fn history_direction(keys: &ButtonInput<KeyCode>) -> Option<isize> {
 }
 
 impl Navigation {
+    pub(super) fn reviewing(&self) -> bool {
+        self.route
+            .as_ref()
+            .is_some_and(|route| route.kind == RouteKind::Review)
+    }
+
+    pub(super) fn select_hunk(&mut self, file: usize, hunk: usize, row: usize, count: usize) {
+        if let Some(route) = self.route.as_mut()
+            && let Stop::Review { file: current, .. } = route.stops[route.current]
+            && current == file
+        {
+            route.stops[route.current] = Stop::Review {
+                file,
+                hunk,
+                row,
+                count,
+            };
+        }
+    }
     pub(super) fn overview(&self) -> bool {
         self.overview.is_some()
     }
@@ -314,24 +334,6 @@ impl Navigation {
         }
     }
 
-    pub(super) fn reading_rows(
-        &self,
-        repo: &Repository,
-        selected: usize,
-        camera: &Transform,
-    ) -> Option<std::ops::Range<usize>> {
-        if self.is_flying() {
-            return None;
-        }
-        let route = self.route.as_ref()?;
-        let Stop::Review { row, count, .. } = route.stops[route.current] else {
-            return None;
-        };
-        let center = stop_position(route, route.current, repo, selected) + Vec3::Y * 3.;
-        reading::panel_in_focus(camera, center, Vec2::new(15.8, 4.3), 20.)
-            .then_some(row..row + count)
-    }
-
     pub(super) fn guides_camera(&self) -> bool {
         self.is_flying() || self.route.is_some()
     }
@@ -376,19 +378,15 @@ impl Navigation {
             let last = route.current + 1 == route.stops.len();
             let hint = match (route.kind, last) {
                 (RouteKind::Review, true) => {
-                    "Scroll down / S to go back · W finishes review · Q returns to the diff wall"
+                    "S / ↓ previous building · W / ↑ finishes review · Q leaves the tour"
                 }
                 (RouteKind::Review, false) => {
-                    "Scroll up / W for next · Scroll down / S for previous · Q returns to the diff wall"
+                    "W / ↑ next building · S / ↓ previous building · Click hunk buttons · Q leaves the tour"
                 }
                 (RouteKind::Trace, true) => "End of stack trace · S to go back · Esc to leave",
                 (RouteKind::Trace, false) => "W to follow the stack · S to go back · Esc to leave",
             };
-            return if route.kind == RouteKind::Review && route.current > 0 {
-                format!("{hint}\nLeft-click an aimed reviewed platform to clear it")
-            } else {
-                hint.into()
-            };
+            return hint.into();
         }
         if explorer.comparison_mode > 0 {
             return "FULL DIFF · Scroll to read · G switches view · Esc to fly".into();
@@ -405,13 +403,14 @@ impl Navigation {
     }
 }
 
-fn review_stops(diff: &Comparison) -> Vec<Stop> {
+fn review_stops(diff: &Comparison, file: usize) -> Vec<Stop> {
     diff.hunks
         .iter()
         .enumerate()
         .flat_map(|(hunk, change)| {
             let len = change.before.len().max(change.after.len());
             (0..len).step_by(PAGE).map(move |offset| Stop::Review {
+                file,
                 hunk,
                 row: change.row + offset,
                 count: (len - offset).min(PAGE),
@@ -420,12 +419,11 @@ fn review_stops(diff: &Comparison) -> Vec<Stop> {
         .collect()
 }
 
-fn stop_position(route: &Route, index: usize, repo: &Repository, selected: usize) -> Vec3 {
+fn stop_position(route: &Route, index: usize, repo: &Repository, _selected: usize) -> Vec3 {
     match route.stops[index] {
-        Stop::Review { .. } => {
-            let [x, z] = repo.files[selected].position;
-            let roof = listing::block_size(&repo.files[selected]).y;
-            Vec3::new(x, roof + 28. + index as f32 * 13., z)
+        Stop::Review { file, .. } => {
+            let [x, z] = repo.files[file].position;
+            Vec3::new(x, comparison_scene::base(&repo.files[file]) + 7., z + 3.)
         }
         Stop::Trace { file, .. } => {
             let [x, z] = repo.files[file].position;
@@ -435,9 +433,38 @@ fn stop_position(route: &Route, index: usize, repo: &Repository, selected: usize
     }
 }
 
-fn fly_to_stop(navigation: &mut Navigation, camera: Transform, repo: &Repository, selected: usize) {
+fn fly_to_stop(
+    navigation: &mut Navigation,
+    camera: Transform,
+    repo: &Repository,
+    explorer: &mut Explorer,
+) {
     let route = navigation.route.as_ref().unwrap();
-    let point = stop_position(route, route.current, repo, selected);
+    if let Stop::Review {
+        file, hunk, row, ..
+    } = route.stops[route.current]
+    {
+        if explorer.selected != file {
+            explorer.open(repo, file);
+        }
+        explorer.hunk = hunk;
+        explorer.page = row / PAGE;
+        if explorer.comparison_mode == 0 {
+            explorer.comparison_mode = 1;
+        }
+        explorer.anchored = true;
+        explorer.rebuild = true;
+        let mut end = camera;
+        comparison_scene::focus(&mut end, repo, explorer);
+        navigation.hop = (camera.translation.distance_squared(end.translation) > 0.01).then(|| {
+            let mut hop = Hop::facade(camera, end, repo);
+            hop.arrival = Arrival::ReviewLine;
+            hop
+        });
+        navigation.redraw = true;
+        return;
+    }
+    let point = stop_position(route, route.current, repo, explorer.selected);
     let end = Transform::from_translation(point + Vec3::new(0., 5., 15.))
         .looking_at(point + Vec3::Y * 3., Vec3::Y);
     navigation.hop = Some(Hop::new(camera, end, Arrival::Stop));
@@ -535,6 +562,22 @@ pub(super) fn navigate(
     };
     if !window.focused {
         return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if keys.any_just_pressed([
+        KeyCode::KeyE,
+        KeyCode::KeyM,
+        KeyCode::KeyT,
+        KeyCode::KeyW,
+        KeyCode::KeyA,
+        KeyCode::KeyS,
+        KeyCode::KeyD,
+        KeyCode::ArrowUp,
+        KeyCode::ArrowDown,
+        KeyCode::ArrowLeft,
+        KeyCode::ArrowRight,
+    ]) {
+        navigation.review_job = None;
     }
     let trace_start = trace
         .as_deref_mut()
@@ -648,6 +691,20 @@ pub(super) fn navigate(
     }
 
     if repo.is_changed() {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            navigation.review_job = None;
+        }
+        if navigation.history.scope.is_some()
+            && navigation
+                .route
+                .as_ref()
+                .is_some_and(|route| route.kind == RouteKind::Review)
+        {
+            navigation.route = None;
+            navigation.hop = None;
+            navigation.redraw = true;
+        }
         let scope = (&repo.0.root, &repo.0.revision, &repo.0.baseline);
         if !navigation
             .history
@@ -742,6 +799,10 @@ pub(super) fn navigate(
             .flatten()
     });
     if requested_file.is_some() {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            navigation.review_job = None;
+        }
         navigation.hop = None;
         navigation.route = None;
         navigation.redraw = true;
@@ -751,9 +812,6 @@ pub(super) fn navigate(
         .route
         .as_ref()
         .is_some_and(|route| route.kind == RouteKind::Review);
-    if reviewing && keys.just_pressed(KeyCode::Escape) {
-        return;
-    }
     if reviewing && keys.just_pressed(KeyCode::KeyQ) {
         let route = navigation.route.take().expect("review route");
         let Stop::Review { row, .. } = route.stops[route.current] else {
@@ -766,6 +824,10 @@ pub(super) fn navigate(
         return;
     }
     if keys.just_pressed(KeyCode::Escape) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            navigation.review_job = None;
+        }
         listing.reset_view();
         let leaving_view = navigation.guides_camera() || explorer.comparison_mode > 0;
         navigation.hop = None;
@@ -774,6 +836,24 @@ pub(super) fn navigate(
         if leaving_view {
             explorer.comparison_mode = 0;
             explorer.rebuild = true;
+        }
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(result) = navigation.review_job.as_ref().and_then(|job| job.take()) {
+        navigation.review_job = None;
+        match result {
+            Ok((route, notice)) => {
+                navigation.route = Some(route);
+                navigation.overview = None;
+                focus.enabled = false;
+                listing.reset_view();
+                fly_to_stop(&mut navigation, *camera, &repo.0, &mut explorer);
+                if !notice.is_empty() {
+                    explorer.notice = notice;
+                }
+            }
+            Err(error) => explorer.notice = error,
         }
         return;
     }
@@ -827,8 +907,8 @@ pub(super) fn navigate(
     }
 
     if let Some(route) = &mut navigation.route {
-        let forward = keys.just_pressed(KeyCode::KeyW);
-        let backward = keys.just_pressed(KeyCode::KeyS);
+        let forward = keys.any_just_pressed([KeyCode::KeyW, KeyCode::ArrowUp]);
+        let backward = keys.any_just_pressed([KeyCode::KeyS, KeyCode::ArrowDown]);
         let scroll = route.scroll_step(&wheel);
         let at_end = route.current + 1 == route.stops.len();
         if forward && at_end {
@@ -847,7 +927,7 @@ pub(super) fn navigate(
                 old.saturating_sub(1)
             };
             if old != route.current {
-                fly_to_stop(&mut navigation, *camera, &repo.0, explorer.selected);
+                fly_to_stop(&mut navigation, *camera, &repo.0, &mut explorer);
             }
         }
         return;
@@ -855,6 +935,18 @@ pub(super) fn navigate(
 
     if keys.just_pressed(KeyCode::KeyC) || keys.just_pressed(KeyCode::KeyT) || trace_start {
         let following_trace = keys.just_pressed(KeyCode::KeyT) || trace_start;
+        #[cfg(not(target_arch = "wasm32"))]
+        if !following_trace {
+            if navigation.review_job.is_none() {
+                let snapshot = repo.0.clone();
+                navigation.review_job = Some(native_github::Job::spawn(move || {
+                    review_route::build(&snapshot, |index, before| snapshot.source(index, before))
+                }));
+                explorer.notice =
+                    "Preparing review of changed files, smallest buildings first…".into();
+            }
+            return;
+        }
         let (kind, stops, labels) = if following_trace {
             focus.enabled = false;
             let (stops, labels) = trace.as_ref().map_or_else(
@@ -896,7 +988,7 @@ pub(super) fn navigate(
                 explorer
                     .comparison
                     .as_ref()
-                    .map_or_else(Vec::new, review_stops),
+                    .map_or_else(Vec::new, |diff| review_stops(diff, explorer.selected)),
                 Vec::new(),
             )
         };
@@ -912,7 +1004,6 @@ pub(super) fn navigate(
         explorer.anchored = false;
         explorer.comparison_mode = 0;
         explorer.rebuild = true;
-        navigation.broken.clear();
         navigation.route = Some(Route {
             kind,
             stops,
@@ -920,7 +1011,7 @@ pub(super) fn navigate(
             scroll: 0.,
             labels,
         });
-        fly_to_stop(&mut navigation, *camera, &repo.0, explorer.selected);
+        fly_to_stop(&mut navigation, *camera, &repo.0, &mut explorer);
         return;
     }
     let next_changed = keys.just_pressed(KeyCode::KeyN) && !search.owns_next();
@@ -1098,13 +1189,13 @@ pub(super) fn draw(
     let Some(route) = &navigation.route else {
         return;
     };
+    if route.kind == RouteKind::Review {
+        return;
+    }
     let first = route.current.saturating_sub(1);
     for index in first..(route.current + 2).min(route.stops.len()) {
         let point = stop_position(route, index, &repo.0, explorer.selected);
         let current = index == route.current;
-        if navigation.broken.contains(&index) && !current {
-            continue;
-        }
         let body = commands
             .spawn((
                 RouteVisual,
@@ -1116,35 +1207,8 @@ pub(super) fn draw(
                 Transform::from_translation(point),
             ))
             .id();
-        if route.kind == RouteKind::Review && index < route.current {
-            commands.entity(body).insert(ReviewedPlatform(index));
-        }
         match route.stops[index] {
-            Stop::Review { hunk, row, count } => {
-                let Some(diff) = &explorer.comparison else {
-                    continue;
-                };
-                for before in [true, false] {
-                    let title = format!(
-                        "Hunk {} / {}",
-                        hunk + 1,
-                        if before { "BEFORE" } else { "AFTER" }
-                    );
-                    let side = if before { -4. } else { 4. };
-                    let panel = panel(
-                        &mut commands,
-                        &mut meshes,
-                        &mut materials,
-                        &mut images,
-                        &title,
-                        &diff.page(before, row, count),
-                        Vec3::new(side, 3., 0.),
-                        7.8,
-                        &set,
-                    );
-                    commands.entity(body).add_child(panel);
-                }
-            }
+            Stop::Review { .. } => unreachable!("Reviews use the file comparison panels"),
             Stop::Trace { file, line } => {
                 let path = &repo.0.files[file].path;
                 let number = index + 1;
@@ -1211,45 +1275,6 @@ fn panel(
             Transform::from_translation(position),
         ))
         .id()
-}
-
-pub(super) fn shoot_reviewed_platform(
-    mut commands: Commands,
-    camera: Query<(&Transform, &Pilot), PlayerCamera>,
-    platforms: Query<(&Transform, &ReviewedPlatform)>,
-    mut navigation: ResMut<Navigation>,
-) {
-    if navigation.is_flying() || navigation.route.is_none() {
-        return;
-    }
-    let Ok((camera, pilot)) = camera.single() else {
-        return;
-    };
-    if !pilot.shot {
-        return;
-    }
-    let origin = camera.translation;
-    let direction = camera.forward().as_vec3();
-    let half = PLATFORM_SIZE * 0.5;
-    let hit = platforms
-        .iter()
-        .filter(|(_, platform)| !navigation.broken.contains(&platform.0))
-        .filter_map(|(pose, platform)| {
-            ray_box(
-                origin,
-                direction,
-                pose.translation - half,
-                pose.translation + half,
-            )
-            .filter(|&distance| distance <= 60.)
-            .map(|distance| (distance, platform.0))
-        })
-        .min_by(|a, b| a.0.total_cmp(&b.0));
-    if let Some((distance, index)) = hit {
-        navigation.broken.insert(index);
-        navigation.redraw = true;
-        physics::splash(&mut commands, origin + direction * distance);
-    }
 }
 
 #[cfg(test)]
@@ -1607,7 +1632,7 @@ mod tests {
             .collect::<String>();
         let new = old.replace("old", "new");
         let diff = Comparison::new("source.txt", &old, &new).unwrap();
-        let stops = review_stops(&diff);
+        let stops = review_stops(&diff, 0);
         let rows = stops
             .into_iter()
             .flat_map(|stop| match stop {
@@ -1619,7 +1644,7 @@ mod tests {
     }
 
     #[test]
-    fn review_platforms_stack_and_the_camera_does_not_overshoot() {
+    fn review_hunks_share_one_roof_without_vertical_platforms() {
         let mut repo = repository_picker::empty();
         repo.files.push(repo_world::File {
             path: "test.rs".into(),
@@ -1632,6 +1657,7 @@ mod tests {
             kind: RouteKind::Review,
             stops: (0..2)
                 .map(|row| Stop::Review {
+                    file: 0,
                     hunk: 0,
                     row,
                     count: 1,
@@ -1644,14 +1670,14 @@ mod tests {
         let lower = stop_position(&route, 0, &repo, 0);
         let upper = stop_position(&route, 1, &repo, 0);
         assert_eq!(lower.xz(), upper.xz());
-        assert!(lower.y < upper.y);
+        assert_eq!(lower.y, upper.y);
         let hop = Hop::new(
             Transform::from_translation(upper),
             Transform::from_translation(lower),
             Arrival::Stop,
         );
-        assert!((lower.y..upper.y).contains(&hop.pose(0.2).translation.y));
-        assert!((lower.y..upper.y).contains(&hop.pose(0.8).translation.y));
+        assert_eq!(hop.pose(0.2).translation.y, lower.y);
+        assert_eq!(hop.pose(0.8).translation.y, lower.y);
     }
 
     #[test]
@@ -1668,6 +1694,7 @@ mod tests {
             kind: RouteKind::Review,
             stops: (0..2)
                 .map(|hunk| Stop::Review {
+                    file: 0,
                     hunk,
                     row: hunk,
                     count: 1,
@@ -1723,46 +1750,33 @@ mod tests {
         assert_eq!(scroll(120.), 1);
         assert_eq!(scroll(120.), 1);
         assert_eq!(scroll(-120.), 0);
-    }
-
-    #[test]
-    fn a_click_clears_the_aimed_platform_once() {
-        let mut app = App::new();
-        let navigation = Navigation {
-            route: Some(Route {
-                kind: RouteKind::Review,
-                stops: vec![Stop::Review {
-                    hunk: 0,
-                    row: 0,
-                    count: 1,
-                }],
-                current: 0,
-                scroll: 0.,
-                labels: Vec::new(),
-            }),
-            ..default()
-        };
-        app.insert_resource(navigation)
-            .add_systems(Update, shoot_reviewed_platform);
-        let pilot = Pilot {
-            captured: true,
-            shot: true,
-            ..default()
-        };
-        app.world_mut()
-            .spawn((Camera3d::default(), Transform::from_xyz(0., 0., 5.), pilot));
-        app.world_mut()
-            .spawn((ReviewedPlatform(0), Transform::default()));
-        app.world_mut()
-            .spawn((ReviewedPlatform(1), Transform::from_xyz(15., 0., 0.)));
-        for _ in 0..3 {
+        drop(scroll);
+        for (key, expected) in [
+            (KeyCode::KeyW, 1),
+            (KeyCode::ArrowDown, 0),
+            (KeyCode::ArrowUp, 1),
+            (KeyCode::KeyS, 0),
+        ] {
+            app.world_mut().resource_mut::<Navigation>().hop = None;
+            app.world_mut()
+                .resource_mut::<AccumulatedMouseScroll>()
+                .delta = Vec2::ZERO;
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .reset_all();
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(key);
             app.update();
+            assert_eq!(
+                app.world()
+                    .resource::<Navigation>()
+                    .route
+                    .as_ref()
+                    .unwrap()
+                    .current,
+                expected
+            );
         }
-        assert_eq!(
-            app.world().resource::<Navigation>().broken,
-            HashSet::from([0])
-        );
-        let mut effects = app.world_mut().query::<&physics::Lifetime>();
-        assert_eq!(effects.iter(app.world()).count(), 1);
     }
 }

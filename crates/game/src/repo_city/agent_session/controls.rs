@@ -228,9 +228,9 @@ fn banner(
     for (mut text, hint, banner) in &mut labels {
         if hint.is_some() {
             let value = if session.interaction.send_with_enter {
-                "Enter sends · Shift+Enter newline · F9 voice"
+                "Enter sends · Shift+Enter newline · F5 voice"
             } else {
-                "Cmd/Ctrl+Enter sends · Enter newline · F9 voice"
+                "Cmd/Ctrl+Enter sends · Enter newline · F5 voice"
             };
             text.set_if_neq(Text::new(value));
         } else if banner.is_some() {

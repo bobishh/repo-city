@@ -155,6 +155,7 @@ const NAVIGATION: &[(&str, &str)] = &[
 
 #[cfg(not(target_arch = "wasm32"))]
 const READING: &[(&str, &str)] = &[
+    ("F4", "Toggle reading mode; timers pause while off"),
     ("Scroll / PgUp / PgDn", "Read along the wall"),
     ("Home", "Frame the file"),
     ("/", "Find text on the wall"),
@@ -173,16 +174,26 @@ const REVIEW: &[(&str, &str)] = &[
     ("Cmd+scroll", "Cycle tools"),
     ("U", "Edit paints and templates"),
     ("J", "Open review comments"),
-    ("C", "Follow the changed blocks"),
-    ("W / S or scroll", "Next or previous review stop"),
-    ("Q", "Return to the diff wall"),
+    ("C", "Review changed roofs, smallest buildings first"),
+    ("W / ↑ / scroll up", "Next changed building during review"),
+    (
+        "S / ↓ / scroll down",
+        "Previous changed building during review",
+    ),
+    (
+        "[ / ] or hunk buttons",
+        "Choose a hunk on the current roof; Previous/Next shows more buttons",
+    ),
+    ("Q", "Leave the roof tour and keep the current diff"),
     ("V", "Toggle reviewed mark"),
 ];
 
 #[cfg(not(target_arch = "wasm32"))]
 const WORKBENCH: &[(&str, &str)] = &[
+    ("F3", "Open or close the cooperative room"),
+    ("F10", "Mute or restore all application sound"),
     (
-        "F9",
+        "F5",
         "Start or stop agent voice; works with VibePad put away",
     ),
     (

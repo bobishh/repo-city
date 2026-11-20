@@ -1,7 +1,16 @@
 //! A review balcony over the selected address: solid current, translucent parent.
 use super::*;
 #[derive(Component)]
-pub struct HunkBlock(pub usize);
+pub struct HunkBlock {
+    pub index: usize,
+    pub hit_size: Vec3,
+}
+const HUNKS_PER_PAGE: usize = 8;
+
+fn hunk_page(selected: usize, total: usize) -> std::ops::Range<usize> {
+    let first = selected.min(total.saturating_sub(1)) / HUNKS_PER_PAGE * HUNKS_PER_PAGE;
+    first..(first + HUNKS_PER_PAGE).min(total)
+}
 pub(super) fn base(file: &repo_world::File) -> f32 {
     listing::block_size(file).y + 4.
 }
@@ -31,13 +40,13 @@ pub fn controls(
     repo: Res<Repo>,
     mut explorer: ResMut<Explorer>,
     mut camera: Query<&mut Transform, PlayerCamera>,
-    navigation: Res<city_navigation::Navigation>,
+    mut navigation: ResMut<city_navigation::Navigation>,
     picker: Res<file_picker::FilePicker>,
 ) {
     if picker.is_open() {
         return;
     }
-    if navigation.guides_camera() {
+    if navigation.is_flying() || (navigation.guides_camera() && !navigation.reviewing()) {
         return;
     }
     if keys.just_pressed(KeyCode::KeyG) && explorer.comparison_mode > 0 {
@@ -66,6 +75,13 @@ pub fn controls(
                     (explorer.hunk + count - 1) % count
                 };
                 let page = diff.hunks[hunk].row / 23;
+                let change = &diff.hunks[hunk];
+                navigation.select_hunk(
+                    explorer.selected,
+                    hunk,
+                    change.row,
+                    change.before.len().max(change.after.len()),
+                );
                 explorer.hunk = hunk;
                 explorer.page = page;
                 explorer.rebuild = true;
@@ -88,18 +104,20 @@ fn panel(
     image: Image,
     position: Vec3,
     size: Vec2,
-) {
-    commands.spawn((
-        Mesh3d(meshes.add(Rectangle::new(size.x, size.y))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color_texture: Some(images.add(image)),
-            unlit: true,
-            cull_mode: None,
-            ..default()
-        })),
-        Transform::from_translation(position),
-        Detail,
-    ));
+) -> Entity {
+    commands
+        .spawn((
+            Mesh3d(meshes.add(Rectangle::new(size.x, size.y))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color_texture: Some(images.add(image)),
+                unlit: true,
+                cull_mode: None,
+                ..default()
+            })),
+            Transform::from_translation(position),
+            Detail,
+        ))
+        .id()
 }
 pub fn draw(
     commands: &mut Commands,
@@ -226,8 +244,14 @@ pub fn draw(
             Vec2::new(13.6, 8.16),
         );
     }
-    let first = (explorer.hunk / 8) * 8;
-    for (i, hunk) in diff.hunks.iter().enumerate().skip(first).take(8) {
+    let page = hunk_page(explorer.hunk, diff.hunks.len());
+    for (i, hunk) in diff
+        .hunks
+        .iter()
+        .enumerate()
+        .skip(page.start)
+        .take(page.len())
+    {
         let hx = x - 12.6 + (i % 8) as f32 * 3.6;
         let height = 0.4 + (hunk.before.len().max(hunk.after.len()) as f32).ln_1p() * 0.23;
         let material = if i == explorer.hunk {
@@ -250,11 +274,14 @@ pub fn draw(
             MeshMaterial3d(material),
             Transform::from_xyz(hx, base + height / 2., z + 9.)
                 .with_scale(Vec3::new(3., height, 1.3)),
-            HunkBlock(i),
+            HunkBlock {
+                index: i,
+                hit_size: Vec3::new(3., height, 1.3),
+            },
             Detail,
         ));
         let title = format!("#{}  -{} +{}", i + 1, hunk.before.len(), hunk.after.len());
-        panel(
+        let label = panel(
             commands,
             meshes,
             materials,
@@ -263,10 +290,54 @@ pub fn draw(
             Vec3::new(hx, base + height + 0.35, z + 9.7),
             Vec2::new(3.4, 0.35),
         );
+        commands.entity(label).insert(HunkBlock {
+            index: i,
+            hit_size: Vec3::new(3.4, 0.35, 0.15),
+        });
+    }
+    for (target, title, offset) in [
+        (
+            page.start.checked_sub(HUNKS_PER_PAGE),
+            "Previous hunks",
+            -7.4,
+        ),
+        (
+            (page.end < diff.hunks.len()).then_some(page.end),
+            "Next hunks",
+            7.4,
+        ),
+    ] {
+        let Some(target) = target else { continue };
+        commands.spawn((
+            Mesh3d(palette.unit.clone()),
+            MeshMaterial3d(palette.edge.clone()),
+            Transform::from_xyz(x + offset, base + 0.4, z + 12.)
+                .with_scale(Vec3::new(6., 0.8, 1.3)),
+            HunkBlock {
+                index: target,
+                hit_size: Vec3::new(6., 0.8, 1.3),
+            },
+            Detail,
+        ));
+        let label = panel(
+            commands,
+            meshes,
+            materials,
+            images,
+            code_texture::render(title, &[], set.ink, 768, 64),
+            Vec3::new(x + offset, base + 1.15, z + 12.7),
+            Vec2::new(6., 0.5),
+        );
+        commands.entity(label).insert(HunkBlock {
+            index: target,
+            hit_size: Vec3::new(6., 0.5, 0.15),
+        });
     }
     let summary = format!(
-        "{} | {} hunks | G ghost/pair | [ ] hunk{}",
+        "{} | hunks {}–{} of {} | G ghost/pair | [ ] hunk | C review all changes{}",
         file.path,
+        if page.is_empty() { 0 } else { page.start + 1 },
+        page.end,
         diff.hunks.len(),
         if diff.final_newline_changed {
             " | final newline changed"
@@ -283,4 +354,18 @@ pub fn draw(
         Vec3::new(x, base + 12., z + 4.1),
         Vec2::new(28., 1.),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn eleven_hunks_have_a_reachable_second_page_and_a_return_to_the_first() {
+        let first = hunk_page(7, 11);
+        assert_eq!(first, 0..8);
+        let second = hunk_page(first.end, 11);
+        assert_eq!(second, 8..11);
+        assert_eq!(hunk_page(second.start - HUNKS_PER_PAGE, 11), first);
+        assert_eq!(hunk_page(0, 0), 0..0);
+    }
 }

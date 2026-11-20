@@ -285,7 +285,7 @@ pub(super) fn update(
     let talk_label = if talk_key == KeyCode::F7 { "F7" } else { "F8" };
     let follow_key_changed = *last_follow_key != Some(agent.follow_key());
     *last_follow_key = Some(agent.follow_key());
-    let toggle = keys.just_pressed(KeyCode::F10);
+    let toggle = keys.just_pressed(KeyCode::F3);
     let result = party
         .native
         .pending
@@ -767,10 +767,10 @@ pub(super) fn update(
         }
     } else if (redraw || follow_key_changed) && (toggle || party.native.panel.is_some()) {
         let panel = if let Some(panel) = party.native.panel {
-            native_panel::refresh_tablet(&mut commands, panel, "Review party · F10");
+            native_panel::refresh_tablet(&mut commands, panel, "Review party · F3");
             panel
         } else {
-            native_panel::panel(&mut commands, "Review party · F10", 580.)
+            native_panel::panel(&mut commands, "Review party · F3", 580.)
         };
         party.native.panel = Some(panel);
         party.native.fields.clear();

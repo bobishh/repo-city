@@ -185,7 +185,7 @@ pub(super) fn propose(
     if reason.chars().count() > 240 {
         return Err("Keep the navigation explanation within 240 characters.".into());
     }
-    propose_range(scope, path, line, None, before, reason)
+    propose_range(scope, path, Some(line), None, before, reason)
 }
 
 pub(super) fn displayed_repository(scope: &str) -> Result<(Repository, u32), String> {
@@ -242,7 +242,7 @@ pub(super) fn checked_anchor(
 pub(super) fn propose_range(
     scope: &str,
     path: &str,
-    line: usize,
+    line: Option<usize>,
     end_line: Option<usize>,
     before: bool,
     reason: &str,
@@ -252,7 +252,14 @@ pub(super) fn propose_range(
         return Err("Keep the navigation explanation within 240 characters.".into());
     }
     let (repo, process) = displayed_repository(scope)?;
-    let mut target = Target::checked(&repo, path, line, before)?;
+    if line.is_none() && end_line.is_some() {
+        return Err("Supply the first source line with end_line.".into());
+    }
+    let mut target = match line {
+        Some(line) => Target::checked(&repo, path, line, before)?,
+        None => changed_target(&repo, path, before)?,
+    };
+    let line = target.line;
     if let Some(end) = end_line {
         checked_anchor(&repo, path, line, end, before)?;
         target.end_line = Some(end);
@@ -289,6 +296,47 @@ pub(super) fn propose_range(
     Ok(
         json!({"status":"awaiting_user","request_id":proposal.id,"path":proposal.target.path,"line":line,"end_line":target_end(&proposal.target),"expires_in_seconds":60,"message":"The city will show a proposal. It moves only after the user accepts with Y or Fly; N dismisses it."}),
     )
+}
+
+/// A file-only proposal shows the actual edit instead of the top of a tall wall.
+fn changed_target(repo: &Repository, path: &str, before: bool) -> Result<Target, String> {
+    let mut target = Target::checked(repo, path, 1, before)?;
+    let index = repo
+        .files
+        .iter()
+        .position(|file| file.path == target.path)
+        .expect("validated file");
+    let file = &repo.files[index];
+    if file.change == Change::Unchanged || !file_preview::has_text_size_hint(path) {
+        return Ok(target);
+    }
+    let old = if file.before.is_some() {
+        repo.source(index, true)?
+    } else {
+        String::new()
+    };
+    let new = if file.after.is_some() {
+        repo.source(index, false)?
+    } else {
+        String::new()
+    };
+    let diff = Comparison::new(path, &old, &new)?;
+    if let Some(hunk) = diff.hunks.first() {
+        let range = if target.before {
+            &hunk.before
+        } else {
+            &hunk.after
+        };
+        let count = if target.before {
+            diff.before.len()
+        } else {
+            diff.after.len()
+        }
+        .max(1);
+        target.line = range.start.min(count - 1) + 1;
+        target.end_line = Some(range.end.max(target.line).min(count));
+    }
+    Ok(target)
 }
 
 fn target_end(target: &Target) -> usize {
@@ -932,6 +980,59 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn file_only_navigation_targets_a_deep_changed_range_and_keeps_explicit_lines() {
+        let checkout = Checkout::new();
+        let original = "unchanged();\n".repeat(1200);
+        std::fs::write(checkout.0.join("src/main.rs"), &original).unwrap();
+        let output = std::process::Command::new("git")
+            .current_dir(&checkout.0)
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-qam",
+                "tall source",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let modified = format!(
+            "{}changed();\n{}",
+            "unchanged();\n".repeat(900),
+            "unchanged();\n".repeat(299)
+        );
+        std::fs::write(checkout.0.join("src/main.rs"), modified).unwrap();
+        let repo = Repository::open_worktree(&checkout.0).unwrap();
+        let target = changed_target(&repo, "src/main.rs", false).unwrap();
+        assert_eq!((target.line, target.end_line), (901, Some(901)));
+        let explicit = Target::checked(&repo, "src/main.rs", 1, false).unwrap();
+        assert_eq!(explicit.line, 1);
+        let proposal = Proposal {
+            version: 1,
+            id: "deep-change".into(),
+            process: 42,
+            created: 1000,
+            target,
+            reason: String::new(),
+        };
+        let mut navigation = Navigation {
+            pending: Some(proposal),
+            ..default()
+        };
+        assert!(navigation.decide(true, &repo, 42, 1001));
+        assert_eq!(
+            navigation.take_destination(&repo).unwrap().anchor.start,
+            901
+        );
     }
 
     #[test]

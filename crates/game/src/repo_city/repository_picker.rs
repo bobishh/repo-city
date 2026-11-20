@@ -363,6 +363,15 @@ pub(super) fn load(path: &Path, revision: &str, base: Option<&str>) -> Result<Re
     Ok(repo)
 }
 
+/// Local folders stay live unless a caller explicitly chooses a frozen revision.
+pub(super) fn startup_revision(live: bool, revision: Option<&str>) -> &str {
+    if live {
+        "WORKTREE"
+    } else {
+        revision.unwrap_or("WORKTREE")
+    }
+}
+
 pub(super) fn window_title(set: &WorldSet, repo: &Repository) -> String {
     let name = if cfg!(target_arch = "wasm32") {
         set.name.as_str()
@@ -1491,6 +1500,14 @@ pub(super) fn open_repository(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_startup_is_live_unless_a_revision_is_explicitly_selected() {
+        assert_eq!(startup_revision(false, None), "WORKTREE");
+        assert_eq!(startup_revision(false, Some("HEAD")), "HEAD");
+        assert_eq!(startup_revision(false, Some("v1")), "v1");
+        assert_eq!(startup_revision(true, Some("HEAD")), "WORKTREE");
+    }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]

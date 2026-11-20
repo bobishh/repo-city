@@ -21,6 +21,7 @@ pub(super) enum Update {
     TurnCompleted {
         id: String,
         error: Option<String>,
+        interrupted: bool,
     },
     MessageDelta {
         id: String,
@@ -153,6 +154,7 @@ pub(super) fn notification(
                 update: Update::TurnCompleted {
                     id: event.turn.id,
                     error: event.turn.error.map(|error| error.message),
+                    interrupted: matches!(event.turn.status, Some(TurnStatus::Interrupted)),
                 },
             }
         }
@@ -329,6 +331,14 @@ struct Turn {
     #[serde(deserialize_with = "identifier")]
     id: String,
     error: Option<TurnError>,
+    status: Option<TurnStatus>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum TurnStatus {
+    Interrupted,
+    #[serde(other)]
+    Other,
 }
 #[derive(Deserialize)]
 struct TurnError {

@@ -29,7 +29,7 @@ pub(super) struct Adapter {
 
 enum Update {
     Event(Event),
-    Turn(Option<String>),
+    Turn(Option<String>, &'static str),
     Delta {
         id: String,
         text: String,
@@ -96,7 +96,7 @@ impl Engine for Adapter {
         for update in updates.try_iter().take(64) {
             match update {
                 Update::Event(event) => events.push(event),
-                Update::Turn(turn) => {
+                Update::Turn(turn, status) => {
                     if turn.is_none()
                         && let Some(thread) = &projection.dialogue.thread
                     {
@@ -104,14 +104,7 @@ impl Engine for Adapter {
                     }
                     projection.turn = turn;
                     events.push(Event::Changed {
-                        status: Some(
-                            if projection.turn.is_some() {
-                                "Working…"
-                            } else {
-                                "Connected"
-                            }
-                            .into(),
-                        ),
+                        status: Some(status.into()),
                     });
                 }
                 Update::Delta { id, text } => {
@@ -396,7 +389,7 @@ fn run(
                     "session/prompt",
                     json!({"sessionId":session,"prompt":[{"type":"text","text":text}]}),
                 )?;
-                send(updates, Update::Turn(Some(prompt.id.clone())))?;
+                send(updates, Update::Turn(Some(prompt.id.clone()), "Working"))?;
                 turn = Some(Turn {
                     request,
                     prompt,
@@ -413,12 +406,17 @@ fn run(
                     }),
                 )?;
             }
-            Ok(Command::Interrupt) => {
-                if let Some(turn) = &mut turn {
+            Ok(Command::Interrupt) => match &mut turn {
+                Some(turn) if turn.stopping.is_none() => {
                     wire.write(json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}}))?;
                     turn.stopping = Some(Instant::now());
                 }
-            }
+                None => send(
+                    updates,
+                    Update::Event(Event::StopUnconfirmed("No active turn to stop.".into())),
+                )?,
+                _ => {}
+            },
             Ok(Command::Approval { token, accept }) => {
                 if let Some(permission) = permissions.remove(&token) {
                     Permission::answer(permission, accept, &mut wire)?;
@@ -471,8 +469,22 @@ fn run(
                 )?;
             }
             (None, Some(id), Some(active)) if id.as_u64() == Some(active.request) => {
-                let result = response(frame).map(|_| ());
-                send(updates, Update::Turn(None))?;
+                let result = response(frame);
+                let canceled = result
+                    .as_ref()
+                    .is_ok_and(|result| result["stopReason"] == "cancelled");
+                let result = result.map(|_| ());
+                send(
+                    updates,
+                    Update::Turn(
+                        None,
+                        if canceled {
+                            "Work stopped"
+                        } else {
+                            "Connected"
+                        },
+                    ),
+                )?;
                 if active.acknowledged
                     && let Err(error) = &result
                 {
@@ -679,7 +691,7 @@ sys.stdin.read()
                     }
                     Update::File { path, line } => file = path == "src/main.rs" && line == 7,
                     Update::Delta { text, .. } => answer = text == "Answer",
-                    Update::Turn(None) => break,
+                    Update::Turn(None, _) => break,
                     _ => {}
                 }
             }

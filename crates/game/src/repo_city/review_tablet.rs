@@ -32,6 +32,7 @@ pub(super) struct Tablet {
     block_kind: reading::BlockKind,
     auto_advance: bool,
     show_all_source: bool,
+    reading_enabled: bool,
     status: String,
     document: Option<Document>,
     links_version: u64,
@@ -213,6 +214,8 @@ enum Action {
     Block(reading::BlockKind),
     AutoAdvance,
     ShowSource,
+    ReadingEnabled,
+    MuteAudio,
     GitShow(usize),
     GitPage(usize),
     GitBack,
@@ -283,6 +286,7 @@ impl Tablet {
             self.block_kind = reading.block_kind;
             self.auto_advance = reading.auto_advance;
             self.show_all_source = reading.show_all_source;
+            self.reading_enabled = reading.enabled;
             self.status.clear();
         }
         self.view = view;
@@ -465,7 +469,7 @@ pub(super) fn update(
         mut images,
         mut terminal,
         mut trace,
-        (editors, mut agent, party),
+        (editors, mut agent, party, windows),
     ): (
         ResMut<reading::Settings>,
         ResMut<guide::Tour>,
@@ -486,6 +490,7 @@ pub(super) fn update(
             Query<&source_editor::View>,
             Option<ResMut<agent_session::Session>>,
             Option<Res<review_party::Party>>,
+            Query<&Window, With<PrimaryWindow>>,
         ),
     ),
 ) {
@@ -493,6 +498,9 @@ pub(super) fn update(
         .get()
         .is_some_and(|entity| fields.contains(entity) || editors.contains(entity));
     let terminal_page = tablet.is_open() && tablet.view == Page::Terminal;
+    if reading.is_changed() {
+        tablet.reading_enabled = reading.enabled;
+    }
     let help = keys.just_pressed(KeyCode::KeyH) && unmodified(&keys) && !editing && !terminal_page;
     let find_file = !terminal_page
         && keys.just_pressed(KeyCode::KeyP)
@@ -539,7 +547,36 @@ pub(super) fn update(
         .as_deref_mut()
         .and_then(|request| request.0.take());
     let was_open = tablet.panel.is_some();
-    let mut redraw = !was_open;
+    let shortcuts_allowed = windows.single().is_ok_and(|window| window.focused)
+        && unmodified(&keys)
+        && !editing
+        && !terminal_page
+        && !menu.is_open()
+        && !picker.is_open()
+        && !search.blocks_controls()
+        && !repository.blocks_controls();
+    let toggle_reading = matches!(action, Some(Action::ReadingEnabled))
+        || (keys.just_pressed(KeyCode::F4) && shortcuts_allowed);
+    let toggle_sound = matches!(action, Some(Action::MuteAudio))
+        || (keys.just_pressed(KeyCode::F10)
+            && unmodified(&keys)
+            && windows.single().is_ok_and(|window| window.focused));
+    if toggle_reading {
+        reading.enabled = !reading.enabled;
+        tablet.reading_enabled = reading.enabled;
+        if let Err(error) = reading.save() {
+            tablet.status = error;
+            warn!("Could not save reading mode: {}", tablet.status);
+        }
+    }
+    if toggle_sound && let Some(audio) = audio.as_deref_mut() {
+        audio.toggle_mute();
+        if let Err(error) = audio.save() {
+            tablet.status = error;
+            warn!("Could not save sound preferences: {}", tablet.status);
+        }
+    }
+    let mut redraw = !was_open || toggle_reading || toggle_sound;
     let chat_room = party.as_deref().and_then(review_party::Party::chat_room);
     if tablet.chat_room.as_deref() != chat_room {
         tablet.chat_room = chat_room.map(str::to_owned);
@@ -1029,6 +1066,7 @@ impl Tablet {
             next.block_kind = self.block_kind;
             next.auto_advance = self.auto_advance;
             next.show_all_source = self.show_all_source;
+            next.enabled = self.reading_enabled;
             next.save()?;
             Ok(next)
         }) {
@@ -1681,6 +1719,8 @@ fn draw_settings(
             columns.spawn(Node { flex_basis: px(540.), flex_grow: 1.2, min_width: px(320.), flex_direction: FlexDirection::Column, ..default() }).with_children(|column| {
                 let card = settings_card(column, "Reading");
                 column.commands().entity(card).with_children(|form| {
+                    add_button(form, if tablet.reading_enabled { "[x] Reading mode · F4" } else { "[ ] Reading mode · F4" }, Action::ReadingEnabled, tab);
+                    native_panel::text(form, "When off, source stays visible and reading timers pause. Saved progress is preserved.", native_panel::INK);
                     add_button(form, if tablet.show_all_source { "Source: always visible" } else { "Source: thaw to reveal" }, Action::ShowSource, tab);
                     native_panel::text(form, "Reading progress is timed separately from source visibility.", native_panel::INK);
                     native_panel::text(form, "Read credit", native_panel::INK);
@@ -1731,6 +1771,7 @@ fn draw_settings(
                 if let Some(audio) = audio {
                     let card = settings_card(column, "Sound");
                     column.commands().entity(card).with_children(|form| {
+                        add_button(form, if audio.muted { "[ ] Sound · F10" } else { "[x] Sound · F10" }, Action::MuteAudio, tab);
                         form.spawn(Node { column_gap: px(6.), flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|row| {
                             add_button(row, if audio.ambience { "City sounds: on" } else { "City sounds: off" }, Action::Ambience, tab);
                             add_button(row, if audio.speech { "Robot voice: on" } else { "Robot voice: off" }, Action::Speech, tab);
@@ -1933,6 +1974,121 @@ fn add_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn function_keys_toggle_reading_and_sound_without_opening_the_tablet() {
+        // Run preference writes in a child with isolated storage, never the player's settings.
+        const CHILD: &str = "REPO_CITY_KEY_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory =
+                std::env::temp_dir().join(format!("repo-city-key-test-{}", std::process::id()));
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "review_tablet::tests::function_keys_toggle_reading_and_sound_without_opening_the_tablet"])
+                .env(CHILD, "1").env("VIBE_CITY_CONFIG_DIR", &directory)
+                .status().unwrap();
+            let _ = std::fs::remove_dir_all(directory);
+            assert!(status.success());
+            return;
+        }
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<AccumulatedMouseScroll>()
+            .init_resource::<Tablet>()
+            .init_resource::<guide::Tour>()
+            .init_resource::<reading::Settings>()
+            .init_resource::<city_audio::Settings>()
+            .init_resource::<review_notes::Review>()
+            .init_resource::<file_picker::FilePicker>()
+            .init_resource::<city_menu::Menu>()
+            .init_resource::<live_worktree::Live>()
+            .init_resource::<progress::Progress>()
+            .init_resource::<listing::find::Search>()
+            .init_resource::<InputFocus>()
+            .insert_resource(Time::<()>::default())
+            .insert_resource(Repo(repository_picker::empty()))
+            .insert_resource(repository_picker::RepositoryPicker::new(String::new()))
+            .add_systems(Update, update);
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    focused: true,
+                    ..default()
+                },
+                PrimaryWindow,
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::F4);
+        app.update();
+        assert!(!app.world().resource::<reading::Settings>().enabled);
+        assert!(!app.world().resource::<Tablet>().is_open());
+        let editor = app.world_mut().spawn(EditableText::default()).id();
+        app.world_mut()
+            .resource_mut::<InputFocus>()
+            .set(editor, FocusCause::Navigated);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::F4);
+        app.update();
+        assert!(
+            !app.world().resource::<reading::Settings>().enabled,
+            "F4 must not steal editor input"
+        );
+        let volume = app.world().resource::<city_audio::Settings>().volume;
+        for muted in [true, false] {
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .reset_all();
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::F10);
+            app.update();
+            let audio = app.world().resource::<city_audio::Settings>();
+            assert_eq!(audio.muted, muted);
+            assert_eq!(audio.volume, volume, "mute must preserve the chosen volume");
+        }
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = false;
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::F10);
+        app.update();
+        assert!(!app.world().resource::<city_audio::Settings>().muted);
+        app.world_mut().get_mut::<Window>(window).unwrap().focused = true;
+        app.world_mut().resource_mut::<InputFocus>().clear();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::F4);
+        app.update();
+        assert!(app.world().resource::<reading::Settings>().enabled);
+        assert!(reading::Settings::load().enabled);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+        app.world_mut()
+            .resource_mut::<Tablet>()
+            .open_page(Page::Settings);
+        app.update();
+        let mut actions = app.world_mut().query::<&Action>();
+        assert!(
+            actions
+                .iter(app.world())
+                .any(|action| matches!(action, Action::ReadingEnabled))
+        );
+        app.world_mut().resource_mut::<Tablet>().action = Some(Action::ReadingEnabled);
+        app.update();
+        assert!(!app.world().resource::<reading::Settings>().enabled);
+    }
 
     #[test]
     fn document_edit_renders_only_the_selected_chunk_with_original_source_identity() {

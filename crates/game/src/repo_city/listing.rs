@@ -925,6 +925,11 @@ impl Listing {
         delta: f32,
         settings: reading::Settings,
     ) -> Option<progress::Mark> {
+        if !settings.enabled {
+            self.stop_water();
+            self.observed = None;
+            return None;
+        }
         let rows = settings.block(explorer, row);
         if rows.is_empty()
             || rows
@@ -1396,6 +1401,10 @@ pub(super) fn wash_stream(
     search: Res<find::Search>,
     settings: Res<reading::Settings>,
 ) {
+    if !settings.enabled {
+        listing.stop_water();
+        return;
+    }
     if listing.show_all_source || listing.guided == Some((explorer.selected, explorer.before)) {
         listing.water_on = false;
         return;
@@ -2048,7 +2057,7 @@ pub(super) fn draw(
 ) {
     let show_all_source = settings
         .as_ref()
-        .is_some_and(|settings| settings.show_all_source);
+        .is_some_and(|settings| settings.source_is_visible());
     if listing.show_all_source != show_all_source {
         listing.show_all_source = show_all_source;
         listing.source_tiles.preview_dirty = true;
@@ -3136,6 +3145,40 @@ mod tests {
             assert_eq!(clear.rotation, blurred.rotation);
             assert!(separation >= 0.0029 && separation < PANEL_OFFSET);
         }
+    }
+
+    #[test]
+    fn disabled_reading_pauses_source_credit_without_losing_accumulated_time() {
+        let file = fixture_with_rows(24);
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight("test.rs", "let value = 1;\n"));
+        let settings: reading::Settings = serde_json::from_value(serde_json::json!({
+            "enabled": true, "min_seconds": 1, "max_seconds": 1
+        }))
+        .unwrap();
+        let disabled: reading::Settings = serde_json::from_value(serde_json::json!({
+            "enabled": false, "min_seconds": 1, "max_seconds": 1
+        }))
+        .unwrap();
+        let mut listing = Listing::default();
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 0, 0.4, settings)
+                .is_none()
+        );
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 0, 30., disabled)
+                .is_none()
+        );
+        assert_eq!(listing.counts(&explorer).0, 0);
+        assert!(listing.wash_fraction_remaining().is_none());
+        assert!(
+            listing
+                .advance_wash(&explorer, &file, 0, 0.61, settings)
+                .is_some()
+        );
+        assert_eq!(listing.counts(&explorer).0, 1);
     }
 
     #[test]

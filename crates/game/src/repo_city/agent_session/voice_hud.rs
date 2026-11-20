@@ -155,13 +155,13 @@ pub(super) fn update(
     }
     let (label, color) = match phase {
         Phase::Off => ("", native_panel::INK),
-        Phase::Connecting => ("Connecting voice… · F9", Color::srgb_u8(235, 181, 94)),
+        Phase::Connecting => ("Connecting voice… · F5", Color::srgb_u8(235, 181, 94)),
         Phase::Waiting => (
-            "Waiting for current turn · F9",
+            "Waiting for current turn · F5",
             Color::srgb_u8(235, 181, 94),
         ),
-        Phase::Listening => ("Listening · F9", Color::srgb_u8(100, 225, 205)),
-        Phase::Speaking => ("Agent speaking · F9", Color::srgb_u8(174, 149, 239)),
+        Phase::Listening => ("Listening · F5", Color::srgb_u8(100, 225, 205)),
+        Phase::Speaking => ("Agent speaking · F5", Color::srgb_u8(174, 149, 239)),
         Phase::Failed => ("Voice failed · Agent", Color::srgb_u8(240, 113, 108)),
     };
     for mut caption in &mut captions {

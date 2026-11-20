@@ -107,7 +107,7 @@ fn respond(scope: &str, request: &Value) -> Option<Value> {
                 "description":"Propose a file and source line in the current city. Shows a notification; the camera moves only after the user accepts with Y or Fly. N dismisses it. Never forces navigation.",
                 "inputSchema":{"type":"object","properties":{
                     "path":{"type":"string","description":"Exact repository-relative file path using forward slashes.","maxLength":4096},
-                    "line":{"type":"integer","minimum":1,"maximum":1000000,"default":1},
+                    "line":{"type":"integer","minimum":1,"maximum":1000000,"description":"One-based source line. Omit to show the first changed range, or the file start when unchanged. Explicit line 1 always means the file start."},
                     "end_line":{"type":"integer","minimum":1,"maximum":1000000,"description":"Inclusive last line to reveal and highlight after acceptance."},
                     "before":{"type":"boolean","default":false},
                     "reason":{"type":"string","maxLength":240,"description":"Short explanation shown to the user."}
@@ -180,11 +180,13 @@ fn run_tool(scope: &str, params: &Value) -> Result<Value, String> {
                 .as_str()
                 .ok_or("Supply a repository-relative file path.")?;
             let line = match args.get("line") {
-                None => 1,
-                Some(value) => value
-                    .as_u64()
-                    .and_then(|line| usize::try_from(line).ok())
-                    .ok_or("Supply a one-based positive source line.")?,
+                None => None,
+                Some(value) => Some(
+                    value
+                        .as_u64()
+                        .and_then(|line| usize::try_from(line).ok())
+                        .ok_or("Supply a one-based positive source line.")?,
+                ),
             };
             let before = match args.get("before") {
                 None => false,

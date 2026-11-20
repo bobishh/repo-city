@@ -54,6 +54,7 @@ pub(crate) enum Event {
     VoiceStarting {
         id: String,
     },
+    StopUnconfirmed(String),
     Error(String),
     VoiceError(String),
     Closed,
@@ -238,6 +239,8 @@ struct Work {
     id: Option<String>,
     pending: bool,
     stop: bool,
+    stop_at: Option<Instant>,
+    stop_request: Option<u64>,
     queued: VecDeque<Prompt>,
 }
 impl Work {
@@ -247,6 +250,9 @@ impl Work {
     }
     fn interrupt(&mut self) -> Option<String> {
         self.queued.clear();
+        if self.id.is_some() || self.pending {
+            self.stop_at = Some(Instant::now());
+        }
         if self.id.is_none() && self.pending {
             self.stop = true;
         }
@@ -259,6 +265,17 @@ impl Work {
     }
     fn finish(&mut self) {
         *self = Self::default();
+    }
+    fn send_stop(&mut self, wire: &mut Wire, thread: &str, turn: &str) -> Result<(), String> {
+        let id = wire.request("turn/interrupt", json!({"threadId":thread,"turnId":turn}))?;
+        self.stop_request = Some(id);
+        Ok(())
+    }
+
+    fn clear_stop_request(&mut self, wire: &mut Wire) {
+        if let Some(id) = self.stop_request.take() {
+            wire.pending.remove(&id);
+        }
     }
     fn queue(&mut self, prompt: Prompt) -> Result<(), (&'static str, Prompt)> {
         if !self.pending {
@@ -1055,9 +1072,15 @@ fn run(
                     end_voice(&mut voice, &mut wire, &thread, events, stop, diagnostics)?;
                 }
                 Command::Interrupt => {
+                    if work.stop_at.is_some() {
+                        continue;
+                    }
                     reject_queued(&mut work, events, "Message canceled before sending.")?;
                     if let Some(id) = work.interrupt() {
-                        wire.request("turn/interrupt", json!({"threadId":thread,"turnId":id}))?;
+                        work.send_stop(&mut wire, &thread, &id)?;
+                    } else if !work.pending {
+                        let _ = events
+                            .try_send(Event::StopUnconfirmed("No active turn to stop.".into()));
                     }
                 }
                 Command::Approval { id, accept } => wire.write(
@@ -1147,6 +1170,17 @@ fn run(
         }
         match wire.output.recv_timeout(Duration::from_millis(10)) {
             Ok(Ok(value)) => {
+                if work.stop_request.is_some()
+                    && value["id"].as_u64() == work.stop_request
+                    && value.get("method").is_none()
+                {
+                    work.clear_stop_request(&mut wire);
+                    if let Err(error) = response(&value) {
+                        work.stop_at = None;
+                        let _ = events.try_send(Event::StopUnconfirmed(error));
+                    }
+                    continue;
+                }
                 if value["id"]
                     .as_u64()
                     .and_then(|id| wire.pending.get(&id))
@@ -1155,9 +1189,11 @@ fn run(
                 {
                     if value.get("error").is_some() {
                         reject_queued(&mut work, events, "Codex refused the starting turn.")?;
+                        let canceled = work.stop || work.stop_at.is_some();
                         work.finish();
                         let request = value["id"].as_u64().expect("matched a request");
-                        if !forked
+                        if !canceled
+                            && !forked
                             && response(&value).is_err_and(|error| active_writer(&error))
                             && let Some(prompt) = wire.deliveries.remove(&request)
                         {
@@ -1185,7 +1221,7 @@ fn run(
                         value.pointer("/result/turn/id").and_then(Value::as_str)
                     {
                         if work.started(id.into()) {
-                            wire.request("turn/interrupt", json!({"threadId":thread,"turnId":id}))?;
+                            work.send_stop(&mut wire, &thread, id)?;
                         } else {
                             flush_steers(&mut work, &mut wire, &thread)?;
                         }
@@ -1238,21 +1274,24 @@ fn run(
                                 value.pointer("/params/turn/id").and_then(Value::as_str)
                             {
                                 if work.started(id.into()) {
-                                    wire.request(
-                                        "turn/interrupt",
-                                        json!({"threadId":thread,"turnId":id}),
-                                    )?;
+                                    work.send_stop(&mut wire, &thread, id)?;
                                 } else {
                                     flush_steers(&mut work, &mut wire, &thread)?;
                                 }
                             }
                         }
-                        "turn/completed" => {
+                        "turn/completed"
+                            if work.id.as_deref().is_none_or(|turn| {
+                                value.pointer("/params/turn/id").and_then(Value::as_str)
+                                    == Some(turn)
+                            }) =>
+                        {
                             reject_queued(
                                 &mut work,
                                 events,
                                 "The turn finished before this message was sent.",
                             )?;
+                            work.clear_stop_request(&mut wire);
                             work.finish();
                         }
                         _ => {}
@@ -1265,6 +1304,16 @@ fn run(
                 return Err("Codex disconnected. Reconnect to continue this conversation.".into());
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        if work
+            .stop_at
+            .is_some_and(|start| start.elapsed() > Duration::from_secs(10))
+        {
+            work.clear_stop_request(&mut wire);
+            work.stop_at = None;
+            let _ = events.try_send(Event::StopUnconfirmed(
+                "Codex did not confirm the stop within 10 seconds.".into(),
+            ));
         }
         if wire
             .pending
@@ -1660,6 +1709,81 @@ for line in sys.stdin:
         work.finish();
         work.begin();
         assert!(!work.started("next".into()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_targets_the_active_turn_and_reports_a_provider_rejection() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir().join(format!("repo-city-stop-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let binary = directory.join("codex");
+        std::fs::write(
+            &binary,
+            r#"#!/usr/bin/env python3
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get('method')
+    if 'id' not in request:
+        continue
+    reply = {'id': request['id'], 'result': {}}
+    if method == 'thread/start':
+        reply['result'] = {'thread': {'id': 'thread'}}
+    elif method == 'turn/start':
+        reply['result'] = {'turn': {'id': 'active'}}
+    elif method == 'turn/interrupt':
+        assert request['params'] == {'threadId': 'thread', 'turnId': 'active'}
+        reply = {'id': request['id'], 'error': {'message': 'Stop refused by fixture'}}
+    print(json.dumps(reply), flush=True)
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let wire = Wire::open_with(&directory, &binary).unwrap();
+        let (commands, input) = mpsc::sync_channel(4);
+        let (events, output) = mpsc::sync_channel(32);
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let start = Start {
+            root: directory.clone(),
+            conversation: None,
+            automatic_review: true,
+            speaking: Arc::default(),
+            diagnostics: None,
+        };
+        let worker = thread::spawn(move || {
+            run(
+                wire,
+                start,
+                input,
+                &events,
+                &worker_stop,
+                &Mutex::new(None),
+                &mut Diagnostics::new(None),
+            )
+        });
+        commands
+            .send(Command::Send(Prompt {
+                id: "message".into(),
+                text: "Test work".into(),
+                context: String::new(),
+            }))
+            .unwrap();
+        commands.send(Command::Interrupt).unwrap();
+        let mut failure = None;
+        while let Ok(event) = output.recv_timeout(Duration::from_secs(5)) {
+            if let Event::StopUnconfirmed(error) = event {
+                failure = Some(error);
+                break;
+            }
+        }
+        stop.store(true, Ordering::Release);
+        let result = worker.join().unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(failure.as_deref(), Some("Stop refused by fixture"));
     }
 
     #[test]

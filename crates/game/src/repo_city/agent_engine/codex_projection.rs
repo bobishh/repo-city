@@ -27,31 +27,37 @@ impl Projection {
                     self.status = "Working".into();
                 }
             }
-            Update::TurnCompleted { id, error } => {
+            Update::TurnCompleted {
+                id,
+                error,
+                interrupted,
+            } => {
                 if primary && self.turn.as_deref().is_some_and(|active| active != id) {
                     return false;
                 }
                 self.presence.retain(|presence| presence.agent != thread);
                 self.timeline.end_turn(&thread);
-                let mut details = Details::new(Kind::Session, "Turn completed");
+                let (title, phase) = if interrupted {
+                    ("Work stopped", Phase::Ended)
+                } else if error.is_some() {
+                    ("Turn failed", Phase::Failed)
+                } else {
+                    ("Turn completed", Phase::Completed)
+                };
+                let mut details = Details::new(Kind::Session, title);
                 details.body = error.clone().unwrap_or_default();
-                self.timeline.record(
-                    &thread,
-                    &format!("turn:{id}"),
-                    details,
-                    if error.is_some() {
-                        Phase::Failed
-                    } else {
-                        Phase::Completed
-                    },
-                );
+                self.timeline
+                    .record(&thread, &format!("turn:{id}"), details, phase);
                 if primary {
                     self.turn = None;
-                    self.status = error
-                        .unwrap_or_else(|| "Ready".into())
-                        .chars()
-                        .take(1000)
-                        .collect();
+                    self.status = if interrupted {
+                        "Work stopped".into()
+                    } else {
+                        error.unwrap_or_else(|| "Ready".into())
+                    }
+                    .chars()
+                    .take(1000)
+                    .collect();
                 }
             }
             Update::ActivityDelta { id, kind, text } => {
@@ -262,6 +268,35 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn interrupted_turn_is_reported_as_stopped_without_leaving_any_live_items() {
+        let root = Path::new("/repo");
+        let mut view = projection();
+        assert!(view.apply_wire(
+            root,
+            "turn/started",
+            &json!({"threadId":"main","turn":{"id":"active"}})
+        ));
+        assert!(view.apply_wire(
+            root,
+            "item/started",
+            &json!({"threadId":"main","item":{"id":"running","type":"plan","text":"Work"}})
+        ));
+        assert!(view.apply_wire(
+            root,
+            "turn/completed",
+            &json!({"threadId":"main","turn":{"id":"active","status":"interrupted","error":null}})
+        ));
+        assert_eq!(view.status, "Work stopped");
+        assert!(view.turn.is_none());
+        assert!(
+            view.timeline
+                .entries
+                .iter()
+                .all(|item| item.phase == Phase::Ended)
+        );
     }
 
     #[test]

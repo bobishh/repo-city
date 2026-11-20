@@ -372,6 +372,7 @@ struct Nearest {
 }
 #[derive(Resource)]
 struct Smoke {
+    review_file: Option<usize>,
     directory: PathBuf,
     elapsed: f32,
     stage: usize,
@@ -422,11 +423,10 @@ pub fn run() {
     #[cfg(not(target_arch = "wasm32"))]
     let repo = match root {
         Some(root) => {
-            let revision = if args.iter().any(|arg| arg == "--live") {
-                "WORKTREE"
-            } else {
-                arg("--rev").unwrap_or("HEAD")
-            };
+            let revision = repository_picker::startup_revision(
+                args.iter().any(|arg| arg == "--live"),
+                arg("--rev"),
+            );
             match repository_picker::load(&root, revision, arg("--base")) {
                 Ok(repo) => repo,
                 Err(error) => {
@@ -617,7 +617,6 @@ pub fn run() {
             )
                 .chain(),
             physics::splashes,
-            city_navigation::shoot_reviewed_platform,
             physics::fractures,
             detail_scene,
             city_navigation::draw,
@@ -792,6 +791,9 @@ pub fn run() {
                     "--smoke-guidance" => Some(15),
                     "--smoke-agent" => Some(23),
                     "--smoke-agent-controls" => Some(25),
+                    "--smoke-settings" => Some(27),
+                    "--smoke-hunk-pages" => Some(29),
+                    "--smoke-review-roofs" => Some(31),
                     "--smoke-overview" => Some(24),
                     "--smoke-empty-diff" => Some(18),
                     "--smoke-frost" => Some(20),
@@ -803,13 +805,17 @@ pub fn run() {
                 elapsed: 0.,
                 stage,
                 stop: match stage {
+                    29 => 31,
+                    31 => 33,
                     15 => 18,
                     18 => 20,
                     20 => 23,
                     25 => 27,
+                    27 => 29,
                     _ => (stage + 1).max(9),
                 },
                 pending: false,
+                review_file: None,
                 prepared: false,
                 expected_draft: None,
                 capture_attempts: 0,
@@ -1707,16 +1713,17 @@ fn flight(
         .is_some();
     let keyboard_axis =
         |positive, negative| f32::from(keys.pressed(positive)) - f32::from(keys.pressed(negative));
-    let keyboard_look =
-        if !close_wall || keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
-            Vec2::new(
-                keyboard_axis(KeyCode::ArrowRight, KeyCode::ArrowLeft),
-                keyboard_axis(KeyCode::ArrowDown, KeyCode::ArrowUp),
-            ) * time.delta_secs()
-                * 600.
-        } else {
-            Vec2::ZERO
-        };
+    let keyboard_look = if !navigation.guides_camera()
+        && (!close_wall || keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]))
+    {
+        Vec2::new(
+            keyboard_axis(KeyCode::ArrowRight, KeyCode::ArrowLeft),
+            keyboard_axis(KeyCode::ArrowDown, KeyCode::ArrowUp),
+        ) * time.delta_secs()
+            * 600.
+    } else {
+        Vec2::ZERO
+    };
     let look = motion.delta + keyboard_look;
     #[cfg(target_arch = "wasm32")]
     let look = look + Vec2::from_array(touch.look);
@@ -1997,12 +2004,12 @@ fn targeting(
         if let Some(d) = ray_box(
             origin,
             direction,
-            transform.translation - transform.scale / 2.,
-            transform.translation + transform.scale / 2.,
+            transform.translation - hunk.hit_size / 2.,
+            transform.translation + hunk.hit_size / 2.,
         ) && d < distance
         {
             distance = d;
-            nearest.hunk = Some(hunk.0);
+            nearest.hunk = Some(hunk.index);
             nearest.function = None;
             nearest.file = None;
         }
@@ -2017,14 +2024,14 @@ fn interaction(
     nearest: Res<Nearest>,
     mut explorer: ResMut<Explorer>,
     mut camera: Query<(&mut Transform, &Pilot), PlayerCamera>,
-    navigation: Res<city_navigation::Navigation>,
+    mut navigation: ResMut<city_navigation::Navigation>,
     picker: Res<file_picker::FilePicker>,
     mut progress: ResMut<progress::Progress>,
 ) {
     if picker.is_open() {
         return;
     }
-    if navigation.guides_camera() {
+    if navigation.is_flying() || (navigation.guides_camera() && !navigation.reviewing()) {
         return;
     }
     let Ok((mut camera, pilot)) = camera.single_mut() else {
@@ -2036,6 +2043,8 @@ fn interaction(
                 && let Some(h) = diff.hunks.get(index)
             {
                 let page = h.row / 23;
+                let (row, count) = (h.row, h.before.len().max(h.after.len()));
+                navigation.select_hunk(explorer.selected, index, row, count);
                 explorer.page = page;
                 explorer.hunk = index;
                 explorer.rebuild = true;
@@ -2045,6 +2054,9 @@ fn interaction(
             explorer.function = Some(index);
             explorer.detach_selection(&repo.0);
         }
+    }
+    if navigation.reviewing() {
+        return;
     }
     if keys.just_pressed(KeyCode::Enter) {
         let enter_wall = explorer.comparison_mode > 0 || !explorer.anchored;
@@ -2571,10 +2583,12 @@ fn smoke(
     mut picker: ResMut<repository_picker::RepositoryPicker>,
     mut session: ResMut<agent_session::Session>,
     window: Query<Entity, With<PrimaryWindow>>,
-    (mut tablet, mut review, mut reading): (
+    (mut tablet, mut review, mut reading, mut audio, navigation): (
         ResMut<review_tablet::Tablet>,
         ResMut<review_notes::Review>,
         ResMut<reading::Settings>,
+        ResMut<city_audio::Settings>,
+        Res<city_navigation::Navigation>,
     ),
 ) {
     if check.pending || repo.0.files.is_empty() {
@@ -2586,7 +2600,13 @@ fn smoke(
             explorer.reload(&repo.0);
             assert_eq!(explorer.source, expected);
         }
-        let report = if check.stop == 27 {
+        let report = if check.stop == 33 {
+            "Rendered a comparison roof tour and moved to the next changed building without hunk floors."
+        } else if check.stop == 31 {
+            "Rendered both hunk button pages with reachable previous and next controls."
+        } else if check.stop == 29 {
+            "Rendered reading and sound settings with both controls disabled, then enabled."
+        } else if check.stop == 27 {
             "Rendered agent approval controls with a multiline draft, then the rejected request without running an agent."
         } else if check.stop == 25 {
             "Rendered the district overview above its uncapped buildings."
@@ -2671,6 +2691,22 @@ fn smoke(
                     .resource_mut::<review_notes::ReviewUi>()
                     .smoke_edit_paint();
             }),
+            31 | 32 => {
+                commands.write_message(bevy::input::keyboard::KeyboardInput {
+                    key_code: if check.stage == 31 {
+                        KeyCode::KeyC
+                    } else {
+                        KeyCode::ArrowUp
+                    },
+                    logical_key: bevy::input::keyboard::Key::Unidentified(
+                        bevy::input::keyboard::NativeKey::Unidentified,
+                    ),
+                    text: None,
+                    state: bevy::input::ButtonState::Pressed,
+                    repeat: false,
+                    window: window.single().expect("smoke window"),
+                });
+            }
             _ => {}
         }
         if let Ok(mut camera) = camera.single_mut() {
@@ -2800,6 +2836,29 @@ fn smoke(
                     session.smoke_controls(&repo.0.root, false);
                     tablet.open_page(review_tablet::Page::Agent);
                 }
+                27 | 28 => {
+                    reading.enabled = check.stage == 28;
+                    audio.muted = check.stage == 27;
+                    tablet.open_page(review_tablet::Page::Settings);
+                }
+                29 | 30 => {
+                    let diff = explorer
+                        .comparison
+                        .as_ref()
+                        .expect("hunk page smoke needs a comparison");
+                    assert!(
+                        diff.hunks.len() > 8,
+                        "hunk page smoke needs more than eight hunks"
+                    );
+                    let hunk = if check.stage == 29 { 7 } else { 8 };
+                    let row = diff.hunks[hunk].row;
+                    explorer.hunk = hunk;
+                    explorer.page = row / 23;
+                    explorer.comparison_mode = 1;
+                    explorer.anchored = true;
+                    explorer.rebuild = true;
+                    comparison_scene::focus(&mut camera, &repo.0, &explorer);
+                }
                 24 => {
                     explorer.anchored = false;
                     explorer.comparison_mode = 0;
@@ -2896,6 +2955,10 @@ fn smoke(
             window: window.single().expect("primary smoke window"),
         });
     }
+    if matches!(check.stage, 31 | 32) && (!navigation.reviewing() || navigation.is_flying()) {
+        assert!(check.elapsed < 30., "roof review smoke timed out");
+        return;
+    }
     let settle = if check.stage == 21 { 0.8 } else { 4. };
     if check.elapsed < settle {
         return;
@@ -2959,6 +3022,36 @@ fn smoke(
     }
     if check.stage == 25 {
         commands.queue(agent_session::Session::check_smoke_banner);
+    }
+    if matches!(check.stage, 31 | 32) {
+        assert_eq!(explorer.comparison_mode, 1);
+        assert!(
+            explorer
+                .comparison
+                .as_ref()
+                .is_some_and(|diff| !diff.hunks.is_empty())
+        );
+        let current = camera.single().expect("roof review camera");
+        let mut facing_diff = *current;
+        comparison_scene::focus(&mut facing_diff, &repo.0, &explorer);
+        assert!(
+            current.forward().dot(*facing_diff.forward()) > 0.98,
+            "review arrows pulled the camera away from the diff"
+        );
+        if check.stage == 32 {
+            assert_ne!(check.review_file, Some(explorer.selected));
+        }
+        check.review_file = Some(explorer.selected);
+        commands.queue(|world: &mut World| {
+            assert_eq!(
+                world
+                    .query_filtered::<Entity, With<city_navigation::RouteVisual>>()
+                    .iter(world)
+                    .count(),
+                0,
+                "roof reviews must not spawn hunk floors"
+            );
+        });
     }
     std::fs::create_dir_all(&check.directory).expect("smoke output");
     let path = check.directory.join(format!("{:02}.png", check.stage));

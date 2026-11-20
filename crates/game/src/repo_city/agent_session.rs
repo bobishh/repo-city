@@ -84,6 +84,7 @@ pub(super) struct Session {
     projection: Projection,
     prompt: String,
     pending_send: Option<String>,
+    stopping: bool,
     restored_messages: HashSet<String>,
     action: Option<Action>,
     approvals: Vec<Approval>,
@@ -191,6 +192,13 @@ impl Session {
                 "Voice connecting",
                 "",
                 Phase::Running,
+            ),
+            Event::StopUnconfirmed(error) => (
+                owner,
+                "stop-error".into(),
+                "Work stop unconfirmed",
+                error.as_str(),
+                Phase::Failed,
             ),
             Event::Error(error) => (
                 owner,
@@ -358,9 +366,36 @@ impl Session {
     }
 
     fn can_send(&self) -> bool {
-        self.pending_send.is_none()
+        !self.stopping
+            && self.pending_send.is_none()
             && !self.prompt.trim().is_empty()
             && (self.provider().capabilities.steer || self.projection.turn.is_none())
+    }
+
+    fn can_stop(&self) -> bool {
+        self.client.is_some()
+            && !self.stopping
+            && (self.pending_send.is_some()
+                || self.projection.turn.is_some()
+                || self.voice_active())
+    }
+
+    fn stop_work(&mut self) -> Result<(), String> {
+        if !self.can_stop() {
+            return Ok(());
+        }
+        if self.projection.turn.is_some() || self.pending_send.is_some() {
+            self.send(Command::Interrupt)?;
+            self.stopping = true;
+            self.status = "Stopping work…".into();
+        } else {
+            self.send(Command::StopVoice)?;
+            self.projection.voice = None;
+            self.voice_connected = false;
+            self.voice_waiting = false;
+            self.status = "Voice stop requested".into();
+        }
+        Ok(())
     }
 
     fn restorable_message(&self) -> Option<usize> {
@@ -414,6 +449,9 @@ impl Session {
 
     fn disconnect(&mut self) {
         self.follow_agent = false;
+        if std::mem::take(&mut self.stopping) && self.status == "Stopping work…" {
+            self.status = "Work stop unconfirmed. Agent disconnected.".into();
+        }
         if self.pending_send.take().is_some() {
             self.status = format!("Delivery unconfirmed. {}", self.status);
         }
@@ -491,7 +529,7 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands) -> Entity {
                 });
                 bar.spawn((
                     VoiceLabel,
-                    Text::new("F9 · Voice off"),
+                    Text::new("F5 · Voice off"),
                     native_panel::panel_font(),
                     TextColor(Color::srgb_u8(133, 175, 180)),
                 ));
@@ -676,7 +714,7 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands) -> Entity {
                     .with_children(|row| {
                         row.spawn((
                             controls::Hint,
-                            Text::new("Enter sends · Shift+Enter newline · F9 voice"),
+                            Text::new("Enter sends · Shift+Enter newline · F5 voice"),
                             TextFont::from_font_size(12.),
                             TextColor(Color::srgb_u8(126, 169, 175)),
                         ));
@@ -864,7 +902,7 @@ fn update(
         }
         area.previous_y = position.y;
     }
-    if keys.just_pressed(KeyCode::F9) && session.provider().capabilities.voice {
+    if keys.just_pressed(KeyCode::F5) && session.provider().capabilities.voice {
         session.action = Some(Action::Voice);
     }
     let events = {
@@ -906,17 +944,28 @@ fn update(
                 session.status = notice.into();
                 session.dirty = true;
             }
-            Event::Delivery { id, result } => session.finish_send(&id, result),
+            Event::Delivery { id, result } => {
+                let rejected_start = result.is_err()
+                    && session.pending_send.as_deref() == Some(id.as_str())
+                    && session.projection.turn.is_none();
+                session.finish_send(&id, result);
+                if rejected_start {
+                    session.stopping = false;
+                }
+            }
             Event::Changed { status } => {
                 session.dirty = true;
-                if !session.provider().capabilities.steer && session.projection.turn.is_none() {
-                    session.approvals.clear();
-                }
                 if let Some(status) = status {
-                    if status != "Ready" && status != "Working" {
+                    if session.projection.turn.is_none() && status != "Working" {
+                        session.stopping = false;
+                        session.approvals.clear();
+                    }
+                    if status != "Ready" && status != "Working" && status != "Connected" {
                         session.notice(&status);
                     }
-                    session.status = status;
+                    if !session.stopping {
+                        session.status = status;
+                    }
                 }
             }
             Event::Approval { token, title } => {
@@ -944,6 +993,13 @@ fn update(
                     if !active {
                         session.projection.voice = None;
                     }
+                }
+            }
+            Event::StopUnconfirmed(error) => {
+                if std::mem::take(&mut session.stopping) {
+                    let status = format!("Work stop unconfirmed. {error}");
+                    session.notice(&status);
+                    session.status = status;
                 }
             }
             Event::Error(error) => {
@@ -1026,7 +1082,7 @@ fn update(
                     result
                 }
             }
-            Action::Stop => session.send(Command::Interrupt),
+            Action::Stop => session.stop_work(),
             Action::Approve | Action::Reject if !session.approvals.is_empty() => {
                 session.answer_approval(matches!(action, Action::Approve))
             }
@@ -1070,7 +1126,9 @@ fn update(
         "{} · {}",
         session.provider().label,
         if session.connected {
-            if session.projection.turn.is_some() {
+            if session.stopping {
+                "stopping"
+            } else if session.projection.turn.is_some() {
                 "working"
             } else {
                 "connected"
@@ -1085,14 +1143,14 @@ fn update(
         "Text only"
     } else if session.voice_active() {
         if session.voice_waiting {
-            "F9 · Waiting for current turn…"
+            "F5 · Waiting for current turn…"
         } else if session.voice_connected {
-            "F9 · Voice on"
+            "F5 · Voice on"
         } else {
-            "F9 · Connecting voice…"
+            "F5 · Connecting voice…"
         }
     } else {
-        "F9 · Voice off"
+        "F5 · Voice off"
     };
     let detail = session
         .voice_error
@@ -1131,7 +1189,8 @@ fn update(
         }
         let enabled = match action {
             Action::Connect => session.client.is_none(),
-            Action::Disconnect | Action::Stop => session.client.is_some(),
+            Action::Disconnect => session.client.is_some(),
+            Action::Stop => session.can_stop(),
             Action::Send => session.can_send(),
             Action::RestoreMessage => session.restorable_message().is_some(),
             Action::Voice => session.provider().capabilities.voice,
@@ -1191,6 +1250,11 @@ fn action_label(action: &Action, session: &Session) -> Option<&'static str> {
             "Stop voice"
         } else {
             "Start voice"
+        }),
+        Action::Stop => Some(if session.stopping {
+            "Stopping…"
+        } else {
+            "Stop work"
         }),
         Action::Send => Some(if session.pending_send.is_some() {
             "Sending…"

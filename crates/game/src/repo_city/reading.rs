@@ -23,6 +23,7 @@ pub(super) enum BlockKind {
 #[derive(Resource, Clone, Copy, Deserialize, Serialize)]
 #[serde(default)]
 pub(super) struct Settings {
+    pub enabled: bool,
     pub mode: Mode,
     pub block_lines: u32,
     pub block_kind: BlockKind,
@@ -35,6 +36,7 @@ pub(super) struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            enabled: true,
             mode: Mode::Delayed,
             block_lines: 6,
             block_kind: BlockKind::Function,
@@ -47,6 +49,10 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub(super) fn source_is_visible(self) -> bool {
+        !self.enabled || self.show_all_source
+    }
+
     fn parse(json: &str) -> Result<Self, String> {
         serde_json::from_str::<Self>(json)
             .map_err(|error| error.to_string())?
@@ -265,6 +271,28 @@ pub(super) fn apply(mut settings: ResMut<Settings>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabling_reading_preserves_visibility_preference_and_round_trips() {
+        let original = Settings::parse(r#"{"show_all_source":false}"#).unwrap();
+        assert!(original.enabled);
+        assert!(!original.source_is_visible());
+        let disabled = Settings {
+            enabled: false,
+            ..original
+        };
+        assert!(disabled.source_is_visible());
+        let restored = Settings::parse(&serde_json::to_string(&disabled).unwrap()).unwrap();
+        assert!(!restored.enabled);
+        assert!(!restored.show_all_source);
+        assert!(
+            !Settings {
+                enabled: true,
+                ..restored
+            }
+            .source_is_visible()
+        );
+    }
 
     #[test]
     fn observing_panels_requires_a_close_forward_facing_center_ray() {

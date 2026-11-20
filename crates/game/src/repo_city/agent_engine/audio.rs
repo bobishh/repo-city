@@ -465,8 +465,10 @@ where
                 return;
             }
             let mut peak = 0_f32;
+            let muted = super::super::city_audio::output_muted();
             for frame in samples.chunks_exact_mut(channels) {
                 let sample = playback.frame(&ring, rate);
+                let sample = if muted { 0. } else { sample };
                 peak = peak.max(sample.abs());
                 frame.fill(T::from_sample_(sample));
             }
@@ -479,7 +481,7 @@ where
             metrics
                 .underruns
                 .store(playback.underruns, Ordering::Relaxed);
-            speaking.store(playback.speaking(), Ordering::Relaxed);
+            speaking.store(!muted && playback.speaking(), Ordering::Relaxed);
         },
         move |_| {
             failed.store(true, Ordering::Relaxed);
