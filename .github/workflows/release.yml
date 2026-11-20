@@ -56,7 +56,7 @@ jobs:
         env:
           REGISTRY_PASSWORD: ${{ github.token }}
         run: |
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/repo-city-web:$GITHUB_SHA"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/repo-city:$GITHUB_SHA"
           docker build --build-arg "REPO_CITY_REVISION=$GITHUB_SHA" -t "$image" web
           printf '%s' "$REGISTRY_PASSWORD" | docker login ghcr.io --username "$GITHUB_REPOSITORY_OWNER" --password-stdin
           docker push "$image"
@@ -111,7 +111,7 @@ jobs:
       - name: Deploy and verify the immutable image on the VPS
         run: |
           kamal deploy --skip-push --skip-hooks --version "$GITHUB_SHA"
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/repo-city-web:$GITHUB_SHA"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/repo-city:$GITHUB_SHA"
           container=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "root@$SERVER_IP" \
             "docker ps --filter label=service=repo-city --filter ancestor=$image --format '{{.ID}}'")
           [[ "$container" =~ ^[a-f0-9]+$ ]]

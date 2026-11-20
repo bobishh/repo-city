@@ -87,7 +87,7 @@ WASM and desktop packages locally from the same release commit.
 server behind the shared Hetzner `kamal-proxy`. It serves static assets,
 precompressed WASM and `/github/` from the same origin. Review rooms are
 disabled. The [manual release workflow](../.github/workflows/release.yml) builds
-and publishes `ghcr.io/bobishh/repo-city-web:<commit>`, then deploys that image
+and publishes `ghcr.io/bobishh/repo-city:<commit>`, then deploys that image
 through Kamal. `use_published_image` reuses a verified image tagged with the
 same commit. The VPS checks run against the deployed container. A normal
 release also checks the public origin; select `preflight` during a DNS migration.
@@ -97,7 +97,7 @@ Set `DEPLOY_SERVER_IP` as a production environment variable and configure
 GitHub authorizes the workflow's GHCR reads and writes. Kamal uses automatic
 Let's Encrypt TLS by default. To verify the current hostname before changing
 its A record, set `REPO_CITY_TLS_CERTIFICATE` and `REPO_CITY_TLS_PRIVATE_KEY`
-as production secrets with a matching DNS-validated certificate and PEM key.
+as production secrets with a matching publicly trusted certificate and PEM key.
 Use the automatic certificate after the hostname points to the VPS.
 
 For a cutover, check HTTPS directly against the VPS with `curl --resolve`
