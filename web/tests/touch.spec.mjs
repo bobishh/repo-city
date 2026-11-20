@@ -6,6 +6,8 @@ test("touch flight controls reset movement for VibePad and backgrounding", async
   await page.route("**/touch-fixture", route => route.fulfill({ contentType: "text/html", body: `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><main><canvas id="game" width="390" height="600"></canvas><dialog><button id="put-away">Put away</button></dialog></main><script type="module">import {createTouchControls} from '/touch.mjs'; globalThis.touch = createTouchControls({canvas: document.querySelector('canvas')}); document.querySelector('#put-away').onclick=()=>document.querySelector('dialog').close();</script>` }));
   await page.goto("/touch-fixture");
   const stick = page.getByRole("button", { name: "Move joystick" });
+  await expect(page.locator("#touch-controls")).toBeHidden();
+  await page.evaluate(() => { document.documentElement.dataset.playing = ""; });
   await expect(stick).toBeVisible();
   const lookStick = page.getByRole("button", { name: "Look joystick" });
   await expect(lookStick).toBeVisible();

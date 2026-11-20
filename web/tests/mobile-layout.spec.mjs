@@ -5,12 +5,19 @@ test("mobile city and VibePad fit between Safari safe-area edges in both orienta
   const portrait = { width: 320, height: 568 };
   const landscape = { width: 734, height: 256 };
   const context = await browser.newContext({ baseURL, viewport: portrait, isMobile: true, hasTouch: true });
+  const download = Promise.withResolvers();
+  const engineRequested = Promise.withResolvers();
   try {
     const page = await context.newPage();
     const head = "b".repeat(40), base = "a".repeat(40);
     const file = "an_extraordinarily_long_filename_for_a_mobile_screen.rs";
     const body = "fn main() {}\n";
     await page.addInitScript(() => localStorage.setItem("repo-city-guide-v1", "seen"));
+    await page.route("**/game/repo_city_bg.wasm", async route => {
+      engineRequested.resolve();
+      await download.promise;
+      await route.continue();
+    });
     await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
     await page.route("https://api.github.com/**", route => {
       const path = new URL(route.request().url()).pathname;
@@ -22,7 +29,18 @@ test("mobile city and VibePad fit between Safari safe-area edges in both orienta
     });
     await page.goto("/?repo=owner%2Fa-very-long-repository-name");
     const pad = page.getByRole("button", { name: "Open VibePad" });
+    await engineRequested.promise;
+    await expect(page.locator("#repo-city")).toBeVisible();
+    await expect(page.getByRole("form", { name: "Open repository" })).toBeVisible();
+    await expect(page.locator("#touch-controls")).toBeHidden();
+    download.resolve();
     await expect(pad).toBeVisible({ timeout: 90_000 });
+    await expect(page.locator("#start-controls")).toBeHidden();
+    await page.getByRole("button", { name: "Repo City", exact: true }).tap();
+    await expect(page.locator("#repository-dialog")).toBeVisible();
+    await expect(pad).toBeHidden();
+    await page.getByRole("button", { name: "Close repository picker" }).tap();
+    await expect(pad).toBeVisible();
     await expect(page.locator("#repository-query")).toHaveCSS("font-size", "16px");
     await expect(page.getByRole("group", { name: "City progress" })).toContainText("/1");
     await page.evaluate(file => globalThis.repoCity.showBlame(file, false, 1), file);
@@ -101,6 +119,7 @@ test("mobile city and VibePad fit between Safari safe-area edges in both orienta
     await expect.poll(async () => (await readTablet(page)).layout.scrollbars.find(item => item.kind === "track").offset)
       .toBeGreaterThan(0);
   } finally {
+    download.resolve();
     await context.close();
   }
 });
