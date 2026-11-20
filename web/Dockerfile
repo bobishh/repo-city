@@ -1,6 +1,6 @@
 FROM node:22-alpine
 WORKDIR /app
-LABEL org.opencontainers.image.source="https://github.com/bobishh/repo-city"
+LABEL org.opencontainers.image.source="https://github.com/bobishh/repo-city" service="repo-city"
 ARG REPO_CITY_REVISION
 ENV NODE_ENV=production PORT=8080 REPO_CITY_REVISION=$REPO_CITY_REVISION
 COPY server.mjs github-auth.mjs pr-review.mjs ./
