@@ -134,6 +134,25 @@ test("Phoenix admits two browser sessions and routes WebRTC audio and review cue
     expect(await guest.page.evaluate(() => window.pinned.head_sha)).toBe("a".repeat(40));
     expect(await guest.page.evaluate(() => window.party.sockets[0].protocol)).toBe("repo-city-party");
 
+    const draft = host.page.getByRole("textbox", { name: "Room message" });
+    await draft.fill("Review the last change.");
+    const reject = route => route.fulfill({ status: 503, json: { error: "Chat temporarily unavailable." } });
+    await host.page.route("**/party/rooms/*/events", reject);
+    await host.page.getByRole("button", { name: "Send message", exact: true }).click();
+    await expect(host.page.getByRole("status").first()).toContainText("Chat temporarily unavailable.");
+    await expect(draft).toHaveValue("Review the last change.");
+    await host.page.unroute("**/party/rooms/*/events", reject);
+    await host.page.getByRole("button", { name: "Send message", exact: true }).click();
+    await expect(guest.page.getByLabel("Room chat").getByText("Review the last change.", { exact: true })).toBeVisible();
+    await expect(draft).toHaveValue("");
+
+    await host.page.getByLabel("Sketch title").fill("Review flow");
+    await host.page.getByLabel("Sketch format").selectOption("markdown");
+    await host.page.getByLabel("Sketch source").fill("# Review\n\n```mermaid\nflowchart LR\n A[Change] --> B[Review]\n```");
+    await host.page.getByRole("button", { name: "Share sketch", exact: true }).click();
+    await expect(guest.page.getByLabel("Room sketches").getByText("Review flow", { exact: true })).toBeVisible();
+    await expect(guest.page.getByRole("button", { name: "Share sketch", exact: true })).toBeHidden();
+
     await host.page.getByLabel("Share live reading focus").check();
     await host.page.evaluate(() => {
       window.party.client.update({ focus: {path:"src/lib.rs", face:"blame", line:12, before:true} });

@@ -18,7 +18,7 @@ export function mountReviewParty(root, client, { comparison = () => null, clipbo
   const roster = element("section", undefined, { "aria-label": "Party members" });
   const cues = element("section", undefined, { "aria-label": "Shared locations" });
   const media = element("fieldset"); media.append(element("legend", "Voice"));
-  let feedback = "", busy = false, membersKey = "", cuesKey = "", roomId;
+  let feedback = "", busy = false, membersKey = "", cuesKey = "", chatKey = "", roomId, pendingMessage;
   const act = action => async () => {
     if (busy) return;
     busy = true; feedback = ""; render(client.state());
@@ -46,6 +46,32 @@ export function mountReviewParty(root, client, { comparison = () => null, clipbo
   });
   const leave = button("Leave room", () => client.leave());
   const close = button("Close room", () => client.close());
+  const chat = element("section", undefined, { "aria-label": "Room chat" });
+  chat.append(element("h3", "Room chat"));
+  const draft = element("textarea", undefined, { "aria-label": "Room message", maxlength: "4096", rows: "3" });
+  chat.append(draft);
+  const send = button("Send message", async () => {
+    const text = draft.value.trim();
+    if (pendingMessage?.text !== text) pendingMessage = { id: crypto.randomUUID(), text };
+    const message = pendingMessage;
+    await client.sendChat(message.id, text);
+    if (draft.value.trim() === message.text) draft.value = "";
+    pendingMessage = undefined;
+  }, chat);
+  const history = element("div", undefined, { "aria-live": "polite" });
+  draft.addEventListener("input", () => render(client.state()));
+  chat.append(history);
+  const sketches = element("section", undefined, { "aria-label": "Room sketches" });
+  const sketchStatus = element("p", "Waiting for a room sketch.");
+  const publish = element("div");
+  const title = input("Sketch title", publish); title.maxLength = 240;
+  const format = element("select", undefined, { "aria-label": "Sketch format" });
+  format.append(element("option", "Markdown", { value: "markdown" }), element("option", "Mermaid", { value: "mermaid" }));
+  const source = element("textarea", undefined, { "aria-label": "Sketch source", maxlength: "16384", rows: "4" });
+  publish.append(format, source);
+  const shareSketch = button("Share sketch", () => client.shareSketch(title.value.trim(), source.value.trim(), format.value), publish);
+  for (const field of [title, source]) field.addEventListener("input", () => render(client.state()));
+  sketches.append(element("h3", "Sketches"), sketchStatus, publish);
   const login = input("Invite GitHub account", inviteControls); login.autocomplete = "off";
   const invite = button("Create invitation", async () => {
     const result = await client.invite(login.value.trim());
@@ -67,13 +93,16 @@ export function mountReviewParty(root, client, { comparison = () => null, clipbo
   const consent = check("Allow my voice to reach party agents", enabled => client.setShareWithAgents(enabled));
   const agent = check("Send consenting participants to my connected agent", enabled => client.setAgentInput(enabled));
   const agentStatus = element("p", "No connected agent adapter. Human voice remains available."); media.append(agentStatus);
-  root.append(status, pinned, controls, inviteControls, media, roster, cues);
+  root.append(status, pinned, controls, chat, inviteControls, sketches, media, roster, cues);
 
   function render(state) {
     const inRoom = Boolean(state.room), host = state.room?.host_id === state.member?.id;
     if (roomId !== state.room?.id) {
       roomId = state.room?.id;
       inviteLink.value = "";
+      draft.value = "";
+      title.value = source.value = "";
+      pendingMessage = undefined;
     }
     const current = state.room?.comparison ?? comparison();
     const label = state.status === "connected" ? "Connected" : state.status === "connecting" ? "Connecting…" : state.status === "reconnecting" ? "Reconnecting…" : state.status === "solo" ? "Solo" : "Room ended";
@@ -84,6 +113,21 @@ export function mountReviewParty(root, client, { comparison = () => null, clipbo
     join.disabled = busy;
     leave.hidden = !inRoom; leave.disabled = busy;
     close.hidden = !inRoom || !host; close.disabled = busy;
+    chat.hidden = !inRoom;
+    sketches.hidden = !inRoom;
+    publish.hidden = !host;
+    shareSketch.disabled = busy || state.status !== "connected" || !title.value.trim() || !source.value.trim();
+    sketchStatus.textContent = state.sketch?.title ?? "Waiting for a room sketch.";
+    send.disabled = busy || state.status !== "connected" || !draft.value.trim();
+    const nextChat = state.chat.map(message => message.seq).join(",");
+    if (nextChat !== chatKey) {
+      chatKey = nextChat;
+      history.replaceChildren(...state.chat.slice().reverse().map(message => {
+        const row = element("div");
+        row.append(element("p", message.login), element("p", message.text));
+        return row;
+      }));
+    }
     inviteControls.hidden = !inRoom || !host;
     invite.disabled = busy; copy.disabled = revoke.disabled = busy || !inviteLink.value;
     media.hidden = !inRoom;

@@ -56,6 +56,12 @@ contains only that shared geometry.
 For isolated local runs, set `VIBE_CITY_CONFIG_DIR` to a separate preferences
 directory. This keeps test notes, reading progress, and sound settings separate.
 
+The desktop Codex integration follows Ecky's app-server configuration at
+`9ea94d7`. It requests Codex's automatic review for workspace sandbox increases
+and preapproves the checkout-bound Repo City MCP tools. Manual requests can still
+be shown by the provider. User acceptance of MCP flight proposals is handled
+separately in the city.
+
 ## Build and test
 
 ```sh
@@ -96,7 +102,8 @@ using their own GitHub authorization.
 
 Membership renews GitHub access every five minutes. Rooms last at most 24 hours
 and the host has a 60-second reconnect window. A backend restart ends active
-rooms. The server holds presence and line cues in memory. It discards directed
+rooms. The server holds presence, line cues, the most recent 32 chat messages,
+and the host's current sketch in memory. It discards directed
 SDP and ICE messages after delivery or 30 seconds. Audio travels over WebRTC.
 
 Kamal runs the TURN relay as the `turn` accessory on the VPS. Set

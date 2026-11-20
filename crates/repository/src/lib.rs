@@ -422,7 +422,6 @@ impl Repository {
         String::from_utf8(bytes).map_err(|_| "Non-UTF-8 asset: metadata only".into())
     }
     /// Read binary preview data from the selected snapshot without following symlinks.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn asset_bytes(&self, index: usize, before: bool) -> Result<Vec<u8>, String> {
         let file = self.files.get(index).ok_or("Unknown file")?;
         let blob = if before { &file.before } else { &file.after }
@@ -434,11 +433,18 @@ impl Repository {
         if blob.size > ASSET_BYTES_LIMIT {
             return Err("Asset exceeds the 16 MiB preview limit.".into());
         }
+        #[cfg(not(target_arch = "wasm32"))]
         let bytes = if blob.id.starts_with("worktree:") {
             worktree::asset(&self.root, &file.path, blob, ASSET_BYTES_LIMIT)?
         } else {
             asset_blob(&self.root, &blob.id)?
         };
+        #[cfg(target_arch = "wasm32")]
+        let bytes = browser_blob(&blob.id).map_err(|error| {
+            error
+                .as_string()
+                .unwrap_or_else(|| "Asset unavailable.".into())
+        })?;
         if bytes.len() != blob.size {
             return Err("Asset size does not match the selected snapshot.".into());
         }

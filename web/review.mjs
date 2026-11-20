@@ -102,7 +102,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
         ["Comments", "notes", () => { notesPanel(); show(); }],
         ["Help", "help", help],
         ["Trace", "trace", tracePanel],
-        ["Party", "party", partyPanel],
+        ["Chat", "party", partyPanel],
       ]) {
         const tab = button(label, open);
         tab.setAttribute("aria-pressed", String(page === dialog.dataset.view));
@@ -128,7 +128,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     partyPanelView?.dispose();
     dialog.dataset.view = "party";
     if (!canvas.hidden) dialog.dataset.tablet = "";
-    view("Party");
+    view("Chat");
     partyPanelView = renderParty(dialog);
     show();
   }

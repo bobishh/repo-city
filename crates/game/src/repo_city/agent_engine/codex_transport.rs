@@ -1290,10 +1290,12 @@ fn missing_rollout(error: &str, thread: Option<&str>) -> bool {
 }
 
 pub(super) fn thread_params(root: &Path, executable: &Path, thread: Option<&str>) -> Value {
-    let mut params = json!({"cwd":root,"approvalPolicy":"on-request","sandbox":"workspace-write","developerInstructions":instructions(),"config":{
+    // Ecky 9ea94d7 uses Codex review for sandbox requests and trusts its own bound MCP server.
+    let mut params = json!({"cwd":root,"approvalPolicy":"on-request","approvalsReviewer":"auto_review","sandbox":"workspace-write","developerInstructions":instructions(),"config":{
         "mcp_servers.repo_city.command":executable,
         "mcp_servers.repo_city.args":["--notes-mcp","--repo",root],
-        "mcp_servers.repo_city.required":true
+        "mcp_servers.repo_city.required":true,
+        "mcp_servers.repo_city.default_tools_approval_mode":"approve"
     }});
     if let Some(thread) = thread {
         params["threadId"] = json!(thread);
@@ -1562,7 +1564,7 @@ for line in sys.stdin:
         std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]
-    fn agent_connection_scopes_tools_to_selected_checkout_without_autoapprovals() {
+    fn agent_connection_scopes_tools_and_uses_ecky_approval_routing() {
         let params = thread_params(
             Path::new("/repo with spaces"),
             Path::new("/Applications/Repo City.app/Contents/MacOS/repo-city"),
@@ -1570,14 +1572,15 @@ for line in sys.stdin:
         );
         assert_eq!(params["threadId"], "saved");
         assert_eq!(params["approvalPolicy"], "on-request");
+        assert_eq!(params["approvalsReviewer"], "auto_review");
+        assert_eq!(params["sandbox"], "workspace-write");
         assert_eq!(
             params["config"]["mcp_servers.repo_city.args"][2],
             "/repo with spaces"
         );
-        assert!(
-            params["config"]
-                .get("mcp_servers.repo_city.default_tools_approval_mode")
-                .is_none()
+        assert_eq!(
+            params["config"]["mcp_servers.repo_city.default_tools_approval_mode"],
+            "approve"
         );
     }
 

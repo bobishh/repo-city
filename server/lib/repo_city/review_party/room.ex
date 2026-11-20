@@ -7,6 +7,7 @@ defmodule RepoCity.ReviewParty.Room do
   @host_grace_ms 60_000
   @signal_ms 30_000
   @cue_limit 32
+  @chat_limit 32
   @signal_limit 128
   @signal_bytes 512 * 1024
 
@@ -72,6 +73,8 @@ defmodule RepoCity.ReviewParty.Room do
       sockets: %{},
       presence: %{},
       cues: [],
+      chat: [],
+      sketch: nil,
       signals: [],
       rate: %{},
       timer: nil
@@ -184,7 +187,7 @@ defmodule RepoCity.ReviewParty.Room do
       state = roster_event(state)
       {pending, others} = Enum.split_with(state.signals, &(&1.to == id))
       state = %{state | signals: others, sockets: Map.put(state.sockets, id, socket)}
-      history = (Enum.reverse(state.cues) ++ Enum.reverse(pending)) |> Enum.map(&public_event/1)
+      history = history(state, pending) |> Enum.map(&public_event/1)
       {state, {:ok, id, [snapshot(state) | history]}}
     else
       error -> {state, error}
@@ -243,8 +246,7 @@ defmodule RepoCity.ReviewParty.Room do
     poses = for %{pose: pose} <- Map.values(state.presence), do: pose
     {signals, others} = Enum.split_with(state.signals, &(&1.to == id))
 
-    events =
-      Enum.filter(poses ++ state.cues ++ signals, &(&1.seq > cursor)) |> Enum.sort_by(& &1.seq)
+    events = history(state, poses ++ signals) |> Enum.filter(&(&1.seq > cursor))
 
     {%{state | signals: others},
      {:ok,
@@ -368,6 +370,47 @@ defmodule RepoCity.ReviewParty.Room do
         else
           {state, error(429, "Voice signaling queue is full. Reconnect voice and retry.")}
         end
+    end
+  end
+
+  defp accept_event(%{type: "chat", id: message_id} = message, state, id, _now) do
+    case Enum.find(state.chat, &(&1.from == id && &1.id == message_id)) do
+      nil ->
+        {state, event} =
+          sequence(state, Map.merge(message, %{from: id, login: state.members[id].login}))
+
+        broadcast(state, event)
+        accepted(%{state | chat: Enum.take([event | state.chat], @chat_limit)})
+
+      %{text: text} when text == message.text ->
+        accepted(state)
+
+      _ ->
+        {state, error(409, "This message ID already belongs to another message.")}
+    end
+  end
+
+  defp accept_event(
+         %{type: "sketch", title: title, source: source, format: format} = message,
+         state,
+         id,
+         now
+       ) do
+    with :ok <- host_only(state, id) do
+      case state.sketch do
+        %{title: ^title, source: ^source, format: ^format} ->
+          accepted(state)
+
+        %{updated_at: previous} when now - previous < 1000 ->
+          {state, error(429, "Wait a moment before updating the sketch again.")}
+
+        _ ->
+          {state, event} = sequence(state, Map.put(message, :from, id))
+          broadcast(state, event)
+          accepted(%{state | sketch: Map.put(event, :updated_at, now)})
+      end
+    else
+      error -> {state, error}
     end
   end
 
@@ -503,10 +546,13 @@ defmodule RepoCity.ReviewParty.Room do
        members: members,
        room_token: token,
        cursor: state.sequence,
-       events: Enum.reverse(state.cues),
+       events: Enum.map(history(state), &public_event/1),
        socket_url: "/party/rooms/#{state.info.id}/socket"
      }}
   end
+
+  defp history(state, additional \\ []),
+    do: Enum.sort_by(state.chat ++ state.cues ++ List.wrap(state.sketch) ++ additional, & &1.seq)
 
   defp drop_socket(state, id, code, reason) do
     case Map.pop(state.sockets, id) do
@@ -533,7 +579,7 @@ defmodule RepoCity.ReviewParty.Room do
     end
   end
 
-  defp public_event(event), do: Map.drop(event, [:expires, :bytes])
+  defp public_event(event), do: Map.drop(event, [:expires, :bytes, :updated_at])
 
   defp count_event(state, id, now) do
     {since, count} = Map.get(state.rate, id, {now, 0})

@@ -1,5 +1,10 @@
 //! Desktop ACP client for Grok and Agy. Ecky 9ea94d7 informed the Grok handshake.
-use super::{Command, Engine, Event, Projection, Prompt, Provider, Start, state::FileActivity};
+use super::{
+    Command, Engine, Event, Projection, Prompt, Provider, Start,
+    activity::{Details, Kind, Location, Phase},
+    state::FileActivity,
+};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -25,8 +30,20 @@ pub(super) struct Adapter {
 enum Update {
     Event(Event),
     Turn(Option<String>),
-    Delta { id: String, text: String },
-    File { path: String, line: usize },
+    Delta {
+        id: String,
+        text: String,
+    },
+    File {
+        path: String,
+        line: usize,
+    },
+    Activity {
+        thread: String,
+        id: String,
+        details: Details,
+        phase: Phase,
+    },
 }
 
 impl Adapter {
@@ -80,6 +97,11 @@ impl Engine for Adapter {
             match update {
                 Update::Event(event) => events.push(event),
                 Update::Turn(turn) => {
+                    if turn.is_none()
+                        && let Some(thread) = &projection.dialogue.thread
+                    {
+                        projection.timeline.end_turn(thread);
+                    }
                     projection.turn = turn;
                     events.push(Event::Changed {
                         status: Some(
@@ -104,6 +126,12 @@ impl Engine for Adapter {
                     projection.activity = Some(FileActivity { serial, path, line });
                     events.push(Event::Changed { status: None });
                 }
+                Update::Activity {
+                    thread,
+                    id,
+                    details,
+                    phase,
+                } => projection.timeline.record(&thread, &id, details, phase),
             }
         }
         events
@@ -434,7 +462,13 @@ fn run(
             (Some(_), Some(id), _) => wire.reject_request(id)?,
             (Some("session/update"), None, Some(turn)) if in_session => {
                 turn.delivered(updates, Ok(()))?;
-                project(&params["update"], &start.root, &turn.prompt.id, updates)?;
+                project(
+                    &params["update"],
+                    &start.root,
+                    &session,
+                    &turn.prompt.id,
+                    updates,
+                )?;
             }
             (None, Some(id), Some(active)) if id.as_u64() == Some(active.request) => {
                 let result = response(frame).map(|_| ());
@@ -463,6 +497,7 @@ fn grok_has_login() -> bool {
 fn project(
     value: &Value,
     root: &Path,
+    session: &str,
     prompt: &str,
     updates: &SyncSender<Update>,
 ) -> Result<(), String> {
@@ -478,26 +513,70 @@ fn project(
                 )?;
             }
         }
-        Some("tool_call") => {
-            if let Some(locations) = value["locations"].as_array() {
-                for location in locations {
-                    let Some(path) = location["path"]
-                        .as_str()
-                        .and_then(|path| repo_path(root, path))
-                    else {
-                        continue;
-                    };
-                    let line = location["line"]
-                        .as_u64()
-                        .and_then(|line| usize::try_from(line).ok())
-                        .unwrap_or(0);
-                    send(updates, Update::File { path, line })?;
+        Some("tool_call" | "tool_call_update") => {
+            let Ok(tool) = serde_json::from_value::<ToolUpdate>(value.clone()) else {
+                return Ok(());
+            };
+            let kind = match tool.kind.as_deref() {
+                Some("edit") => Kind::Edit,
+                Some("execute" | "read") => Kind::Command,
+                Some("search") => Kind::Search,
+                _ => Kind::Tool,
+            };
+            let phase = match tool.status.as_deref() {
+                Some("completed") => Phase::Completed,
+                Some("failed") => Phase::Failed,
+                _ => Phase::Running,
+            };
+            let mut details = Details::new(kind, tool.title.unwrap_or_default());
+            for position in tool.locations.into_iter().take(16) {
+                let Some(path) = repo_path(root, &position.path) else {
+                    continue;
+                };
+                let line = position.line.unwrap_or(1).clamp(1, 1_000_000);
+                if phase == Phase::Running {
+                    send(
+                        updates,
+                        Update::File {
+                            path: path.clone(),
+                            line,
+                        },
+                    )?;
                 }
+                details.locations.push(Location { path, line });
+            }
+            if let Some(id) = tool.tool_call_id.filter(|id| !id.is_empty()) {
+                send(
+                    updates,
+                    Update::Activity {
+                        thread: session.into(),
+                        id,
+                        details,
+                        phase,
+                    },
+                )?;
             }
         }
         _ => {}
     }
     Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolUpdate {
+    tool_call_id: Option<String>,
+    title: Option<String>,
+    status: Option<String>,
+    kind: Option<String>,
+    #[serde(default)]
+    locations: Vec<ToolLocation>,
+}
+
+#[derive(Deserialize)]
+struct ToolLocation {
+    path: String,
+    line: Option<usize>,
 }
 
 fn repo_path(root: &Path, path: &str) -> Option<String> {

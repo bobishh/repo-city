@@ -24,7 +24,7 @@ pub(super) fn document_html(path: &str, source: &str) -> String {
     html
 }
 
-fn events(source: &str) -> impl Iterator<Item = Event<'_>> {
+pub(super) fn events(source: &str) -> impl Iterator<Item = Event<'_>> {
     Parser::new_ext(
         source,
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS,
@@ -76,7 +76,7 @@ pub(super) struct SourceFile {
     pub before: bool,
 }
 
-fn relative_file(source: &str, href: &str) -> Option<String> {
+pub(super) fn relative_file(source: &str, href: &str) -> Option<String> {
     let href = href.split(['?', '#']).next()?;
     let href = percent_encoding::percent_decode_str(href)
         .decode_utf8()

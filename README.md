@@ -321,7 +321,7 @@ platforms can set `CC_wasm32_unknown_unknown` to a compatible Clang.
 
 ## Talk to a coding agent
 
-On desktop, choose **Settings → Agent provider** in VibePad, then open **Agent**
+On desktop, choose **Settings → Agent provider** in VibePad, then open **Chat**
 to connect to the locally installed Codex, Agy (Antigravity), or Grok CLI.
 Sign in with that CLI first. City keeps a separate conversation for each
 checkout and provider. Agy requires a CLI with `agy acp`; Grok uses
@@ -357,6 +357,12 @@ local notes through Repo City’s MCP tools. Focus reports whether the window is
 active; it is not eye tracking. Public tool events with explicit file paths
 draw blue beacons at those buildings, including activity from identified child
 agents. Unresolved activity is not assigned to a guessed building.
+Expand **Agent activity** in Chat to inspect commands, edits, and tool calls as
+they run. Expand a step and select an available file link to fly to the reported
+line or the start of the file. **Files → Recent agent files** shows the time of
+the tool event. **Changed files** continues to show the selected Git comparison.
+Switch to **Live worktree** for files created or edited in the current checkout.
+The action history stays in the local session, including when Chat is in a room.
 Paths such as `crates/explorer/build.rs:12` are highlighted inside chat; click
 to fly to that file and source line. The MCP tool `propose_navigation` shows a
 notification with **Y · Fly** and **N · Dismiss**. Proposals expire after a minute
@@ -516,7 +522,7 @@ with GitHub and loads source using their own access. Invitations name one GitHub
 account; forwarding a link does not admit a different account. Worktrees and
 private drafts are not shared.
 
-To start a room, open **Party** in the browser's VibePad or **F10**
+To start a room, open **Chat** in the browser's VibePad or press **F10**
 on desktop. Create a room, enter your teammate's GitHub login, and copy their invitation
 link. Invitees sign in with the named GitHub account and open the link in the
 browser or paste it into **Invitation link** on desktop.
@@ -524,14 +530,23 @@ Enable reading focus to share the current file and wall; select a teammate in
 the roster to fly to their view. **Share current lines** sends a separate cue.
 Joining suspends automatic comment publication.
 
+**Chat** in VibePad shows messages from the current room. On desktop, the same
+tab opens the local agent conversation when flying solo. The chat board shows
+recent messages. The document board previews the root `README.md` from the
+current revision and displays a staged or shared sketch when available. It
+supports Markdown with repository images and Mermaid flowcharts or sequence
+diagrams. Open a README's building and press **P** for the full document.
+On desktop, `show_sketch` stages Markdown or Mermaid through the local MCP server.
+A room host can choose **Share staged sketch** in Chat, or enter the source on
+the web and choose **Share sketch**.
+
 Voice requires a separate microphone action. Hold **F8** to speak; release to
 mute. Leaving the window disables capture. Individual peers can be muted.
 Browser capture requests echo cancellation. Desktop currently suppresses its
 microphone while playing remote speech, so overlapping speech is not yet full
 duplex. Sending conversation to an agent requires a connected audio adapter
 and each speaker's sharing consent; unavailable adapters are not connected by
-enabling human voice. Native/browser audio and relay interoperability still
-require verification before production rollout.
+enabling human voice. TURN can relay audio when peers cannot connect directly.
 
 See [Development](docs/development.md#review-room-service) for hosting settings.
 

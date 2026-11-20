@@ -4,6 +4,7 @@ use bevy::{
     input_focus::InputFocus,
     picking::events::PointerPress,
     text::{ComputedTextBlock, EditableText, TextBackgroundColor, TextLayoutInfo, Underline},
+    ui_widgets::{Activate, observe},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -710,7 +711,47 @@ pub(super) fn draw_links(
     text: &str,
     repo: &Repository,
 ) -> Entity {
-    let references = links(text, repo);
+    draw_references(parent, text, links(text, repo))
+}
+
+pub(super) fn draw_measured_link(
+    parent: &mut ChildSpawnerCommands,
+    repo: &Repository,
+    path: &str,
+    line: usize,
+    text: &str,
+) {
+    match Target::checked(repo, path, line, false) {
+        Ok(target) => {
+            parent.spawn((
+                file_picker::button(
+                    text,
+                    &native_panel::panel_font(),
+                    native_panel::INK,
+                    AlignSelf::Start,
+                ),
+                Outline::new(px(2.), px(2.), Color::NONE),
+                Reference(target),
+                observe(
+                    |event: On<Activate>,
+                     references: Query<&Reference>,
+                     repo: Res<Repo>,
+                     mut navigation: ResMut<Navigation>,
+                     mut tablet: ResMut<review_tablet::Tablet>| {
+                        if let Ok(reference) = references.get(event.entity)
+                            && navigation.follow(&reference.0, &repo.0)
+                        {
+                            tablet.request_close();
+                        }
+                    },
+                ),
+            ));
+        }
+        Err(reason) => native_panel::text(parent, &format!("{text} · {reason}"), native_panel::INK),
+    }
+}
+
+fn draw_references(parent: &mut ChildSpawnerCommands, text: &str, references: Vec<Link>) -> Entity {
     let entity = parent
         .spawn((
             Text::new(""),
@@ -1001,6 +1042,33 @@ mod tests {
         activity.path = "../other/private.rs".into();
         assert!(!navigation.follow_activity(&repo, &activity, 4.));
         assert!(navigation.take_destination(&repo).is_none());
+    }
+
+    #[test]
+    fn activity_file_button_flies_to_the_reported_line_without_a_proposal() {
+        let checkout = Checkout::new();
+        let repo = Repository::open_worktree(&checkout.0).unwrap();
+        let mut app = App::new();
+        app.insert_resource(Repo(repo.clone()))
+            .init_resource::<Navigation>()
+            .init_resource::<review_tablet::Tablet>();
+        let world = app.world_mut();
+        world.commands().spawn_empty().with_children(|parent| {
+            draw_measured_link(parent, &repo, "src/main.rs", 3, "src/main.rs:3");
+            draw_measured_link(parent, &repo, "outside.rs", 1, "outside.rs:1");
+        });
+        world.flush();
+        let button = world
+            .query_filtered::<Entity, (With<bevy::ui_widgets::Button>, With<Reference>)>()
+            .single(world)
+            .unwrap();
+        world.trigger(Activate { entity: button });
+        let destination = world
+            .resource_mut::<Navigation>()
+            .take_destination(&repo)
+            .unwrap();
+        assert_eq!(destination.anchor.path, "src/main.rs");
+        assert_eq!(destination.anchor.start, 3);
     }
 
     #[test]

@@ -6,6 +6,8 @@ mod agent_engine;
 mod agent_navigation;
 #[cfg(not(target_arch = "wasm32"))]
 mod agent_session;
+#[cfg(not(target_arch = "wasm32"))]
+mod agent_timeline;
 mod android;
 mod blame;
 #[cfg(target_arch = "wasm32")]
@@ -16,6 +18,7 @@ mod browser_tablet;
 mod browser_touch;
 #[cfg(not(target_arch = "wasm32"))]
 mod city_audio;
+mod city_boards;
 mod city_menu;
 mod city_navigation;
 mod city_stream;
@@ -52,6 +55,7 @@ mod review_party;
 mod review_tablet;
 #[path = "../shapes.rs"]
 mod shapes;
+mod sketch;
 mod source_editor;
 mod tablet_display;
 mod tablet_scroll;
@@ -693,8 +697,11 @@ pub fn run() {
     markdown_preview::register(&mut app);
     source_editor::register(&mut app);
     app.add_plugins(review_party::Plugin);
+    app.add_plugins(city_boards::Plugin);
     #[cfg(not(target_arch = "wasm32"))]
     app.add_plugins(agent_session::Plugin);
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_plugins(agent_timeline::Plugin);
     #[cfg(not(target_arch = "wasm32"))]
     app.add_plugins(agent_navigation::Plugin);
     #[cfg(not(target_arch = "wasm32"))]

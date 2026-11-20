@@ -1,5 +1,6 @@
 //! Reduces validated Codex events into the city session state.
-use super::codex_protocol::{Item, Location, Notification, Role, Update};
+use super::activity::{Details, Kind, Phase};
+use super::codex_protocol::{Item, Location, Notification, Role, ThreadPhase, Update};
 use super::state::{Dialogue, FileActivity, Presence, Projection};
 
 impl Projection {
@@ -14,13 +15,36 @@ impl Projection {
         }
         let primary = self.dialogue.thread.as_deref() == Some(thread.as_str());
         match event.update {
-            Update::TurnStarted { id } if primary => {
-                self.turn = Some(id);
-                self.status = "Working".into();
+            Update::TurnStarted { id } => {
+                self.timeline.record(
+                    &thread,
+                    &format!("turn:{id}"),
+                    Details::new(Kind::Session, "Turn started"),
+                    Phase::Running,
+                );
+                if primary {
+                    self.turn = Some(id);
+                    self.status = "Working".into();
+                }
             }
-            Update::TurnStarted { .. } => return false,
-            Update::TurnCompleted { error } => {
+            Update::TurnCompleted { id, error } => {
+                if primary && self.turn.as_deref().is_some_and(|active| active != id) {
+                    return false;
+                }
                 self.presence.retain(|presence| presence.agent != thread);
+                self.timeline.end_turn(&thread);
+                let mut details = Details::new(Kind::Session, "Turn completed");
+                details.body = error.clone().unwrap_or_default();
+                self.timeline.record(
+                    &thread,
+                    &format!("turn:{id}"),
+                    details,
+                    if error.is_some() {
+                        Phase::Failed
+                    } else {
+                        Phase::Completed
+                    },
+                );
                 if primary {
                     self.turn = None;
                     self.status = error
@@ -29,6 +53,27 @@ impl Projection {
                         .take(1000)
                         .collect();
                 }
+            }
+            Update::ActivityDelta { id, kind, text } => {
+                self.timeline.append(&thread, &id, kind, &text)
+            }
+            Update::Activity { id, details, phase } => {
+                self.timeline.record(&thread, &id, details, phase)
+            }
+            Update::ThreadStatus { status } => {
+                let (title, phase) = match status {
+                    ThreadPhase::Active => ("Thread active", Phase::Completed),
+                    ThreadPhase::Idle => ("Thread idle", Phase::Completed),
+                    ThreadPhase::NotLoaded => ("Thread unloaded", Phase::Ended),
+                    ThreadPhase::SystemError => ("Thread reported a system error", Phase::Failed),
+                    ThreadPhase::Other => return false,
+                };
+                self.timeline.record(
+                    &thread,
+                    "thread-status",
+                    Details::new(Kind::Session, title),
+                    phase,
+                );
             }
             Update::MessageDelta { id, text } => {
                 dialogue_message(
@@ -85,6 +130,18 @@ impl Projection {
                 applied,
                 detail,
             } => {
+                let mut activity = Details::new(
+                    Kind::Edit,
+                    if files.is_empty() {
+                        "File changes"
+                    } else {
+                        "Edit repository files"
+                    },
+                );
+                activity.body = detail.clone();
+                activity.locations = files.clone();
+                self.timeline
+                    .record(thread, id, activity, phase(completed, !applied));
                 if self.approvals.len() >= 32 {
                     self.approvals.clear();
                 }
@@ -97,14 +154,42 @@ impl Projection {
                     self.present_files(thread, id, files, false);
                 }
             }
-            Item::Read { files } if !completed => self.present_files(thread, id, files, true),
-            Item::Collaboration { agents } if primary => {
-                for (id, state) in agents.into_iter().take(32) {
-                    if !state.status.active() {
-                        self.presence.retain(|presence| presence.agent != id);
-                    }
-                    self.agents.insert(id, state.status.as_str().into());
+            Item::Read {
+                files,
+                mut activity,
+            } => {
+                activity.locations = files.clone();
+                let phase = phase(completed, activity.failed);
+                self.timeline.record(thread, id, activity, phase);
+                if !completed {
+                    self.present_files(thread, id, files, true);
                 }
+            }
+            Item::Collaboration { agents, tool } => {
+                let mut activity = Details::new(
+                    Kind::Delegate,
+                    tool.unwrap_or_else(|| "Subagent activity".into()),
+                );
+                let mut status = agents
+                    .iter()
+                    .map(|(id, state)| format!("{id} · {}", state.status.as_str()))
+                    .collect::<Vec<_>>();
+                status.sort_unstable();
+                activity.body = status.into_iter().take(16).collect::<Vec<_>>().join("\n");
+                self.timeline
+                    .record(thread, id, activity, phase(completed, false));
+                if primary {
+                    for (id, state) in agents.into_iter().take(32) {
+                        if !state.status.active() {
+                            self.presence.retain(|presence| presence.agent != id);
+                        }
+                        self.agents.insert(id, state.status.as_str().into());
+                    }
+                }
+            }
+            Item::Activity(activity) => {
+                self.timeline
+                    .record(thread, id, activity, phase(completed, false))
             }
             _ => {}
         }
@@ -133,6 +218,14 @@ impl Projection {
             path: file.path,
             line: file.line,
         });
+    }
+}
+
+fn phase(completed: bool, failed: bool) -> Phase {
+    match (completed, failed) {
+        (false, _) => Phase::Running,
+        (true, false) => Phase::Completed,
+        (true, true) => Phase::Failed,
     }
 }
 
@@ -169,6 +262,56 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn one_live_command_keeps_its_file_anchor_and_ignores_unrelated_threads() {
+        let root = Path::new("/repo");
+        let mut view = projection();
+        assert!(!view.apply_wire(
+            root,
+            "item/commandExecution/outputDelta",
+            &json!({"threadId":"unrelated","itemId":"cmd","delta":"private"})
+        ));
+        assert!(view.apply_wire(root, "item/started", &json!({"threadId":"main","item":{"id":"cmd","type":"commandExecution","command":"cat example.rs","commandActions":[{"type":"read","path":"example.rs"}]}})));
+        assert!(view.apply_wire(
+            root,
+            "item/commandExecution/outputDelta",
+            &json!({"threadId":"main","itemId":"cmd","delta":"first line\n"})
+        ));
+        assert_eq!(view.timeline.entries[0].details.body, "first line\n");
+        let serial = view.timeline.entries[0].serial;
+        assert!(view.apply_wire(root, "item/completed", &json!({"threadId":"main","item":{"id":"cmd","type":"commandExecution","command":"cat example.rs","exitCode":0}})));
+        assert_eq!(view.timeline.entries.len(), 1);
+        let item = &view.timeline.entries[0];
+        assert_eq!(item.serial, serial);
+        assert_eq!(item.phase, Phase::Completed);
+        assert_eq!(item.details.body, "first line\n");
+        assert_eq!(item.details.locations[0].path, "example.rs");
+        assert_eq!(item.details.locations[0].line, 1);
+    }
+
+    #[test]
+    fn a_reported_child_can_stream_a_file_read_without_a_legacy_spawn_call() {
+        let root = Path::new("/repo");
+        let mut view = projection();
+        assert!(view.apply_wire(
+            root,
+            "item/started",
+            &json!({"threadId":"main","item":{
+                "id":"delegate","type":"subAgentActivity","agentThreadId":"child","kind":"started"
+            }})
+        ));
+        assert!(view.apply_wire(
+            root,
+            "item/started",
+            &json!({"threadId":"child","item":{
+                "id":"read","type":"imageView","path":"diagram.png"
+            }})
+        ));
+        let read = view.timeline.entries.back().unwrap();
+        assert_eq!(read.thread, "child");
+        assert_eq!(read.details.locations[0].path, "diagram.png");
     }
 
     #[test]

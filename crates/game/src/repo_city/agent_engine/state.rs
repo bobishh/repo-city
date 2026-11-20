@@ -39,6 +39,7 @@ pub(crate) struct Projection {
     pub approvals: HashMap<String, String>,
     pub voice: Option<String>,
     pub status: String,
+    pub timeline: super::activity::Timeline,
 }
 
 impl Dialogue {

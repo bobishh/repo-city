@@ -93,6 +93,16 @@ fn respond(scope: &str, request: &Value) -> Option<Value> {
                 "annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}
             },
             {
+                "name":"show_sketch",
+                "description":"Stage Markdown or a Mermaid diagram on the local city's document board. A room host can explicitly share it from Chat.",
+                "inputSchema":{"type":"object","properties":{
+                    "title":{"type":"string","minLength":1,"maxLength":240},
+                    "source":{"type":"string","minLength":1,"maxLength":16384,"description":"Markdown or Mermaid source."},
+                    "format":{"type":"string","enum":["markdown","mermaid"],"default":"mermaid"}
+                },"required":["title","source"],"additionalProperties":false},
+                "annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}
+            },
+            {
                 "name":"propose_navigation",
                 "description":"Propose a file and source line in the current city. Shows a notification; the camera moves only after the user accepts with Y or Fly. N dismisses it. Never forces navigation.",
                 "inputSchema":{"type":"object","properties":{
@@ -194,6 +204,12 @@ fn run_tool(scope: &str, params: &Value) -> Result<Value, String> {
                 })
                 .transpose()?;
             agent_navigation::propose_range(scope, path, line, end, before, reason)
+        }
+        Some("show_sketch") => {
+            let sketch: crate::sketch::Sketch = serde_json::from_value(args.clone())
+                .map_err(|_| "Supply a sketch title, Markdown or Mermaid source, and format.")?;
+            crate::sketch::stage(scope, &sketch)?;
+            Ok(json!({"title":sketch.title, "staged":true}))
         }
         Some("mark_note") => {
             let id = args["id"].as_str().ok_or("Supply a note ID.")?;
@@ -305,6 +321,7 @@ mod tests {
         assert!(names.contains(&"create_note"));
         assert!(names.contains(&"list_notes"));
         assert!(names.contains(&"mark_note"));
+        assert!(names.contains(&"show_sketch"));
         assert!(names.contains(&"propose_navigation"));
         let reply = respond("/nonexistent-checkout", &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_focus","arguments":{}}})).unwrap();
         assert_eq!(reply["result"]["isError"], false);

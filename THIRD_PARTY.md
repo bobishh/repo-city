@@ -30,6 +30,10 @@ Caveat Project Authors. The desktop font (`assets/fonts/Caveat-Latin.ttf`) is
 the TrueType form of the web font (`web/assets/caveat-latin-wght.woff2`). See
 `assets/fonts/Caveat-LICENSE` and `web/assets/OFL-Caveat.txt`.
 
+Mermaid flowcharts and sequence diagrams use [Merman 0.10.0](https://github.com/Latias94/merman)
+under the MIT license. Repo City uses the renderer without the ELK layout engine.
+See `licenses/merman-MIT.txt` and the original package metadata in `Cargo.lock`.
+
 ## GPU Markdown dependencies
 
 The desktop and browser GPU Markdown renderer uses the following unmodified MPL-2.0 packages.
@@ -38,6 +42,7 @@ Their source archives are available at the links below, under the
 The application is a larger work distributed under its own license.
 
 - [cssparser 0.37.0 source](https://crates.io/api/v1/crates/cssparser/0.37.0/download)
+- [cssparser 0.38.0 source](https://crates.io/api/v1/crates/cssparser/0.38.0/download), also used by the sketch renderer.
 - [cssparser-color 0.5.0 source](https://crates.io/api/v1/crates/cssparser-color/0.5.0/download)
 - [cssparser-macros 0.7.1 source](https://crates.io/api/v1/crates/cssparser-macros/0.7.1/download)
 - [dtoa-short 0.3.5 source](https://crates.io/api/v1/crates/dtoa-short/0.3.5/download)

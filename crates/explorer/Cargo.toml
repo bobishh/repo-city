@@ -31,6 +31,7 @@ avian3d = { version = "0.8", default-features = false, features = ["3d", "parry-
 pulldown-cmark = { version = "0.13.6", default-features = false, features = ["html"] }
 percent-encoding = "2.3"
 resvg = { version = "0.50.0", default-features = false, features = ["text"] }
+merman = { version = "=0.10.0", default-features = false, features = ["diagram-flowchart", "diagram-sequence", "svg"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"

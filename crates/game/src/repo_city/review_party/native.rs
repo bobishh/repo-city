@@ -35,10 +35,28 @@ pub(super) struct State {
     outgoing: std::collections::VecDeque<Value>,
     muted: HashSet<String>,
     poses: std::collections::HashMap<String, Value>,
+    pub(super) chat: chat::Chat,
 }
 impl State {
     pub(super) fn connected(&self) -> bool {
         self.room.is_some() && !self.opening
+    }
+    pub(super) fn chat_room(&self) -> Option<&str> {
+        self.room.as_ref().filter(|_| !self.opening)?["id"].as_str()
+    }
+    pub(super) fn hosts_room(&self) -> bool {
+        self.connected()
+            && self.room.as_ref().and_then(|room| room["host_id"].as_str())
+                == Some(self.member_id.as_str())
+    }
+    pub(super) fn post_event(&self, body: Value) -> Result<native_github::Job<Value>, String> {
+        let path = room_path(self, "events")
+            .filter(|_| self.connected())
+            .ok_or("Connect to the room to share.")?;
+        let token = self.token.clone();
+        Ok(native_github::Job::spawn(move || {
+            request("POST", &path, &token, Some(body))
+        }))
     }
     pub(super) fn peers(&self) -> Vec<Value> {
         self.members
@@ -240,7 +258,7 @@ fn write_focus(focus: &Option<Focus>) -> Value {
     json!({"path":focus.path,"side":if focus.before {"before"}else{"after"},"face":focus.face,"line":focus.line,"end_line":focus.end_line})
 }
 
-fn update(
+pub(super) fn update(
     mut commands: Commands,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -286,6 +304,7 @@ fn update(
             }
             Ok(value) => {
                 if matches!(task, Task::Create | Task::Join) {
+                    party.native.chat = default();
                     party.native.invite.clear();
                     party.native.cues.clear();
                     party.native.poses.clear();
@@ -327,6 +346,9 @@ fn update(
                     party.native.cursor = cursor;
                 }
                 for event in value["events"].as_array().into_iter().flatten() {
+                    if event["type"] == "chat" || event["type"] == "sketch" {
+                        party.native.chat.receive(event);
+                    }
                     if event["type"] == "pose" {
                         if let Some(from) = event["from"].as_str() {
                             party.native.poses.insert(from.into(), event.clone());

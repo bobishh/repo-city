@@ -116,6 +116,30 @@ defmodule RepoCity.ReviewParty.Protocol do
      }}
   end
 
+  def message(%{"type" => "chat", "id" => id, "text" => value})
+      when is_binary(value) and byte_size(value) <= 4096 do
+    text = String.trim(value)
+
+    if text != "" && matches?(id, ~r/\A[A-Za-z0-9_-]{1,64}\z/),
+      do: {:ok, %{type: "chat", id: id, text: text}},
+      else: invalid_message()
+  end
+
+  def message(%{"type" => "sketch", "title" => title, "source" => source} = value)
+      when is_binary(title) and byte_size(title) <= 240 and is_binary(source) and
+             byte_size(source) <= 16_384 do
+    title = String.trim(title)
+    source = String.trim(source)
+    format = Map.get(value, "format", "mermaid")
+
+    if title != "" && source != "" && format in ["markdown", "mermaid"] &&
+         !String.contains?(title, ["\n", "\r"]) do
+      {:ok, %{type: "sketch", title: title, source: source, format: format}}
+    else
+      invalid_message()
+    end
+  end
+
   def message(%{"type" => "signal", "to" => to, "signal" => value}) do
     with true <- identity?(to),
          {:ok, signal} <- signal(value) do

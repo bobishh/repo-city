@@ -44,6 +44,7 @@ pub(super) struct Tablet {
     trace_input: Option<Entity>,
     trace_follow: Option<Entity>,
     trace_version: u64,
+    chat_room: Option<String>,
 }
 
 struct History {
@@ -198,7 +199,7 @@ impl Page {
         (Self::Git, "Git"),
         (Self::Terminal, "Terminal"),
         (Self::Trace, "Trace"),
-        (Self::Agent, "Agent"),
+        (Self::Agent, "Chat"),
     ];
 }
 
@@ -464,7 +465,7 @@ pub(super) fn update(
         mut images,
         mut terminal,
         mut trace,
-        (editors, mut agent),
+        (editors, mut agent, party),
     ): (
         ResMut<reading::Settings>,
         ResMut<guide::Tour>,
@@ -484,6 +485,7 @@ pub(super) fn update(
         (
             Query<&source_editor::View>,
             Option<ResMut<agent_session::Session>>,
+            Option<Res<review_party::Party>>,
         ),
     ),
 ) {
@@ -538,6 +540,11 @@ pub(super) fn update(
         .and_then(|request| request.0.take());
     let was_open = tablet.panel.is_some();
     let mut redraw = !was_open;
+    let chat_room = party.as_deref().and_then(review_party::Party::chat_room);
+    if tablet.chat_room.as_deref() != chat_room {
+        tablet.chat_room = chat_room.map(str::to_owned);
+        redraw |= tablet.view == Page::Agent;
+    }
     if let Some(panel) = tablet.panel {
         if tablet.view == Page::Trace
             && tablet
@@ -1002,6 +1009,9 @@ pub(super) fn update(
         &repo.0,
         trace.as_deref(),
         agent.as_deref().map(agent_session::Session::provider),
+        party
+            .as_deref()
+            .is_some_and(review_party::Party::hosts_room),
     );
     tablet.panel = Some(panel);
     focus.set(first, FocusCause::Navigated);
@@ -1097,6 +1107,7 @@ fn draw(
     repository: &Repository,
     trace: Option<&trace_import::Trace>,
     agent: Option<agent_engine::Provider>,
+    hosts_room: bool,
 ) -> (Entity, Entity) {
     let title = match tablet.view {
         Page::Files => "Changed files",
@@ -1115,7 +1126,7 @@ fn draw(
         Page::Search => "Find a file",
         Page::Terminal => "Terminal",
         Page::Trace => "Paste a trace",
-        Page::Agent => "Agent",
+        Page::Agent => "Chat",
     };
     let chrome_title = if matches!(tablet.view, Page::Agent | Page::Terminal) {
         ""
@@ -1193,7 +1204,11 @@ fn draw(
             });
         match tablet.view {
             Page::Agent => {
-                first = Some(agent_session::spawn(parent));
+                first = Some(if tablet.chat_room.is_some() {
+                    review_party::chat::spawn(parent, hosts_room)
+                } else {
+                    agent_session::spawn(parent)
+                });
                 return;
             }
             Page::Trace => {
@@ -1328,6 +1343,16 @@ fn draw(
             }
             Page::Files => {}
         }
+        let revision = if repository.is_worktree() {
+            "Live worktree".into()
+        } else {
+            format!(
+                "Comparison · {}",
+                repository.revision.chars().take(8).collect::<String>()
+            )
+        };
+        native_panel::text(parent, &revision, native_panel::INK);
+        agent_timeline::spawn(parent, agent_timeline::View::Files);
         parent
             .spawn((Node {
                 flex_direction: FlexDirection::Row,

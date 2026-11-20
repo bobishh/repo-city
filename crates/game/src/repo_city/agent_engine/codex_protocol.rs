@@ -1,5 +1,7 @@
 //! Codex wire boundary. Only validated, normalized provider events leave this module.
 //! Field names follow the installed app-server v2 schema; unrelated fields stay forward compatible.
+pub(super) use super::activity::Location;
+use super::activity::{Details, Kind, Phase};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
@@ -17,11 +19,25 @@ pub(super) enum Update {
         id: String,
     },
     TurnCompleted {
+        id: String,
         error: Option<String>,
     },
     MessageDelta {
         id: String,
         text: String,
+    },
+    ActivityDelta {
+        id: String,
+        kind: Kind,
+        text: String,
+    },
+    Activity {
+        id: String,
+        details: Details,
+        phase: Phase,
+    },
+    ThreadStatus {
+        status: ThreadPhase,
     },
     Transcript {
         session: String,
@@ -48,15 +64,24 @@ pub(super) enum Item {
     },
     Read {
         files: Vec<Location>,
+        activity: Details,
     },
     Collaboration {
         agents: HashMap<String, AgentState>,
+        tool: Option<String>,
     },
+    Activity(Details),
 }
 
-pub(super) struct Location {
-    pub path: String,
-    pub line: usize,
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) enum ThreadPhase {
+    Active,
+    Idle,
+    SystemError,
+    NotLoaded,
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -126,6 +151,7 @@ pub(super) fn notification(
             Notification {
                 thread: event.thread_id,
                 update: Update::TurnCompleted {
+                    id: event.turn.id,
                     error: event.turn.error.map(|error| error.message),
                 },
             }
@@ -137,6 +163,92 @@ pub(super) fn notification(
                 update: Update::MessageDelta {
                     id: event.item_id,
                     text: event.delta,
+                },
+            }
+        }
+        "item/plan/delta"
+        | "item/reasoning/summaryTextDelta"
+        | "item/commandExecution/outputDelta"
+        | "item/mcpToolCall/progress" => {
+            let event: MessageDelta = decode(method, params)?;
+            let kind = match method {
+                "item/plan/delta" => Kind::Plan,
+                "item/reasoning/summaryTextDelta" => Kind::Reasoning,
+                "item/commandExecution/outputDelta" => Kind::Command,
+                _ => Kind::Tool,
+            };
+            Notification {
+                thread: event.thread_id,
+                update: Update::ActivityDelta {
+                    id: event.item_id,
+                    kind,
+                    text: event.delta,
+                },
+            }
+        }
+        "thread/status/changed" => {
+            let event: ThreadStatus = decode(method, params)?;
+            Notification {
+                thread: event.thread_id,
+                update: Update::ThreadStatus {
+                    status: event.status.kind,
+                },
+            }
+        }
+        "turn/plan/updated" => {
+            let event: PlanUpdate = decode(method, params)?;
+            let mut details = Details::new(Kind::Plan, "Plan status");
+            details.body = event
+                .explanation
+                .into_iter()
+                .chain(event.plan.into_iter().take(24).map(|step| {
+                    let status = match step.status {
+                        PlanStatus::Pending => "Pending",
+                        PlanStatus::InProgress => "In progress",
+                        PlanStatus::Completed => "Done",
+                    };
+                    format!("{status} · {}", step.step)
+                }))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Notification {
+                thread: event.thread_id,
+                update: Update::Activity {
+                    id: format!("plan:{}", event.turn_id),
+                    details,
+                    phase: Phase::Running,
+                },
+            }
+        }
+        "item/autoApprovalReview/started" | "item/autoApprovalReview/completed" => {
+            let event: AutomaticReview = decode(method, params)?;
+            let (title, phase) = match event.review.status {
+                ReviewStatus::InProgress => ("Codex checking permission", Phase::Running),
+                ReviewStatus::Approved => ("Permission approved by Codex", Phase::Completed),
+                ReviewStatus::Denied => ("Permission denied by Codex", Phase::Failed),
+                ReviewStatus::TimedOut => ("Permission review timed out", Phase::Failed),
+                ReviewStatus::Aborted => ("Permission review stopped", Phase::Ended),
+                ReviewStatus::Other => return Ok(None),
+            };
+            let mut details = Details::new(Kind::Session, title);
+            details.body = event.review.rationale.unwrap_or_default();
+            Notification {
+                thread: event.thread_id,
+                update: Update::Activity {
+                    id: format!("approval:{}", event.review_id),
+                    details,
+                    phase,
+                },
+            }
+        }
+        "item/fileChange/patchUpdated" => {
+            let event: PatchUpdate = decode(method, params)?;
+            Notification {
+                thread: event.thread_id,
+                update: Update::Item {
+                    id: event.item_id,
+                    completed: false,
+                    content: FileChange::normalize(event.changes, root, false),
                 },
             }
         }
@@ -229,7 +341,68 @@ struct MessageDelta {
     thread_id: String,
     #[serde(deserialize_with = "identifier")]
     item_id: String,
+    #[serde(alias = "message")]
     delta: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadStatus {
+    #[serde(deserialize_with = "identifier")]
+    thread_id: String,
+    status: StatusValue,
+}
+#[derive(Deserialize)]
+struct StatusValue {
+    #[serde(rename = "type")]
+    kind: ThreadPhase,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanUpdate {
+    #[serde(deserialize_with = "identifier")]
+    thread_id: String,
+    #[serde(deserialize_with = "identifier")]
+    turn_id: String,
+    explanation: Option<String>,
+    plan: Vec<PlanStep>,
+}
+#[derive(Deserialize)]
+struct PlanStep {
+    step: String,
+    status: PlanStatus,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum PlanStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutomaticReview {
+    #[serde(deserialize_with = "identifier")]
+    thread_id: String,
+    #[serde(deserialize_with = "identifier")]
+    review_id: String,
+    review: Review,
+}
+#[derive(Deserialize)]
+struct Review {
+    status: ReviewStatus,
+    rationale: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum ReviewStatus {
+    InProgress,
+    Approved,
+    Denied,
+    TimedOut,
+    Aborted,
+    #[serde(other)]
+    Other,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -260,19 +433,70 @@ enum WireItem {
     CommandExecution {
         #[serde(deserialize_with = "identifier")]
         id: String,
-        #[serde(rename = "commandActions")]
+        #[serde(rename = "commandActions", default)]
         actions: Vec<CommandAction>,
+        command: Option<ShellCommand>,
+        status: Option<StepStatus>,
+        #[serde(rename = "exitCode")]
+        exit_code: Option<i32>,
+        #[serde(rename = "aggregatedOutput")]
+        output: Option<String>,
     },
     McpToolCall {
         #[serde(deserialize_with = "identifier")]
         id: String,
+        #[serde(default)]
         arguments: Value,
+        #[serde(alias = "serverName")]
+        server: Option<String>,
+        #[serde(alias = "toolName", alias = "name")]
+        tool: Option<String>,
+        status: Option<StepStatus>,
     },
+    DynamicToolCall {
+        #[serde(deserialize_with = "identifier")]
+        id: String,
+        #[serde(default)]
+        arguments: Value,
+        namespace: Option<String>,
+        tool: Option<String>,
+        status: Option<StepStatus>,
+    },
+    #[serde(alias = "collabToolCall")]
     CollabAgentToolCall {
         #[serde(deserialize_with = "identifier")]
         id: String,
-        #[serde(rename = "agentsStates")]
+        #[serde(rename = "agentsStates", default)]
         agents: HashMap<String, AgentState>,
+        tool: Option<String>,
+    },
+    SubAgentActivity {
+        #[serde(deserialize_with = "identifier")]
+        id: String,
+        #[serde(rename = "agentThreadId", deserialize_with = "identifier")]
+        thread: String,
+        kind: SubagentAction,
+    },
+    ImageView {
+        #[serde(deserialize_with = "identifier")]
+        id: String,
+        path: String,
+    },
+    WebSearch {
+        #[serde(deserialize_with = "identifier")]
+        id: String,
+        query: Option<String>,
+    },
+    Plan {
+        #[serde(deserialize_with = "identifier")]
+        id: String,
+        text: Option<String>,
+    },
+    Reasoning {
+        #[serde(deserialize_with = "identifier")]
+        id: String,
+        #[serde(default)]
+        summary: Vec<String>,
     },
     #[serde(other)]
     Other,
@@ -315,36 +539,18 @@ impl WireItem {
                 id,
                 changes,
                 status,
+            } => (
+                id,
+                FileChange::normalize(changes, root, matches!(status, PatchStatus::Completed)),
+            ),
+            Self::CommandExecution {
+                id,
+                actions,
+                command,
+                status,
+                exit_code,
+                output,
             } => {
-                let detail = changes
-                    .iter()
-                    .take(12)
-                    .map(|change| format!("{}\n{}", change.path, change.diff))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    .chars()
-                    .take(6000)
-                    .collect();
-                let files = changes
-                    .into_iter()
-                    .take(16)
-                    .filter_map(|change| {
-                        relative(root, &change.path).map(|path| Location {
-                            path,
-                            line: changed_line(&change.diff).unwrap_or(1),
-                        })
-                    })
-                    .collect();
-                (
-                    id,
-                    Item::Edit {
-                        files,
-                        applied: matches!(status, PatchStatus::Completed),
-                        detail,
-                    },
-                )
-            }
-            Self::CommandExecution { id, actions } => {
                 let files = actions
                     .into_iter()
                     .filter_map(|action| match action {
@@ -355,18 +561,133 @@ impl WireItem {
                     })
                     .take(16)
                     .collect();
-                (id, Item::Read { files })
+                let title = command.map_or_else(|| "Shell command".into(), ShellCommand::label);
+                let mut activity = Details::new(Kind::Command, title);
+                activity.failed = status.is_some_and(StepStatus::failed)
+                    || exit_code.is_some_and(|code| code != 0);
+                activity.body = output.unwrap_or_default();
+                if let Some(code) = exit_code {
+                    activity.title = format!("{} · exit {code}", activity.title);
+                }
+                (id, Item::Read { files, activity })
             }
-            Self::McpToolCall { id, arguments } => (
+            Self::McpToolCall {
+                id,
+                arguments,
+                server,
+                tool,
+                status,
+            }
+            | Self::DynamicToolCall {
+                id,
+                arguments,
+                namespace: server,
+                tool,
+                status,
+            } => {
+                let tool = tool.unwrap_or_else(|| "Tool call".into());
+                let title =
+                    server.map_or_else(|| tool.clone(), |server| format!("{server}/{tool}"));
+                let mut activity = Details::new(Kind::Tool, title);
+                activity.failed = status.is_some_and(StepStatus::failed);
+                (
+                    id,
+                    Item::Read {
+                        files: mcp_location(root, arguments).into_iter().collect(),
+                        activity,
+                    },
+                )
+            }
+            Self::CollabAgentToolCall { id, agents, tool } => {
+                (id, Item::Collaboration { agents, tool })
+            }
+            Self::SubAgentActivity { id, thread, kind } => {
+                let (title, status) = match kind {
+                    SubagentAction::Started => ("Subagent started", AgentStatus::Running),
+                    SubagentAction::Interacted => ("Subagent received input", AgentStatus::Running),
+                    SubagentAction::Interrupted => ("Subagent interrupted", AgentStatus::Shutdown),
+                    SubagentAction::Completed => ("Subagent finished", AgentStatus::Completed),
+                    SubagentAction::Other => return None,
+                };
+                (
+                    id,
+                    Item::Collaboration {
+                        agents: HashMap::from([(thread, AgentState { status })]),
+                        tool: Some(title.into()),
+                    },
+                )
+            }
+            Self::ImageView { id, path } => (
                 id,
                 Item::Read {
-                    files: mcp_location(root, arguments).into_iter().collect(),
+                    files: relative(root, &path)
+                        .map(|path| Location { path, line: 1 })
+                        .into_iter()
+                        .collect(),
+                    activity: Details::new(Kind::Tool, "Open image"),
                 },
             ),
-            Self::CollabAgentToolCall { id, agents } => (id, Item::Collaboration { agents }),
+            Self::WebSearch { id, query } => (
+                id,
+                Item::Activity(Details::new(
+                    Kind::Search,
+                    query.unwrap_or_else(|| "Web search".into()),
+                )),
+            ),
+            Self::Plan { id, text } => {
+                let mut activity = Details::new(Kind::Plan, "Plan");
+                activity.body = text.unwrap_or_default();
+                (id, Item::Activity(activity))
+            }
+            Self::Reasoning { id, summary } => {
+                let mut activity = Details::new(Kind::Reasoning, "Progress summary");
+                activity.body = summary.into_iter().take(24).collect::<Vec<_>>().join("\n");
+                (id, Item::Activity(activity))
+            }
             Self::Other => return None,
         };
         Some(normalized)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum SubagentAction {
+    Started,
+    Interacted,
+    Interrupted,
+    Completed,
+    #[serde(other)]
+    Other,
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ShellCommand {
+    Text(String),
+    Arguments(Vec<String>),
+}
+impl ShellCommand {
+    fn label(self) -> String {
+        match self {
+            Self::Text(text) => text,
+            Self::Arguments(args) => args.into_iter().take(32).collect::<Vec<_>>().join(" "),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum StepStatus {
+    Failed,
+    Declined,
+    Interrupted,
+    Errored,
+    #[serde(other)]
+    Other,
+}
+impl StepStatus {
+    fn failed(self) -> bool {
+        !matches!(self, Self::Other)
     }
 }
 #[derive(Deserialize)]
@@ -382,6 +703,49 @@ enum UserInput {
 struct FileChange {
     path: String,
     diff: String,
+}
+
+impl FileChange {
+    fn normalize(changes: Vec<Self>, root: &Path, applied: bool) -> Item {
+        let detail = changes
+            .iter()
+            .take(12)
+            .flat_map(|change| {
+                change
+                    .path
+                    .chars()
+                    .chain(['\n'])
+                    .chain(change.diff.chars())
+                    .chain(['\n'])
+            })
+            .take(6000)
+            .collect();
+        let files = changes
+            .into_iter()
+            .take(16)
+            .filter_map(|change| {
+                relative(root, &change.path).map(|path| Location {
+                    path,
+                    line: changed_line(&change.diff).unwrap_or(1),
+                })
+            })
+            .collect();
+        Item::Edit {
+            files,
+            applied,
+            detail,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PatchUpdate {
+    #[serde(deserialize_with = "identifier")]
+    thread_id: String,
+    #[serde(deserialize_with = "identifier")]
+    item_id: String,
+    changes: Vec<FileChange>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -471,8 +835,55 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn plan_and_public_reasoning_deltas_are_visible_activity() {
+        let params = json!({"threadId":"main","itemId":"action","delta":"Read the file"});
+        for method in ["item/plan/delta", "item/reasoning/summaryTextDelta"] {
+            assert!(
+                notification(Path::new("/repo"), method, params.clone())
+                    .unwrap()
+                    .is_some(),
+                "{method}"
+            );
+        }
+        assert!(
+            notification(Path::new("/repo"), "item/reasoning/textDelta", params)
+                .unwrap()
+                .is_none()
+        );
+    }
+
     fn event(method: &str, params: Value) -> Result<Option<Notification>, String> {
         notification(Path::new("/repo"), method, params)
+    }
+
+    #[test]
+    fn an_in_flight_patch_reports_the_changed_line_before_completion() {
+        let patch = event(
+            "item/fileChange/patchUpdated",
+            json!({"threadId":"main","turnId":"turn","itemId":"patch","changes":[{
+                "path":"src/state.rs","kind":{"type":"update"},"diff":"@@ -8 +12 @@\n-old\n+new"
+            }]}),
+        )
+        .unwrap()
+        .unwrap();
+        let Update::Item {
+            id,
+            completed,
+            content: Item::Edit { files, .. },
+        } = patch.update
+        else {
+            panic!("expected a file edit");
+        };
+        assert_eq!(id, "patch");
+        assert!(!completed);
+        assert_eq!(
+            files,
+            [Location {
+                path: "src/state.rs".into(),
+                line: 12
+            }]
+        );
     }
 
     #[test]
@@ -540,7 +951,7 @@ mod tests {
     fn explicit_file_locations_are_normalized_once_and_unsafe_paths_are_excluded() {
         let value = event("item/started", json!({"threadId":"main","item":{"id":"read","type":"commandExecution","commandActions":[{"type":"unknown","command":"cat invisible.rs"},{"type":"read","path":"/repo/src/main.rs"},{"type":"read","path":"../secret"},{"type":"read","path":"/other/private"}]}})).unwrap().unwrap();
         let Update::Item {
-            content: Item::Read { files },
+            content: Item::Read { files, .. },
             ..
         } = value.update
         else {
@@ -571,12 +982,12 @@ mod tests {
         ] {
             let value = event("item/started", json!({"threadId":"main","item":{"id":"mcp","type":"mcpToolCall","arguments":arguments}})).unwrap().unwrap();
             assert!(
-                matches!(value.update, Update::Item { content: Item::Read { files }, .. } if files.is_empty())
+                matches!(value.update, Update::Item { content: Item::Read { files, .. }, .. } if files.is_empty())
             );
         }
         let value = event("item/started", json!({"threadId":"main","item":{"id":"mcp","type":"mcpToolCall","arguments":{"path":"src/main.rs","line":23}}})).unwrap().unwrap();
         assert!(
-            matches!(value.update, Update::Item { content: Item::Read { files }, .. } if files[0].line == 23)
+            matches!(value.update, Update::Item { content: Item::Read { files, .. }, .. } if files[0].line == 23)
         );
     }
 

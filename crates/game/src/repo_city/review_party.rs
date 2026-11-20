@@ -4,19 +4,26 @@ use super::*;
 use serde::{Deserialize, Serialize};
 
 #[cfg(not(target_arch = "wasm32"))]
+pub(super) mod chat;
+#[cfg(not(target_arch = "wasm32"))]
 mod media;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 
 pub(super) struct Plugin;
+#[derive(SystemSet, Clone, Debug, Hash, PartialEq, Eq)]
+pub(super) struct ProjectRoom;
 impl bevy::app::Plugin for Plugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Party>()
             .init_resource::<Markers>()
-            .add_systems(Update, project.after(listing::draw))
+            .add_systems(Update, project.in_set(ProjectRoom).after(listing::draw))
             .add_systems(Update, draw_peers.after(project));
         #[cfg(not(target_arch = "wasm32"))]
-        native::register(app);
+        {
+            native::register(app);
+            chat::register(app);
+        }
     }
 }
 
@@ -75,16 +82,49 @@ struct Projection {
     focus: Option<Focus>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub(super) struct BoardContent {
+    pub(super) chat: Vec<BoardMessage>,
+    pub(super) sketch: Option<sketch::Sketch>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub(super) struct BoardMessage {
+    pub(super) login: String,
+    pub(super) text: String,
+}
+
 #[derive(Resource, Default)]
 pub(super) struct Party {
     destination: Option<Focus>,
     projection: Option<Projection>,
     next: f64,
     peers: Vec<serde_json::Value>,
+    #[cfg(target_arch = "wasm32")]
+    board: Option<BoardContent>,
     #[cfg(not(target_arch = "wasm32"))]
     native: native::State,
 }
 impl Party {
+    pub(super) fn board_content(&self) -> Option<BoardContent> {
+        #[cfg(target_arch = "wasm32")]
+        return self.board.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.native
+            .connected()
+            .then(|| self.native.chat.board_content())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn chat_room(&self) -> Option<&str> {
+        self.native.chat_room()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn hosts_room(&self) -> bool {
+        self.native.hosts_room()
+    }
+
     pub(super) fn take_destination(
         &mut self,
         repo: &Repository,
@@ -117,6 +157,8 @@ extern "C" {
     fn party_active() -> bool;
     #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = partyPeers)]
     fn party_peers() -> String;
+    #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = takePartyBoard)]
+    fn take_party_board() -> String;
 }
 
 fn project(
@@ -135,11 +177,19 @@ fn project(
     let active = party.native.connected();
     if !active {
         party.peers.clear();
+        #[cfg(target_arch = "wasm32")]
+        {
+            party.board = None;
+        }
         return;
     }
     #[cfg(target_arch = "wasm32")]
     {
         party.peers = serde_json::from_str(&party_peers()).unwrap_or_default();
+        let board = take_party_board();
+        if !board.is_empty() {
+            party.board = serde_json::from_str(&board).ok();
+        }
     }
     #[cfg(not(target_arch = "wasm32"))]
     {

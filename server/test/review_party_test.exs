@@ -119,6 +119,31 @@ defmodule RepoCity.ReviewPartyTest do
     assert request(:get, path <> "/events", nil, second["room_token"]).status == 410
   end
 
+  test "room members see the same attributed chat history and retries leave one message" do
+    admitted = create()
+    path = room_path(admitted)
+    host = admitted["room_token"]
+    message = %{type: "chat", id: "prompt-1", text: "  Check this diff.  ", from: "2"}
+
+    assert request(:post, path <> "/events", message, "stranger").status == 403
+    assert json(request(:post, path <> "/events", message, host))["accepted"]
+    assert json(request(:post, path <> "/events", message, host))["accepted"]
+    assert request(:post, path <> "/events", %{message | text: "  "}, host).status == 400
+
+    guest = join_guest(admitted)
+
+    assert [%{"type" => "chat", "from" => "1", "login" => "host", "text" => "Check this diff."}] =
+             guest["events"]
+
+    assert guest["events"] ==
+             json(request(:get, path <> "/events", nil, guest["room_token"]))["events"]
+
+    other = create()
+
+    assert json(request(:get, room_path(other) <> "/events", nil, other["room_token"]))["events"] ==
+             []
+  end
+
   test "browser requests require the same origin and an authorized WebSocket upgrade" do
     assert request(
              :post,
@@ -135,6 +160,29 @@ defmodule RepoCity.ReviewPartyTest do
              403
 
     assert request(:get, path <> "/socket", nil, first["room_token"], @origin).status == 426
+  end
+
+  test "only the host changes the sketch and reconnect sees the current sketch" do
+    admitted = create()
+    guest = join_guest(admitted)
+    path = room_path(admitted)
+    sketch = %{type: "sketch", title: "Flow", source: "flowchart LR\nA --> B"}
+
+    assert request(:post, path <> "/events", sketch, guest["room_token"]).status == 403
+    assert json(request(:post, path <> "/events", sketch, admitted["room_token"]))["accepted"]
+    assert json(request(:post, path <> "/events", sketch, admitted["room_token"]))["accepted"]
+
+    renewed = json(request(:post, path <> "/renew", %{}, "guest"))
+
+    assert [
+             %{
+               "type" => "sketch",
+               "title" => "Flow",
+               "format" => "mermaid",
+               "source" => "flowchart LR\nA --> B"
+             }
+           ] =
+             renewed["events"]
   end
 
   defp create, do: request(:post, "/party/rooms", %{comparison: @comparison}, "host") |> json()

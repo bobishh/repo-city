@@ -1,4 +1,4 @@
-// Room messages contain locations and media signaling, never source or drafts.
+// Room events carry explicit chat, locations, and media signaling.
 export function createReviewParty(options = {}) {
   const request = options.fetch ?? globalThis.fetch.bind(globalThis);
   const Socket = options.WebSocket ?? globalThis.WebSocket;
@@ -10,11 +10,11 @@ export function createReviewParty(options = {}) {
   const origin = options.origin ?? globalThis.location.origin;
   const listeners = new Set(), peers = new Map(), remoteStreams = new Map(), routes = new Map(), muted = new Set();
   let room, member, socket, credentials, renewal, reconnect, retry = 0, generation = 0;
-  let status = "solo", error = "", members = [], cues = [], sequence = 0;
+  let status = "solo", error = "", members = [], cues = [], chat = [], sketch = null, sequence = 0;
   let microphone, outgoing, speaking = false, liveFocus = false, agentInput = false, shareWithAgents = false;
   let currentFocus = null, lastFocus = "", lastPose = 0, agentAdapter = options.agentAdapter;
   const connectedAgent = () => Boolean(agentAdapter?.connected());
-  const state = () => ({ room, member, members, cues, status, error, voice: Boolean(microphone), speaking,
+  const state = () => ({ room, member, members, cues, chat, sketch, status, error, voice: Boolean(microphone), speaking,
     liveFocus, agentInput, shareWithAgents, agentConnected: connectedAgent(), muted: [...muted] });
   const changed = () => { for (const listener of listeners) listener(state()); };
   const send = value => { if (socket?.readyState === 1) socket.send(JSON.stringify(value)); };
@@ -112,6 +112,11 @@ export function createReviewParty(options = {}) {
     }).catch(mediaError);
     await entry.chain;
   }
+  function receiveChat(message) {
+    if (!chat.some(item => item.seq === message.seq)) {
+      chat = [...chat, message].sort((left, right) => left.seq - right.seq).slice(-32);
+    }
+  }
   function receive(message) {
     if (message.type === "roster") {
       members = message.members; room = message.room ?? room; syncPeers();
@@ -126,7 +131,9 @@ export function createReviewParty(options = {}) {
       if (message.seq == null || !cues.some(cue => cue.seq === message.seq)) {
         cues = [...cues.slice(-31), { ...message.cue, from: message.from, seq: message.seq }];
       }
-    } else if (message.type === "signal") { void signal(message.from, message.signal).catch(mediaError); return; }
+    } else if (message.type === "chat") receiveChat(message);
+    else if (message.type === "sketch" && (!sketch || message.seq > sketch.seq)) sketch = message;
+    else if (message.type === "signal") { void signal(message.from, message.signal).catch(mediaError); return; }
     else if (["closed", "removed", "expired"].includes(message.type)) { disconnect(message.type, message.reason ?? "Room access ended."); return; }
     else if (message.type === "error") error = message.error ?? "Room request rejected.";
     changed();
@@ -171,7 +178,7 @@ export function createReviewParty(options = {}) {
   function disconnect(next = "solo", message = "") {
     generation++; cancel(renewal); cancel(reconnect); disableVoice();
     socket?.close(); socket = undefined; room = member = credentials = undefined;
-    members = []; cues = []; status = next; error = message; liveFocus = agentInput = shareWithAgents = false; changed();
+    members = []; cues = []; chat = []; sketch = null; status = next; error = message; liveFocus = agentInput = shareWithAgents = false; changed();
   }
   async function enter(path, body) {
     if (room) await leave();
@@ -181,6 +188,9 @@ export function createReviewParty(options = {}) {
       data = await api(path, body);
       await options.loadComparison?.(data.room.comparison);
       credentials = data; room = data.room; member = data.member; members = data.members ?? [member];
+      for (const message of data.events ?? []) {
+        if (message.type === "chat" || message.type === "sketch") receive(message);
+      }
       const epoch = ++generation; connect(epoch); renew(epoch); changed();
       return state();
     } catch (problem) {
@@ -203,6 +213,14 @@ export function createReviewParty(options = {}) {
     create: comparison => enter("rooms", { comparison }), join: (id, invite) => enter(`rooms/${encodeURIComponent(id)}/join`, { invite }),
     leave, invite: login => roomApi("invites", { login }), revokeInvite: invite => roomApi("revoke-invite", { invite }),
     remove: member_id => roomApi("remove", { member_id }),
+    async sendChat(id, text) {
+      if (status !== "connected") throw new Error("Connect to the room to send a message.");
+      await roomApi("events", { type: "chat", id, text });
+    },
+    async shareSketch(title, source, format) {
+      if (status !== "connected") throw new Error("Connect to the room to share a sketch.");
+      await roomApi("events", { type: "sketch", title, source, format });
+    },
     async close() { await roomApi("close"); disconnect("closed", "Host closed the room."); },
     follow: id => navigate(members.find(value => value.id === id)?.focus), followCue: navigate,
     shareCue() { if (currentFocus) send({ type: "cue", cue: currentFocus }); },

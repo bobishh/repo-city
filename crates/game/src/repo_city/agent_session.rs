@@ -93,6 +93,151 @@ pub(super) struct Session {
 }
 
 impl Session {
+    pub(super) fn timeline(&self, root: &Path) -> Option<&agent_engine::activity::Timeline> {
+        (self.root.as_deref() == Some(root)).then_some(&self.projection.timeline)
+    }
+
+    pub(super) fn activity_owner(&self, thread: &str) -> String {
+        if self
+            .projection
+            .dialogue
+            .thread
+            .as_deref()
+            .is_none_or(|primary| primary == thread)
+        {
+            self.selected.label.into()
+        } else {
+            format!("Subagent {}", thread.chars().take(8).collect::<String>())
+        }
+    }
+
+    fn record_engine_event(&mut self, event: &Event) {
+        use agent_engine::activity::{Details, Kind, Phase};
+        let owner = self
+            .projection
+            .dialogue
+            .thread
+            .as_deref()
+            .unwrap_or("local-session");
+        let (thread, key, title, detail, phase) = match event {
+            Event::Connected(thread) => (
+                thread.as_str(),
+                "connection".into(),
+                "Connected to provider",
+                "",
+                Phase::Completed,
+            ),
+            Event::Replaced { conversation, .. } => (
+                conversation.as_str(),
+                "connection".into(),
+                "Conversation replaced",
+                "",
+                Phase::Completed,
+            ),
+            Event::Delivery { id, result } => match result {
+                Ok(()) => (
+                    owner,
+                    format!("delivery:{id}"),
+                    "Message delivered",
+                    "",
+                    Phase::Completed,
+                ),
+                Err(error) => (
+                    owner,
+                    format!("delivery:{id}"),
+                    "Message delivery failed",
+                    error.as_str(),
+                    Phase::Failed,
+                ),
+            },
+            Event::Approval { token, title } => (
+                owner,
+                format!("request:{token}"),
+                "Permission requested",
+                title.as_str(),
+                Phase::Running,
+            ),
+            Event::Voice { id, active: true } => (
+                owner,
+                format!("voice:{id}"),
+                "Voice connected",
+                "",
+                Phase::Running,
+            ),
+            Event::Voice { id, active: false } => (
+                owner,
+                format!("voice:{id}"),
+                "Voice disconnected",
+                "",
+                Phase::Ended,
+            ),
+            Event::VoiceWaiting { id } => (
+                owner,
+                format!("voice:{id}"),
+                "Voice waiting for the active turn",
+                "",
+                Phase::Running,
+            ),
+            Event::VoiceStarting { id } => (
+                owner,
+                format!("voice:{id}"),
+                "Voice connecting",
+                "",
+                Phase::Running,
+            ),
+            Event::Error(error) => (
+                owner,
+                "session-error".into(),
+                "Session error",
+                error.as_str(),
+                Phase::Failed,
+            ),
+            Event::VoiceError(error) => (
+                owner,
+                "voice-error".into(),
+                "Voice error",
+                error.as_str(),
+                Phase::Failed,
+            ),
+            Event::Closed => (
+                owner,
+                "connection".into(),
+                "Provider disconnected",
+                "",
+                Phase::Ended,
+            ),
+            Event::Changed { .. } => return,
+        };
+        let mut details = Details::new(Kind::Session, title);
+        details.body = detail.into();
+        self.projection
+            .timeline
+            .record(thread, &key, details, phase);
+    }
+
+    pub(super) fn chat_board(&self) -> Vec<review_party::BoardMessage> {
+        let mut recent = self
+            .projection
+            .dialogue
+            .messages
+            .iter()
+            .rev()
+            .filter(|message| matches!(message.role.as_str(), "user" | "assistant"))
+            .take(5)
+            .map(|message| review_party::BoardMessage {
+                login: if message.role == "user" {
+                    "You"
+                } else {
+                    self.selected.label
+                }
+                .into(),
+                text: message.text.clone(),
+            })
+            .collect::<Vec<_>>();
+        recent.reverse();
+        recent
+    }
+
     pub(super) fn follows_agent(&self) -> bool {
         self.follow_agent
     }
@@ -457,6 +602,7 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands) -> Entity {
                     },
                 ));
             });
+            agent_timeline::spawn(body, agent_timeline::View::Chat);
             body.spawn(Node {
                 flex_direction: FlexDirection::Row,
                 column_gap: px(6.),
@@ -718,6 +864,7 @@ fn update(
         session.version = session.version.wrapping_add(1);
     }
     for event in events {
+        session.record_engine_event(&event);
         match event {
             Event::Connected(thread) => {
                 session.projection.dialogue.thread = Some(thread);
