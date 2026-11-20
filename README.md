@@ -327,14 +327,25 @@ Sign in with that CLI first. City keeps a separate conversation for each
 checkout and provider. Agy requires a CLI with `agy acp`; Grok uses
 `grok agent stdio`. Agy and Grok stream text and ask before tool calls that
 require permission. Voice and steering are available with Codex.
-Enter a message and choose **Send**, or press **Cmd/Ctrl+Enter**. During an active
+Enter a message and choose **Send**, or press **Enter**. **Shift+Enter** inserts a
+new line. Settings can restore **Cmd/Ctrl+Enter** for sending. During an active
 Codex turn, **Steer** sends new instructions into that same work.
 City saves the message locally and shows **Sending** until Codex confirms delivery.
 If another client owns the saved conversation, City forks its history and delivers
 the queued message in the independent conversation. **Restore message** copies the
 most recent rejected or unconfirmed message into an empty composer for manual review.
 Requested command and file permissions appear in the same tablet with
-**Approve once** and **Reject**. **Stop work** interrupts the current turn.
+**Approve once** and **Reject**, plus a city overlay with **Y/N** shortcuts.
+Y/N remain text while an editor, message field, search, or terminal has focus.
+Agent requests take priority over flight proposals. **Settings → Agent provider**
+selects who reviews Codex permission requests. The default uses Codex's
+automatic review. Codex applies the setting on the next connection. Repo City
+shows any requests the provider sends to the user. These preferences are stored
+in `agent-interaction.json` beside desktop preferences. **Stop work** interrupts
+the current turn.
+
+**F7** toggles Follow agent, including while VibePad is put away. Settings can
+assign **F8** instead; native party push-to-talk then uses **F7**.
 
 Choose **Start voice** in VibePad or press **F9** while flying (some Macs use
 **Fn+F9**). **Connect chat** starts the text connection separately. The app

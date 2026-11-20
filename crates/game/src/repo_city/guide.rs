@@ -190,12 +190,13 @@ const WORKBENCH: &[(&str, &str)] = &[
         "Open the conversation; closing VibePad keeps it active",
     ),
     (
-        "Cmd/Ctrl+Enter",
-        "Send a message or steer the current agent work",
+        "Enter / Shift+Enter",
+        "Send or steer agent work / insert a new line (configurable in Settings)",
     ),
+    ("F7", "Toggle Follow agent (F8 is available in Settings)"),
     (
         "Y / N",
-        "Accept or dismiss a proposed flight outside text input",
+        "Approve or reject an agent request, then accept or dismiss a flight outside text input",
     ),
     ("Tab → Terminal", "Open the persistent shell"),
     (

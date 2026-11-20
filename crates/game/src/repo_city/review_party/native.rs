@@ -273,8 +273,18 @@ pub(super) fn update(
     mut clipboard: ResMut<Clipboard>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut labels: Query<&mut Text>,
+    agent: Res<agent_session::Session>,
+    mut last_follow_key: Local<Option<KeyCode>>,
 ) {
     let now = time.elapsed_secs_f64();
+    let talk_key = if agent.follow_key() == KeyCode::F8 {
+        KeyCode::F7
+    } else {
+        KeyCode::F8
+    };
+    let talk_label = if talk_key == KeyCode::F7 { "F7" } else { "F8" };
+    let follow_key_changed = *last_follow_key != Some(agent.follow_key());
+    *last_follow_key = Some(agent.follow_key());
     let toggle = keys.just_pressed(KeyCode::F10);
     let result = party
         .native
@@ -652,8 +662,9 @@ pub(super) fn update(
                 if let Some(media) = &party.native.media {
                     media.command(media::Command::Members(party.native.members.clone()));
                 }
-                party.native.status =
-                    "Voice enabled. Hold F8 to speak. Agent audio forwarding unavailable.".into();
+                party.native.status = format!(
+                    "Voice enabled. Hold {talk_label} to speak. Agent audio forwarding unavailable."
+                );
                 redraw = true;
             }
             media::Event::Error(error) => {
@@ -676,7 +687,7 @@ pub(super) fn update(
     }
     let talking = party.native.media_ready
         && party.native.connected()
-        && keys.pressed(KeyCode::F8)
+        && keys.pressed(talk_key)
         && windows.single().is_ok_and(|window| window.focused);
     if talking != party.native.talking {
         party.native.talking = talking;
@@ -754,7 +765,7 @@ pub(super) fn update(
         if let Some(panel) = party.native.panel.take() {
             native_panel::close(&mut commands, panel, &mut focus, &parents);
         }
-    } else if redraw && (toggle || party.native.panel.is_some()) {
+    } else if (redraw || follow_key_changed) && (toggle || party.native.panel.is_some()) {
         let panel = if let Some(panel) = party.native.panel {
             native_panel::refresh_tablet(&mut commands, panel, "Review party · F10");
             panel
@@ -781,7 +792,7 @@ pub(super) fn update(
                 }
                 native_panel::button::<_, Party>(parent, if state.focus_enabled { "Share reading focus: on" } else { "Share reading focus: off" }, native_panel::INK, Action::Focus);
                 native_panel::button::<_, Party>(parent, "Share current code location", native_panel::INK, Action::ShareCue);
-                native_panel::button::<_, Party>(parent, if state.media.is_some() { "Disable voice · hold F8 to talk" } else { "Enable voice · microphone permission" }, native_panel::INK, Action::Voice);
+                native_panel::button::<_, Party>(parent, &if state.media.is_some() { format!("Disable voice · hold {talk_label} to talk") } else { "Enable voice · microphone permission".into() }, native_panel::INK, Action::Voice);
                 let roster = parent.spawn(Node { flex_direction: FlexDirection::Column, min_height: px(100.), max_height: px(220.), overflow: Overflow::scroll_y(), ..default() }).with_children(|parent| draw_roster(parent, state)).id();
                 state.roster = Some(roster);
                 native_panel::button::<_, Party>(parent, "Leave room", native_panel::INK, Action::Leave);

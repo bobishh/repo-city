@@ -1725,6 +1725,7 @@ fn draw_settings(
                             }
                         });
                         native_panel::text(form, "Voice is available with Codex.", native_panel::INK);
+                        agent_session::settings(form);
                     });
                 }
                 if let Some(audio) = audio {

@@ -1,6 +1,6 @@
 //! Owned stdio app-server process. No provider connection exists before a user action.
 use super::{
-    Prompt,
+    Prompt, Start,
     audio::{Devices, Opening},
     rtc::Connection,
 };
@@ -67,12 +67,7 @@ pub(crate) struct Client {
 }
 
 impl Client {
-    pub fn start(
-        root: PathBuf,
-        thread: Option<String>,
-        speaking: Arc<AtomicBool>,
-        diagnostic_path: Option<PathBuf>,
-    ) -> Self {
+    pub fn start(mut start: Start) -> Self {
         let (commands, input) = mpsc::sync_channel(24);
         let (events, output) = mpsc::sync_channel(256);
         let stop = Arc::new(AtomicBool::new(false));
@@ -80,18 +75,16 @@ impl Client {
         let wanted_voice = Arc::new(Mutex::new(None));
         let wanted = wanted_voice.clone();
         thread::spawn(move || {
-            let mut diagnostics = Diagnostics::new(diagnostic_path);
+            let mut diagnostics = Diagnostics::new(start.diagnostics.take());
             diagnostics.record("connecting_agent", || json!({"deadline_seconds":45}));
-            if let Err(error) = Wire::open(&root).and_then(|wire| {
+            if let Err(error) = Wire::open(&start.root).and_then(|wire| {
                 run(
                     wire,
-                    root,
-                    thread,
+                    start,
                     input,
                     &events,
                     &stopped,
                     &wanted,
-                    speaking,
                     &mut diagnostics,
                 )
             }) {
@@ -879,10 +872,11 @@ fn fork_thread(
     root: &Path,
     executable: &Path,
     previous: &str,
+    automatic_review: bool,
     events: &SyncSender<Event>,
     stop: &AtomicBool,
 ) -> Result<String, String> {
-    let mut params = thread_params(root, executable, Some(previous));
+    let mut params = thread_params(root, executable, Some(previous), automatic_review);
     params["deferGoalContinuation"] = json!(true);
     let result = wire.call("thread/fork", params, events, stop)?;
     let thread = thread_id(&result)?;
@@ -926,6 +920,7 @@ fn establish_thread(
     root: &Path,
     executable: &Path,
     saved: Option<&str>,
+    automatic_review: bool,
     events: &SyncSender<Event>,
     stop: &AtomicBool,
 ) -> Result<(String, bool), String> {
@@ -934,24 +929,36 @@ fn establish_thread(
     } else {
         "thread/start"
     };
-    let (result, replaced) =
-        match wire.call(method, thread_params(root, executable, saved), events, stop) {
-            Ok(result) => (result, None),
-            Err(error) if saved.is_some() && active_writer(&error) => {
-                return fork_thread(wire, root, executable, saved.unwrap(), events, stop)
-                    .map(|thread| (thread, true));
-            }
-            Err(error) if missing_rollout(&error, saved) => (
-                wire.call(
-                    "thread/start",
-                    thread_params(root, executable, None),
-                    events,
-                    stop,
-                )?,
-                Some(false),
-            ),
-            Err(error) => return Err(error),
-        };
+    let (result, replaced) = match wire.call(
+        method,
+        thread_params(root, executable, saved, automatic_review),
+        events,
+        stop,
+    ) {
+        Ok(result) => (result, None),
+        Err(error) if saved.is_some() && active_writer(&error) => {
+            return fork_thread(
+                wire,
+                root,
+                executable,
+                saved.unwrap(),
+                automatic_review,
+                events,
+                stop,
+            )
+            .map(|thread| (thread, true));
+        }
+        Err(error) if missing_rollout(&error, saved) => (
+            wire.call(
+                "thread/start",
+                thread_params(root, executable, None, automatic_review),
+                events,
+                stop,
+            )?,
+            Some(false),
+        ),
+        Err(error) => return Err(error),
+    };
     let thread = thread_id(&result)?;
     announce_thread(events, &thread, replaced)?;
     Ok((thread, false))
@@ -965,15 +972,20 @@ fn active_writer(error: &str) -> bool {
 
 fn run(
     mut wire: Wire,
-    root: PathBuf,
-    saved_thread: Option<String>,
+    start: Start,
     commands: Receiver<Command>,
     events: &SyncSender<Event>,
     stop: &AtomicBool,
     wanted_voice: &Mutex<Option<String>>,
-    speaking: Arc<AtomicBool>,
     diagnostics: &mut Diagnostics,
 ) -> Result<(), String> {
+    let Start {
+        root,
+        conversation: saved_thread,
+        automatic_review,
+        speaking,
+        ..
+    } = start;
     wire.call("initialize",json!({"clientInfo":{"name":"repo_city","version":"0.1.0","title":super::super::APP_NAME},"capabilities":{"experimentalApi":true}}),events,stop)?;
     wire.write(json!({"method":"initialized","params":{}}))?;
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
@@ -982,6 +994,7 @@ fn run(
         &root,
         &executable,
         saved_thread.as_deref(),
+        automatic_review,
         events,
         stop,
     )?;
@@ -1150,8 +1163,15 @@ fn run(
                         {
                             wire.pending.remove(&request);
                             forked = true;
-                            match fork_thread(&mut wire, &root, &executable, &thread, events, stop)
-                            {
+                            match fork_thread(
+                                &mut wire,
+                                &root,
+                                &executable,
+                                &thread,
+                                automatic_review,
+                                events,
+                                stop,
+                            ) {
                                 Ok(next) => {
                                     thread = next;
                                     work.begin();
@@ -1289,9 +1309,19 @@ fn missing_rollout(error: &str, thread: Option<&str>) -> bool {
     })
 }
 
-pub(super) fn thread_params(root: &Path, executable: &Path, thread: Option<&str>) -> Value {
+pub(super) fn thread_params(
+    root: &Path,
+    executable: &Path,
+    thread: Option<&str>,
+    automatic_review: bool,
+) -> Value {
     // Ecky 9ea94d7 uses Codex review for sandbox requests and trusts its own bound MCP server.
-    let mut params = json!({"cwd":root,"approvalPolicy":"on-request","approvalsReviewer":"auto_review","sandbox":"workspace-write","developerInstructions":instructions(),"config":{
+    let reviewer = if automatic_review {
+        "auto_review"
+    } else {
+        "user"
+    };
+    let mut params = json!({"cwd":root,"approvalPolicy":"on-request","approvalsReviewer":reviewer,"sandbox":"workspace-write","developerInstructions":instructions(),"config":{
         "mcp_servers.repo_city.command":executable,
         "mcp_servers.repo_city.args":["--notes-mcp","--repo",root],
         "mcp_servers.repo_city.required":true,
@@ -1390,13 +1420,17 @@ for line in sys.stdin:
             let worker = thread::spawn(move || {
                 run(
                     wire,
-                    worker_root,
-                    Some("source".into()),
+                    Start {
+                        root: worker_root,
+                        conversation: Some("source".into()),
+                        automatic_review: true,
+                        speaking: Arc::default(),
+                        diagnostics: None,
+                    },
                     input,
                     &events,
                     &worker_stop,
                     &Mutex::new(None),
-                    Arc::new(AtomicBool::new(false)),
                     &mut Diagnostics::new(None),
                 )
             });
@@ -1569,6 +1603,7 @@ for line in sys.stdin:
             Path::new("/repo with spaces"),
             Path::new("/Applications/Repo City.app/Contents/MacOS/repo-city"),
             Some("saved"),
+            true,
         );
         assert_eq!(params["threadId"], "saved");
         assert_eq!(params["approvalPolicy"], "on-request");
@@ -1645,10 +1680,12 @@ for line in sys.stdin:
         ));
         let root = Path::new("/repo");
         let exe = Path::new("/app");
-        let old = thread_params(root, exe, Some("lost"));
-        let fresh = thread_params(root, exe, None);
+        let old = thread_params(root, exe, Some("lost"), false);
+        let fresh = thread_params(root, exe, None, false);
         assert!(fresh.get("threadId").is_none());
         assert_eq!(fresh["approvalPolicy"], old["approvalPolicy"]);
+        assert_eq!(fresh["approvalsReviewer"], "user");
+        assert_eq!(old["approvalsReviewer"], "user");
         assert_eq!(fresh["config"], old["config"]);
     }
 

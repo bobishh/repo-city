@@ -3,7 +3,9 @@
 //! c48e376f676663272ee3a06622cd81bacb3f24d7; Tauri/CAD services are not copied.
 
 use super::agent_engine::{self, Command, Dialogue, Engine, Event, Projection};
+mod controls;
 mod voice_hud;
+pub(super) use controls::settings;
 
 use super::*;
 use bevy::{input_focus::InputFocus, text::EditableText};
@@ -29,6 +31,7 @@ impl bevy::app::Plugin for Plugin {
             .add_systems(Update, voice_hud::update.after(update))
             .add_systems(Update, update.after(review_tablet::update))
             .add_systems(Update, presence.after(update));
+        controls::register(app);
     }
 }
 
@@ -43,6 +46,9 @@ enum Action {
     Follow,
     Approve,
     Reject,
+    SendKey,
+    ApprovalMode,
+    FollowKey,
 }
 #[derive(Component, Default)]
 struct Prompt {
@@ -73,6 +79,7 @@ struct Approval {
 pub(super) struct Session {
     root: Option<PathBuf>,
     selected: agent_engine::Provider,
+    interaction: controls::Settings,
     client: Option<Box<dyn Engine>>,
     projection: Projection,
     prompt: String,
@@ -295,6 +302,8 @@ impl Session {
                 agent_engine::Start {
                     root,
                     conversation: self.projection.dialogue.thread.clone(),
+                    automatic_review: self.interaction.approvals
+                        == controls::ApprovalMode::Automatic,
                     speaking: self.speaking.clone(),
                     diagnostics: repository_picker::settings_file()
                         .map(|path| path.with_file_name("voice-status.json")),
@@ -534,6 +543,7 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands) -> Entity {
                     TextColor(native_panel::INK),
                 ));
             });
+            agent_timeline::spawn(body, agent_timeline::View::Chat);
             body.spawn(Node {
                 height: px(38.),
                 flex_shrink: 0.,
@@ -602,7 +612,6 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands) -> Entity {
                     },
                 ));
             });
-            agent_timeline::spawn(body, agent_timeline::View::Chat);
             body.spawn(Node {
                 flex_direction: FlexDirection::Row,
                 column_gap: px(6.),
@@ -642,10 +651,14 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands) -> Entity {
                 BorderColor::all(Color::srgb_u8(40, 85, 91)),
             ))
             .with_children(|composer| {
-                let field = native_panel::input(composer, "", "", 100, true);
+                let field = native_panel::input(composer, "", "", 100, false);
                 composer.commands().entity(field).insert((
                     Prompt::default(),
                     Name::new("Message"),
+                    EditableText {
+                        max_characters: Some(6000),
+                        ..default()
+                    },
                     Node {
                         width: percent(100.),
                         height: px(76.),
@@ -662,7 +675,8 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands) -> Entity {
                     })
                     .with_children(|row| {
                         row.spawn((
-                            Text::new("Cmd/Ctrl+Enter sends · F9 toggles voice · H help"),
+                            controls::Hint,
+                            Text::new("Enter sends · Shift+Enter newline · F9 voice"),
                             TextFont::from_font_size(12.),
                             TextColor(Color::srgb_u8(126, 169, 175)),
                         ));
@@ -768,7 +782,7 @@ fn update(
     mut commands: Commands,
     repo: Res<Repo>,
     time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
     focus: Res<InputFocus>,
     mut session: ResMut<Session>,
     mut prompts: Query<(Entity, &mut EditableText, &mut Prompt)>,
@@ -792,6 +806,12 @@ fn update(
     transcripts: Query<Entity, With<Transcript>>,
     mut rendered: Local<Option<u64>>,
     mut rendered_entities: Local<HashSet<Entity>>,
+    editing: Query<(), Or<(With<EditableText>, With<source_editor::View>)>>,
+    blockers: (
+        Res<terminal::Terminal>,
+        Res<listing::find::Search>,
+        Query<&Window, With<PrimaryWindow>>,
+    ),
 ) {
     let root = &repo.0.root;
     if session.root.as_ref() != Some(root) {
@@ -804,20 +824,27 @@ fn update(
         };
         session.prompt.clear();
         session.restored_messages.clear();
-        session.status = "Disconnected".into();
+        match controls::Settings::load() {
+            Ok(settings) => {
+                session.interaction = settings;
+                session.status = "Disconnected".into();
+            }
+            Err(error) => {
+                session.notice(&error);
+                session.status = error;
+            }
+        }
         session.version = session.version.wrapping_add(1);
         for (_, mut field, _) in &mut prompts {
             field.editor_mut().set_text("");
         }
     }
-    let mut prompt_focused = false;
-    for (entity, mut field, mut marker) in &mut prompts {
+    for (_, mut field, mut marker) in &mut prompts {
         if !marker.initialized {
             field.editor_mut().set_text(&session.prompt);
             marker.initialized = true;
         }
         session.prompt = field.editor().text().to_string();
-        prompt_focused |= focus.get() == Some(entity);
     }
     for (mut area, mut position, node) in &mut history_areas {
         let delta = match wheel.unit {
@@ -839,17 +866,6 @@ fn update(
     }
     if keys.just_pressed(KeyCode::F9) && session.provider().capabilities.voice {
         session.action = Some(Action::Voice);
-    }
-    if prompt_focused
-        && keys.just_pressed(KeyCode::Enter)
-        && keys.any_pressed([
-            KeyCode::SuperLeft,
-            KeyCode::SuperRight,
-            KeyCode::ControlLeft,
-            KeyCode::ControlRight,
-        ])
-    {
-        session.action = Some(Action::Send);
     }
     let events = {
         let Session {
@@ -897,10 +913,18 @@ fn update(
                     session.approvals.clear();
                 }
                 if let Some(status) = status {
+                    if status != "Ready" && status != "Working" {
+                        session.notice(&status);
+                    }
                     session.status = status;
                 }
             }
-            Event::Approval { token, title } => session.approvals.push(Approval { token, title }),
+            Event::Approval { token, title } => {
+                if let Err(error) = session.request_approval(token, title) {
+                    session.notice(&error);
+                    session.status = error;
+                }
+            }
             Event::VoiceWaiting { id } => {
                 if session.projection.voice.as_deref() == Some(id.as_str()) {
                     session.voice_waiting = true;
@@ -922,7 +946,10 @@ fn update(
                     }
                 }
             }
-            Event::Error(error) => session.status = error,
+            Event::Error(error) => {
+                session.notice(&error);
+                session.status = error;
+            }
             Event::VoiceError(error) => session.voice_error = Some(error),
             Event::Closed => {
                 session.disconnect();
@@ -932,6 +959,22 @@ fn update(
             }
         }
     }
+    let window_focused = blockers.2.single().is_ok_and(|window| window.focused);
+    let keyboard_allowed = window_focused
+        && !blockers.0.active
+        && !blockers.1.blocks_controls()
+        && !focus.get().is_some_and(|entity| editing.contains(entity))
+        && !keys.any_pressed([
+            KeyCode::ControlLeft,
+            KeyCode::ControlRight,
+            KeyCode::SuperLeft,
+            KeyCode::SuperRight,
+            KeyCode::AltLeft,
+            KeyCode::AltRight,
+            KeyCode::ShiftLeft,
+            KeyCode::ShiftRight,
+        ]);
+    controls::shortcuts(&mut keys, &mut session, window_focused, keyboard_allowed);
     if let Some(action) = session.action.take() {
         session.version = session.version.wrapping_add(1);
         let result = match action {
@@ -939,6 +982,7 @@ fn update(
                 session.follow_agent = !session.follow_agent;
                 Ok(())
             }
+            Action::SendKey | Action::ApprovalMode | Action::FollowKey => session.configure(action),
             Action::Connect => session.connect(),
             Action::Disconnect => {
                 session.disconnect();
@@ -984,15 +1028,12 @@ fn update(
             }
             Action::Stop => session.send(Command::Interrupt),
             Action::Approve | Action::Reject if !session.approvals.is_empty() => {
-                let approval = session.approvals.remove(0);
-                session.send(Command::Approval {
-                    token: approval.token,
-                    accept: matches!(action, Action::Approve),
-                })
+                session.answer_approval(matches!(action, Action::Approve))
             }
             _ => Ok(()),
         };
         if let Err(error) = result {
+            session.notice(&error);
             session.status = error;
         }
     }
@@ -1094,7 +1135,7 @@ fn update(
             Action::Send => session.can_send(),
             Action::RestoreMessage => session.restorable_message().is_some(),
             Action::Voice => session.provider().capabilities.voice,
-            Action::Follow => true,
+            Action::Follow | Action::SendKey | Action::ApprovalMode | Action::FollowKey => true,
             Action::Approve | Action::Reject => !session.approvals.is_empty(),
         };
         if enabled && disabled.is_some() {
@@ -1123,10 +1164,28 @@ fn update(
 
 fn action_label(action: &Action, session: &Session) -> Option<&'static str> {
     match action {
-        Action::Follow => Some(if session.follow_agent {
-            "Pause following"
+        Action::SendKey => Some(if session.interaction.send_with_enter {
+            "Send: Enter"
         } else {
-            "Follow agent"
+            "Send: Cmd/Ctrl+Enter"
+        }),
+        Action::ApprovalMode => Some(
+            if session.interaction.approvals == controls::ApprovalMode::Automatic {
+                "Codex review: automatic"
+            } else {
+                "Codex review: ask me"
+            },
+        ),
+        Action::FollowKey => Some(if session.follow_key() == KeyCode::F7 {
+            "Follow shortcut: F7"
+        } else {
+            "Follow shortcut: F8 (replaces party talk)"
+        }),
+        Action::Follow => Some(match (session.follow_key(), session.follow_agent) {
+            (KeyCode::F8, true) => "F8 · Pause following",
+            (KeyCode::F8, false) => "F8 · Follow agent",
+            (_, true) => "F7 · Pause following",
+            (_, false) => "F7 · Follow agent",
         }),
         Action::Voice => Some(if session.voice_active() {
             "Stop voice"

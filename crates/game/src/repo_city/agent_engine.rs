@@ -63,6 +63,7 @@ impl Default for Provider {
 pub(super) struct Start {
     pub root: PathBuf,
     pub conversation: Option<String>,
+    pub automatic_review: bool,
     pub speaking: Arc<AtomicBool>,
     pub diagnostics: Option<PathBuf>,
 }

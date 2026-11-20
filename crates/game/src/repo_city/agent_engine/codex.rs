@@ -9,14 +9,10 @@ pub(super) struct Adapter {
 }
 impl Adapter {
     pub fn start(start: Start) -> Self {
+        let root = start.root.clone();
         Self {
-            client: transport::Client::start(
-                start.root.clone(),
-                start.conversation,
-                start.speaking,
-                start.diagnostics,
-            ),
-            root: start.root,
+            client: transport::Client::start(start),
+            root,
         }
     }
 }

@@ -640,6 +640,7 @@ sys.stdin.read()
             let start = Start {
                 root: root.clone(),
                 conversation: Some("saved".into()),
+                automatic_review: false,
                 speaking: Arc::default(),
                 diagnostics: None,
             };

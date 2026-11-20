@@ -791,6 +791,7 @@ pub fn run() {
                     "--smoke-paint" => Some(14),
                     "--smoke-guidance" => Some(15),
                     "--smoke-agent" => Some(23),
+                    "--smoke-agent-controls" => Some(25),
                     "--smoke-overview" => Some(24),
                     "--smoke-empty-diff" => Some(18),
                     "--smoke-frost" => Some(20),
@@ -805,6 +806,7 @@ pub fn run() {
                     15 => 18,
                     18 => 20,
                     20 => 23,
+                    25 => 27,
                     _ => (stage + 1).max(9),
                 },
                 pending: false,
@@ -2567,6 +2569,7 @@ fn smoke(
     debris: Query<Entity, With<physics::Lifetime>>,
     mut listing: ResMut<listing::Listing>,
     mut picker: ResMut<repository_picker::RepositoryPicker>,
+    mut session: ResMut<agent_session::Session>,
     window: Query<Entity, With<PrimaryWindow>>,
     (mut tablet, mut review, mut reading): (
         ResMut<review_tablet::Tablet>,
@@ -2583,7 +2586,9 @@ fn smoke(
             explorer.reload(&repo.0);
             assert_eq!(explorer.source, expected);
         }
-        let report = if check.stop == 25 {
+        let report = if check.stop == 27 {
+            "Rendered agent approval controls with a multiline draft, then the rejected request without running an agent."
+        } else if check.stop == 25 {
             "Rendered the district overview above its uncapped buildings."
         } else if check.stop == 24 {
             "Rendered the Agent tablet."
@@ -2787,6 +2792,14 @@ fn smoke(
                     .expect("guidance source position");
                 }
                 17 | 23 => tablet.open_page(review_tablet::Page::Agent),
+                25 => {
+                    session.smoke_controls(&repo.0.root, true);
+                    tablet.request_close();
+                }
+                26 => {
+                    session.smoke_controls(&repo.0.root, false);
+                    tablet.open_page(review_tablet::Page::Agent);
+                }
                 24 => {
                     explorer.anchored = false;
                     explorer.comparison_mode = 0;
@@ -2943,6 +2956,9 @@ fn smoke(
             0,
             "preview granted premature read credit"
         );
+    }
+    if check.stage == 25 {
+        commands.queue(agent_session::Session::check_smoke_banner);
     }
     std::fs::create_dir_all(&check.directory).expect("smoke output");
     let path = check.directory.join(format!("{:02}.png", check.stage));

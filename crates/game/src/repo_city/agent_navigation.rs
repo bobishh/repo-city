@@ -518,7 +518,7 @@ fn update(
             tablet.request_close();
         }
     }
-    if keyboard_allowed && navigation.pending.is_some() {
+    if keyboard_allowed && !session.approval_pending() && navigation.pending.is_some() {
         if keys.just_pressed(KeyCode::KeyY) {
             navigation.decision = Some(Decision::Accept);
             keys.clear_just_pressed(KeyCode::KeyY);
