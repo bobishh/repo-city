@@ -77,6 +77,22 @@ canvas[data-pointer-locked] { cursor: none !important; }
 :root:not([data-playing]) .wordmark { font-size: clamp(3rem, 5.5vw, 5rem); }
 .wordmark-edition { font-size: 0.48em; }
 [data-playing] .wordmark-edition { display: none; }
+@font-face {
+  font-family: "GFS Didot";
+  src: url("./assets/GFSDidot-Regular.ttf") format("truetype");
+  font-display: swap;
+}
+#repo-city[data-world="greek-library"] ~ #city-header {
+  --library-ink: #f6deb0;
+}
+#repo-city[data-world="greek-library"] ~ #city-header :is(#logo, #city-repository) { color: var(--library-ink); }
+#repo-city[data-world="greek-library"] ~ #city-header .android { display: none; }
+#repo-city[data-world="greek-library"] ~ #city-header .wordmark {
+  padding-left: 8px;
+  font: 400 2.55rem/1 "GFS Didot", Georgia, serif;
+  text-shadow: 0 1px 2px #2f2119;
+}
+#repo-city[data-library-reading] ~ #city-header .city-brand:not(:hover, :focus-within) { opacity: .28; }
 #blame { display: grid; place-items: center; min-height: 32px; padding: 0 8px; font-size: .8rem; white-space: nowrap; text-underline-offset: 0.2em; }
 #blame span { display: none; }
 #help { grid-column: 2; min-width: 32px; min-height: 32px; }
@@ -140,6 +156,8 @@ form {
 .picker-selection { border-bottom: 1px solid #26343e; }
 #selected-repository { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 650; }
 .picker-toolbar { min-height: 50px; display: flex; align-items: center; gap: 8px; padding: 7px 12px; }
+.world-picker { display: flex; align-items: center; gap: 8px; padding: 0 12px 9px; color: #a4c7ca; }
+.world-picker select { border: 1px solid #41616a; border-radius: 0; background: #0a171e; color: #e8f7f3; font: inherit; padding: 3px 6px; }
 #revisions { display: flex; gap: 8px; min-width: 0; overflow: hidden; }
 #revisions button { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #open-city {

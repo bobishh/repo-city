@@ -41,6 +41,14 @@ pub struct File {
     pub change: Change,
     pub position: [f32; 2],
 }
+
+impl File {
+    pub fn directory(&self) -> &str {
+        self.path
+            .rsplit_once('/')
+            .map_or("/", |(directory, _)| directory)
+    }
+}
 #[derive(Clone, Debug)]
 pub struct District {
     pub name: String,
@@ -340,8 +348,7 @@ impl Repository {
     fn layout(&mut self) {
         let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         for (i, f) in self.files.iter().enumerate() {
-            let dir = f.path.rsplit_once('/').map_or("/", |(d, _)| d);
-            groups.entry(dir.into()).or_default().push(i);
+            groups.entry(f.directory().into()).or_default().push(i);
         }
         const LOT_WIDTH: f32 = 27.;
         const LOT_DEPTH: f32 = 30.;

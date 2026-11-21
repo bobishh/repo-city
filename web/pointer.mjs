@@ -1,4 +1,4 @@
-export function setupPointer(canvas, menu) {
+export function setupPointer(canvas, menu, enabled = () => true) {
   const locked = () => document.pointerLockElement === canvas;
   const modalOpen = () => menu.open || Boolean(document.querySelector("dialog[open]"));
 
@@ -7,7 +7,7 @@ export function setupPointer(canvas, menu) {
   }
 
   function capture() {
-    if (canvas.hidden || modalOpen() || canvas.hasAttribute("data-pointer-ui") || canvas.hasAttribute("data-overview") ||
+    if (!enabled() || canvas.hidden || modalOpen() || canvas.hasAttribute("data-pointer-ui") || canvas.hasAttribute("data-overview") ||
         canvas.hasAttribute("data-action-menu") ||
         document.pointerLockElement || !canvas.requestPointerLock) return;
     canvas.focus({ preventScroll: true });

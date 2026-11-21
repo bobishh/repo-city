@@ -1,7 +1,7 @@
 // Adapted from Feed the Poor touch.ts at beabe03f5aef648717fa175693cb9a76c953d9d5.
 // Repo City adds altitude, independent look, and tablet actions; no pointer lock is required.
 // Circular controls follow Feed the Poor style.css at 6b1b2eed8a660bfb9dea2a4259175056d0718e06.
-export function createTouchControls({ canvas, document = globalThis.document, browser = globalThis, onPad } = {}) {
+export function createTouchControls({ canvas, document = globalThis.document, browser = globalThis, onPad, enabled = () => true } = {}) {
   const panel = document.createElement("nav");
   panel.id = "touch-controls";
   panel.setAttribute("aria-label", "Touch flight controls");
@@ -102,7 +102,8 @@ export function createTouchControls({ canvas, document = globalThis.document, br
     if (event.pointerId === looking) looking = undefined;
   });
   function refresh() {
-    const hidden = !document.documentElement.hasAttribute("data-playing") ||
+    const hidden = !enabled() ||
+      !document.documentElement.hasAttribute("data-playing") ||
       !browser.matchMedia("(pointer: coarse)").matches || canvas.hidden ||
       Boolean(document.querySelector("dialog[open]")) || document.hidden;
     if (hidden) reset();

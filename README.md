@@ -70,6 +70,36 @@ The app uses Git to fetch snapshots and the GitHub API for review comments.
 In large repositories the city loads nearby buildings as you fly. File search
 still covers the entire comparison.
 
+### Greek Library
+
+Add `?world=greek-library` to the web URL to open the library directly, or
+enable the world selector in the repository picker with `?world-picker=1`.
+On desktop, launch with `--world-picker` to choose a world before opening
+the explorer. To skip the chooser on a Mac, use
+`open -n -a "Repo City" --args --repo /path/to/checkout --world-set greek-library`.
+On desktop, append `--file src/main.rs --line 120` to open a scroll at a line.
+Browse with **WASD**, turn with **Left/Right** or drag with the right mouse
+button. Use **Up/Down** to select a file, **Page Up/Down** to change shelves,
+and **/** to search the full repository. Each directory has a cabinet sized
+by its file count. With **Enter**, follow the librarian as it steps up to the
+roll and unrolls the selected file along the gallery at a fixed scale per line.
+Use the wheel or **Page Up/Down**
+to move along the scroll, **J** to go to a line, and **Esc** to return to the
+aisle. The gallery extends as you move.
+
+The library reads the same snapshots as Code City and shares visited-file
+progress. Its scrolls show source, including the previous snapshot for removed
+files.
+
+To add a world in Rust, give it a Bevy presentation module under
+`world_set/` and register its installer and bundled JSON descriptor in
+`world_set.rs`. An installer owns the scene and controls and uses the
+repository by path and line. The descriptor selects the registered
+representation and locomotion and supplies a palette. A custom descriptor
+can also be selected on desktop through `--world-set /path/to/world.json`.
+For the browser, add the bundled world's ID to the world selector in
+`web/index.html`.
+
 ### On Linux or Windows
 
 Both desktop ports require Git on `PATH` and a graphics driver supported by

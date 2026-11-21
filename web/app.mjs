@@ -12,6 +12,8 @@ import { mountReviewParty } from "./review-party-ui.mjs";
 const engineBuild = document.documentElement.dataset.engineBuild;
 const engineDirectory = engineBuild ? `./game/${engineBuild}/` : "./game/";
 const form = document.querySelector("#repository-form");
+const worldSelect = form.elements.world;
+const defaultWorld = worldSelect.options[0].value;
 const status = document.querySelector("#status");
 const canvas = document.querySelector("#repo-city");
 const blame = document.querySelector("#blame");
@@ -39,9 +41,11 @@ const submit = document.querySelector("#open-city");
 const syntax = createSyntaxCache();
 let active;
 let running = false;
+let world = defaultWorld;
+const cityControls = () => world === defaultWorld;
 const audio = createCityAudio({ active: () => running && !dialog.open && !canvas.hidden });
-const releasePointer = setupPointer(canvas, dialog);
-const touch = createTouchControls({ canvas, onPad: () => review.changedFiles() });
+const releasePointer = setupPointer(canvas, dialog, cityControls);
+const touch = createTouchControls({ canvas, onPad: () => review.changedFiles(), enabled: cityControls });
 const review = createReview({
   audio, canvas, release: releasePointer, onClose: focusCanvas,
   onCompare: (repository, before, after) => openRepository(repository, after, before, true),
@@ -86,6 +90,17 @@ let sourceVersion = 0;
 let repositoryVersion = 0;
 let progressResetVersion = 0;
 const parameters = new URLSearchParams(location.search);
+const worldPickerEnabled = parameters.get("world-picker") === "1";
+worldSelect.closest(".world-picker").hidden = !worldPickerEnabled;
+const requestedWorld = parameters.get("world");
+if (Array.from(worldSelect.options).some(option => option.value === requestedWorld)) {
+  worldSelect.value = requestedWorld;
+}
+function nameOpenButton() {
+  submit.textContent = worldSelect.selectedOptions[0].dataset.openLabel ?? "Open world";
+}
+worldSelect.addEventListener("change", nameOpenButton);
+nameOpenButton();
 for (const name of ["repo", "ref", "base"]) form.elements[name].value = parameters.get(name) ?? "";
 if (parameters.get("pr")) form.elements.repo.value = parameters.get("pr");
 
@@ -98,6 +113,14 @@ window.addEventListener("keydown", event => {
   const plain = !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey;
   if (event.altKey && event.code === "Digit0" && !event.ctrlKey && !event.metaKey) {
     event.preventDefault(); event.stopPropagation(); review.dismissTablet(); logo.click(); return;
+  }
+  if (running && !cityControls()) {
+    if (event.target === canvas &&
+        (/^(Arrow|Page)/.test(event.code) || ["Home", "End"].includes(event.code) ||
+         (event.code === "KeyP" && (event.metaKey || event.ctrlKey)))) {
+      event.preventDefault();
+    }
+    return;
   }
   if (event.altKey && !event.ctrlKey && !event.metaKey && /^Digit[1-9]$/.test(event.code) && review.selectTab(Number(event.code.slice(-1)) - 1)) {
     event.preventDefault(); event.stopPropagation(); return;
@@ -206,10 +229,12 @@ async function stageRepository(repository, ref, base) {
 }
 
 function queryFor(repo, ref, base) {
-  if (parsePullRequest(repo)) return new URLSearchParams({ pr: repo.trim() });
-  const query = new URLSearchParams({ repo: repo.trim() });
-  if (ref?.trim()) query.set("ref", ref.trim());
-  if (base?.trim()) query.set("base", base.trim());
+  const pull = parsePullRequest(repo);
+  const query = new URLSearchParams({ [pull ? "pr" : "repo"]: repo.trim() });
+  if (!pull && ref?.trim()) query.set("ref", ref.trim());
+  if (!pull && base?.trim()) query.set("base", base.trim());
+  if (worldSelect.value !== defaultWorld) query.set("world", worldSelect.value);
+  if (worldPickerEnabled) query.set("world-picker", "1");
   return query;
 }
 
@@ -220,7 +245,16 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
     return;
   }
   const pull = parsePullRequest(repo);
+  const nextWorld = worldSelect.value;
+  const worldName = worldSelect.selectedOptions[0].label;
+  const query = queryFor(repo, ref, base);
+  if (exactBase) query.set("exact", "1");
+  if (running && world !== nextWorld) {
+    location.search = query.toString();
+    return;
+  }
   submit.disabled = true;
+  worldSelect.disabled = true;
   form.setAttribute("aria-busy", "true");
   status.textContent = running ? "Loading repository…" : "Loading repository and browser engine…";
   try {
@@ -233,7 +267,20 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
       const graphics = await navigator.gpu?.requestAdapter();
       if (!graphics) throw new Error("WebGPU is unavailable. Open Repo City Web in a browser with WebGPU and graphics acceleration.");
       await stageRepository(repository, ref, base);
+      world = nextWorld;
+      canvas.dataset.world = world;
       globalThis.repoCity = {
+        worldSet: () => world,
+        libraryReading(path, first, last, status) {
+          const position = first ? `, lines ${first}–${last}` : "";
+          const notice = status ? `, ${status}` : "";
+          canvas.setAttribute("aria-label", path ? `${worldName}, ${path}${position}${notice}` : worldName);
+          canvas.toggleAttribute("data-library-reading", Boolean(path));
+        },
+        libraryLinePrompt(open) {
+          if (open) canvas.setAttribute("aria-description", "Enter a line number. Press Enter to go.");
+          else canvas.removeAttribute("aria-description");
+        },
         partyUpdate(value) { party.update(JSON.parse(value)); },
         partyActive: () => Boolean(party.state().room),
         partyPeers: () => JSON.stringify(party.state().members.filter(member => member.id !== party.state().member?.id)),
@@ -363,19 +410,18 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
         },
       };
       canvas.hidden = false;
+      if (!cityControls()) canvas.setAttribute("aria-label", worldName);
       await engine.default();
       running = true;
       document.documentElement.dataset.playing = "";
       startScreen.hidden = true;
       cityRepository.hidden = false;
-      cityProgress.hidden = false;
+      cityProgress.hidden = !cityControls();
       startControls.hidden = true;
-      help.hidden = false;
+      help.hidden = !cityControls();
     } else {
       await stageRepository(await loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest, { exactBase, pinnedComparison }), ref, base);
     }
-    const query = queryFor(repo, ref, base);
-    if (exactBase) query.set("exact", "1");
     history.replaceState(null, "", `?${query}`);
     if (exactBase) review.dismissTablet();
     status.textContent = "";
@@ -387,7 +433,7 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
     } else {
       progressWarning.hidden = true;
     }
-    if (firstOpen) offerFirstTour();
+    if (firstOpen && cityControls()) offerFirstTour();
     audio.refresh();
     focusCanvas();
   } catch (error) {
@@ -395,6 +441,7 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
     if (!running) canvas.hidden = true;
   } finally {
     submit.disabled = false;
+    worldSelect.disabled = false;
     form.removeAttribute("aria-busy");
   }
 }

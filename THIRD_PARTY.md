@@ -30,6 +30,10 @@ Caveat Project Authors. The desktop font (`assets/fonts/Caveat-Latin.ttf`) is
 the TrueType form of the web font (`web/assets/caveat-latin-wght.woff2`). See
 `assets/fonts/Caveat-LICENSE` and `web/assets/OFL-Caveat.txt`.
 
+The Greek Library wordmark uses GFS Didot Regular by Greek Font Society.
+The unmodified font comes from [Google Fonts](https://github.com/google/fonts/tree/main/ofl/gfsdidot)
+and ships with SIL Open Font License 1.1 in `assets/fonts/GFSDidot-LICENSE`.
+
 Mermaid flowcharts and sequence diagrams use [Merman 0.10.0](https://github.com/Latias94/merman)
 under the MIT license. Repo City uses the renderer without the ELK layout engine.
 See `licenses/merman-MIT.txt` and the original package metadata in `Cargo.lock`.

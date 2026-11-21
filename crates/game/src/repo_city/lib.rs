@@ -393,7 +393,7 @@ pub fn run() {
     };
     if args.iter().any(|a| a == "--help") {
         println!(
-            "repo-city [--repo PATH [--rev HEAD | --live] [--base REF] | --github URL [--rev REF] [--base REF]] [--file PATH] [--world-set FILE] [--smoke-dir PATH]\nWASD fly · E flies to the aimed face · Space/Ctrl altitude · Shift boost · Click captures the cursor · Esc releases it\nClick close to start or stop washing source · Home frames the file · G diff · B blame\nC reviews changes · T follows a supplied stack · W/S or scroll fly between review stops · Q returns to the diff wall\nG ghost/pair · [ ] hunks · Enter source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
+            "repo-city [--repo PATH [--rev HEAD | --live] [--base REF] | --github URL [--rev REF] [--base REF]] [--file PATH] [--world-set ID|FILE | --world-picker] [--smoke-dir PATH]\nWASD fly · E flies to the aimed face · Space/Ctrl altitude · Shift boost · Click captures the cursor · Esc releases it\nClick close to start or stop washing source · Home frames the file · G diff · B blame\nC reviews changes · T follows a supplied stack · W/S or scroll fly between review stops · Q returns to the diff wall\nG ghost/pair · [ ] hunks · Enter source wall · Q before/after · Scroll/PgUp/PgDn read\nF6 exports the draft to this project's sandbox"
         );
         return;
     }
@@ -406,6 +406,11 @@ pub fn run() {
             eprintln!("Repo City MCP: {error}");
             std::process::exit(1);
         }
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if args.iter().any(|arg| arg == "--world-picker") {
+        world_set::picker::run(args);
         return;
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -446,10 +451,13 @@ pub fn run() {
             return;
         }
     };
+    #[cfg(not(target_arch = "wasm32"))]
     let set = WorldSet::load(arg("--world-set")).unwrap_or_else(|e| {
         eprintln!("World set: {e}");
         std::process::exit(1)
     });
+    #[cfg(target_arch = "wasm32")]
+    let set = WorldSet::browser();
     let requested_file = arg("--file").filter(|_| !repo.files.is_empty());
     let initial = requested_file
         .map(|path| {
@@ -504,19 +512,7 @@ pub fn run() {
         );
     }
     let mut app = App::new();
-    let navigation = city_navigation::Navigation::default();
-    let mut trace = trace_import::Trace::default();
-    if let Some(path) = arg("--trace") {
-        let source = std::fs::read_to_string(path).unwrap_or_else(|error| {
-            eprintln!("Trace {path}: {error}");
-            std::process::exit(1)
-        });
-        trace.import(&repo, source);
-        if !trace.report.error.is_empty() {
-            eprintln!("Trace: {}", trace.report.error);
-            std::process::exit(1)
-        }
-    }
+    let install = set.installer();
     let picker = repository_picker::RepositoryPicker::new(startup_error);
     #[cfg(not(target_arch = "wasm32"))]
     let picker = {
@@ -547,88 +543,110 @@ pub fn run() {
         ..default()
     }))
     .insert_resource(ClearColor(color(set.background)))
-    .add_plugins((PhysicsPlugins::default(), listing::CoverPlugin))
-    .insert_resource(GlobalAmbientLight {
-        color: Color::srgb(0.64, 0.82, 0.85),
-        brightness: 550.,
-        ..default()
-    })
     .insert_resource(Repo(repo))
     .insert_resource(set)
     .insert_resource(explorer)
-    .insert_resource(navigation)
-    .insert_resource(trace)
     .insert_resource(picker)
-    .init_resource::<Nearest>()
-    .init_resource::<city_menu::Menu>()
-    .init_resource::<file_picker::FilePicker>()
-    .init_resource::<file_facade::ChangesOnly>()
-    .init_resource::<listing::Listing>()
-    .init_resource::<reading::Settings>()
-    .init_resource::<listing::find::Search>()
     .init_resource::<progress::Progress>()
     .init_resource::<review_notes::Review>()
-    .init_resource::<guide::Tour>()
-    .add_systems(Startup, setup)
-    .add_systems(
-        Update,
-        (
+    .init_resource::<listing::Listing>()
+    .add_plugins(bevy::input_focus::tab_navigation::TabNavigationPlugin);
+    install(&mut app, &args);
+    app.run();
+}
+
+fn install_city(app: &mut App, args: &[String]) {
+    let mut trace = trace_import::Trace::default();
+    if let Some(path) = args
+        .windows(2)
+        .find(|pair| pair[0] == "--trace")
+        .map(|pair| &pair[1])
+    {
+        let source = std::fs::read_to_string(path).unwrap_or_else(|error| {
+            eprintln!("Trace {path}: {error}");
+            std::process::exit(1)
+        });
+        trace.import(&app.world().resource::<Repo>().0, source);
+        if !trace.report.error.is_empty() {
+            eprintln!("Trace: {}", trace.report.error);
+            std::process::exit(1)
+        }
+    }
+    app.add_plugins((PhysicsPlugins::default(), listing::CoverPlugin))
+        .insert_resource(GlobalAmbientLight {
+            color: Color::srgb(0.64, 0.82, 0.85),
+            brightness: 550.,
+            ..default()
+        })
+        .init_resource::<city_navigation::Navigation>()
+        .insert_resource(trace)
+        .init_resource::<Nearest>()
+        .init_resource::<city_menu::Menu>()
+        .init_resource::<file_picker::FilePicker>()
+        .init_resource::<file_facade::ChangesOnly>()
+        .init_resource::<reading::Settings>()
+        .init_resource::<listing::find::Search>()
+        .init_resource::<guide::Tour>()
+        .add_systems(Startup, setup)
+        .add_systems(
+            Update,
             (
-                trace_import::update,
-                file_facade::lower_unchanged,
-                file_picker::update,
+                (
+                    trace_import::update,
+                    file_facade::lower_unchanged,
+                    file_picker::update,
+                )
+                    .chain(),
+                flight,
+                (file_facade::keep_beams_clear, targeting).chain(),
+                (
+                    city_menu::update,
+                    listing::fold_controls,
+                    listing::find::update,
+                )
+                    .chain(),
+                (
+                    review_notes::update,
+                    review_notes::panels,
+                    review_notes::update_color_picker,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    review_tablet::update,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    live_worktree::focus_latest,
+                )
+                    .chain(),
+                city_navigation::navigate
+                    .run_if(city_menu::gameplay_enabled)
+                    .run_if(listing::find::movement_enabled),
+                interaction
+                    .run_if(city_menu::gameplay_enabled)
+                    .run_if(listing::find::movement_enabled),
+                comparison_scene::controls
+                    .run_if(city_menu::gameplay_enabled)
+                    .run_if(listing::find::movement_enabled),
+                listing::controls
+                    .run_if(city_menu::gameplay_enabled)
+                    .run_if(listing::find::movement_enabled),
+                (listing::exposure::update, listing::wash_stream).chain(),
+                (
+                    guide::advance,
+                    listing::paint_notes,
+                    listing::find::mark,
+                    (android::show_sprayer, android::show_tablet),
+                )
+                    .chain(),
+                physics::splashes,
+                physics::fractures,
+                detail_scene,
+                city_navigation::draw,
+                listing::draw,
+                listing::draw_overview,
+                animate,
+                hud,
             )
-                .chain(),
-            flight,
-            (file_facade::keep_beams_clear, targeting).chain(),
-            (
-                city_menu::update,
-                listing::fold_controls,
-                listing::find::update,
-            )
-                .chain(),
-            (
-                review_notes::update,
-                review_notes::panels,
-                review_notes::update_color_picker,
-                #[cfg(not(target_arch = "wasm32"))]
-                review_tablet::update,
-                #[cfg(not(target_arch = "wasm32"))]
-                live_worktree::focus_latest,
-            )
-                .chain(),
-            city_navigation::navigate
-                .run_if(city_menu::gameplay_enabled)
-                .run_if(listing::find::movement_enabled),
-            interaction
-                .run_if(city_menu::gameplay_enabled)
-                .run_if(listing::find::movement_enabled),
-            comparison_scene::controls
-                .run_if(city_menu::gameplay_enabled)
-                .run_if(listing::find::movement_enabled),
-            listing::controls
-                .run_if(city_menu::gameplay_enabled)
-                .run_if(listing::find::movement_enabled),
-            (listing::exposure::update, listing::wash_stream).chain(),
-            (
-                guide::advance,
-                listing::paint_notes,
-                listing::find::mark,
-                (android::show_sprayer, android::show_tablet),
-            )
-                .chain(),
-            physics::splashes,
-            physics::fractures,
-            detail_scene,
-            city_navigation::draw,
-            listing::draw,
-            listing::draw_overview,
-            animate,
-            hud,
-        )
-            .chain()
-            .run_if(repository_picker::has_city),
-    );
+                .chain()
+                .run_if(repository_picker::has_city),
+        );
     app.add_systems(
         Update,
         city_menu::apply_filter_shortcut
@@ -656,17 +674,16 @@ pub fn run() {
             .before(listing::draw)
             .run_if(repository_picker::has_city),
     );
-    tablet_scroll::register(&mut app);
-    app.add_plugins(bevy::input_focus::tab_navigation::TabNavigationPlugin)
-        .add_systems(
-            Update,
-            native_panel::focus_outline.after(native_panel::keyboard_navigation),
-        )
-        .add_systems(Update, tablet_display::toggle.after(android::show_tablet))
-        .add_systems(
-            First,
-            tablet_display::pointer.in_set(bevy::picking::PickingSystems::Input),
-        );
+    tablet_scroll::register(app);
+    app.add_systems(
+        Update,
+        native_panel::focus_outline.after(native_panel::keyboard_navigation),
+    )
+    .add_systems(Update, tablet_display::toggle.after(android::show_tablet))
+    .add_systems(
+        First,
+        tablet_display::pointer.in_set(bevy::picking::PickingSystems::Input),
+    );
     #[cfg(not(target_arch = "wasm32"))]
     app.add_systems(
         Update,
@@ -694,8 +711,8 @@ pub fn run() {
             .before(listing::draw),
     )
     .add_systems(Update, live_worktree::highlight.after(animate));
-    markdown_preview::register(&mut app);
-    source_editor::register(&mut app);
+    markdown_preview::register(app);
+    source_editor::register(app);
     app.add_plugins(review_party::Plugin);
     app.add_plugins(city_boards::Plugin);
     #[cfg(not(target_arch = "wasm32"))]
@@ -760,6 +777,11 @@ pub fn run() {
 
     #[cfg(not(target_arch = "wasm32"))]
     {
+        let arg = |name: &str| {
+            args.windows(2)
+                .find(|pair| pair[0] == name)
+                .map(|pair| pair[1].as_str())
+        };
         let bundle_smoke = std::env::current_exe()
             .ok()
             .and_then(|p| {
@@ -824,7 +846,6 @@ pub fn run() {
             .add_systems(Update, smoke.after(animate));
         }
     }
-    app.run();
 }
 
 #[cfg(target_arch = "wasm32")]
