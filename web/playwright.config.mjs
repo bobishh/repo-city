@@ -6,9 +6,10 @@ import { fileURLToPath } from "node:url";
 const port = process.env.REPO_CITY_TEST_PORT ?? "18791";
 const partyFixture = process.env.REPO_CITY_TEST_PARTY === "1";
 const hardware = process.env.REPO_CITY_TEST_GPU === "hardware";
+const visible = process.env.REPO_CITY_TEST_VISIBLE === "1";
 const browserName = process.env.REPO_CITY_TEST_BROWSER ?? "chromium";
 const graphicsArgs = hardware
-  ? ["--enable-unsafe-webgpu", process.env.REPO_CITY_TEST_VISIBLE ? "--window-position=40,40" : "--window-position=-10000,-10000"]
+  ? ["--enable-unsafe-webgpu", ...(process.platform === "darwin" ? ["--use-angle=metal"] : [])]
   : ["--enable-unsafe-webgpu", "--enable-unsafe-swiftshader", "--use-angle=swiftshader"];
 if (!hardware && process.platform === "linux") {
   // The WebGPU canvas needs a Vulkan compositor to share images with SwiftShader.
@@ -22,7 +23,7 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     browserName,
-    headless: !hardware,
+    headless: !visible,
     launchOptions: browserName === "chromium" ? { args: graphicsArgs } : { firefoxUserPrefs: { "dom.webgpu.enabled": true } },
     screenshot: "only-on-failure",
     viewport: { width: 1280, height: 800 },

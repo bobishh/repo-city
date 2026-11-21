@@ -8,6 +8,12 @@ const HEIGHT: u32 = 608;
 const INK: [f32; 3] = [0.63, 0.91, 0.85];
 const BODY: [f32; 3] = [0.84, 0.89, 0.91];
 
+#[derive(Resource)]
+pub(super) struct Placement {
+    pub transforms: [Transform; 2],
+    pub size: Vec2,
+}
+
 #[derive(Default)]
 struct Boards {
     panels: Option<[Entity; 2]>,
@@ -37,6 +43,7 @@ fn update(
     set: Res<WorldSet>,
     time: Res<Time>,
     party: Res<review_party::Party>,
+    placement: Option<Res<Placement>>,
     #[cfg(not(target_arch = "wasm32"))] agent: Res<agent_session::Session>,
     mut state: Local<Boards>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -62,14 +69,21 @@ fn update(
             .map(|district| district.position[1])
             .fold(f32::INFINITY, f32::min);
         let center = district.position[0] + district.size[0] / 2.;
-        let transforms =
-            [-12., 12.].map(|offset| Transform::from_xyz(center + offset, 7., front - 10.));
+        let (transforms, size) = placement.as_ref().map_or_else(
+            || {
+                (
+                    [-12., 12.].map(|offset| Transform::from_xyz(center + offset, 7., front - 10.)),
+                    Vec2::new(22., 13.),
+                )
+            },
+            |placement| (placement.transforms, placement.size),
+        );
         if let Some(panels) = state.panels {
             for (panel, transform) in panels.into_iter().zip(transforms) {
                 commands.entity(panel).insert(transform);
             }
         } else {
-            let mesh = meshes.add(Rectangle::new(22., 13.));
+            let mesh = meshes.add(Rectangle::from_size(size));
             let textures = [
                 images.add(canvas(&set, "Chat").image()),
                 images.add(canvas(&set, "Documents").image()),
@@ -78,9 +92,9 @@ fn update(
                 commands
                     .spawn((
                         Name::new(if index == 0 {
-                            "City chat board"
+                            "Chat board"
                         } else {
-                            "City document board"
+                            "Document board"
                         }),
                         Mesh3d(mesh.clone()),
                         MeshMaterial3d(materials.add(StandardMaterial {
@@ -157,10 +171,15 @@ fn canvas(set: &WorldSet, title: &str) -> code_texture::Canvas {
         .background
         .map(|value| (value.clamp(0., 1.) * 255.) as u8);
     let mut canvas = code_texture::Canvas::new(WIDTH, HEIGHT);
-    canvas.rect(0, 0, WIDTH, HEIGHT, [25, 55, 63]);
+    let (rim, header, ink) = if set.is_library() {
+        ([128, 93, 61], [55, 40, 30], [0.99, 0.89, 0.73])
+    } else {
+        ([25, 55, 63], [13, 31, 39], INK)
+    };
+    canvas.rect(0, 0, WIDTH, HEIGHT, rim);
     canvas.rect(4, 4, WIDTH - 8, HEIGHT - 8, tint);
-    canvas.rect(4, 4, WIDTH - 8, 88, [13, 31, 39]);
-    canvas.text(title, 34., 64., 43., |_| INK);
+    canvas.rect(4, 4, WIDTH - 8, 88, header);
+    canvas.text(title, 34., 64., 43., |_| ink);
     canvas
 }
 
@@ -168,7 +187,12 @@ fn render_chat(set: &WorldSet, shared: bool, content: &BoardContent) -> Image {
     let mut canvas = canvas(set, if shared { "Room chat" } else { "Chat" });
     for (index, entry) in content.chat.iter().rev().take(5).enumerate() {
         let top = 103. + index as f32 * 96.;
-        canvas.text(&entry.login, 34., top + 26., 25., |_| INK);
+        let ink = if set.is_library() {
+            [0.99, 0.89, 0.73]
+        } else {
+            INK
+        };
+        canvas.text(&entry.login, 34., top + 26., 25., |_| ink);
         let body = entry.text.split_whitespace().collect::<Vec<_>>().join(" ");
         let mut chars = body.chars();
         let first = chars.by_ref().take(73).collect::<String>();
@@ -182,6 +206,8 @@ fn render_chat(set: &WorldSet, shared: bool, content: &BoardContent) -> Image {
     if content.chat.is_empty() {
         let message = if shared {
             "Messages from this room appear here."
+        } else if set.is_library() {
+            "Open Chat on Stone Pad."
         } else {
             "Open Chat on VibePad."
         };

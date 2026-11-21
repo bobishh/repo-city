@@ -473,7 +473,7 @@ pub(super) fn update(
         mut images,
         mut terminal,
         mut trace,
-        (editors, mut agent, party, windows),
+        (editors, mut agent, party, windows, world),
     ): (
         ResMut<reading::Settings>,
         ResMut<guide::Tour>,
@@ -495,6 +495,7 @@ pub(super) fn update(
             Option<ResMut<agent_session::Session>>,
             Option<Res<review_party::Party>>,
             Query<&Window, With<PrimaryWindow>>,
+            Option<Res<WorldSet>>,
         ),
     ),
 ) {
@@ -1078,6 +1079,7 @@ pub(super) fn update(
         party
             .as_deref()
             .is_some_and(review_party::Party::hosts_room),
+        world.as_deref().is_some_and(WorldSet::is_library),
     );
     tablet.panel = Some(panel);
     focus.set(first, FocusCause::Navigated);
@@ -1175,6 +1177,7 @@ fn draw(
     trace: Option<&trace_import::Trace>,
     agent: Option<agent_engine::Provider>,
     hosts_room: bool,
+    library: bool,
 ) -> (Entity, Entity) {
     let title = match tablet.view {
         Page::Files => "Changed files",
@@ -1409,7 +1412,7 @@ fn draw(
                             ..default()
                         },
                     ))
-                    .with_children(guide::draw_controls);
+                    .with_children(|body| guide::draw_controls(body, library));
                 parent
                     .spawn(Node {
                         column_gap: px(8.),

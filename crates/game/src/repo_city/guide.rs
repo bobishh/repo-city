@@ -28,6 +28,48 @@ impl Tour {
     fn stop(&mut self) {
         self.step = Step::Off;
     }
+
+    #[cfg(target_arch = "wasm32")]
+    fn sync_browser(&mut self) {
+        let (version, play) = browser_tour();
+        if self.browser_version != version {
+            self.browser_version = version;
+            if play {
+                self.start();
+            } else {
+                self.stop();
+            }
+        }
+    }
+
+    pub(super) fn library_hint(
+        &mut self,
+        now: f32,
+        aiming: bool,
+        reading: bool,
+        ready: bool,
+        heating: bool,
+    ) -> &'static str {
+        #[cfg(target_arch = "wasm32")]
+        self.sync_browser();
+        self.step = match self.step {
+            Step::Look if aiming || reading => Step::Travel,
+            Step::Travel if reading => Step::Arriving,
+            Step::Arriving if !reading => Step::Travel,
+            Step::Arriving if ready => Step::Wash,
+            Step::Wash if heating => Step::Finish(now),
+            Step::Finish(started) if now > started + 9. => Step::Off,
+            step => step,
+        };
+        match self.step {
+            Step::Off => "",
+            Step::Look => "Look toward a shelf. Walk with WASD or the move stick.",
+            Step::Travel => "Aim at a scroll and press E, or use M to find it on the map.",
+            Step::Arriving => "Unrolling the file…",
+            Step::Wash => "Look at the lines and press K to turn on heat.",
+            Step::Finish(_) => "Tab opens Stone Pad. M cycles the cabinet and library maps.",
+        }
+    }
 }
 
 #[derive(Component)]
@@ -62,17 +104,7 @@ pub(super) fn advance(
     mut hint: Query<(&mut Text, &mut Node), With<Hint>>,
 ) {
     #[cfg(target_arch = "wasm32")]
-    {
-        let (version, play) = browser_tour();
-        if tour.browser_version != version {
-            tour.browser_version = version;
-            if play {
-                tour.start();
-            } else {
-                tour.stop();
-            }
-        }
-    }
+    tour.sync_browser();
     let Ok(pilot) = camera.single() else {
         return;
     };
@@ -192,13 +224,10 @@ const REVIEW: &[(&str, &str)] = &[
 const WORKBENCH: &[(&str, &str)] = &[
     ("F3", "Open or close the cooperative room"),
     ("F10", "Mute or restore all application sound"),
-    (
-        "F5",
-        "Start or stop agent voice; works with VibePad put away",
-    ),
+    ("F5", "Start or stop agent voice with the tablet put away"),
     (
         "Tab → Agent",
-        "Open the conversation; closing VibePad keeps it active",
+        "Open the conversation; closing the tablet keeps it active",
     ),
     (
         "Enter / Shift+Enter",
@@ -207,14 +236,17 @@ const WORKBENCH: &[(&str, &str)] = &[
     ("F7", "Toggle Follow agent (F8 is available in Settings)"),
     (
         "Y / N",
-        "Approve or reject an agent request, then accept or dismiss a flight outside text input",
+        "Approve or reject an agent request, or accept or dismiss a destination",
     ),
     ("Tab → Terminal", "Open the persistent shell"),
     (
         "F6",
         "Switch between shell/editor input and tablet controls",
     ),
-    ("Ctrl+Tab", "Put away VibePad while the terminal has focus"),
+    (
+        "Ctrl+Tab",
+        "Put away the tablet while the terminal has focus",
+    ),
     ("Tab / Esc / Ctrl+C", "Pass through to the focused shell"),
 ];
 
@@ -271,7 +303,36 @@ fn section(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn draw_controls(parent: &mut ChildSpawnerCommands) {
+pub(super) fn draw_controls(parent: &mut ChildSpawnerCommands, library: bool) {
+    const LIBRARY_NAVIGATION: &[(&str, &str)] = &[
+        ("W A S D", "Walk in the gallery"),
+        ("Mouse / arrows", "Look around the gallery"),
+        ("E", "Open the aimed scroll or select the aimed cabinet"),
+        ("M", "Open the cabinet map, the corridor map, or return"),
+        ("Tab", "Open or put away Stone Pad"),
+        ("Cmd+O / Cmd+P", "Open a repository or find a file"),
+        ("Ctrl+O / Ctrl+I", "Previous or next file"),
+        ("Arrows / Enter", "Move through controls and activate"),
+    ];
+    const LIBRARY_READING: &[(&str, &str)] = &[
+        ("Scroll / PgUp / PgDn", "Move along the scroll"),
+        ("J / /", "Jump to a line or find text"),
+        ("Enter / Shift+Enter", "Next or previous match"),
+        ("G / B / Q", "Open diff, blame, or switch snapshot side"),
+        ("Z / X", "Fold or unfold the aimed block"),
+        ("F4", "Toggle reading mode"),
+    ];
+    const LIBRARY_REVIEW: &[(&str, &str)] = &[
+        ("0 / 1–9", "Select heat or a paint"),
+        ("K", "Toggle heat or hold to paint"),
+        ("U / Shift+J", "Edit paints or open comments"),
+        ("F", "Show only changed files"),
+        (
+            "C / W / S",
+            "Start changed-file review or move between files",
+        ),
+        ("[ / ]", "Move between hunks"),
+    ];
     let font = TextFont::from_font_size(14.);
     let ink = native_panel::INK;
     let column = Node {
@@ -290,15 +351,37 @@ pub(super) fn draw_controls(parent: &mut ChildSpawnerCommands) {
         })
         .with_children(|columns| {
             columns.spawn(column.clone()).with_children(|left| {
-                section(left, "Navigation", NAVIGATION, &font, ink);
+                section(
+                    left,
+                    "Navigation",
+                    if library {
+                        LIBRARY_NAVIGATION
+                    } else {
+                        NAVIGATION
+                    },
+                    &font,
+                    ink,
+                );
                 left.spawn(Node {
                     height: px(10.),
                     ..default()
                 });
-                section(left, "Reading", READING, &font, ink);
+                section(
+                    left,
+                    "Reading",
+                    if library { LIBRARY_READING } else { READING },
+                    &font,
+                    ink,
+                );
             });
             columns.spawn(column).with_children(|right| {
-                section(right, "Review", REVIEW, &font, ink);
+                section(
+                    right,
+                    "Review",
+                    if library { LIBRARY_REVIEW } else { REVIEW },
+                    &font,
+                    ink,
+                );
                 right.spawn(Node {
                     height: px(10.),
                     ..default()

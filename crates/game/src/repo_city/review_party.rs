@@ -29,15 +29,15 @@ impl bevy::app::Plugin for Plugin {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct Focus {
-    path: String,
-    face: String,
+pub(super) struct Focus {
+    pub path: String,
+    pub face: String,
     #[serde(default)]
-    before: bool,
+    pub before: bool,
     #[serde(default = "first_line")]
-    line: usize,
+    pub line: usize,
     #[serde(default = "first_line")]
-    end_line: usize,
+    pub end_line: usize,
 }
 fn first_line() -> usize {
     1
@@ -78,8 +78,14 @@ struct Pose {
 
 #[derive(Clone, Serialize)]
 struct Projection {
-    pose: Pose,
+    pose: Option<Pose>,
     focus: Option<Focus>,
+}
+
+#[derive(Resource, Default)]
+pub(super) struct Scene {
+    pub focus: Option<Focus>,
+    pub positions: std::collections::HashMap<String, Vec3>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -170,6 +176,7 @@ fn project(
     mut review: ResMut<review_notes::Review>,
     camera: Query<&Transform, PlayerCamera>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    scene: Option<Res<Scene>>,
 ) {
     #[cfg(target_arch = "wasm32")]
     let active = party_active();
@@ -214,32 +221,35 @@ fn project(
         return;
     };
     let aspect = window.width() / window.height().max(1.);
-    let focus = repo
-        .0
-        .files
-        .get(explorer.selected)
-        .filter(|_| window.focused && !review.blocked && !review.tablet_open)
-        .and_then(|file| {
-            let face = listing.close_face(file, camera, &explorer, aspect)?;
-            let rows = listing.visible_source_rows(file, camera, &explorer, aspect);
-            Some(Focus {
-                path: file.path.clone(),
-                before: explorer.before,
-                face: match face {
-                    listing::Face::Source => "source",
-                    listing::Face::Diff => "diff",
-                    listing::Face::Blame => "blame",
-                }
-                .into(),
-                line: rows.as_ref().map_or(1, |range| range.start + 1),
-                end_line: rows.map_or(1, |range| range.end.max(1)),
+    let focus = if let Some(scene) = &scene {
+        scene.focus.clone()
+    } else {
+        repo.0
+            .files
+            .get(explorer.selected)
+            .filter(|_| window.focused && !review.blocked && !review.tablet_open)
+            .and_then(|file| {
+                let face = listing.close_face(file, camera, &explorer, aspect)?;
+                let rows = listing.visible_source_rows(file, camera, &explorer, aspect);
+                Some(Focus {
+                    path: file.path.clone(),
+                    before: explorer.before,
+                    face: match face {
+                        listing::Face::Source => "source",
+                        listing::Face::Diff => "diff",
+                        listing::Face::Blame => "blame",
+                    }
+                    .into(),
+                    line: rows.as_ref().map_or(1, |range| range.start + 1),
+                    end_line: rows.map_or(1, |range| range.end.max(1)),
+                })
             })
-        });
+    };
     let projection = Projection {
-        pose: Pose {
+        pose: scene.is_none().then(|| Pose {
             position: camera.translation.to_array(),
             forward: camera.forward().to_array(),
-        },
+        }),
         focus,
     };
     #[cfg(target_arch = "wasm32")]
@@ -265,6 +275,8 @@ fn draw_peers(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut transforms: Query<&mut Transform, With<Marker>>,
+    scene: Option<Res<Scene>>,
+    set: Res<WorldSet>,
 ) {
     let mut targets = std::collections::HashMap::new();
     for peer in &party.peers {
@@ -272,9 +284,10 @@ fn draw_peers(
             continue;
         };
         let name = peer["login"].as_str().unwrap_or("Reviewer");
-        if let Some(position) = peer["pose"]["position"]
-            .as_array()
-            .filter(|value| value.len() == 3)
+        if scene.is_none()
+            && let Some(position) = peer["pose"]["position"]
+                .as_array()
+                .filter(|value| value.len() == 3)
         {
             let coordinates = position
                 .iter()
@@ -302,11 +315,18 @@ fn draw_peers(
                 (id.to_owned(), true),
                 (
                     format!("{name} reading {path}"),
-                    Vec3::new(
-                        file.position[0],
-                        listing::block_size(file).y + 3.,
-                        file.position[1],
-                    ),
+                    if let Some(scene) = &scene {
+                        let Some(position) = scene.positions.get(path) else {
+                            continue;
+                        };
+                        *position
+                    } else {
+                        Vec3::new(
+                            file.position[0],
+                            listing::block_size(file).y + 3.,
+                            file.position[1],
+                        )
+                    },
                 ),
             );
         }
@@ -333,8 +353,17 @@ fn draw_peers(
         .material
         .get_or_insert_with(|| {
             materials.add(StandardMaterial {
-                base_color: Color::srgb_u8(90, 232, 225),
-                emissive: Color::srgb(0.15, 0.5, 0.48).into(),
+                base_color: if scene.is_some() {
+                    color(set.accent)
+                } else {
+                    Color::srgb_u8(90, 232, 225)
+                },
+                emissive: if scene.is_some() {
+                    Color::srgb(0.42, 0.22, 0.07)
+                } else {
+                    Color::srgb(0.15, 0.5, 0.48)
+                }
+                .into(),
                 ..default()
             })
         })

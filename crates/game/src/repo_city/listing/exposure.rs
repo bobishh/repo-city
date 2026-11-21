@@ -7,6 +7,47 @@ struct Viewed {
 }
 
 impl Listing {
+    pub(crate) fn observe_rows(
+        &mut self,
+        explorer: &Explorer,
+        file: &repo_world::File,
+        rows: Range<usize>,
+        lines: impl Iterator<Item = (bool, syntax::Line)>,
+        delta: f32,
+        settings: reading::Settings,
+    ) -> Vec<progress::Mark> {
+        self.advance_seen(
+            explorer,
+            file,
+            Viewed {
+                rows,
+                lines: lines.collect(),
+            },
+            delta,
+            settings,
+        )
+    }
+
+    pub(crate) fn clear_observation(&mut self) {
+        self.observed = None;
+    }
+
+    pub(crate) fn reading_seconds(&self) -> Option<(f32, f32)> {
+        self.observed
+            .as_ref()
+            .map(|view| (view.elapsed, view.seconds))
+    }
+
+    pub(crate) fn has_read_line(&self, file: usize, before: bool, line: usize) -> bool {
+        self.revealed.contains(&(file, before, line))
+    }
+
+    pub(crate) fn observes_row(&self, index: usize, before: bool, row: usize) -> bool {
+        self.observed.as_ref().is_some_and(|view| {
+            view.file == index && view.before == before && view.rows.contains(&row)
+        })
+    }
+
     fn advance_seen(
         &mut self,
         explorer: &Explorer,

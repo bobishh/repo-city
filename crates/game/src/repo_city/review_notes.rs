@@ -436,7 +436,7 @@ pub(super) fn command_scroll(keys: &ButtonInput<KeyCode>) -> bool {
     keys.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight])
 }
 
-const SLOTS: [KeyCode; 10] = [
+pub(super) const SLOTS: [KeyCode; 10] = [
     KeyCode::Digit0,
     KeyCode::Digit1,
     KeyCode::Digit2,
@@ -449,18 +449,9 @@ const SLOTS: [KeyCode; 10] = [
     KeyCode::Digit9,
 ];
 
-pub(super) fn update(
+pub(super) fn refresh(
     repo: Res<Repo>,
-    keys: Res<ButtonInput<KeyCode>>,
-    wheel: Res<AccumulatedMouseScroll>,
-    time: Res<Time>,
     mut review: ResMut<Review>,
-    picker: Res<file_picker::FilePicker>,
-    menu: Res<city_menu::Menu>,
-    navigation: Res<city_navigation::Navigation>,
-    camera: Query<&Pilot, PlayerCamera>,
-    listing: Option<Res<listing::Listing>>,
-    #[cfg(not(target_arch = "wasm32"))] search: Option<Res<listing::find::Search>>,
     #[cfg(not(target_arch = "wasm32"))] comments: Option<Res<native_github::PullComments>>,
 ) {
     review.washing = false;
@@ -535,7 +526,20 @@ pub(super) fn update(
             }
         }
     }
+}
 
+pub(super) fn update(
+    keys: Res<ButtonInput<KeyCode>>,
+    wheel: Res<AccumulatedMouseScroll>,
+    time: Res<Time>,
+    mut review: ResMut<Review>,
+    picker: Res<file_picker::FilePicker>,
+    menu: Res<city_menu::Menu>,
+    navigation: Res<city_navigation::Navigation>,
+    camera: Query<&Pilot, PlayerCamera>,
+    listing: Option<Res<listing::Listing>>,
+    #[cfg(not(target_arch = "wasm32"))] search: Option<Res<listing::find::Search>>,
+) {
     let Ok(pilot) = camera.single() else {
         return;
     };

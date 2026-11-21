@@ -739,14 +739,16 @@ pub(super) fn update(
                         request("POST", &path, &token, Some(message))?;
                     }
                     if let Some(projection) = projection {
-                        request(
-                            "POST",
-                            &path,
-                            &token,
-                            Some(
-                                json!({"type":"pose","seq":pose_seq,"position":projection.pose.position,"forward":projection.pose.forward}),
-                            ),
-                        )?;
+                        if let Some(pose) = projection.pose {
+                            request(
+                                "POST",
+                                &path,
+                                &token,
+                                Some(
+                                    json!({"type":"pose","seq":pose_seq,"position":pose.position,"forward":pose.forward}),
+                                ),
+                            )?;
+                        }
                         if focus_changed {
                             request(
                                 "POST",

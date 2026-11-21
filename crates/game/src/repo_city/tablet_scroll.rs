@@ -8,9 +8,41 @@ use bevy::{
     },
 };
 
-const FACE: Color = Color::srgb_u8(43, 105, 111);
-const LIGHT: Color = Color::srgb_u8(125, 216, 200);
-const DARK: Color = Color::srgb_u8(8, 35, 43);
+struct Palette {
+    face: Color,
+    active: Color,
+    light: Color,
+    dark: Color,
+    border: Color,
+    track: Color,
+    ink: Color,
+}
+
+impl Palette {
+    fn for_world(world: Option<&WorldSet>) -> Self {
+        if world.is_some_and(WorldSet::is_library) {
+            Self {
+                face: Color::srgb_u8(105, 74, 45),
+                active: Color::srgb_u8(127, 89, 49),
+                light: Color::srgb_u8(224, 184, 125),
+                dark: Color::srgb_u8(44, 32, 24),
+                border: Color::srgb_u8(140, 107, 72),
+                track: Color::srgb_u8(54, 42, 33),
+                ink: Color::srgb_u8(255, 235, 204),
+            }
+        } else {
+            Self {
+                face: Color::srgb_u8(43, 105, 111),
+                active: Color::srgb_u8(57, 137, 137),
+                light: Color::srgb_u8(125, 216, 200),
+                dark: Color::srgb_u8(8, 35, 43),
+                border: Color::srgb_u8(61, 112, 116),
+                track: Color::srgb_u8(11, 27, 34),
+                ink: native_panel::INK,
+            }
+        }
+    }
+}
 
 #[derive(Component, Default)]
 pub(super) struct Area;
@@ -31,8 +63,12 @@ pub(super) fn register(app: &mut App) {
         );
 }
 
-fn bevel(raised: bool) -> BorderColor {
-    let (light, dark) = if raised { (LIGHT, DARK) } else { (DARK, LIGHT) };
+fn bevel(palette: &Palette, raised: bool) -> BorderColor {
+    let (light, dark) = if raised {
+        (palette.light, palette.dark)
+    } else {
+        (palette.dark, palette.light)
+    };
     BorderColor {
         top: light,
         left: light,
@@ -45,7 +81,9 @@ fn attach(
     mut commands: Commands,
     mut areas: Query<(Entity, &ChildOf, &mut Node), Added<Area>>,
     children: Query<&Children>,
+    world: Option<Res<WorldSet>>,
 ) {
+    let palette = Palette::for_world(world.as_deref());
     for (area, parent, mut node) in &mut areas {
         let parent = parent.parent();
         let index = children
@@ -84,8 +122,8 @@ fn attach(
                     border: UiRect::all(px(1.)),
                     ..default()
                 },
-                BackgroundColor(DARK),
-                BorderColor::all(Color::srgb_u8(61, 112, 116)),
+                BackgroundColor(palette.dark),
+                BorderColor::all(palette.border),
             ))
             .with_children(|bar| {
                 bar.spawn((
@@ -102,8 +140,8 @@ fn attach(
                         border: UiRect::all(px(2.)),
                         ..default()
                     },
-                    BackgroundColor(Color::srgb_u8(11, 27, 34)),
-                    bevel(false),
+                    BackgroundColor(palette.track),
+                    bevel(&palette, false),
                 ))
                 .with_child((
                     Name::new("Scroll thumb"),
@@ -116,8 +154,8 @@ fn attach(
                         ..default()
                     },
                     Hovered::default(),
-                    BackgroundColor(FACE),
-                    bevel(true),
+                    BackgroundColor(palette.face),
+                    bevel(&palette, true),
                     BackgroundGradient::default(),
                 ));
                 for (kind, label) in [("up", "▲"), ("down", "▼")] {
@@ -138,14 +176,14 @@ fn attach(
                             border: UiRect::all(px(2.)),
                             ..default()
                         },
-                        BackgroundColor(FACE),
-                        bevel(true),
+                        BackgroundColor(palette.face),
+                        bevel(&palette, true),
                     ))
                     .observe(step)
                     .with_child((
                         Text::new(label),
                         native_panel::panel_font(),
-                        TextColor(native_panel::INK),
+                        TextColor(palette.ink),
                         Pickable::IGNORE,
                     ));
                 }
@@ -173,6 +211,7 @@ fn step(
 }
 
 fn grip(
+    world: Option<Res<WorldSet>>,
     mut thumbs: Query<
         (
             &ComputedNode,
@@ -191,11 +230,12 @@ fn grip(
         ),
     >,
 ) {
+    let palette = Palette::for_world(world.as_deref());
     for (node, hovered, drag, mut color, mut gradient) in &mut thumbs {
         let face = if hovered.0 || drag.dragging {
-            Color::srgb_u8(57, 137, 137)
+            palette.active
         } else {
-            FACE
+            palette.face
         };
         color.0 = face;
         let middle = node.size().y * node.inverse_scale_factor() / 2.;
@@ -203,10 +243,10 @@ fn grip(
         for y in [-7., -1., 5.].map(|offset| middle + offset) {
             stripes.extend([
                 ColorStop::new(face, px(y)),
-                ColorStop::new(DARK, px(y)),
-                ColorStop::new(DARK, px(y + 2.)),
-                ColorStop::new(LIGHT, px(y + 2.)),
-                ColorStop::new(LIGHT, px(y + 3.)),
+                ColorStop::new(palette.dark, px(y)),
+                ColorStop::new(palette.dark, px(y + 2.)),
+                ColorStop::new(palette.light, px(y + 2.)),
+                ColorStop::new(palette.light, px(y + 3.)),
                 ColorStop::new(face, px(y + 3.)),
             ]);
         }

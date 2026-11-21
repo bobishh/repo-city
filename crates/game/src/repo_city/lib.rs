@@ -606,6 +606,7 @@ fn install_city(app: &mut App, args: &[String]) {
                 )
                     .chain(),
                 (
+                    review_notes::refresh,
                     review_notes::update,
                     review_notes::panels,
                     review_notes::update_color_picker,
@@ -674,43 +675,30 @@ fn install_city(app: &mut App, args: &[String]) {
             .before(listing::draw)
             .run_if(repository_picker::has_city),
     );
-    tablet_scroll::register(app);
-    app.add_systems(
-        Update,
-        native_panel::focus_outline.after(native_panel::keyboard_navigation),
-    )
-    .add_systems(Update, tablet_display::toggle.after(android::show_tablet))
-    .add_systems(
-        First,
-        tablet_display::pointer.in_set(bevy::picking::PickingSystems::Input),
-    );
+    tablet_display::register(app);
     #[cfg(not(target_arch = "wasm32"))]
-    app.add_systems(
-        Update,
-        native_panel::keyboard_navigation.after(review_tablet::update),
-    )
-    .add_plugins(city_audio::Plugin)
-    .add_systems(PostUpdate, synchronize_cursor)
-    .add_plugins(focus_context::Plugin)
-    .init_resource::<file_links::Links>()
-    .add_systems(Update, file_links::update.before(review_tablet::update))
-    .add_systems(Update, file_links::draw.after(file_links::update))
-    .init_resource::<review_notes::ReviewUi>()
-    .init_resource::<review_tablet::Tablet>()
-    .add_plugins(desktop_splash::Plugin)
-    .init_resource::<terminal::Terminal>()
-    .add_systems(Update, terminal::update.after(review_tablet::update))
-    .init_resource::<markdown_preview::Request>()
-    .init_resource::<markdown_preview::ReadQueue>()
-    .init_resource::<image_preview::Request>()
-    .init_resource::<live_worktree::Live>()
-    .add_systems(
-        Update,
-        live_worktree::animate
-            .after(spawn_city)
-            .before(listing::draw),
-    )
-    .add_systems(Update, live_worktree::highlight.after(animate));
+    app.add_plugins(city_audio::Plugin)
+        .add_systems(PostUpdate, synchronize_cursor)
+        .add_plugins(focus_context::Plugin)
+        .init_resource::<file_links::Links>()
+        .add_systems(Update, file_links::update.before(review_tablet::update))
+        .add_systems(Update, file_links::draw.after(file_links::update))
+        .init_resource::<review_notes::ReviewUi>()
+        .init_resource::<review_tablet::Tablet>()
+        .add_plugins(desktop_splash::Plugin)
+        .init_resource::<terminal::Terminal>()
+        .add_systems(Update, terminal::update.after(review_tablet::update))
+        .init_resource::<markdown_preview::Request>()
+        .init_resource::<markdown_preview::ReadQueue>()
+        .init_resource::<image_preview::Request>()
+        .init_resource::<live_worktree::Live>()
+        .add_systems(
+            Update,
+            live_worktree::animate
+                .after(spawn_city)
+                .before(listing::draw),
+        )
+        .add_systems(Update, live_worktree::highlight.after(animate));
     markdown_preview::register(app);
     source_editor::register(app);
     app.add_plugins(review_party::Plugin);
@@ -737,25 +725,11 @@ fn install_city(app: &mut App, args: &[String]) {
         )
         .add_systems(
             Update,
-            browser_touch::update.before(file_facade::lower_unchanged),
+            browser_touch::update
+                .before(file_facade::lower_unchanged)
+                .before(tablet_display::resize),
         )
         .add_systems(Update, reading::apply.before(listing::wash_stream))
-        .add_systems(
-            Update,
-            native_panel::keyboard_navigation.after(browser_tablet::update),
-        )
-        .init_resource::<browser_tablet::Tablet>()
-        .add_systems(
-            PostUpdate,
-            browser_tablet::geometry.after(bevy::ui::UiSystems::PostLayout),
-        )
-        .add_systems(
-            Update,
-            tablet_display::resize
-                .after(browser_touch::update)
-                .before(browser_tablet::update),
-        )
-        .add_systems(Update, browser_tablet::update.after(android::show_tablet))
         .add_systems(Update, browser_audio::update.after(listing::draw));
     app.add_systems(Startup, district::setup);
     app.add_systems(
@@ -1078,7 +1052,13 @@ fn setup(
         bevy::picking::Pickable::IGNORE,
     ));
     #[cfg(not(target_arch = "wasm32"))]
-    repository_picker::spawn(&mut commands, &ui_font(13.), color(set.ink), &mut images);
+    repository_picker::spawn(
+        &mut commands,
+        &ui_font(13.),
+        color(set.ink),
+        &mut images,
+        None,
+    );
     #[cfg(not(target_arch = "wasm32"))]
     commands.spawn((
         Text::new(""),

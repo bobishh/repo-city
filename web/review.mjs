@@ -34,7 +34,7 @@ const changedPaths = ({ before, after }) => [...new Set([...Object.keys(before),
   path => before[path]?.id !== after[path]?.id || before[path]?.mode !== after[path]?.mode,
 );
 
-export function createReview({ canvas, release, onClose, onTour, audio, onCompare = () => {} }) {
+export function createReview({ canvas, release, onClose, onTour, audio, onCompare = () => {}, library = () => false }) {
   const dialog = document.querySelector("#review-dialog");
   const tablet = createTablet(dialog, canvas);
   const settingsKey = "repo-city-reading-v1";
@@ -92,9 +92,10 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       gear.title = "Settings";
       gear.setAttribute("aria-pressed", String(dialog.dataset.view === "settings"));
       const putAway = button("×", dismissTablet);
-      putAway.className = "vibepad-put-away"; putAway.setAttribute("aria-label", "Put away VibePad");
+      const pad = library() ? "Stone Pad" : "VibePad";
+      putAway.className = "vibepad-put-away"; putAway.setAttribute("aria-label", `Put away ${pad}`);
       bar.append(heading, gear, putAway);
-      const tabs = make("nav", undefined, { "aria-label": "VibePad", class: "vibepad-tabs" });
+      const tabs = make("nav", undefined, { "aria-label": pad, class: "vibepad-tabs" });
       for (const [label, page, open] of [
         ["Files", "changed-files", changedFiles],
         ["Find", "file-search", fileSearch],
@@ -229,6 +230,25 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     dialog.dataset.view = "help";
     dialog.dataset.tablet = "";
     view("Help");
+    if (library()) {
+      dialog.append(make("p", "Click Greek Library to open the repository picker."));
+      const controls = make("dl", undefined, { class: "review-controls" });
+      for (const [keys, purpose] of [
+        ["WASD / mouse", "Walk and look around"],
+        ["E / M", "Open the aimed scroll or cycle the cabinet and library maps"],
+        ["Tab / Cmd+P / P", "Open Stone Pad, find a file, or preview the scroll"],
+        ["G / B / Q", "Compare, open blame, or switch snapshot side"],
+        ["Scroll / J", "Move along the scroll or jump to a line"],
+        ["/ / Z / X", "Find text, fold a block, or unfold it"],
+        ["C / [ / ]", "Start changed-file review or move between hunks"],
+        ["K / 0–9 / U", "Use heat or paint, select a paint, or edit paints"],
+        ["Shift+J / Esc", "Open comments on the aimed line or close the scroll"],
+      ]) controls.append(make("dt", keys), make("dd", purpose));
+      dialog.append(controls);
+      actions(button("Start tour", () => { onTour(true); close(); }));
+      show();
+      return;
+    }
     dialog.append(make("p", "Click the Repo City logo to open the repository picker."));
     const controls = make("dl", undefined, { class: "review-controls" });
     for (const [keys, purpose] of [

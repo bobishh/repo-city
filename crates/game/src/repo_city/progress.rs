@@ -151,7 +151,7 @@ impl Progress {
     }
 }
 
-fn comparison_scope(repo: &Repository) -> String {
+pub(super) fn comparison_scope(repo: &Repository) -> String {
     #[cfg(not(target_arch = "wasm32"))]
     return serde_json::to_string(&(format!("{:?}", repo.root), &repo.revision, &repo.baseline))
         .expect("comparison key contains only strings");

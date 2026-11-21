@@ -95,6 +95,26 @@ impl Progress {
         }
     }
 
+    pub(crate) fn world_place<T: serde::de::DeserializeOwned>(
+        &mut self,
+        repo: &Repository,
+        world: &str,
+    ) -> Option<T> {
+        let scope = world_scope(repo, world);
+        serde_json::from_str(&self.read_view(&scope).ok().flatten()?).ok()
+    }
+
+    pub(crate) fn save_world_place(
+        &mut self,
+        repo: &Repository,
+        world: &str,
+        place: &impl Serialize,
+    ) -> Result<(), String> {
+        let scope = world_scope(repo, world);
+        let value = serde_json::to_string(place).map_err(|error| error.to_string())?;
+        self.write_view_at(&scope, &value)
+    }
+
     fn read_view(&mut self, scope: &str) -> Result<Option<String>, String> {
         #[cfg(not(target_arch = "wasm32"))]
         return self.native_store()?.read_view(scope);
@@ -104,19 +124,26 @@ impl Progress {
     }
 
     fn write_view(&mut self, json: &str) -> Result<(), String> {
+        self.write_view_at(&self.scope.clone(), json)
+    }
+
+    fn write_view_at(&mut self, scope: &str, json: &str) -> Result<(), String> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let scope = self.scope.clone();
-            self.native_store()?.write_view(&scope, json)
+            self.native_store()?.write_view(scope, json)
         }
         #[cfg(target_arch = "wasm32")]
         {
             browser_storage()
                 .ok_or("Browser storage is unavailable.")?
-                .set_item(&browser_key(&self.scope), json)
+                .set_item(&browser_key(scope), json)
                 .map_err(|_| "Browser storage rejected the saved camera position.".into())
         }
     }
+}
+
+fn world_scope(repo: &Repository, world: &str) -> String {
+    format!("{}|world={world}", comparison_scope(repo))
 }
 
 #[cfg(target_arch = "wasm32")]

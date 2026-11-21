@@ -532,7 +532,15 @@ pub(super) fn build(
         for side in [-1., 1.] {
             tablet_grip(&case, commands, tablet, side);
         }
-        tablet_display::spawn(commands, pilot, tablet, images, meshes, materials);
+        tablet_display::spawn(
+            commands,
+            pilot,
+            tablet,
+            images,
+            meshes,
+            materials,
+            tablet_display::Case::Metal,
+        );
     }
     let can = commands
         .spawn((

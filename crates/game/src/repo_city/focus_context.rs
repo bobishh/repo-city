@@ -201,7 +201,7 @@ impl Writer {
 }
 
 #[derive(Resource)]
-struct Publisher {
+pub(super) struct Publisher {
     writer: Option<Writer>,
     next: f64,
     error_reported: bool,
@@ -237,38 +237,96 @@ fn publish(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut publisher: ResMut<Publisher>,
 ) {
-    let error = publisher
-        .writer
-        .as_ref()
-        .and_then(|writer| writer.errors.try_lock().ok()?.try_recv().ok());
-    if let Some(error) = error
-        && !publisher.error_reported
-    {
-        warn!("Could not publish city focus: {error}");
-        publisher.error_reported = true;
-    }
-    let now = time.elapsed_secs_f64();
-    if publisher.writer.is_none() || now < publisher.next {
+    if !publisher.due(time.elapsed_secs_f64()) {
         return;
     }
-    publisher.next = now + WRITE_INTERVAL;
     let (Ok(camera), Ok(window)) = (camera.single(), windows.single()) else {
         return;
     };
-    let scope = repo.0.root.to_string_lossy().into_owned();
-    let Some(directory) = directory(&scope) else {
-        return;
-    };
-    let selected = repo.0.files.get(explorer.selected);
-    let focus = selected
+    let visible = repo
+        .0
+        .files
+        .get(explorer.selected)
         .filter(|file| !review.blocked && !review.tablet_open && filter.includes(file))
         .and_then(|file| {
-            let (face, lines) = listing.visible_wall_lines(
+            listing.visible_wall_lines(
                 file,
                 camera,
                 &explorer,
                 window.width() / window.height().max(1.),
-            )?;
+            )
+        });
+    let aimed_path = nearest
+        .file
+        .and_then(|aim| repo.0.files.get(aim.index))
+        .filter(|file| filter.includes(file))
+        .map(|file| file.path.as_str());
+    publisher.submit(
+        &repo.0,
+        &explorer,
+        camera,
+        View {
+            active: window.focused,
+            aimed_path,
+            wall_face: listing.visible_face(),
+            visible,
+            tablet_page: tablet
+                .page_name()
+                .or_else(|| review.tablet_open.then_some("review_notes")),
+            source_page: explorer.page + 1,
+        },
+    );
+}
+
+pub(super) struct View<'a> {
+    pub active: bool,
+    pub aimed_path: Option<&'a str>,
+    pub wall_face: Option<listing::Face>,
+    pub visible: Option<(listing::Face, Vec<listing::VisibleLine<'a>>)>,
+    pub tablet_page: Option<&'a str>,
+    pub source_page: usize,
+}
+
+fn face_name(face: listing::Face) -> &'static str {
+    match face {
+        listing::Face::Source => "source",
+        listing::Face::Diff => "diff",
+        listing::Face::Blame => "blame",
+    }
+}
+
+impl Publisher {
+    pub(super) fn due(&mut self, now: f64) -> bool {
+        let error = self
+            .writer
+            .as_ref()
+            .and_then(|writer| writer.errors.try_lock().ok()?.try_recv().ok());
+        if let Some(error) = error
+            && !self.error_reported
+        {
+            warn!("Could not publish city focus: {error}");
+            self.error_reported = true;
+        }
+        if self.writer.is_none() || now < self.next {
+            return false;
+        }
+        self.next = now + WRITE_INTERVAL;
+        true
+    }
+
+    pub(super) fn submit(
+        &mut self,
+        repo: &Repository,
+        explorer: &Explorer,
+        camera: &Transform,
+        view: View<'_>,
+    ) {
+        let scope = repo.root.to_string_lossy().into_owned();
+        let Some(directory) = directory(&scope) else {
+            return;
+        };
+        let selected = repo.files.get(explorer.selected);
+        let focus = selected.zip(view.visible).map(|(file, (face, lines))| {
             let numbers = lines
                 .iter()
                 .filter(|line| line.before == explorer.before)
@@ -318,7 +376,7 @@ fn publish(
                 })
                 .collect::<Vec<_>>();
             let text_truncated = omitted || readable_lines.iter().any(|line| line.truncated);
-            Some(Focus {
+            Focus {
                 path: file.path.clone(),
                 before: explorer.before,
                 source_blob: (if explorer.before {
@@ -328,63 +386,43 @@ fn publish(
                 })
                 .as_ref()
                 .map(|blob| blob.id.clone()),
-                face: Some(
-                    match face {
-                        listing::Face::Source => "source",
-                        listing::Face::Diff => "diff",
-                        listing::Face::Blame => "blame",
-                    }
-                    .into(),
-                ),
+                face: Some(face_name(face).into()),
                 visible_lines,
                 readable_lines,
                 text_truncated,
-            })
-        });
-    let snapshot = Snapshot {
-        version: 1,
-        repository: scope,
-        observed_millis: now_millis(),
-        process: std::process::id(),
-        active: window.focused,
-        comparison: Comparison {
-            revision: repo.0.revision.clone(),
-            baseline: repo.0.baseline.clone(),
-            worktree: repo.0.is_worktree(),
-        },
-        aimed_path: nearest
-            .file
-            .and_then(|aim| repo.0.files.get(aim.index))
-            .filter(|file| filter.includes(file))
-            .map(|file| file.path.clone()),
-        selected_path: selected.map(|file| file.path.clone()),
-        selected_before: explorer.before,
-        wall_face: listing.visible_face().map(|face| {
-            match face {
-                listing::Face::Source => "source",
-                listing::Face::Diff => "diff",
-                listing::Face::Blame => "blame",
             }
-            .to_owned()
-        }),
-        focus,
-        tablet_page: tablet
-            .page_name()
-            .map(str::to_owned)
-            .or_else(|| review.tablet_open.then(|| "review_notes".to_owned())),
-        source_page: explorer.page + 1,
-        camera_position: camera.translation.to_array(),
-        camera_forward: camera.forward().to_array(),
-    };
-    if let Some(writer) = &publisher.writer {
-        match writer.send.try_send((directory, snapshot)) {
-            Ok(()) | Err(mpsc::TrySendError::Full(_)) => {}
-            Err(mpsc::TrySendError::Disconnected(_)) => {
-                if !publisher.error_reported {
-                    warn!("City focus writer stopped.");
-                    publisher.error_reported = true;
+        });
+        let snapshot = Snapshot {
+            version: 1,
+            repository: scope,
+            observed_millis: now_millis(),
+            process: std::process::id(),
+            active: view.active,
+            comparison: Comparison {
+                revision: repo.revision.clone(),
+                baseline: repo.baseline.clone(),
+                worktree: repo.is_worktree(),
+            },
+            aimed_path: view.aimed_path.map(str::to_owned),
+            selected_path: selected.map(|file| file.path.clone()),
+            selected_before: explorer.before,
+            wall_face: view.wall_face.map(face_name).map(str::to_owned),
+            focus,
+            tablet_page: view.tablet_page.map(str::to_owned),
+            source_page: view.source_page,
+            camera_position: camera.translation.to_array(),
+            camera_forward: camera.forward().to_array(),
+        };
+        if let Some(writer) = &self.writer {
+            match writer.send.try_send((directory, snapshot)) {
+                Ok(()) | Err(mpsc::TrySendError::Full(_)) => {}
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    if !self.error_reported {
+                        warn!("City focus writer stopped.");
+                        self.error_reported = true;
+                    }
+                    self.writer = None;
                 }
-                publisher.writer = None;
             }
         }
     }

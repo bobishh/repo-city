@@ -11,6 +11,13 @@ pub(super) struct ChangesOnly {
 }
 
 impl ChangesOnly {
+    pub(super) fn measure(&mut self, repo: &Repository) {
+        self.available = comparison_available(repo);
+        if !self.available {
+            self.enabled = false;
+        }
+    }
+
     pub(super) fn toggle(&mut self) {
         if self.available {
             self.enabled = !self.enabled;
@@ -67,6 +74,13 @@ extern "C" {
     fn browser_can_filter_changes() -> bool;
 }
 
+fn comparison_available(_repo: &Repository) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    return browser_can_filter_changes();
+    #[cfg(not(target_arch = "wasm32"))]
+    return _repo.baseline.is_some();
+}
+
 pub(super) fn lower_unchanged(
     time: Res<Time>,
     repo: Res<Repo>,
@@ -80,11 +94,7 @@ pub(super) fn lower_unchanged(
         Query<(&SinkPart, &mut Transform), Added<SinkPart>>,
     )>,
 ) {
-    #[cfg(target_arch = "wasm32")]
-    let available = browser_can_filter_changes();
-    #[cfg(not(target_arch = "wasm32"))]
-    let available = repo.0.baseline.is_some();
-    focus.available = available;
+    focus.measure(&repo.0);
     if repo.is_changed() {
         let identity = (
             repo.0.root.clone(),
@@ -95,9 +105,6 @@ pub(super) fn lower_unchanged(
             *comparison = Some(identity);
             focus.enabled = false;
         }
-    }
-    if !available {
-        focus.enabled = false;
     }
     if !focus.includes(&repo.0.files[explorer.selected])
         && let Some(index) = repo.0.files.iter().position(|file| focus.includes(file))

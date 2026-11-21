@@ -250,7 +250,7 @@ fn draw(parent: &mut ChildSpawnerCommands, node: &NodeView, order: &mut i32) {
         "text" | "heading" | "code" | "status" => {
             let mut font = native_panel::panel_font();
             font.font_size = (if node.kind == "heading" { 22. } else { 18. }).into();
-            parent.spawn((
+            let mut entity = parent.spawn((
                 binding(),
                 Label(node.id.clone()),
                 Text::new(&node.text),
@@ -273,6 +273,9 @@ fn draw(parent: &mut ChildSpawnerCommands, node: &NodeView, order: &mut i32) {
                     ..default()
                 },
             ));
+            if node.kind == "heading" {
+                entity.insert(native_panel::Heading);
+            }
         }
         "spacer" => {
             parent.spawn(Node {

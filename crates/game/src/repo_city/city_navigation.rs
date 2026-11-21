@@ -222,14 +222,14 @@ pub(super) enum Overview {
 }
 
 #[derive(Default)]
-struct History {
+pub(super) struct History {
     scope: Option<(PathBuf, String, Option<String>)>,
     paths: Vec<String>,
     current: usize,
 }
 
 impl History {
-    fn record(&mut self, path: &str) {
+    pub(super) fn record(&mut self, path: &str) {
         if self
             .paths
             .get(self.current)
@@ -242,7 +242,7 @@ impl History {
         self.current = self.paths.len() - 1;
     }
 
-    fn step(&mut self, offset: isize) -> Option<&str> {
+    pub(super) fn step(&mut self, offset: isize) -> Option<&str> {
         let index = self.current.checked_add_signed(offset)?;
         let path = self.paths.get(index)?;
         self.current = index;

@@ -77,22 +77,29 @@ canvas[data-pointer-locked] { cursor: none !important; }
 :root:not([data-playing]) .wordmark { font-size: clamp(3rem, 5.5vw, 5rem); }
 .wordmark-edition { font-size: 0.48em; }
 [data-playing] .wordmark-edition { display: none; }
+.library-title { display: none; }
 @font-face {
   font-family: "GFS Didot";
   src: url("./assets/GFSDidot-Regular.ttf") format("truetype");
   font-display: swap;
 }
-#repo-city[data-world="greek-library"] ~ #city-header {
+[data-world="greek-library"] #city-header {
   --library-ink: #f6deb0;
 }
-#repo-city[data-world="greek-library"] ~ #city-header :is(#logo, #city-repository) { color: var(--library-ink); }
-#repo-city[data-world="greek-library"] ~ #city-header .android { display: none; }
-#repo-city[data-world="greek-library"] ~ #city-header .wordmark {
+[data-world="greek-library"] #city-header :is(#logo, #city-repository) { color: var(--library-ink); }
+[data-world="greek-library"] :is(.android, .city-title) { display: none; }
+[data-world="greek-library"] .library-title { display: inline; }
+[data-world="greek-library"] #city-header .wordmark {
   padding-left: 8px;
-  font: 400 2.55rem/1 "GFS Didot", Georgia, serif;
+  font: 400 clamp(1.65rem, 4vw, 2.55rem)/1 "GFS Didot", Georgia, serif;
   text-shadow: 0 1px 2px #2f2119;
 }
-#repo-city[data-library-reading] ~ #city-header .city-brand:not(:hover, :focus-within) { opacity: .28; }
+[data-world="greek-library"] #start-screen { background: #221811; }
+[data-world="greek-library"] #start-screen img { object-fit: cover; object-position: 55% 50%; }
+[data-world="greek-library"] #start-screen::after { background: linear-gradient(120deg, #1a100be0, transparent 70%); }
+#repo-city[data-library-reading] ~ #city-header :is(.wordmark, #city-repository) {
+  text-shadow: 0 1px 2px #1a100a, 0 0 7px #1a100a;
+}
 #blame { display: grid; place-items: center; min-height: 32px; padding: 0 8px; font-size: .8rem; white-space: nowrap; text-underline-offset: 0.2em; }
 #blame span { display: none; }
 #help { grid-column: 2; min-width: 32px; min-height: 32px; }
@@ -202,6 +209,57 @@ form button:focus-visible, form summary:focus-visible, form a:focus-visible { ou
 .suggestions li { cursor: pointer; overflow-wrap: anywhere; }
 .suggestions li[aria-selected="true"], .suggestions li:hover { background: #153333; box-shadow: inset 2px 0 #76ebd6; }
 .suggestions small { color: #a8c6cc; padding-inline: 12px; }
+
+:root[data-world="greek-library"] {
+  --stone-form: #251d17;
+  --stone-field: #342a21;
+  --stone-rule: #604b37;
+  --stone-ink: #f0dfc7;
+  --stone-muted: #c7ad8b;
+  --stone-focus: #d3a568;
+}
+[data-world="greek-library"] :is(#repository-form, .city-dialog, .picker-menu) {
+  background: var(--stone-form);
+  border-color: var(--stone-rule);
+  color: var(--stone-ink);
+}
+[data-world="greek-library"] :is(.picker-row, #revision-editor, #pull-editor, #picker-footer) {
+  border-color: var(--stone-rule);
+}
+[data-world="greek-library"] #repository-form .picker-search:focus-within,
+[data-world="greek-library"] .city-dialog button:hover {
+  border-color: var(--stone-focus);
+}
+[data-world="greek-library"] :is(form button, form summary, #picker-links a, .picker-menu a, .world-picker, .suggestions small),
+[data-world="greek-library"] .picker-search input::placeholder {
+  color: var(--stone-muted);
+}
+[data-world="greek-library"] :is(.picker-search input, .city-dialog h2, form button:hover, form summary:hover, #picker-links a:hover) {
+  color: var(--stone-ink);
+}
+[data-world="greek-library"] .city-dialog h2 { font-family: "GFS Didot", Georgia, serif; }
+[data-world="greek-library"] :is(.city-dialog button, .world-picker select) {
+  background: var(--stone-field);
+  border-color: var(--stone-rule);
+  color: var(--stone-ink);
+}
+[data-world="greek-library"] #city-header :is(#help, #blame) {
+  background: var(--stone-form);
+  border-color: var(--stone-rule);
+  color: var(--stone-ink);
+}
+[data-world="greek-library"] :is(form button, form summary, form a, form select, .city-dialog button):focus-visible {
+  outline: 2px solid var(--stone-focus);
+}
+[data-world="greek-library"] .suggestions li:is([aria-selected="true"], :hover) {
+  background: var(--stone-field);
+  box-shadow: inset 2px 0 var(--stone-focus);
+}
+[data-world="greek-library"] #repository-form #open-city { color: #21150a; background: var(--stone-focus); }
+[data-world="greek-library"] #repository-form #open-city:hover { background: #ecd1a7; }
+[data-world="greek-library"] #repository-form #open-city:disabled { color: #f0dfc7; background: #584636; opacity: 1; }
+[data-world="greek-library"] form[aria-busy="true"] #status { color: var(--stone-ink); }
+
 @media (max-width: 560px) {
   #city-header { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "brand commands" "progress progress"; }
 }

@@ -70,7 +70,13 @@ test("VibePad scroll arrows, thumb drag and track paging follow the visible cont
 
 test("short tablet pages keep the gutter stable without scrollable content", async ({ page }) => {
   await openHelp(page);
-  const width = (await part(page, "track")).bounds[2];
+  let width, stableFrames = 0;
+  await expect.poll(async () => {
+    const current = (await part(page, "track"))?.bounds[2];
+    stableFrames = current && current === width ? stableFrames + 1 : 0;
+    width = current;
+    return stableFrames;
+  }).toBeGreaterThan(2);
   await gpuClick(page, servicePanel(page).getByRole("button", { name: "Files", exact: true, includeHidden: true }));
   await expect.poll(async () => (await part(page, "track"))?.range).toBe(0);
   expect((await part(page, "track")).bounds[2]).toBeCloseTo(width, 0);

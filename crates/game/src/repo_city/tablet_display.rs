@@ -43,6 +43,39 @@ fn screen_texture(images: &mut Assets<Image>, size: UVec2) -> Handle<Image> {
     ))
 }
 
+pub(super) fn register(app: &mut App) {
+    tablet_scroll::register(app);
+    app.add_systems(First, pointer.in_set(bevy::picking::PickingSystems::Input))
+        .add_systems(Update, toggle.after(android::show_tablet))
+        .add_systems(
+            Update,
+            native_panel::focus_outline.after(native_panel::keyboard_navigation),
+        );
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_systems(
+        Update,
+        native_panel::keyboard_navigation.after(review_tablet::update),
+    );
+    #[cfg(target_arch = "wasm32")]
+    app.init_resource::<browser_tablet::Tablet>()
+        .add_systems(
+            Update,
+            native_panel::keyboard_navigation.after(browser_tablet::update),
+        )
+        .add_systems(Update, resize.before(browser_tablet::update))
+        .add_systems(Update, browser_tablet::update.after(android::show_tablet))
+        .add_systems(
+            PostUpdate,
+            browser_tablet::geometry.after(bevy::ui::UiSystems::PostLayout),
+        );
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Case {
+    Metal,
+    Stone,
+}
+
 pub(super) fn spawn(
     commands: &mut Commands,
     pilot: Entity,
@@ -50,6 +83,7 @@ pub(super) fn spawn(
     images: &mut Assets<Image>,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    case: Case,
 ) {
     let image = screen_texture(images, SIZE);
     let target = image.clone().into();
@@ -105,20 +139,22 @@ pub(super) fn spawn(
         RenderLayers::layer(LAYER),
         bevy::light::NotShadowCaster,
     ));
-    commands.spawn((
-        ChildOf(tablet),
-        Mesh3d(meshes.add(Rectangle::new(0.17, 0.0425))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color_texture: Some(images.add(code_texture::vibepad_wordmark())),
-            alpha_mode: AlphaMode::Mask(0.35),
-            unlit: true,
-            ..default()
-        })),
-        Transform::from_xyz(0.385, -0.349, 0.055),
-        RenderLayers::layer(LAYER),
-        bevy::light::NotShadowCaster,
-    ));
-    let shield = spawn_shield(commands);
+    if matches!(case, Case::Metal) {
+        commands.spawn((
+            ChildOf(tablet),
+            Mesh3d(meshes.add(Rectangle::new(0.17, 0.0425))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color_texture: Some(images.add(code_texture::vibepad_wordmark())),
+                alpha_mode: AlphaMode::Mask(0.35),
+                unlit: true,
+                ..default()
+            })),
+            Transform::from_xyz(0.385, -0.349, 0.055),
+            RenderLayers::layer(LAYER),
+            bevy::light::NotShadowCaster,
+        ));
+    }
+    let shield = spawn_shield(commands, pilot);
     commands.spawn(POINTER);
     commands.insert_resource(TouchScroll::default());
     commands.insert_resource(Display {
@@ -132,10 +168,11 @@ pub(super) fn spawn(
     });
 }
 
-fn spawn_shield(commands: &mut Commands) -> Entity {
+fn spawn_shield(commands: &mut Commands, pilot: Entity) -> Entity {
     commands
         .spawn((
             GlobalZIndex(900),
+            UiTargetCamera(pilot),
             Node {
                 position_type: PositionType::Absolute,
                 width: percent(100.),
@@ -449,7 +486,8 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((bevy::input::InputPlugin, InputFocusPlugin))
             .add_systems(Startup, |mut commands: Commands| {
-                spawn_shield(&mut commands);
+                let camera = commands.spawn(Camera3d::default()).id();
+                spawn_shield(&mut commands, camera);
             });
         app.world_mut().register_component::<ChildOf>();
         let window = app

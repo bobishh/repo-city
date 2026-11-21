@@ -86,6 +86,10 @@ impl WorldSet {
         self.adapter().expect("validated world set").install
     }
 
+    pub(super) fn is_library(&self) -> bool {
+        self.representation == "shelves-and-scrolls"
+    }
+
     #[cfg(target_arch = "wasm32")]
     pub(super) fn browser() -> Self {
         let selection = browser_world();

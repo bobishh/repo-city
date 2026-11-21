@@ -44,10 +44,10 @@ let running = false;
 let world = defaultWorld;
 const cityControls = () => world === defaultWorld;
 const audio = createCityAudio({ active: () => running && !dialog.open && !canvas.hidden });
-const releasePointer = setupPointer(canvas, dialog, cityControls);
-const touch = createTouchControls({ canvas, onPad: () => review.changedFiles(), enabled: cityControls });
+const releasePointer = setupPointer(canvas, dialog);
+const touch = createTouchControls({ canvas, onPad: () => review.changedFiles(), walking: () => !cityControls() });
 const review = createReview({
-  audio, canvas, release: releasePointer, onClose: focusCanvas,
+  audio, canvas, release: releasePointer, onClose: focusCanvas, library: () => !cityControls(),
   onCompare: (repository, before, after) => openRepository(repository, after, before, true),
   onTour(started) {
     tourCommand = ((tourCommand & ~1) + 2) | Number(started);
@@ -98,6 +98,12 @@ if (Array.from(worldSelect.options).some(option => option.value === requestedWor
 }
 function nameOpenButton() {
   submit.textContent = worldSelect.selectedOptions[0].dataset.openLabel ?? "Open world";
+  document.documentElement.dataset.world = worldSelect.value;
+  const library = worldSelect.value === "greek-library";
+  const artwork = library ? "./assets/greek-library-start.webp" : "./assets/repo-city-start.webp";
+  const image = startScreen.querySelector("img");
+  if (image.getAttribute("src") !== artwork) image.src = artwork;
+  document.title = library ? "Greek Library · Repo City Web" : "Repo City Web";
 }
 worldSelect.addEventListener("change", nameOpenButton);
 nameOpenButton();
@@ -109,18 +115,24 @@ function focusCanvas() {
 }
 
 window.addEventListener("keydown", event => {
+  if (event.target === canvas && canvas.hasAttribute("data-library-input")) return;
+  if (event.target === canvas && canvas.hasAttribute("data-library-map")) {
+    if (/^(Arrow|Page)/.test(event.code) || ["Tab", "Home", "End"].includes(event.code)) event.preventDefault();
+    return;
+  }
   const locked = document.pointerLockElement === canvas;
   const plain = !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey;
+  if (event.target === canvas && canvas.hasAttribute("data-library-reading")
+      && event.code === "KeyF" && (event.metaKey || event.ctrlKey)) {
+    event.preventDefault();
+    return;
+  }
   if (event.altKey && event.code === "Digit0" && !event.ctrlKey && !event.metaKey) {
     event.preventDefault(); event.stopPropagation(); review.dismissTablet(); logo.click(); return;
   }
-  if (running && !cityControls()) {
-    if (event.target === canvas &&
-        (/^(Arrow|Page)/.test(event.code) || ["Home", "End"].includes(event.code) ||
-         (event.code === "KeyP" && (event.metaKey || event.ctrlKey)))) {
-      event.preventDefault();
-    }
-    return;
+  if (running && !cityControls() && event.target === canvas &&
+      (/^(Arrow|Page)/.test(event.code) || ["Home", "End"].includes(event.code))) {
+    event.preventDefault();
   }
   if (event.altKey && !event.ctrlKey && !event.metaKey && /^Digit[1-9]$/.test(event.code) && review.selectTab(Number(event.code.slice(-1)) - 1)) {
     event.preventDefault(); event.stopPropagation(); return;
@@ -271,14 +283,27 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
       canvas.dataset.world = world;
       globalThis.repoCity = {
         worldSet: () => world,
-        libraryReading(path, first, last, status) {
+        libraryReading(path, first, last, status, face) {
           const position = first ? `, lines ${first}–${last}` : "";
           const notice = status ? `, ${status}` : "";
           canvas.setAttribute("aria-label", path ? `${worldName}, ${path}${position}${notice}` : worldName);
           canvas.toggleAttribute("data-library-reading", Boolean(path));
+          if (path) canvas.dataset.libraryFace = face.toLowerCase();
+          else canvas.removeAttribute("data-library-face");
         },
-        libraryLinePrompt(open) {
-          if (open) canvas.setAttribute("aria-description", "Enter a line number. Press Enter to go.");
+        libraryTarget(target) {
+          if (target) canvas.dataset.libraryTarget = target;
+          else canvas.removeAttribute("data-library-target");
+        },
+        libraryMap(title) {
+          if (title) {
+            releasePointer();
+            canvas.dataset.libraryMap = title;
+          } else canvas.removeAttribute("data-library-map");
+        },
+        libraryInput(prompt) {
+          canvas.toggleAttribute("data-library-input", Boolean(prompt));
+          if (prompt) canvas.setAttribute("aria-description", prompt);
           else canvas.removeAttribute("aria-description");
         },
         partyUpdate(value) { party.update(JSON.parse(value)); },
@@ -418,7 +443,7 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
       cityRepository.hidden = false;
       cityProgress.hidden = !cityControls();
       startControls.hidden = true;
-      help.hidden = !cityControls();
+      help.hidden = false;
     } else {
       await stageRepository(await loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest, { exactBase, pinnedComparison }), ref, base);
     }

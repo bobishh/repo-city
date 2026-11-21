@@ -44,7 +44,7 @@ remain opt-in while a feature is still missing.
 | Repository selection | Local folder, live worktree, frozen revision, recent checkout, GitHub repository or PR, revision and base selection. GitHub sign-in, private repo access and historical PR rules remain in effect. | Open the same comparison in the gallery. Keep the world and selection when changing repository or revision. |
 | Frame and aim | First-person view, mouse capture and Esc, keyboard look, common input focus and pointer-based hover. The reticle and label identify the current target. | First-person eye camera and the same focus states. Render hands near the lower edge during tool use. Highlight the actual aimed cabinet or file and name it. |
 | Travel | City flight, boost, altitude, street walking, wall anchoring, click/E approach and bookmarks or Back/Forward. | Walk in the aisle and step to the reading position. Animate the approach and unroll from the player's eyes. Keep the clicked or selected file and any requested line. |
-| Directory and project overview | District and project maps, directory selection, changed buildings and comment markers. | Gallery overview groups the same directories. The selected directory leads to its cabinet, then a file. Show change and comment markers with their meaning. |
+| Directory and project overview | District and project maps, directory selection, changed buildings and comment markers. | M opens the cabinet map on the Stone Pad. M again shows the library corridors with real cabinets on each side. Select a cabinet to see its shelves, then select a scroll to open its file. A third M or Escape puts the map away. |
 | File filtering and search | Changes-only filter, all files, search by filename and path, changed and viewed lists in VibePad, live save indicator and recent agent files. | The same lists and filters select visible file slots or open the matching scroll. Size each cabinet from its directory's file count. The hall can extend past the last cabinet without duplicating directories. |
 | Follow links and traces | File connections, import resolution, trace import, frame selection and route following. Confirmed paths are distinguishable from unresolved entries. | Use cross-references or aisle guidance. Keep the same resolved destination and trace order. |
 | Source inspection | Syntax, exact line numbers, wrapping and horizontal movement, search and match navigation, fold/unfold, covered source previews and readable source. | Render the source on a continuous scroll at a fixed scale per line. Render text in bounded tiles. Wheel/keys advance the eye along the scroll at ground height or move the readable paper under a steady eye. Render any movement of the character with a gait. |
@@ -85,15 +85,22 @@ spec enters this contract when its supported route is available.
 - In the library, a cabinet represents one exact directory. Cabin dimensions
   increase with its file count up to the available space. Slots represent real
   paths. The corridor may reuse rendered bays while preserving these identities.
+  Show directory names above visible cabinets and file names over nearby
+  scrolls. Fade out labels outside the view and avoid overlap. The aimed label
+  takes priority and the target caption shows the full path.
 - Start library travel from the first-person camera. When the player approaches
   the coil, show stepping and handling from their own eyes. Unroll the
   whole file with consistent line height and keep a visibly larger roll for
   longer files. At rest the player's viewpoint and selected line stay stable.
   Scrolling moves the reading location continuously or by the requested
   step. A distant line jump may reposition the camera immediately.
-- A skin supplies the case, tool/hands animation, lighting, material and form
-  theme for VibePad. The library uses stone panels, bronze accents and
-  GFS Didot headings. Use the common control implementations and keep code,
+  During unrolling the moving coil follows the edge of the paper along the
+  floor. Reveal the printed rows with that edge, keeping the ink at the same
+  physical scale throughout the animation.
+- A skin supplies the case, tool/hands animation, lighting, material, splash
+  art and form theme for VibePad. The library calls it Stone Pad. It uses
+  stone panels, bronze accents and GFS Didot headings. Text over bronze uses
+  dark ink. Use the common control implementations and keep code,
   notes, focus outlines, status colors and contrast legible. The screen
   dimensions, fitting, hit projection, accessible UI,
   open/close lifecycle and actions come from the shared tablet. The stone
@@ -111,6 +118,7 @@ spec enters this contract when its supported route is available.
 | --- | --- | --- |
 | The default launch and an opt-in launch open the same comparison | Open Code City, then Greek Library with the world flag | Code City remains the default, the picker is opt-in, and the comparison and progress identities match. A custom descriptor chooses a registered presentation. |
 | A small directory and a large directory both contain visible files | Aim at a cabinet, then at a file with mouse capture and with the free pointer | The larger cabinet is visibly taller, the correct target is highlighted and named, and E or a selection opens the intended file. A modal suppresses aim until closed. |
+| A repository has multiple directories with scrolls | Press M twice, choose a cabinet from the corridor plan, then choose a scroll | The Stone Pad shows the cabinet and full-library maps in order. Selecting an entry opens the corresponding cabinet or file. Escape and an empty map leave the current location usable. |
 | A file has 2,400 lines | Approach, unroll, wheel through it, then jump to line 1,750 and press End | The camera remains first-person, the animation shows the roll extending through the hall, the code and line numbers are legible, the highlight reaches line 1,750 and End reaches line 2,400. Recycled bays preserve scale. |
 | A comparison has changed files and an active conversation or terminal | Open the stone VibePad, use a tab and its controls, then close and reopen it | The same tabs and actions work as in the city on the supported platform, and ongoing state survives. Mouse projection and keyboard focus reach the same control. |
 | A changed or removed file has a saved note and a previous read visit | Select source, diff and blame, open the note, accept its destination and then reset progress | The correct side and anchor are shown, the note persists, and only the specified reading progress resets. |

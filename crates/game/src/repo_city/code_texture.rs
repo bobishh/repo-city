@@ -129,6 +129,33 @@ impl Canvas {
             }
         }
     }
+
+    pub(super) fn blur_ink(&mut self, x: u32, y: u32, height: u32) {
+        const CELL: u32 = 4;
+        let bottom = (y + height).min(self.height);
+        for top in (y..bottom).step_by(CELL as usize) {
+            let rows = (top + CELL).min(bottom) - top;
+            for left in (x..self.width).step_by(CELL as usize) {
+                let columns = (left + CELL).min(self.width) - left;
+                let mut total = [0u32; 3];
+                for row in top..top + rows {
+                    for col in left..left + columns {
+                        let offset = ((row * self.width + col) * 4) as usize;
+                        for (sum, value) in total.iter_mut().zip(&self.pixels[offset..offset + 3]) {
+                            *sum += *value as u32;
+                        }
+                    }
+                }
+                self.rect(
+                    left,
+                    top,
+                    columns,
+                    rows,
+                    total.map(|sum| (sum / (columns * rows)) as u8),
+                );
+            }
+        }
+    }
     pub(super) fn image(self) -> Image {
         Image::new(
             Extent3d {

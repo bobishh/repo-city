@@ -373,7 +373,7 @@ pub(super) fn startup_revision(live: bool, revision: Option<&str>) -> &str {
 }
 
 pub(super) fn window_title(set: &WorldSet, repo: &Repository) -> String {
-    let name = if cfg!(target_arch = "wasm32") {
+    let name = if cfg!(target_arch = "wasm32") || set.is_library() {
         set.name.as_str()
     } else {
         APP_NAME
@@ -893,21 +893,25 @@ pub(super) fn spawn(
     font: &TextFont,
     ink: Color,
     images: &mut Assets<Image>,
+    brand: Option<(&str, TextFont)>,
 ) {
     use bevy::{
         asset::RenderAssetUsages,
         image::{CompressedImageFormats, ImageSampler, ImageType},
     };
-    let icon = Image::from_buffer(
-        include_bytes!("../../../../web/assets/apple-touch-icon.png"),
-        ImageType::Extension("png"),
-        CompressedImageFormats::NONE,
-        true,
-        ImageSampler::linear(),
-        RenderAssetUsages::default(),
-    )
-    .expect("project robot icon");
-    let icon = images.add(icon);
+    let icon = brand.is_none().then(|| {
+        Image::from_buffer(
+            include_bytes!("../../../../web/assets/apple-touch-icon.png"),
+            ImageType::Extension("png"),
+            CompressedImageFormats::NONE,
+            true,
+            ImageSampler::linear(),
+            RenderAssetUsages::default(),
+        )
+        .map(|icon| images.add(icon))
+        .expect("project robot icon")
+    });
+    let (title, wordmark) = brand.unwrap_or_else(|| (APP_NAME, desktop_splash::wordmark_font()));
     commands
         .spawn((
             file_picker::FileButton,
@@ -930,18 +934,20 @@ pub(super) fn spawn(
             }),
         ))
         .with_children(|ui| {
+            if let Some(icon) = icon {
+                ui.spawn((
+                    ImageNode::new(icon),
+                    Node {
+                        width: px(30.),
+                        height: px(30.),
+                        ..default()
+                    },
+                    bevy::picking::Pickable::IGNORE,
+                ));
+            }
             ui.spawn((
-                ImageNode::new(icon),
-                Node {
-                    width: px(30.),
-                    height: px(30.),
-                    ..default()
-                },
-                bevy::picking::Pickable::IGNORE,
-            ));
-            ui.spawn((
-                Text::new(APP_NAME),
-                desktop_splash::wordmark_font(),
+                Text::new(title),
+                wordmark,
                 TextColor(ink),
                 bevy::picking::Pickable::IGNORE,
             ));
@@ -965,8 +971,8 @@ pub(super) fn spawn(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn draw_menu(commands: &mut Commands) -> RepositoryView {
-    let panel = native_panel::panel(commands, APP_NAME, 390.);
+fn draw_menu(commands: &mut Commands, title: &str) -> RepositoryView {
+    let panel = native_panel::panel(commands, title, 390.);
     commands.entity(panel).with_children(|menu| {
         for (label, action) in [
             ("Open local repository…", PickerAction::Folder),
@@ -1412,7 +1418,14 @@ pub(super) fn open_repository(
         cursor.visible = true;
         picker.status.clear();
         match action {
-            PickerAction::Menu => picker.view = Some(draw_menu(&mut commands)),
+            PickerAction::Menu => {
+                let title = if set.is_library() {
+                    &set.name
+                } else {
+                    APP_NAME
+                };
+                picker.view = Some(draw_menu(&mut commands, title));
+            }
             PickerAction::Folder => {
                 #[cfg(target_os = "macos")]
                 match choose_folder(&repo.0.root) {
@@ -1573,7 +1586,7 @@ mod tests {
         app.world_mut()
             .run_system_once(
                 |mut commands: Commands, mut picker: ResMut<RepositoryPicker>| {
-                    picker.view = Some(draw_menu(&mut commands));
+                    picker.view = Some(draw_menu(&mut commands, APP_NAME));
                     picker.action = Some(PanelAction::Choose(PickerAction::Revision));
                 },
             )

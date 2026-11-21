@@ -15,7 +15,11 @@ impl bevy::app::Plugin for Plugin {
 }
 
 #[derive(Component)]
-struct Cover(f32);
+struct Cover {
+    aspect: f32,
+    focus: Vec2,
+    library: bool,
+}
 
 #[derive(Component)]
 pub(super) struct CityOverlay;
@@ -32,6 +36,7 @@ fn spawn(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut fonts: ResMut<Assets<Font>>,
+    set: Res<WorldSet>,
 ) {
     fonts
         .insert(
@@ -39,8 +44,14 @@ fn spawn(
             Font::from_bytes(include_bytes!("../../../../assets/fonts/Caveat-Latin.ttf").to_vec()),
         )
         .expect("Repo City wordmark font");
+    let library = set.is_library();
+    let bytes: &[u8] = if library {
+        include_bytes!("../../../../assets/greek-library-tablet.webp")
+    } else {
+        include_bytes!("../../../../assets/repo-city-tablet.webp")
+    };
     let image = Image::from_buffer(
-        include_bytes!("../../../../assets/repo-city-tablet.webp"),
+        bytes,
         ImageType::Extension("webp"),
         CompressedImageFormats::NONE,
         true,
@@ -50,7 +61,11 @@ fn spawn(
     .expect("Repo City desktop splash");
     let aspect = image.width() as f32 / image.height() as f32;
     commands.spawn((
-        Cover(aspect),
+        Cover {
+            aspect,
+            focus: Vec2::new(if library { 0.69 } else { 0.67 }, 0.47),
+            library,
+        },
         ImageNode::new(images.add(image)),
         Node::default(),
         GlobalZIndex(-1),
@@ -69,10 +84,10 @@ fn layout(
     let (Ok(window), Ok((cover, mut node))) = (windows.single(), cover.single_mut()) else {
         return;
     };
-    let visible = repo.0.files.is_empty() || !*city_seen;
+    let visible = repo.0.files.is_empty() || (!cover.library && !*city_seen);
     *city_seen |= !buildings.is_empty();
     let viewport = Vec2::new(window.width(), window.height());
-    let (size, offset) = fit(viewport, cover.0);
+    let (size, offset) = fit(viewport, cover.aspect, cover.focus);
     for mut overlay in &mut overlays {
         let display = if visible {
             Display::None
@@ -98,11 +113,9 @@ fn layout(
     });
 }
 
-fn fit(viewport: Vec2, aspect: f32) -> (Vec2, Vec2) {
+fn fit(viewport: Vec2, aspect: f32, focus: Vec2) -> (Vec2, Vec2) {
     let width = viewport.x.max(viewport.y * aspect);
     let size = Vec2::new(width, width / aspect);
-    // The tablet and the robot's face share the right half of the artwork.
-    let focus = Vec2::new(0.67, 0.47);
     let offset =
         (viewport * 0.5 - size * focus).clamp((viewport - size).min(Vec2::ZERO), Vec2::ZERO);
     (size, offset)
@@ -120,7 +133,7 @@ mod tests {
             Vec2::new(646., 878.),
             Vec2::new(1200., 600.),
         ] {
-            let (size, offset) = fit(viewport, aspect);
+            let (size, offset) = fit(viewport, aspect, Vec2::new(0.67, 0.47));
             assert!(offset.cmple(Vec2::ZERO).all());
             assert!((offset + size).cmpge(viewport - Vec2::splat(0.001)).all());
             assert!((size.x / size.y - aspect).abs() < 0.001);

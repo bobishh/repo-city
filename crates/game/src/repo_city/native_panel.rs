@@ -11,6 +11,12 @@ use bevy::{
 
 use super::*;
 
+#[derive(Component)]
+pub(super) struct Form;
+
+#[derive(Component)]
+pub(super) struct Heading;
+
 pub(super) fn panel(commands: &mut Commands, title: &str, width: f32) -> Entity {
     surface(commands, title, width, false)
 }
@@ -41,6 +47,7 @@ fn surface(commands: &mut Commands, title: &str, width: f32, tablet: bool) -> En
     let panel = commands
         .spawn((
             ChildOf(backdrop),
+            Form,
             TabGroup::modal(),
             Node {
                 width: if tablet { percent(100.) } else { px(width) },
@@ -73,6 +80,7 @@ fn heading(commands: &mut Commands, panel: Entity, title: &str) {
         return;
     }
     commands.entity(panel).with_child((
+        Heading,
         Text::new(title),
         TextFont::from_font_size(19.),
         TextColor(Color::srgb_u8(156, 241, 223)),
@@ -199,11 +207,17 @@ pub(super) const INK: Color = Color::srgb_u8(157, 231, 214);
 pub(super) fn focus_outline(
     focus: Res<InputFocus>,
     visible: Res<bevy::input_focus::InputFocusVisible>,
+    world: Option<Res<WorldSet>>,
     mut outlines: Query<(Entity, &mut Outline)>,
 ) {
+    let ink = if world.as_deref().is_some_and(WorldSet::is_library) {
+        Color::srgb_u8(242, 195, 130)
+    } else {
+        INK
+    };
     for (entity, mut outline) in &mut outlines {
         let color = if visible.0 && focus.get() == Some(entity) {
-            INK
+            ink
         } else {
             Color::NONE
         };

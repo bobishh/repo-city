@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { expectClosed, expectOpen, gpuClick, servicePanel } from "./gpu-tablet.mjs";
 
 test("keeps the world selector behind the preview flag", async ({ page }) => {
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
@@ -10,10 +11,37 @@ test("keeps the world selector behind the preview flag", async ({ page }) => {
   await expect(selector.locator("option:checked")).toHaveText("Code City");
 });
 
+test("styles the shared repository form for the selected world", async ({ page }) => {
+  await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
+  const form = page.getByRole("form", { name: "Open repository" });
+  await page.goto("/?world=greek-library");
+  await expect(form).toHaveCSS("background-color", "rgb(37, 29, 23)");
+  const search = form.locator("#repository-query");
+  await search.focus({ timeout: 5000 });
+  await expect(form.locator("#repository-search .picker-search")).toHaveCSS("border-bottom-color", "rgb(211, 165, 104)");
+  await expect(page.locator(".library-title")).toBeVisible();
+  await expect(page.locator("#start-screen img")).toHaveAttribute("src", "./assets/greek-library-start.webp");
+  await expect.poll(() => page.locator("#start-screen img").evaluate(image => image.naturalWidth)).toBeGreaterThan(1000);
+  const colors = await form.locator("#open-city").evaluate(button => {
+    const style = getComputedStyle(button);
+    return [style.color, style.backgroundColor];
+  });
+  expect(colors).toEqual(["rgb(33, 21, 10)", "rgb(211, 165, 104)"]);
+  await page.goto("/");
+  await expect(form).toHaveCSS("background-color", "rgb(10, 19, 26)");
+});
+
 test("opens a repository in the Greek Library and unrolls a file at the requested line", async ({ page }, testInfo) => {
+  page.on("pageerror", error => console.error(error));
+  page.on("console", message => { if (message.type() === "error") console.error(message.text()); });
   const revision = "a".repeat(40);
   const document = "b".repeat(40);
   const source = Array.from({ length: 2400 }, (_, row) => `pub const ROW_${row + 1}: usize = ${row + 1};\n`).join("");
+  await page.addInitScript(() => {
+    if (!localStorage.getItem("repo-city-reading-v1")) {
+      localStorage.setItem("repo-city-reading-v1", JSON.stringify({ block_kind: "lines", min_seconds: 0.1, max_seconds: 0.2 }));
+    }
+  });
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
   await page.route("https://api.github.com/**", route => {
     const path = new URL(route.request().url()).pathname;
@@ -34,7 +62,9 @@ test("opens a repository in the Greek Library and unrolls a file at the requeste
   await expect(page.locator("#city-progress")).toBeHidden();
   await expect(page.locator(".wordmark")).toHaveCSS("font-family", /GFS Didot/);
   await canvas.focus();
-  await page.screenshot({ path: testInfo.outputPath("library.png") });
+  await page.screenshot({ path: testInfo.outputPath("library.png"), style: "#city-header { visibility: hidden }" });
+  await page.keyboard.press("ArrowLeft", { delay: 450 });
+  await page.screenshot({ path: testInfo.outputPath("shelf-labels.png"), style: "#city-header { visibility: hidden }" });
 
   const press = code => page.keyboard.press(code, { delay: 135 });
   await press("Slash");
@@ -63,6 +93,25 @@ test("opens a repository in the Greek Library and unrolls a file at the requeste
     }, png.toString("base64"));
   };
   await expect.poll(visibleInk, { timeout: 7500 }).toBeGreaterThan(150);
+  await page.screenshot({ path: testInfo.outputPath("printed-scroll.png") });
+  const reveals = () => page.evaluate(async () => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("repo-city-progress", 2);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const result = await new Promise((resolve, reject) => {
+      const request = db.transaction("marks").objectStore("marks").getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return result.map(value => JSON.parse(value)).filter(mark => mark.reveal?.path === "src/scroll.rs").length;
+  });
+  expect(await reveals()).toBe(0);
+  await press("KeyK");
+  await expect.poll(reveals).toBeGreaterThan(0);
+  await press("KeyK");
   await canvas.focus();
   await press("KeyJ");
   await expect(canvas).toHaveAccessibleDescription("Enter a line number. Press Enter to go.");
@@ -73,6 +122,36 @@ test("opens a repository in the Greek Library and unrolls a file at the requeste
   await page.screenshot({ path: testInfo.outputPath("scroll.png") });
   await press("End");
   await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 2379–2400");
+  await press("Slash");
+  await expect(canvas).toHaveAccessibleDescription("Find text in this scroll. Press Enter to search.");
+  await page.keyboard.type("ROW_1800", { delay: 55 });
+  await press("Enter");
+  await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 1800–1821");
+  await expect.poll(() => page.evaluate(() => {
+    const key = Object.keys(localStorage).find(key => key.includes("|world=greek-library"));
+    return key ? JSON.parse(localStorage.getItem(key)).line : 0;
+  })).toBe(1800);
+  await page.reload();
+  await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 1800–1821", { timeout: 30_000 });
+  await canvas.focus();
   await press("Escape");
   await expect(canvas).toHaveAccessibleName("Greek Library");
+  await press("KeyM");
+  await expect(canvas).toHaveAttribute("data-library-map", "Cabinet · src");
+  await press("KeyM");
+  await expect(canvas).toHaveAttribute("data-library-map", "Library corridors");
+  await page.screenshot({ path: testInfo.outputPath("corridors.png"), style: "#city-header { visibility: hidden }" });
+  await press("End");
+  await press("Enter");
+  await expect(canvas).toHaveAttribute("data-library-map", "Cabinet · src");
+  await press("Enter");
+  await expect(canvas).not.toHaveAttribute("data-library-map");
+  await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 1–22");
+  await press("Escape");
+  await press("Tab");
+  await expectOpen(page, "Changed files");
+  const file = servicePanel(page).getByRole("button", { name: /src\/scroll\.rs/, includeHidden: true });
+  await gpuClick(page, file);
+  await expectClosed(page);
+  await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 1–22");
 });

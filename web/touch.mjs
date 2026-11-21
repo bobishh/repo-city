@@ -1,7 +1,7 @@
 // Adapted from Feed the Poor touch.ts at beabe03f5aef648717fa175693cb9a76c953d9d5.
 // Repo City adds altitude, independent look, and tablet actions; no pointer lock is required.
 // Circular controls follow Feed the Poor style.css at 6b1b2eed8a660bfb9dea2a4259175056d0718e06.
-export function createTouchControls({ canvas, document = globalThis.document, browser = globalThis, onPad, enabled = () => true } = {}) {
+export function createTouchControls({ canvas, document = globalThis.document, browser = globalThis, onPad, enabled = () => true, walking = () => false } = {}) {
   const panel = document.createElement("nav");
   panel.id = "touch-controls";
   panel.setAttribute("aria-label", "Touch flight controls");
@@ -38,7 +38,7 @@ export function createTouchControls({ canvas, document = globalThis.document, br
   let sampled = browser.performance.now();
   const held = new Set(), pulses = [];
   const pulse = (label, name, key) => button(label, name, ["Tab", "KeyM", "KeyJ"].includes(key) ? utility : tools).addEventListener("pointerdown", event => {
-    event.preventDefault(); event.stopPropagation(); if (key === "Tab" && onPad) onPad(); else pulses.push(key);
+    event.preventDefault(); event.stopPropagation(); if (key === "Tab" && onPad) onPad(); else pulses.push(walking() && key === "KeyJ" ? "KeyN" : key);
   });
   for (const [label, name, key] of [["Pad", "Open VibePad", "Tab"], ["Map", "Change map view", "KeyM"],
     ["Go", "Fly to aimed wall", "KeyE"], ["Read", "Preview aimed file", "KeyP"],
@@ -48,7 +48,9 @@ export function createTouchControls({ canvas, document = globalThis.document, br
     ["Fast", "Fly faster", "ShiftLeft"], ["Use", "Use water or paint", "Fire"]]) {
     const element = button(label, name, flight); element.dataset.action = key;
     element.addEventListener("pointerdown", event => {
-      event.preventDefault(); event.stopPropagation(); element.setPointerCapture(event.pointerId); held.add(key);
+      event.preventDefault(); event.stopPropagation();
+      if (walking() && key === "Fire") { pulses.push("KeyK"); return; }
+      element.setPointerCapture(event.pointerId); held.add(key);
     });
     const release = () => held.delete(key);
     for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) element.addEventListener(type, release);
@@ -105,7 +107,16 @@ export function createTouchControls({ canvas, document = globalThis.document, br
     const hidden = !enabled() ||
       !document.documentElement.hasAttribute("data-playing") ||
       !browser.matchMedia("(pointer: coarse)").matches || canvas.hidden ||
-      Boolean(document.querySelector("dialog[open]")) || document.hidden;
+      Boolean(document.querySelector("dialog[open]")) || canvas.hasAttribute("data-library-map") || document.hidden;
+    if (!hidden) {
+      const foot = walking();
+      panel.setAttribute("aria-label", foot ? "Touch walking controls" : "Touch flight controls");
+      const use = flight.querySelector('[data-action="Fire"]');
+      use.setAttribute("aria-label", foot ? "Use heat" : "Use water or paint");
+      utility.querySelector("button").setAttribute("aria-label", foot ? "Open Stone Pad" : "Open VibePad");
+      tools.querySelector("button").setAttribute("aria-label", foot ? "Open aimed scroll" : "Fly to aimed wall");
+      for (const element of flight.children) if (element !== use && element.hidden !== foot) element.hidden = foot;
+    }
     if (hidden) reset();
     if (panel.hidden !== hidden) panel.hidden = hidden;
     canvas.toggleAttribute("data-touch-controls", !hidden);
@@ -114,7 +125,7 @@ export function createTouchControls({ canvas, document = globalThis.document, br
   viewport.append(panel);
   const observer = new browser.MutationObserver(refresh);
   observer.observe(document.documentElement, { attributeFilter: ["data-playing"] });
-  observer.observe(viewport, { subtree: true, attributeFilter: ["open", "hidden", "data-touch-reading"] });
+  observer.observe(viewport, { subtree: true, attributeFilter: ["open", "hidden", "data-touch-reading", "data-library-map"] });
   browser.addEventListener("blur", reset); document.addEventListener("visibilitychange", refresh);
   browser.matchMedia("(pointer: coarse)").addEventListener("change", refresh);
   refresh();

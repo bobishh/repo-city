@@ -7,7 +7,7 @@ export function setupPointer(canvas, menu, enabled = () => true) {
   }
 
   function capture() {
-    if (!enabled() || canvas.hidden || modalOpen() || canvas.hasAttribute("data-pointer-ui") || canvas.hasAttribute("data-overview") ||
+    if (!enabled() || canvas.hidden || modalOpen() || canvas.hasAttribute("data-pointer-ui") || canvas.hasAttribute("data-overview") || canvas.hasAttribute("data-library-map") ||
         canvas.hasAttribute("data-action-menu") ||
         document.pointerLockElement || !canvas.requestPointerLock) return;
     canvas.focus({ preventScroll: true });

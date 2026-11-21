@@ -44,6 +44,8 @@ fn key(name: &str) -> Option<KeyCode> {
         "KeyP" => KeyCode::KeyP,
         "KeyU" => KeyCode::KeyU,
         "KeyJ" => KeyCode::KeyJ,
+        "KeyN" => KeyCode::KeyN,
+        "KeyK" => KeyCode::KeyK,
         "Space" => KeyCode::Space,
         "ControlLeft" => KeyCode::ControlLeft,
         "ShiftLeft" => KeyCode::ShiftLeft,
@@ -63,23 +65,7 @@ pub(super) fn update(
     camera: Query<&Transform, PlayerCamera>,
     windows: Query<&Window, With<PrimaryWindow>>,
 ) {
-    let mut next = serde_json::from_str::<Touch>(&take_input()).unwrap_or_default();
-    if !next
-        .r#move
-        .iter()
-        .chain(&next.look)
-        .chain(&next.aim)
-        .all(|value| value.is_finite())
-    {
-        next = Touch::default();
-    }
-    if !next.enabled {
-        next.r#move = [0.; 2];
-        next.look = [0.; 2];
-        next.aim = [0.; 2];
-        next.held.clear();
-        next.pulses.clear();
-    }
+    let next = sample();
     let reading = next.enabled
         && next.r#move.iter().all(|value| value.abs() < 0.1)
         && listing::Listing::visible(&explorer, &navigation)
@@ -99,6 +85,50 @@ pub(super) fn update(
                         .is_some()
                 })
         });
+    apply(next, reading, &mut touch, &mut keys, &mut mouse, &mut wheel);
+}
+
+fn sample() -> Touch {
+    let mut next = serde_json::from_str::<Touch>(&take_input()).unwrap_or_default();
+    if !next
+        .r#move
+        .iter()
+        .chain(&next.look)
+        .chain(&next.aim)
+        .all(|value| value.is_finite())
+    {
+        next = Touch::default();
+    }
+    if !next.enabled {
+        next.r#move = [0.; 2];
+        next.look = [0.; 2];
+        next.aim = [0.; 2];
+        next.held.clear();
+        next.pulses.clear();
+    }
+    next
+}
+
+pub(super) fn update_library(
+    reading: bool,
+    touch: &mut Touch,
+    keys: &mut ButtonInput<KeyCode>,
+    mouse: &mut ButtonInput<MouseButton>,
+    wheel: &mut AccumulatedMouseScroll,
+) {
+    let next = sample();
+    let reading = reading && next.enabled && next.r#move.iter().all(|value| value.abs() < 0.1);
+    apply(next, reading, touch, keys, mouse, wheel);
+}
+
+fn apply(
+    mut next: Touch,
+    reading: bool,
+    touch: &mut Touch,
+    keys: &mut ButtonInput<KeyCode>,
+    mouse: &mut ButtonInput<MouseButton>,
+    wheel: &mut AccumulatedMouseScroll,
+) {
     if let Some(canvas) = web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.get_element_by_id("repo-city"))
