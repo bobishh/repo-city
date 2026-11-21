@@ -303,7 +303,11 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
           } else {
             canvas.removeAttribute("data-library-map");
             canvas.removeAttribute("data-library-map-files");
+            canvas.removeAttribute("data-library-travel");
           }
+        },
+        libraryTravel(folder) {
+          canvas.dataset.libraryTravel = folder;
         },
         libraryInput(prompt) {
           canvas.toggleAttribute("data-library-input", Boolean(prompt));

@@ -31,7 +31,7 @@ test("styles the shared repository form for the selected world", async ({ page }
   await expect(form).toHaveCSS("background-color", "rgb(10, 19, 26)");
 });
 
-test("fits every file in both maps and opens a distant file directly", async ({ page }, testInfo) => {
+test("fits every file and travels between folders before opening a distant scroll", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1900, height: 732 });
   const revision = "c".repeat(40);
   const tree = Array.from({ length: 6000 }, (_, index) => ({
@@ -64,7 +64,21 @@ test("fits every file in both maps and opens a distant file directly", async ({ 
   await page.screenshot({ path: testInfo.outputPath("archive.png") });
   await press("End");
   await press("Enter");
+  await expect(canvas).toHaveAttribute("data-library-travel", "gallery-99");
+  await expect(canvas).not.toHaveAttribute("data-library-reading");
+  await press("Escape");
+  await expect(canvas).not.toHaveAttribute("data-library-travel");
+  await expect(canvas).toHaveAccessibleName("Greek Library");
+  await press("KeyM");
+  await expect(canvas).toHaveAttribute("data-library-map", "Folder · gallery-00");
+  await press("KeyM");
+  await press("End");
+  await press("Enter");
+  await expect(canvas).toHaveAttribute("data-library-travel", "gallery-99");
+  await expect(canvas).toHaveAttribute("data-library-map", "Archive courtyards");
+  await page.screenshot({ path: testInfo.outputPath("crossing.png") });
   await expect(canvas).not.toHaveAttribute("data-library-map");
+  await expect(canvas).not.toHaveAttribute("data-library-travel");
   await expect(canvas).toHaveAccessibleName("Greek Library, gallery-99/file-5999.rs, lines 1–1");
   await press("Escape");
   await expect(canvas).toHaveAccessibleName("Greek Library");
@@ -192,6 +206,7 @@ test("opens a repository in the Greek Library and unrolls a file at the requeste
   await page.screenshot({ path: testInfo.outputPath("corridors.png"), style: "#city-header { visibility: hidden }" });
   await press("End");
   await press("Enter");
+  await expect(canvas).not.toHaveAttribute("data-library-travel");
   await expect(canvas).not.toHaveAttribute("data-library-map");
   await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 1–22");
   await press("Escape");

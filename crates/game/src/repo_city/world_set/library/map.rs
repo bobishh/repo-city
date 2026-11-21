@@ -35,12 +35,44 @@ pub(super) struct Map {
     cursor: usize,
     scene: Option<Scene>,
     terrain: Option<Vec<atlas::Terrace>>,
+    passage: Option<Passage>,
     ground: Option<(Transform, Projection, Msaa)>,
     close: bool,
     shift: Vec2,
     zoom: f32,
     pointer: Option<Vec2>,
     pub(super) consumed: bool,
+}
+
+struct Passage {
+    file: usize,
+    start: (Vec2, f32),
+    from: Vec2,
+    to: Vec2,
+    elapsed: f32,
+}
+
+impl Passage {
+    const APPROACH: f32 = 0.32;
+    const CROSSING: f32 = 1.26;
+    const ARRIVAL: f32 = 1.57;
+
+    fn advance(&mut self, seconds: f32) -> ((Vec2, f32), Option<usize>) {
+        self.elapsed += seconds;
+        let ease = |start: f32, end: f32| {
+            let t = ((self.elapsed - start) / (end - start)).clamp(0., 1.);
+            t * t * (3. - 2. * t)
+        };
+        let aim = ease(0., Self::APPROACH);
+        let cross = ease(Self::APPROACH, Self::CROSSING);
+        let land = ease(Self::CROSSING, Self::ARRIVAL);
+        let shifted = self.start.0.lerp(self.from, aim).lerp(self.to, cross);
+        let zoom = self.start.1.lerp(0.42, aim).lerp(0.16, land);
+        (
+            (shifted, zoom),
+            (self.elapsed >= Self::ARRIVAL).then_some(self.file),
+        )
+    }
 }
 
 impl Map {
@@ -66,7 +98,7 @@ type Eye<'a> = (
 
 pub(super) fn update(
     mut commands: Commands,
-    keys: Res<ButtonInput<KeyCode>>,
+    (keys, time): (Res<ButtonInput<KeyCode>>, Res<Time>),
     repo: Res<Repo>,
     explorer: Res<Explorer>,
     aim: Res<aim::Aim>,
@@ -105,6 +137,7 @@ pub(super) fn update(
     #[cfg(not(target_arch = "wasm32"))]
     let unavailable = unavailable || picker.blocks_controls();
     if unavailable
+        || (repo.is_changed() && map.passage.is_some())
         || std::mem::take(&mut map.close)
         || (map.open() && keys.any_just_pressed([KeyCode::Escape, KeyCode::Tab]))
     {
@@ -146,6 +179,7 @@ pub(super) fn update(
         }
         match map.level {
             None => {
+                map.passage = None;
                 if let Some((ground, ground_projection, ground_msaa)) = map.ground.take() {
                     *pose = ground;
                     *projection = ground_projection;
@@ -203,71 +237,123 @@ pub(super) fn update(
             }
         }
     }
+    let passage = map
+        .passage
+        .as_mut()
+        .map(|passage| passage.advance(time.delta_secs()));
     let Some(scene) = map.scene.as_ref() else {
         return;
     };
     let count = scene.atlas.len();
     let mut selected = None;
+    let mut arrived = false;
+    if let Some(((shift, zoom), destination)) = passage {
+        (*pose, *projection) = scene.atlas.view(shift, zoom);
+        if let Some(file) = destination {
+            selected = Some(file);
+            arrived = true;
+        } else {
+            return;
+        }
+    }
     let mut cursor = map.cursor;
     let mut zoom = map.zoom;
     let mut shift = map.shift;
     let mut pointer_position = map.pointer;
-    if let Ok(window) = windows.single() {
-        let position = window.cursor_position();
-        let on_panel = pointer
-            .get(scene.panel)
-            .is_ok_and(RelativeCursorPosition::cursor_over);
-        if !on_panel {
-            let amount = match wheel.unit {
-                bevy::input::mouse::MouseScrollUnit::Line => wheel.delta.y,
-                bevy::input::mouse::MouseScrollUnit::Pixel => wheel.delta.y / 40.,
-            };
-            zoom = (zoom * (-amount * 0.16).exp()).clamp(0.025, 1.0);
-            if zoom == 1. {
-                shift = Vec2::ZERO;
-            } else if buttons.pressed(MouseButton::Right)
-                && let Projection::Orthographic(lens) = &*projection
-            {
-                let units =
-                    lens.area.size() / Vec2::new(window.width(), window.height()).max(Vec2::ONE);
-                shift += Vec2::new(-motion.delta.x, motion.delta.y) * units;
-            }
-            if (position != map.pointer || buttons.just_pressed(MouseButton::Left))
-                && let Some(position) = position
-                && let Ok(ray) = camera.viewport_to_world(&GlobalTransform::from(*pose), position)
-                && let Some(slot) = scene.atlas.hit(ray)
-            {
-                cursor = slot;
-                if buttons.just_pressed(MouseButton::Left) {
-                    selected = scene.atlas.file(slot);
+    if !arrived {
+        if let Ok(window) = windows.single() {
+            let position = window.cursor_position();
+            let on_panel = pointer
+                .get(scene.panel)
+                .is_ok_and(RelativeCursorPosition::cursor_over);
+            if !on_panel {
+                let amount = match wheel.unit {
+                    bevy::input::mouse::MouseScrollUnit::Line => wheel.delta.y,
+                    bevy::input::mouse::MouseScrollUnit::Pixel => wheel.delta.y / 40.,
+                };
+                zoom = (zoom * (-amount * 0.16).exp()).clamp(0.025, 1.0);
+                if zoom == 1. {
+                    shift = Vec2::ZERO;
+                } else if buttons.pressed(MouseButton::Right)
+                    && let Projection::Orthographic(lens) = &*projection
+                {
+                    let units = lens.area.size()
+                        / Vec2::new(window.width(), window.height()).max(Vec2::ONE);
+                    shift += Vec2::new(-motion.delta.x, motion.delta.y) * units;
+                }
+                if (position != map.pointer || buttons.just_pressed(MouseButton::Left))
+                    && let Some(position) = position
+                    && let Ok(ray) =
+                        camera.viewport_to_world(&GlobalTransform::from(*pose), position)
+                    && let Some(slot) = scene.atlas.hit(ray)
+                {
+                    cursor = slot;
+                    if buttons.just_pressed(MouseButton::Left) {
+                        selected = scene.atlas.file(slot);
+                    }
                 }
             }
+            pointer_position = position;
         }
-        pointer_position = position;
-    }
-    if keys.just_pressed(KeyCode::Home) {
-        cursor = 0;
-    } else if keys.just_pressed(KeyCode::End) {
-        cursor = count - 1;
-    } else if keys.any_just_pressed([KeyCode::ArrowRight, KeyCode::ArrowDown]) {
-        cursor = (cursor + 1).min(count - 1);
-    } else if keys.any_just_pressed([KeyCode::ArrowLeft, KeyCode::ArrowUp]) {
-        cursor = cursor.saturating_sub(1);
-    } else if keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter])
-        && !focus.get().is_some_and(|entity| {
-            parents
-                .iter_ancestors(entity)
-                .any(|parent| parent == scene.panel)
-        })
-    {
-        selected = scene.atlas.file(cursor);
+        if keys.just_pressed(KeyCode::Home) {
+            cursor = 0;
+        } else if keys.just_pressed(KeyCode::End) {
+            cursor = count - 1;
+        } else if keys.any_just_pressed([KeyCode::ArrowRight, KeyCode::ArrowDown]) {
+            cursor = (cursor + 1).min(count - 1);
+        } else if keys.any_just_pressed([KeyCode::ArrowLeft, KeyCode::ArrowUp]) {
+            cursor = cursor.saturating_sub(1);
+        } else if keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter])
+            && !focus.get().is_some_and(|entity| {
+                parents
+                    .iter_ancestors(entity)
+                    .any(|parent| parent == scene.panel)
+            })
+        {
+            selected = scene.atlas.file(cursor);
+        }
     }
     if let Some(index) = selected {
         let file = &repo.0.files[index];
-        let ground = library
+        let folder = library
             .catalog
             .folder(file.directory())
-            .map(|(folder, _, _)| layout::view(folder));
+            .map(|(folder, _, _)| folder);
+        let origin = library
+            .walk_pose
+            .as_ref()
+            .or(map.ground.as_ref().map(|(saved, _, _)| saved))
+            .and_then(|ground| layout::nearest(ground.translation, library.catalog.folders.len()));
+        if !arrived
+            && map.level == Some(Level::Library)
+            && let (Some(origin), Some(target)) = (origin, folder)
+            && origin != target
+            && let Some(&origin_file) = library.catalog.folders[origin].files.first()
+            && let (Some(from), Some(to)) = (
+                scene.atlas.focus_shift(origin_file),
+                scene.atlas.focus_shift(index),
+            )
+        {
+            if let Ok(mut label) = labels.single_mut() {
+                label.0 = format!(
+                    "{} → {}",
+                    library.catalog.folders[origin].path,
+                    file.directory()
+                );
+            }
+            #[cfg(target_arch = "wasm32")]
+            browser_travel(file.directory());
+            map.passage = Some(Passage {
+                file: index,
+                start: (map.shift, map.zoom),
+                from,
+                to,
+                elapsed: 0.,
+            });
+            return;
+        }
+        map.passage = None;
+        let ground = folder.map(layout::view);
         if let Some(scene) = map.scene.take() {
             commands.entity(scene.mesh).despawn();
             commands.entity(scene.selection).despawn();
@@ -399,4 +485,33 @@ fn spawn(
 extern "C" {
     #[wasm_bindgen(js_namespace = repoCity, js_name = libraryMap)]
     fn browser_map(title: &str, files: u32);
+    #[wasm_bindgen(js_namespace = repoCity, js_name = libraryTravel)]
+    fn browser_travel(folder: &str);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_passage_frames_both_folders_before_releasing_the_file() {
+        let mut passage = Passage {
+            file: 71,
+            start: (Vec2::ZERO, 1.),
+            from: Vec2::new(-20., 10.),
+            to: Vec2::new(45., -5.),
+            elapsed: 0.,
+        };
+        let ((shift, zoom), destination) = passage.advance(Passage::APPROACH);
+        assert!((shift - passage.from).length() < 0.001);
+        assert!((zoom - 0.42).abs() < 0.001);
+        assert_eq!(destination, None);
+        let crossing = passage.advance((Passage::CROSSING - Passage::APPROACH) * 0.5);
+        assert!((crossing.0.0 - passage.from.lerp(passage.to, 0.5)).length() < 0.001);
+        assert_eq!(crossing.1, None);
+        let ((shift, zoom), destination) = passage.advance(1.);
+        assert!((shift - passage.to).length() < 0.001);
+        assert!((zoom - 0.16).abs() < 0.001);
+        assert_eq!(destination, Some(71));
+    }
 }

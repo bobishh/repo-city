@@ -258,6 +258,11 @@ impl Atlas {
         self.lots.get(slot).map(|lot| (lot.center, lot.size))
     }
 
+    pub(super) fn focus_shift(&self, file: usize) -> Option<Vec2> {
+        let (center, size) = self.lot_bounds(self.slot(file)?)?;
+        Some((rotation().inverse() * (center + Vec3::Y * size.y / 2. - self.center)).xy())
+    }
+
     pub(super) fn mesh(&self) -> Mesh {
         let mut mesh = Blocks::default();
         mesh.ground(self.terrain_bounds);
