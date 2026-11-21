@@ -3,7 +3,9 @@ use super::listing::Face;
 
 use bevy::{
     asset::RenderAssetUsages,
-    image::{CompressedImageFormats, ImageSampler, ImageType},
+    image::{
+        CompressedImageFormats, ImageAddressMode, ImageSampler, ImageSamplerDescriptor, ImageType,
+    },
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
@@ -481,6 +483,7 @@ pub(super) enum Coverage {
 }
 
 pub(super) const FACADE_GLASS: [u8; 3] = [23, 29, 40];
+pub(super) const FACADE_TILE_HEIGHT: usize = 512;
 
 impl Coverage {
     pub(super) const ALL: [Self; 3] = [Self::Closed, Self::Partial, Self::Open];
@@ -508,7 +511,7 @@ pub(super) fn embedded_png(png: &[u8]) -> Image {
 
 pub(super) fn facade_overview(
     bands: impl ExactSizeIterator<Item = Coverage>,
-    repeats: usize,
+    wall_rows: usize,
     print: FacadePrint,
 ) -> Image {
     static PRINTS: std::sync::OnceLock<[[Image; 2]; FacadePrint::ALL.len()]> =
@@ -517,7 +520,7 @@ pub(super) fn facade_overview(
     let mut image = prints[print as usize][0].clone();
     let width = image.width() as usize;
     let print_height = image.height() as usize;
-    let height = (print_height * repeats).min(2048);
+    let height = wall_rows.min(2048);
     image.resize(Extent3d {
         width: width as u32,
         height: height as u32,
@@ -528,7 +531,7 @@ pub(super) fn facade_overview(
     let pixels = image.data.as_mut().expect("packed facade print");
     let gutter = width * 91 / LISTING_WIDTH as usize;
     for (y, row) in pixels.chunks_exact_mut(width * 4).enumerate() {
-        let offset = y * print_height * repeats / height;
+        let offset = y * wall_rows / height;
         let pattern_row = offset % print_height;
         let pattern = print.tile(offset / print_height);
         let state = bands[y * count / height];
@@ -541,6 +544,15 @@ pub(super) fn facade_overview(
             row[x * 4..x * 4 + 3].copy_from_slice(&accent);
         }
     }
+    image
+}
+
+pub(super) fn facade_atlas(state: Coverage, print: FacadePrint) -> Image {
+    let mut image = facade_overview(std::iter::once(state), print.atlas_height(), print);
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_v: ImageAddressMode::Repeat,
+        ..ImageSamplerDescriptor::linear()
+    });
     image
 }
 
@@ -570,6 +582,17 @@ impl FacadePrint {
         Self::Asset,
     ];
     const CODE: [Self; 3] = [Self::CodeA, Self::CodeB, Self::CodeC];
+
+    pub(super) fn atlas_height(self) -> usize {
+        match self {
+            Self::CodeA | Self::CodeB | Self::CodeC => FACADE_TILE_HEIGHT * Self::CODE.len(),
+            _ => FACADE_TILE_HEIGHT,
+        }
+    }
+
+    pub(super) fn uses_text_rows(self) -> bool {
+        !matches!(self, Self::Media | Self::Asset)
+    }
 
     pub(super) fn for_path(path: &str) -> Self {
         use super::file_preview::{FacadeKind, facade_kind};
@@ -651,11 +674,32 @@ fn document_sample(source: &str, markdown: bool) -> Vec<Line> {
 }
 
 fn line_print(lines: &[Line], open: bool, scale: f32) -> Image {
+    let trimmed: Vec<_> = lines
+        .iter()
+        .skip_while(|line| line.text.trim().is_empty())
+        .collect();
+    let end = trimmed
+        .iter()
+        .rposition(|line| !line.text.trim().is_empty())
+        .map_or(0, |last| last + 1);
+    let mut previous_blank = false;
+    let rows: Vec<_> = trimmed[..end]
+        .iter()
+        .copied()
+        .filter(|line| {
+            let blank = line.text.trim().is_empty();
+            let was_blank = std::mem::replace(&mut previous_blank, blank);
+            !blank || !was_blank
+        })
+        .collect();
     listing_preview(
-        128,
+        FACADE_TILE_HEIGHT / 4,
         |row| {
             (
-                row.is_multiple_of(2).then(|| lines.get(row / 2)).flatten(),
+                row.is_multiple_of(2)
+                    .then(|| rows.get((row / 2) % rows.len().max(1)))
+                    .flatten()
+                    .copied(),
                 Mark::Context,
             )
         },
@@ -667,15 +711,16 @@ fn line_print(lines: &[Line], open: bool, scale: f32) -> Image {
 }
 
 fn media_print(thumbnail: Option<&::image::RgbaImage>, open: bool) -> Image {
-    let mut canvas = Canvas::new(256, 512);
-    canvas.band(0, 512, FACADE_GLASS);
+    let height = FACADE_TILE_HEIGHT as u32;
+    let mut canvas = Canvas::new(256, height);
+    canvas.band(0, height, FACADE_GLASS);
     if let Some(thumbnail) = thumbnail {
         let frame = if open {
             thumbnail.clone()
         } else {
             ::image::imageops::blur(thumbnail, 2.5)
         };
-        let top = (512 - frame.height()) / 2;
+        let top = (height - frame.height()) / 2;
         let left = (256 - frame.width()) / 2;
         let alpha = if open { 0.78 } else { 0.52 };
         for (x, y, pixel) in frame.enumerate_pixels() {
@@ -927,8 +972,8 @@ mod tests {
 
     #[test]
     fn distant_facades_preserve_syntax_colors_through_frost() {
-        let closed = facade_overview(std::iter::once(Coverage::Closed), 1, FacadePrint::CodeC);
-        let open = facade_overview(std::iter::once(Coverage::Open), 1, FacadePrint::CodeC);
+        let closed = facade_atlas(Coverage::Closed, FacadePrint::CodeC);
+        let open = facade_atlas(Coverage::Open, FacadePrint::CodeC);
         let width = closed.width() as usize;
         let source_start = (width * 106).div_ceil(LISTING_WIDTH as usize);
         for image in [&closed, &open] {
@@ -960,6 +1005,25 @@ mod tests {
             contrast(closed) < contrast(open),
             "Frost should soften the code"
         );
+    }
+
+    #[test]
+    fn distant_code_keeps_short_sample_padding_out_of_the_atlas() {
+        let atlas = facade_atlas(Coverage::Closed, FacadePrint::CodeA);
+        let width = atlas.width() as usize;
+        let source_start = (width * 106).div_ceil(LISTING_WIDTH as usize);
+        let mut empty = 0;
+        for row in atlas.data.as_ref().unwrap().chunks_exact(width * 4) {
+            if row[source_start * 4..]
+                .chunks_exact(4)
+                .all(|pixel| pixel[..3] == FACADE_GLASS)
+            {
+                empty += 1;
+            } else {
+                empty = 0;
+            }
+            assert!(empty < 24, "Atlas introduced a blank section in the code");
+        }
     }
 
     #[test]

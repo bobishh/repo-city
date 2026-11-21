@@ -270,11 +270,24 @@ pub(super) fn overview_material(texture: Handle<Image>) -> StandardMaterial {
     }
 }
 
-fn facade_repeats(height: f32) -> usize {
-    // Reuse a small number of texture sizes. One print covers a 14 by 28 wall.
-    ((height / (2. * WIDTH)).round() as usize)
-        .clamp(1, 64)
-        .next_power_of_two()
+fn facade_rows(height: f32, print: code_texture::FacadePrint) -> usize {
+    use code_texture::FACADE_TILE_HEIGHT;
+    if print.uses_text_rows() {
+        // A tile spans two wall widths. Quantize at a quarter of a world unit to reuse materials.
+        let meters = (height * 4.).round().max(1.) / 4.;
+        (meters * FACADE_TILE_HEIGHT as f32 / (2. * WIDTH)).round() as usize
+    } else {
+        FACADE_TILE_HEIGHT
+    }
+}
+
+pub(super) fn scale_facade(
+    material: &mut StandardMaterial,
+    print: code_texture::FacadePrint,
+    rows: usize,
+) {
+    material.uv_transform =
+        bevy::math::Affine2::from_scale(Vec2::new(1., rows as f32 / print.atlas_height() as f32));
 }
 
 pub(super) fn draw_overview(
@@ -330,10 +343,10 @@ pub(super) fn draw_overview(
         }
         let file = &repo.0.files[index];
         let print = code_texture::FacadePrint::for_path(&file.path);
-        let repeats = facade_repeats(block_size(file).y);
+        let rows = facade_rows(block_size(file).y, print);
         let reading = progress(index);
         if let Some(reading) = reading.filter(|reading| reading.opened < reading.rows) {
-            let overview = code_texture::facade_overview(reading.bands(), repeats, print);
+            let overview = code_texture::facade_overview(reading.bands(), rows, print);
             if material.0 == palette.facade_neutral
                 || palette
                     .facades
@@ -352,25 +365,16 @@ pub(super) fn draw_overview(
             }
         } else {
             let open = reading.is_some();
-            material.0 = if repeats == 1 {
-                palette.facades[print as usize][usize::from(open)].clone()
+            let base = &palette.facades[print as usize][usize::from(open)];
+            material.0 = if rows == code_texture::FACADE_TILE_HEIGHT {
+                base.clone()
             } else {
                 facade_prints
-                    .entry((print, repeats, open))
+                    .entry((print, rows, open))
                     .or_insert_with(|| {
-                        use code_texture::Coverage;
-                        let coverage = if open {
-                            Coverage::Open
-                        } else {
-                            Coverage::Closed
-                        };
-                        materials.add(overview_material(images.add(
-                            code_texture::facade_overview(
-                                std::iter::once(coverage),
-                                repeats,
-                                print,
-                            ),
-                        )))
+                        let mut material = materials.get(base).expect("facade atlas").clone();
+                        scale_facade(&mut material, print, rows);
+                        materials.add(material)
                     })
                     .clone()
             }
@@ -3534,15 +3538,18 @@ mod tests {
 
     #[test]
     fn tall_code_facades_cycle_real_prints_and_keep_the_reading_bands() {
-        use code_texture::{Coverage, FacadePrint};
-        let repeats = facade_repeats(112.);
-        assert_eq!(repeats, 4);
+        use code_texture::{Coverage, FACADE_TILE_HEIGHT, FacadePrint};
+        let wall_rows = facade_rows(112., FacadePrint::CodeA);
+        assert_eq!(wall_rows, 4 * FACADE_TILE_HEIGHT);
         let [closed, open] = [Coverage::Closed, Coverage::Open];
-        let image =
-            code_texture::facade_overview([closed, open].into_iter(), repeats, FacadePrint::CodeA);
+        let image = code_texture::facade_overview(
+            [closed, open].into_iter(),
+            wall_rows,
+            FacadePrint::CodeA,
+        );
         let stride = image.width() as usize * 4;
         let rows: Vec<_> = image.data.as_ref().unwrap().chunks_exact(stride).collect();
-        let period = rows.len() / repeats;
+        let period = FACADE_TILE_HEIGHT;
         assert_ne!(&rows[..period], &rows[period..2 * period]);
         assert_ne!(&rows[2 * period..3 * period], &rows[3 * period..]);
         let gutter = image.width() as usize * 91 / code_texture::LISTING_WIDTH as usize * 4;
@@ -3553,6 +3560,23 @@ mod tests {
             assert_eq!(&row[gutter..gutter + 3], &open.accent());
         }
         assert!(rows[..period].windows(2).any(|pair| pair[0] != pair[1]));
+    }
+
+    #[test]
+    fn code_facades_keep_the_same_print_scale_across_wall_sizes() {
+        let print = code_texture::FacadePrint::CodeA;
+        for height in [1., 16., 28., 47., 85., 112., 931.] {
+            let rows = facade_rows(height, print);
+            let mut material = StandardMaterial::default();
+            scale_facade(&mut material, print, rows);
+            let uv = material.uv_transform.transform_point2(Vec2::Y);
+            let tile_height = height * code_texture::FACADE_TILE_HEIGHT as f32
+                / (uv.y * print.atlas_height() as f32);
+            assert!(
+                (tile_height - 2. * WIDTH).abs() < 0.5,
+                "Wall height {height}"
+            );
+        }
     }
 
     #[test]
@@ -3571,9 +3595,9 @@ mod tests {
         let rims = Coverage::ALL.map(|_| materials.add(StandardMaterial::default()));
         let print = code_texture::FacadePrint::for_path(&file.path);
         let [closed, open] = [Coverage::Closed, Coverage::Open].map(|state| {
-            materials.add(overview_material(images.add(
-                code_texture::facade_overview(std::iter::once(state), 1, print),
-            )))
+            materials.add(overview_material(
+                images.add(code_texture::facade_atlas(state, print)),
+            ))
         });
         let mut app = App::new();
         app.insert_resource(Repo(repo))
@@ -3623,6 +3647,14 @@ mod tests {
                 .get::<MeshMaterial3d<StandardMaterial>>(facade)
                 .unwrap()
                 .0
+                .clone()
+        };
+        let texture = |app: &App, material: &Handle<StandardMaterial>| {
+            app.world()
+                .resource::<Assets<StandardMaterial>>()
+                .get(material)
+                .unwrap()
+                .base_color_texture
                 .clone()
         };
         wash(&mut app, 1.);
@@ -3679,14 +3711,14 @@ mod tests {
             wash(&mut app, row as f32 + 0.5);
         }
         app.update();
-        assert_eq!(current(&app), open);
+        assert_eq!(texture(&app, &current(&app)), texture(&app, &open));
         assert_eq!(rim_material(&app), rims[2]);
         app.world_mut().resource_mut::<Listing>().rendered = Some((0, true, count));
         app.update();
         assert_eq!(current(&app), neutral);
         app.world_mut().resource_mut::<Listing>().rendered = None;
         app.update();
-        assert_eq!(current(&app), open);
+        assert_eq!(texture(&app, &current(&app)), texture(&app, &open));
     }
 
     #[test]

@@ -353,6 +353,10 @@ pub(super) fn beam_visible(
     camera: &Transform,
     reading: Option<&ReadingPlane>,
 ) -> bool {
+    // The raised caps project away from their roofs at near-vertical camera angles.
+    if camera.forward().y < -0.95 {
+        return false;
+    }
     let delta = camera.translation - beam.translation;
     let half = beam.scale.abs() / 2.;
     if (delta.abs() - half).max(Vec3::ZERO).length_squared() < 16. {
@@ -453,6 +457,16 @@ mod tests {
             file.change = change;
             assert!(focus.includes(&file));
         }
+    }
+
+    #[test]
+    fn a_top_down_view_hides_the_beam_cap_but_a_street_view_keeps_the_beam() {
+        let beam = Transform::from_xyz(30., 15., 12.).with_scale(Vec3::new(0.15, 14., 0.15));
+        let overhead = Transform::from_xyz(0., 320., 0.)
+            .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2));
+        let street = Transform::from_xyz(0., 8., 8.).looking_at(beam.translation, Vec3::Y);
+        assert!(!beam_visible(&beam, &overhead, None));
+        assert!(beam_visible(&beam, &street, None));
     }
 
     #[cfg(not(target_arch = "wasm32"))]

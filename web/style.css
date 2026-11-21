@@ -67,8 +67,8 @@ canvas[data-pointer-locked] { cursor: none !important; }
   color: #c2ffef;
 }
 #logo:hover { color: #fff4b3; }
-.android { display: block; width: 48px; height: 48px; filter: drop-shadow(0 0 5px #7fffe394); }
-[data-playing] .android { display: none; }
+.android { display: block; flex: none; width: 48px; height: 48px; filter: drop-shadow(0 0 5px #7fffe394); }
+[data-playing] .android { visibility: hidden; }
 .wordmark {
   font: 700 3.1rem/1 Caveat, cursive;
   white-space: nowrap;

@@ -212,6 +212,15 @@ test("opens a public repository and fetches source after the WASM city starts", 
   await expect(page.locator("form")).toBeHidden({ timeout: 90_000 });
   const canvas = page.locator("canvas");
   await expect(canvas).toBeVisible();
+  const brand = page.locator("#logo");
+  await expect(brand.locator(".wordmark")).toBeVisible();
+  const androidSlot = await brand.locator(".android").evaluate(image => {
+    const { x, width } = image.getBoundingClientRect();
+    return { x, width };
+  });
+  const wordmark = await brand.locator(".wordmark").boundingBox();
+  expect(androidSlot?.width).toBe(48);
+  expect(wordmark.x).toBeGreaterThanOrEqual(androidSlot.x + androidSlot.width);
   await expect(cover).toBeHidden();
   await expect.poll(() => canvas.evaluate(element => ({
     top: element.getBoundingClientRect().top,

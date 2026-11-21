@@ -941,9 +941,10 @@ fn setup(
     });
     let facades = code_texture::FacadePrint::ALL.map(|print| {
         [code_texture::Coverage::Closed, code_texture::Coverage::Open].map(|coverage| {
-            materials.add(listing::overview_material(images.add(
-                code_texture::facade_overview(std::iter::once(coverage), 1, print),
-            )))
+            let mut material =
+                listing::overview_material(images.add(code_texture::facade_atlas(coverage, print)));
+            listing::scale_facade(&mut material, print, code_texture::FACADE_TILE_HEIGHT);
+            materials.add(material)
         })
     });
     let facade_rims = code_texture::Coverage::ALL.map(|state| {
