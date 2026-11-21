@@ -62,8 +62,7 @@ and `licenses/bevy-markup-APACHE.txt`.
 ## Project artwork
 
 The startup covers (`web/assets/repo-city-start.webp` and
-`assets/repo-city-tablet.webp`) and facade texture (`assets/city/facade-print.png`)
-are original artwork created for this project.
+`assets/repo-city-tablet.webp`) are original artwork created for this project.
 They are distributed under the project's MIT or Apache-2.0 license.
 
 ## Native terminal

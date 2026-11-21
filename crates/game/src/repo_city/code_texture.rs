@@ -9,7 +9,7 @@ use bevy::{
 };
 use repo_world::{
     comparison::Mark,
-    syntax::{Kind, Line},
+    syntax::{Kind, Line, Span},
 };
 use swash::{
     FontRef,
@@ -492,14 +492,6 @@ impl Coverage {
             Self::Open => [135, 237, 208],
         }
     }
-
-    pub(super) fn stroke(self) -> [u8; 3] {
-        match self {
-            Self::Closed => [85, 103, 129],
-            Self::Partial => [137, 121, 160],
-            Self::Open => [155, 196, 193],
-        }
-    }
 }
 
 pub(super) fn embedded_png(png: &[u8]) -> Image {
@@ -518,10 +510,9 @@ pub(super) fn facade_overview(
     bands: impl ExactSizeIterator<Item = Coverage>,
     repeats: usize,
 ) -> Image {
-    static PRINT: std::sync::OnceLock<Image> = std::sync::OnceLock::new();
-    let print = PRINT
-        .get_or_init(|| embedded_png(include_bytes!("../../../../assets/city/facade-print.png")));
-    let mut image = print.clone();
+    static PRINTS: std::sync::OnceLock<[Image; 2]> = std::sync::OnceLock::new();
+    let prints = PRINTS.get_or_init(facade_prints);
+    let mut image = prints[0].clone();
     let width = image.width() as usize;
     let print_height = image.height() as usize;
     let height = (print_height * repeats).min(2048);
@@ -533,27 +524,99 @@ pub(super) fn facade_overview(
     let count = bands.len();
     let bands: Vec<_> = bands.collect();
     let pixels = image.data.as_mut().expect("packed facade print");
-    let print_pixels = print.data.as_ref().expect("packed facade print");
     let gutter = width * 91 / LISTING_WIDTH as usize;
     for (y, row) in pixels.chunks_exact_mut(width * 4).enumerate() {
         let pattern_row = y * print_height * repeats / height % print_height;
         let state = bands[y * count / height];
+        let print = &prints[usize::from(state == Coverage::Open)];
+        let source = pattern_row * width * 4;
+        let print_pixels = print.data.as_ref().expect("packed facade print");
+        row.copy_from_slice(&print_pixels[source..source + row.len()]);
         let accent = state.accent();
-        let stroke = state.stroke();
-        for (x, pixel) in row.chunks_exact_mut(4).enumerate() {
-            let source = (pattern_row * width + x) * 4;
-            let rgb = if (gutter..gutter + 2).contains(&x) {
-                accent
-            } else if print_pixels[source] > 0 {
-                stroke
-            } else {
-                FACADE_GLASS
-            };
-            pixel[..3].copy_from_slice(&rgb);
-            pixel[3] = print_pixels[source + 3];
+        for x in gutter..gutter + 2 {
+            row[x * 4..x * 4 + 3].copy_from_slice(&accent);
         }
     }
     image
+}
+
+fn facade_prints() -> [Image; 2] {
+    use Kind::{Comment, Function, Keyword, Number, Plain, String as Literal, Type};
+    // Generic code for offscreen files, using the same ink and frost as the source preview.
+    #[rustfmt::skip]
+    const SAMPLE: [&[(&str, Kind)]; 32] = [
+        &[("use", Keyword), (" crate::layout::Panel;", Plain)],
+        &[],
+        &[("// Keep the source bounds.", Comment)],
+        &[("pub fn", Keyword), (" ", Plain), ("layout", Function), ("(width: ", Plain), ("u32", Type), (") {", Plain)],
+        &[("    let", Keyword), (" gutter = ", Plain), ("12", Number), (";", Plain)],
+        &[("    let", Keyword), (" label = ", Plain), (r#""source""#, Literal), (";", Plain)],
+        &[("    let", Keyword), (" inner = width.saturating_sub(gutter);", Plain)],
+        &[("    if", Keyword), (" inner == ", Plain), ("0", Number), (" {", Plain)],
+        &[("        return", Keyword), (";", Plain)],
+        &[("    }", Plain)],
+        &[],
+        &[("    let", Keyword), (" panel = ", Plain), ("Panel", Type), (" {", Plain)],
+        &[("        width: inner,", Plain)],
+        &[("        label,", Plain)],
+        &[("        padding: ", Plain), ("4", Number), (",", Plain)],
+        &[("    };", Plain)],
+        &[("    ", Plain), ("draw", Function), ("(panel);", Plain)],
+        &[("}", Plain)],
+        &[],
+        &[("fn", Keyword), (" ", Plain), ("draw", Function), ("(panel: ", Plain), ("Panel", Type), (") {", Plain)],
+        &[("    for", Keyword), (" row ", Plain), ("in", Keyword), (" panel.rows() {", Plain)],
+        &[("        let", Keyword), (" color = ", Plain), ("row_color", Function), ("(row);", Plain)],
+        &[("        row.paint(color);", Plain)],
+        &[("    }", Plain)],
+        &[("}", Plain)],
+        &[],
+        &[("// Pick an ink tone.", Comment)],
+        &[("fn", Keyword), (" ", Plain), ("row_color", Function), ("(row: ", Plain), ("Row", Type), (") -> ", Plain), ("Ink", Type), (" {", Plain)],
+        &[("    match", Keyword), (" row.kind() {", Plain)],
+        &[("        ", Plain), (r#""muted""#, Literal), (" => INK_SOFT,", Plain)],
+        &[("        _ => INK,", Plain)],
+        &[("    }}", Plain)],
+    ];
+    let lines: Vec<_> = SAMPLE
+        .into_iter()
+        .enumerate()
+        .map(|(index, tokens)| {
+            let mut text = String::new();
+            let mut spans = Vec::new();
+            for &(token, kind) in tokens {
+                let start = text.len();
+                text.push_str(token);
+                if kind != Kind::Plain {
+                    spans.push(Span {
+                        bytes: start..text.len(),
+                        kind,
+                    });
+                }
+            }
+            Line {
+                number: index + 1,
+                text,
+                spans,
+            }
+        })
+        .collect();
+    [false, true].map(|open| {
+        listing_preview(
+            lines.len() * 4,
+            |row| {
+                (
+                    row.is_multiple_of(2)
+                        .then(|| &lines[(row / 2) % lines.len()]),
+                    Mark::Context,
+                )
+            },
+            |_| open,
+            Face::Source,
+            Vec2::new(1.8, 1.),
+            |_| None,
+        )
+    })
 }
 
 pub(super) fn listing_preview<'a>(
@@ -789,6 +852,43 @@ pub(super) fn listing_with_notes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn distant_facades_preserve_syntax_colors_through_frost() {
+        let closed = facade_overview(std::iter::once(Coverage::Closed), 1);
+        let open = facade_overview(std::iter::once(Coverage::Open), 1);
+        let width = closed.width() as usize;
+        let source_start = (width * 106).div_ceil(LISTING_WIDTH as usize);
+        for image in [&closed, &open] {
+            let mut keyword = false;
+            let mut string = false;
+            for row in image.data.as_ref().unwrap().chunks_exact(width * 4) {
+                for pixel in row[source_start * 4..].chunks_exact(4) {
+                    let [r, g, b] = [pixel[0] as i16, pixel[1] as i16, pixel[2] as i16];
+                    keyword |= r > g + 4 && b > r + 7;
+                    string |= g > r + 6 && g > b + 4;
+                }
+            }
+            assert!(
+                keyword && string,
+                "Facade should show violet keywords and green strings"
+            );
+        }
+        let contrast = |image: Image| {
+            image
+                .data
+                .unwrap()
+                .chunks_exact(width * 4)
+                .flat_map(|row| row[source_start * 4..].chunks_exact(4))
+                .map(|pixel| pixel[2].abs_diff(FACADE_GLASS[2]))
+                .max()
+                .unwrap()
+        };
+        assert!(
+            contrast(closed) < contrast(open),
+            "Frost should soften the code"
+        );
+    }
 
     #[test]
     fn long_code_tails_render_on_every_face_and_history_cannot_overlap_source() {
