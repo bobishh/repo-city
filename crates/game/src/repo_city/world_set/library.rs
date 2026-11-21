@@ -7,12 +7,12 @@ use super::super::*;
 
 mod aim;
 mod athens;
+mod atlas;
 mod forms;
 mod journey;
 mod layout;
 mod librarian;
 mod map;
-mod owl;
 mod paper;
 mod place;
 mod room;
@@ -237,15 +237,12 @@ pub(super) fn install(app: &mut App, args: &[String]) {
             (
                 controls,
                 room::draw,
-                room::overview,
                 room::arrange_cabinets,
                 aim::update,
                 signs::draw,
                 seeing::update,
                 seeing::share,
                 place::save,
-                librarian::animate,
-                owl::fly,
                 progress::sync.run_if(repository_picker::has_city),
                 android::show_tablet,
             )

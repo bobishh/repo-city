@@ -31,10 +31,11 @@ test("styles the shared repository form for the selected world", async ({ page }
   await expect(form).toHaveCSS("background-color", "rgb(10, 19, 26)");
 });
 
-test("travels from the owl view to a distant folder and returns there after reading", async ({ page }, testInfo) => {
+test("fits every file in both maps and opens a distant file directly", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1900, height: 732 });
   const revision = "c".repeat(40);
-  const tree = Array.from({ length: 10 }, (_, index) => ({
-    path: `gallery-${index}/index.rs`,
+  const tree = Array.from({ length: 6000 }, (_, index) => ({
+    path: `gallery-${String(index % 100).padStart(2, "0")}/file-${String(index).padStart(4, "0")}.rs`,
     type: "blob",
     mode: "100644",
     sha: (index + 10).toString(16).padStart(40, "0"),
@@ -54,24 +55,24 @@ test("travels from the owl view to a distant folder and returns there after read
   await canvas.focus();
   const press = key => page.keyboard.press(key, { delay: 135 });
   await press("KeyM");
-  await expect(canvas).toHaveAttribute("data-library-map", "Folder · gallery-0");
+  await expect(canvas).toHaveAttribute("data-library-map", "Folder · gallery-00");
+  await expect(canvas).toHaveAttribute("data-library-map-files", "60");
   await page.screenshot({ path: testInfo.outputPath("folder.png") });
   await press("KeyM");
   await expect(canvas).toHaveAttribute("data-library-map", "Archive courtyards");
-  await page.screenshot({ path: testInfo.outputPath("owl-view.png") });
+  await expect(canvas).toHaveAttribute("data-library-map-files", "6000");
+  await page.screenshot({ path: testInfo.outputPath("archive.png") });
   await press("End");
   await press("Enter");
-  await expect(canvas).toHaveAttribute("data-library-map", "Folder · gallery-9");
-  await press("Escape");
   await expect(canvas).not.toHaveAttribute("data-library-map");
-  await press("KeyM");
-  await expect(canvas).toHaveAttribute("data-library-map", "Folder · gallery-9");
-  await press("Enter");
-  await expect(canvas).toHaveAccessibleName("Greek Library, gallery-9/index.rs, lines 1–1");
+  await expect(canvas).toHaveAccessibleName("Greek Library, gallery-99/file-5999.rs, lines 1–1");
   await press("Escape");
   await expect(canvas).toHaveAccessibleName("Greek Library");
   await press("KeyM");
-  await expect(canvas).toHaveAttribute("data-library-map", "Folder · gallery-9");
+  await expect(canvas).toHaveAttribute("data-library-map", "Folder · gallery-99");
+  await expect(canvas).toHaveAttribute("data-library-map-files", "60");
+  await press("Escape");
+  await expect(canvas).not.toHaveAttribute("data-library-map-files");
 });
 
 test("opens a repository in the Greek Library and unrolls a file at the requested line", async ({ page }, testInfo) => {
@@ -190,8 +191,6 @@ test("opens a repository in the Greek Library and unrolls a file at the requeste
   await expect(canvas).toHaveAttribute("data-library-map", "Archive courtyards");
   await page.screenshot({ path: testInfo.outputPath("corridors.png"), style: "#city-header { visibility: hidden }" });
   await press("End");
-  await press("Enter");
-  await expect(canvas).toHaveAttribute("data-library-map", "Folder · src");
   await press("Enter");
   await expect(canvas).not.toHaveAttribute("data-library-map");
   await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 1–22");

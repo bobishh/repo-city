@@ -21,7 +21,7 @@ pub(super) struct Heading;
 enum Placement {
     Modal(f32),
     Tablet,
-    Sidebar(f32, Entity),
+    Bottom(Entity),
 }
 
 pub(super) fn panel(commands: &mut Commands, title: &str, width: f32) -> Entity {
@@ -32,17 +32,17 @@ pub(super) fn tablet(commands: &mut Commands, title: &str) -> Entity {
     surface(commands, title, Placement::Tablet)
 }
 
-pub(super) fn sidebar(commands: &mut Commands, title: &str, width: f32, camera: Entity) -> Entity {
-    surface(commands, title, Placement::Sidebar(width, camera))
+pub(super) fn bottom_bar(commands: &mut Commands, camera: Entity) -> Entity {
+    surface(commands, "", Placement::Bottom(camera))
 }
 
 fn surface(commands: &mut Commands, title: &str, placement: Placement) -> Entity {
     let tablet = matches!(placement, Placement::Tablet);
-    let sidebar = matches!(placement, Placement::Sidebar(..));
+    let bar = matches!(placement, Placement::Bottom(_));
     let backdrop = commands
         .spawn((
             GlobalZIndex(40),
-            BackgroundColor(if tablet || sidebar {
+            BackgroundColor(if tablet || bar {
                 Color::NONE
             } else {
                 Color::srgba(0.01, 0.02, 0.04, 0.55)
@@ -51,22 +51,17 @@ fn surface(commands: &mut Commands, title: &str, placement: Placement) -> Entity
                 position_type: PositionType::Absolute,
                 width: percent(100.),
                 height: percent(100.),
-                align_items: AlignItems::Center,
-                justify_content: if sidebar {
-                    JustifyContent::End
+                align_items: if bar {
+                    AlignItems::End
                 } else {
-                    JustifyContent::Center
+                    AlignItems::Center
                 },
-                padding: if sidebar {
-                    UiRect::right(px(14.))
-                } else {
-                    UiRect::ZERO
-                },
+                justify_content: JustifyContent::Center,
                 ..default()
             },
         ))
         .id();
-    if let Placement::Sidebar(_, camera) = placement {
+    if let Placement::Bottom(camera) = placement {
         commands
             .entity(backdrop)
             .insert(bevy::ui::UiTargetCamera(camera));
@@ -78,28 +73,36 @@ fn surface(commands: &mut Commands, title: &str, placement: Placement) -> Entity
             TabGroup::modal(),
             Node {
                 width: match placement {
-                    Placement::Modal(width) | Placement::Sidebar(width, _) => px(width),
-                    Placement::Tablet => percent(100.),
+                    Placement::Modal(width) => px(width),
+                    Placement::Tablet | Placement::Bottom(_) => percent(100.),
                 },
                 height: if tablet { percent(100.) } else { Val::Auto },
-                max_width: if tablet {
+                max_width: if tablet || bar {
                     percent(100.)
-                } else if sidebar {
-                    percent(60.)
                 } else {
                     percent(94.)
                 },
-                max_height: percent(if tablet {
-                    100.
-                } else if sidebar {
-                    92.
+                max_height: if tablet { percent(100.) } else { percent(94.) },
+                flex_direction: if bar {
+                    FlexDirection::Row
                 } else {
-                    94.
-                }),
-                flex_direction: FlexDirection::Column,
+                    FlexDirection::Column
+                },
+                align_items: if bar {
+                    AlignItems::Center
+                } else {
+                    AlignItems::Stretch
+                },
+                column_gap: px(12.),
                 row_gap: px(10.),
                 border: UiRect::all(px(if tablet { 0. } else { 1. })),
-                padding: UiRect::all(px(if tablet { 26. } else { 18. })),
+                padding: UiRect::all(px(if tablet {
+                    26.
+                } else if bar {
+                    7.
+                } else {
+                    18.
+                })),
                 ..default()
             },
             BackgroundColor(Color::srgb_u8(10, 24, 32)),

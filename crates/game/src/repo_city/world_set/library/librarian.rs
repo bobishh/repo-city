@@ -1,10 +1,7 @@
-//! First-person hands and the stone case for the shared VibePad screen.
+//! The stone case and its grips for the shared VibePad screen.
 use bevy::{camera::visibility::RenderLayers, light::NotShadowCaster};
 
 use super::*;
-
-#[derive(Component)]
-pub(super) struct Hands(f32);
 
 pub(super) fn spawn(
     commands: &mut Commands,
@@ -71,16 +68,6 @@ pub(super) fn spawn(
         materials,
         tablet_display::Case::Stone,
     );
-    for side in [-1., 1.] {
-        commands
-            .spawn((
-                ChildOf(eye),
-                Hands(side),
-                Transform::default(),
-                Visibility::Hidden,
-            ))
-            .with_children(|arm| grip(arm, &block, &sleeve, &hand, side, 0));
-    }
 }
 
 fn grip(
@@ -104,32 +91,5 @@ fn grip(
             RenderLayers::layer(layer),
             NotShadowCaster,
         ));
-    }
-}
-
-pub(super) fn animate(
-    library: Res<Library>,
-    review: Res<review_notes::Review>,
-    map: Res<map::Map>,
-    unrolling: Res<room::Unrolling>,
-    mut hands: Query<(&Hands, &mut Transform, &mut Visibility)>,
-) {
-    let t = unrolling.elapsed;
-    let changing = !map.open()
-        && library.reader.is_some()
-        && !review.blocked
-        && t >= room::APPROACHED
-        && t < room::UNROLLED;
-    let push = (std::f32::consts::PI * unrolling.reveal()).sin().max(0.);
-    for (hand, mut pose, mut visibility) in &mut hands {
-        *visibility = if changing {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        if changing {
-            pose.translation = Vec3::new(hand.0 * -0.18, -0.20 + push * 0.15, -1.10 - push * 0.35);
-            pose.rotation = Quat::from_rotation_x(-0.12 - 0.11 * push);
-        }
     }
 }

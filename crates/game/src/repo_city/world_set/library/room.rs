@@ -1,4 +1,4 @@
-use bevy::image::ImageSampler;
+use bevy::{camera::visibility::RenderLayers, image::ImageSampler, render::view::Msaa};
 
 use super::*;
 use layout::{CABINET_X, COURT_LENGTH, DEPTHS, EYE, FRONT};
@@ -42,12 +42,6 @@ pub(super) enum ScrollPart {
 
 #[derive(Component)]
 pub(super) struct Bay(usize);
-
-#[derive(Component)]
-pub(super) struct Roof {
-    bay: usize,
-    folder: usize,
-}
 
 #[derive(Component)]
 pub(super) struct Cabinet {
@@ -159,6 +153,8 @@ pub(super) fn setup(
     let eye = commands
         .spawn((
             Camera3d::default(),
+            RenderLayers::layer(0),
+            Msaa::Sample4,
             Pilot::default(),
             DistanceFog {
                 color: color(set.background),
@@ -256,7 +252,6 @@ pub(super) fn setup(
     }
 
     librarian::spawn(&mut commands, eye, &mut meshes, &mut materials, &mut images);
-    owl::spawn(&mut commands, eye, &mut meshes, &mut materials);
     aim::spawn(&mut commands);
     signs::spawn(&mut commands, eye);
     commands.spawn((
@@ -423,7 +418,6 @@ fn spawn_bays(
                     let point = layout::folder(folder);
                     for slope in [-1., 1.] {
                         bay.spawn((
-                            Roof { bay: index, folder },
                             Mesh3d(roof.0.clone()),
                             MeshMaterial3d(roof.1.clone()),
                             Transform::from_xyz(
@@ -495,36 +489,6 @@ fn spawn_bays(
                     }
                 }
             });
-    }
-}
-
-pub(super) fn overview(
-    map: Res<map::Map>,
-    mut eyes: Query<(&Transform, &mut DistanceFog), With<Camera>>,
-    mut roofs: Query<(&Roof, &mut Visibility)>,
-) {
-    let Ok((eye, mut fog)) = eyes.single_mut() else {
-        return;
-    };
-    let range = if map.birds_eye() {
-        (105., 260.)
-    } else {
-        (42., 78.)
-    };
-    if !matches!(fog.falloff, FogFalloff::Linear { start, end } if (start, end) == range) {
-        fog.falloff = FogFalloff::Linear {
-            start: range.0,
-            end: range.1,
-        };
-    }
-    let first = first_bay(map.court_center().unwrap_or(eye.translation.z));
-    for (roof, mut visible) in &mut roofs {
-        let folder = (first + roof.bay) * layout::FOLDERS_PER_COURT + roof.folder;
-        visible.set_if_neq(if map.folder() == Some(folder) {
-            Visibility::Hidden
-        } else {
-            Visibility::Inherited
-        });
     }
 }
 
@@ -615,6 +579,17 @@ pub(super) fn draw(
     mut unrolling: ResMut<Unrolling>,
     #[cfg(target_arch = "wasm32")] mut last_prompt: Local<&'static str>,
 ) {
+    if map.open() {
+        if let Ok(mut panel) = panels.single_mut() {
+            panel.display = Display::None;
+        }
+        for (label, mut text) in &mut labels {
+            if matches!(label, Label::Help) && !text.0.is_empty() {
+                text.0.clear();
+            }
+        }
+        return;
+    }
     let catalog = &library.catalog;
     let reading = library.reader.is_some();
     #[cfg(target_arch = "wasm32")]
@@ -655,20 +630,12 @@ pub(super) fn draw(
             let aspect = window.width().max(1.) / window.height().max(1.);
             let fit_width = 2. * (SCROLL_WIDTH * 0.58 / (READ_DISTANCE * aspect)).atan();
             let reading_fov = ROOM_FOV.max(fit_width).min(2.2);
-            let fov = if map.open() {
-                0.92
-            } else {
-                ROOM_FOV + (reading_fov - ROOM_FOV) * unrolling.reading_blend()
-            };
+            let fov = ROOM_FOV + (reading_fov - ROOM_FOV) * unrolling.reading_blend();
             if perspective.fov != fov {
                 perspective.fov = fov;
             }
         }
-        if let Some(destination) = map.camera() {
-            let t = 1. - (-5.0 * dt).exp();
-            camera.translation = camera.translation.lerp(destination.translation, t);
-            camera.rotation = camera.rotation.slerp(destination.rotation, t);
-        } else if let Some(reader) = reader {
+        if let Some(reader) = reader {
             if unrolling.elapsed == 0. {
                 let from = library.walk_pose.as_ref().unwrap_or(&*camera);
                 let local = ((from.translation.z + COURT_LENGTH / 2.).rem_euclid(COURT_LENGTH)
@@ -678,7 +645,11 @@ pub(super) fn draw(
                     .floor()
                     * COURT_LENGTH;
                 unrolling.anchor = court_center + local * 7.5 - 2.75;
-                unrolling.x = if from.translation.x > 0. { 9.92 } else { -9.92 };
+                unrolling.x = if from.translation.x > 0. {
+                    10.65
+                } else {
+                    -10.65
+                };
                 if reader.first > 0 {
                     unrolling.elapsed = STAGED;
                 }
@@ -728,7 +699,7 @@ pub(super) fn draw(
         } else if unrolling.elapsed != 0. {
             *unrolling = Unrolling::default();
         }
-        camera_z = map.court_center().unwrap_or(camera.translation.z);
+        camera_z = camera.translation.z;
     }
     keep_hall(camera_z, &mut bays);
     let origin = unrolling.origin;
@@ -971,10 +942,11 @@ pub(super) fn arrange_cabinets(
     mut rolls: Query<(&CabinetFile, &mut Visibility), Without<Cabinet>>,
 ) {
     let Ok(eye) = camera.single() else { return };
-    let first = first_bay(map.court_center().unwrap_or(eye.translation.z));
-    let selected = map
-        .focused_scroll(&library.catalog)
-        .or_else(|| library.catalog.files.get(library.catalog.selected).copied());
+    if map.open() {
+        return;
+    }
+    let first = first_bay(eye.translation.z);
+    let selected = library.catalog.files.get(library.catalog.selected).copied();
     for (mut cabinet, mut location, mut visibility, children) in &mut cabinets {
         let index = layout::folder_at(first + cabinet.bay, cabinet.slot);
         let new_directory = cabinet.directory != index || repo.is_changed();

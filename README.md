@@ -80,9 +80,10 @@ the explorer. To skip the chooser on a Mac, use
 On desktop, append `--file src/main.rs --line 120` to open a scroll at a line.
 Walk between the courtyards with **WASD**. Turn with **Left/Right** or drag
 with the right mouse button. Each folder occupies a reading room. Its
-cabinets hold files in alphabetical order. Press **M** to look into the
-current room from above and choose a scroll. Press **M** again to fly over
-the courtyards with the owl, then select a room. **Esc** returns to the room.
+cabinets hold files in alphabetical order. Press **M** to see every file in
+the current folder. Press **M** again to fit all repository files on the
+terrain map. Each building opens a file. Zoom with the mouse wheel, pan with
+right drag, and press **Esc** to return to the room.
 Use **/** or **\\** to search the repository or the open scroll. Press
 **Enter** to open the selected file and read the parchment from directly
 above. Use the wheel, **Page Up/Down**, or **J** to move through the file.

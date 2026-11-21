@@ -6,7 +6,7 @@ pub(super) const CABINETS_PER_COURT: usize = 8;
 pub(super) const FOLDERS_PER_COURT: usize = 4;
 pub(super) const DEPTHS: [f32; 4] = [-11., -4., 4., 11.];
 pub(super) const FRONT: f32 = 7.2;
-pub(super) const CABINET_X: f32 = 13.;
+pub(super) const CABINET_X: f32 = 14.55;
 pub(super) const EYE: f32 = 2.15;
 pub(super) const ENTRANCE_Z: f32 = -16.6;
 

@@ -295,11 +295,15 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
           if (target) canvas.dataset.libraryTarget = target;
           else canvas.removeAttribute("data-library-target");
         },
-        libraryMap(title) {
+        libraryMap(title, files) {
           if (title) {
             releasePointer();
             canvas.dataset.libraryMap = title;
-          } else canvas.removeAttribute("data-library-map");
+            canvas.dataset.libraryMapFiles = String(files);
+          } else {
+            canvas.removeAttribute("data-library-map");
+            canvas.removeAttribute("data-library-map-files");
+          }
         },
         libraryInput(prompt) {
           canvas.toggleAttribute("data-library-input", Boolean(prompt));
