@@ -34,7 +34,7 @@ pub(super) struct Map {
     level: Option<Level>,
     cursor: usize,
     scene: Option<Scene>,
-    terrain: Option<Vec<atlas::Terrace>>,
+    terrain: Option<atlas::Terrain>,
     passage: Option<Passage>,
     framing: Option<Framing>,
     ground: Option<(Transform, Projection, Msaa)>,
