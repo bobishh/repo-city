@@ -243,6 +243,10 @@ fn draw(parent: &mut ChildSpawnerCommands, node: &NodeView, order: &mut i32) {
             }
             *order += 1;
         }
+        "code" if !node.name.is_empty() => {
+            let document = markdown_preview::draw_source(parent, &node.name, &node.text);
+            parent.commands().entity(document).insert(binding());
+        }
         "text" | "heading" | "code" | "status" => {
             let mut font = native_panel::panel_font();
             font.font_size = (if node.kind == "heading" { 22. } else { 18. }).into();
@@ -698,10 +702,9 @@ pub(super) fn update(
     let documents_ready = bindings
         .iter()
         .filter(|(_, binding)| {
-            tablet
-                .nodes
-                .get(&binding.0)
-                .is_some_and(|node| node.kind == "markdown")
+            tablet.nodes.get(&binding.0).is_some_and(|node| {
+                node.kind == "markdown" || (node.kind == "code" && !node.name.is_empty())
+            })
         })
         .all(|(entity, _)| {
             documents

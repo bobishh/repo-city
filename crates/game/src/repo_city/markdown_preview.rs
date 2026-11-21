@@ -1,5 +1,6 @@
 //! Markdown previews for source documents and review comments.
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use std::fmt::Write;
 
 use super::*;
 
@@ -11,17 +12,55 @@ pub(super) fn document_html(path: &str, source: &str) -> String {
     if is_markdown(path) {
         return markdown_html(source);
     }
-    let mut html = String::new();
-    pulldown_cmark::html::push_html(
-        &mut html,
-        [
-            Event::Start(Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Indented)),
-            Event::Text(source.into()),
-            Event::End(TagEnd::CodeBlock),
-        ]
-        .into_iter(),
-    );
-    html
+    source_html(path, source).0
+}
+
+fn source_html(path: &str, source: &str) -> (String, bool) {
+    let mut html = String::with_capacity(source.len() + 64);
+    let mut styled = false;
+    html.push_str("<pre class=\"source-code\"><code>");
+    for (raw, line) in source
+        .split_inclusive('\n')
+        .zip(syntax::highlight(path, source))
+    {
+        let mut cursor = 0;
+        for span in line.spans {
+            let start = span.bytes.start;
+            let end = span.bytes.end;
+            if span.kind == syntax::Kind::Plain || start < cursor || end <= start {
+                continue;
+            }
+            let (Some(before), Some(token)) = (raw.get(cursor..start), raw.get(start..end)) else {
+                continue;
+            };
+            escape_source(&mut html, before);
+            let [red, green, blue] =
+                code_texture::ink(span.kind).map(|channel| (channel * 255.).round() as u8);
+            write!(
+                html,
+                "<span style=\"color:#{red:02x}{green:02x}{blue:02x}\">"
+            )
+            .unwrap();
+            escape_source(&mut html, token);
+            html.push_str("</span>");
+            styled = true;
+            cursor = end;
+        }
+        escape_source(&mut html, &raw[cursor..]);
+    }
+    html.push_str("</code></pre>\n");
+    (html, styled)
+}
+
+fn escape_source(html: &mut String, text: &str) {
+    for ch in text.chars() {
+        match ch {
+            '&' => html.push_str("&amp;"),
+            '<' => html.push_str("&lt;"),
+            '>' => html.push_str("&gt;"),
+            _ => html.push(ch),
+        }
+    }
 }
 
 pub(super) fn events(source: &str) -> impl Iterator<Item = Event<'_>> {
@@ -194,6 +233,8 @@ pub(super) fn register(app: &mut App) {
     app.add_plugins(bevy_markup::BevyMarkupPlugin)
         .add_systems(Update, follow_links);
     #[cfg(target_arch = "wasm32")]
+    app.add_systems(Update, refresh_browser_source);
+    #[cfg(target_arch = "wasm32")]
     let sans = FontSource::list([Handle::<Font>::default(), MATH_FONT, EMOJI_FONT]);
     #[cfg(not(target_arch = "wasm32"))]
     let sans = FontSource::sans_serif();
@@ -250,6 +291,51 @@ pub(super) fn draw(
         }
     });
     entity
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Component)]
+struct BrowserSource {
+    path: String,
+    text: String,
+    version: u32,
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(super) fn draw_source(parent: &mut ChildSpawnerCommands, path: &str, text: &str) -> Entity {
+    let (html, styled) = source_html(path, text);
+    let entity = draw(parent, html, None);
+    if !styled {
+        parent.commands().entity(entity).insert(BrowserSource {
+            path: path.into(),
+            text: text.into(),
+            version: repo_world::browser_syntax_version(),
+        });
+    }
+    entity
+}
+
+#[cfg(target_arch = "wasm32")]
+fn refresh_browser_source(
+    mut commands: Commands,
+    mut previews: Query<(
+        Entity,
+        &mut BrowserSource,
+        &mut bevy_markup::prelude::TemplateContext,
+    )>,
+) {
+    let version = repo_world::browser_syntax_version();
+    for (entity, mut source, mut context) in &mut previews {
+        if source.version == version {
+            continue;
+        }
+        source.version = version;
+        let (html, styled) = source_html(&source.path, &source.text);
+        if styled {
+            *context = bevy_markup::prelude::TemplateContext::new().with("document", &html);
+            commands.entity(entity).remove::<BrowserSource>();
+        }
+    }
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -327,6 +413,20 @@ mod tests {
             "| Action | Control |\n| --- | --- |\n| Read **all** | Press **P** once |\n",
         );
         assert!(table.contains("<td><p>Press <strong>P</strong> once</p></td>"));
+    }
+
+    #[test]
+    fn source_previews_color_tokens_and_escape_the_file_without_losing_indentation() {
+        let source = "    let answer = \"Привет <script>&\";\n\n    // note\n";
+        let html = document_html("example.rs", source);
+        assert!(html.contains("    <span style=\"color:#cc91ff\">let</span>"));
+        assert!(html.contains("<span style=\"color:#b8db80\">"));
+        assert!(html.contains("Привет &lt;script&gt;&amp;"));
+        assert!(html.contains("\n\n    <span"));
+        assert!(!html.contains("<script>"));
+        let text = document_html("LICENSE", "    Unformatted terms.\n");
+        assert!(text.contains("    Unformatted terms.\n"));
+        assert!(!text.contains("<span"));
     }
 
     #[test]

@@ -211,7 +211,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       const visibleText = displayText ?? text;
       if (!visibleText.trim()) { content.textContent = "Empty document."; return; }
       if (kind === "text") {
-        content.replaceChildren(make("pre", visibleText, { class: "plain-file-preview" }));
+        content.replaceChildren(make("pre", visibleText, { class: "plain-file-preview", "data-source-path": path }));
       } else {
         content.dataset.markdownPath = path;
         content.dataset.markdownBefore = String(mark?.before ?? false);

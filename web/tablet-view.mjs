@@ -32,7 +32,7 @@ export function tabletView(root, identify, images = new Map()) {
     if (element.matches("nav,.dialog-actions,.paint-slots > div,tr")) return { id, kind: "row", children: children(element) };
     if (element.matches("fieldset,.reading-estimate,form.review-reading")) return { id, kind: "card", children: children(element) };
     if (element.getAttribute("role") === "status" || element.matches(".review-status,.audio-status")) return { id, kind: "status", text };
-    if (tag === "pre") return { id, kind: "code", text };
+    if (tag === "pre") return { id, kind: "code", text: element.textContent ?? "", name: element.dataset.sourcePath };
     if (tag === "label") {
       const control = element.querySelector("input,textarea,select");
       return { id, kind: "column", children: [...(control?.type === "checkbox" ? [] : [{ id: `${id}:label`, kind: "text", text: [...element.childNodes].filter(node => node.nodeType === 3).map(node => node.textContent).join("").trim() }]), ...[...element.children].map(read).filter(Boolean)] };

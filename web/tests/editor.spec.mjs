@@ -35,19 +35,51 @@ async function fixture(page, binary = false) {
 async function preview(page) {
   await page.goto("/?repo=owner%2Feditor");
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
-  await page.locator("canvas").focus();
-  await page.keyboard.press("Meta+p", { delay: 120 });
+  await expect(page.locator("#city-file")).toHaveText("example.rb");
+  const canvas = page.locator("canvas");
+  await canvas.focus();
   const pad = page.locator("#review-dialog");
-  await gpuClick(page, pad.getByRole("button", { includeHidden: true, name: path, exact: true }));
-  await expectClosed(page);
-  await page.waitForTimeout(1500);
-  await page.keyboard.press("Home", { delay: 120 });
-  await page.waitForTimeout(500);
-  await page.locator("canvas").evaluate(canvas => canvas.requestPointerLock());
+  await canvas.evaluate(canvas => canvas.requestPointerLock());
+  await expect(canvas).toHaveAttribute("data-pointer-locked", "");
   await page.keyboard.press("KeyP", { delay: 160 });
   await expectOpen(page, path);
   return pad;
 }
+
+test("P highlights source in the read-only GPU preview and keeps the original spacing", async ({ page }) => {
+  await fixture(page);
+  const pad = await preview(page);
+  expect(await pad.locator("pre").textContent()).toBe(source);
+  await expect(pad.locator("[data-code-editor]")).toHaveCount(0);
+  await expect.poll(async () => {
+    const view = await readTablet(page);
+    const code = view?.layout?.controls.find(control => control.kind === "code");
+    if (!code) return 0;
+    const [x, y, width, height] = code.bounds;
+    const [left, top, clipWidth, clipHeight] = code.clip;
+    const startX = Math.max(x, left);
+    const startY = Math.max(y, top);
+    const right = Math.min(x + width, left + clipWidth, startX + 280);
+    const bottom = Math.min(y + height, top + clipHeight, startY + 120);
+    if (right <= startX || bottom <= startY) return 0;
+    const png = await page.screenshot();
+    return page.evaluate(async ({ encoded, x, y, width, height }) => {
+      const bitmap = await createImageBitmap(new Blob([Uint8Array.fromBase64(encoded)], { type: "image/png" }));
+      const canvas = new OffscreenCanvas(Math.ceil(width), Math.ceil(height));
+      const context = canvas.getContext("2d");
+      const scale = bitmap.width / innerWidth;
+      context.drawImage(bitmap, x * scale, y * scale, width * scale, height * scale, 0, 0, canvas.width, canvas.height);
+      bitmap.close();
+      const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+      let violet = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        const [red, green, blue] = data.subarray(i, i + 3);
+        if (red > 100 && red > green + 18 && blue > green + 32) violet++;
+      }
+      return violet;
+    }, { encoded: png.toString("base64"), x: startX, y: startY, width: right - startX, height: bottom - startY });
+  }, { timeout: 30_000 }).toBeGreaterThan(12);
+});
 
 // Given a read-only GitHub snapshot, when source is edited in the GPU tablet,
 // private autosave restores edits after closing and reloading without a GitHub write.

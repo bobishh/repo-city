@@ -30,6 +30,7 @@
   font-family: monospace;
 }
 .markdown-body pre { padding: 14px; }
+.markdown-body .source-code { white-space: pre-wrap; }
 .markdown-body blockquote {
   padding-left: 14px;
   border-left: 4px solid #3d444d;
