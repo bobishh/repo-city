@@ -126,6 +126,7 @@ pub(super) fn shortcuts(
 }
 
 pub(crate) fn settings(parent: &mut ChildSpawnerCommands) {
+    models::settings(parent);
     for (label, action) in [
         ("Send: Enter", Action::SendKey),
         ("Permissions: automatic review", Action::ApprovalMode),

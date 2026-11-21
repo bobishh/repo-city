@@ -342,6 +342,15 @@ before connecting. Agy, Grok and Muse stream text and ask before tool calls that
 require permission. Muse receives the current checkout's Repo City MCP server
 when a session is created or loaded; no global Muse configuration is changed.
 Voice and steering are available with Codex.
+**Settings → Agent provider → Refresh models** connects the selected CLI and
+loads its available models. Codex uses its paginated `model/list`; Agy, Grok and
+Muse use the model choices advertised by their ACP session. No model names are
+hardcoded. Choose a model in the scrollable list for the next turn. Selection
+is disabled while work or voice is active. Explicit choices are saved per
+provider in `agent-models.json` beside desktop preferences. **Use provider
+settings** removes that override and reconnects. A missing saved model blocks
+new turns until you choose an available model or remove the override; catalog
+and login errors remain visible in the model panel.
 Enter a message and choose **Send**, or press **Enter**. **Shift+Enter** inserts a
 new line. Settings can restore **Cmd/Ctrl+Enter** for sending. During an active
 Codex turn, **Steer** sends new instructions into that same work.

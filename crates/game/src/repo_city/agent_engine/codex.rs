@@ -23,6 +23,8 @@ impl Engine for Adapter {
     fn send(&self, command: Command) -> Result<(), String> {
         use transport::Command as Wire;
         self.client.send(match command {
+            Command::RefreshModels => Wire::RefreshModels,
+            Command::SelectModel(model) => Wire::SelectModel(model),
             Command::Send(prompt) => Wire::Send(prompt),
             Command::Steer(prompt) => Wire::Steer(prompt),
             Command::Voice { id, context } => Wire::Voice { id, context },
@@ -39,6 +41,7 @@ impl Engine for Adapter {
         for event in self.client.poll() {
             use transport::Event as Wire;
             match event {
+                Wire::Models(models) => events.push(Event::Models(models)),
                 Wire::Connected(id) => {
                     state.dialogue.thread = Some(id.clone());
                     events.push(Event::Connected(id));

@@ -20,6 +20,8 @@ use std::{
 };
 
 pub(crate) enum Command {
+    RefreshModels,
+    SelectModel(String),
     Send(Prompt),
     Steer(Prompt),
     Voice { id: String, context: String },
@@ -29,6 +31,7 @@ pub(crate) enum Command {
 }
 
 pub(crate) enum Event {
+    Models(Result<super::models::Catalog, String>),
     Connected(String),
     Replaced {
         thread: String,
@@ -224,6 +227,7 @@ impl Drop for Process {
 }
 
 struct Wire {
+    model: Option<String>,
     process: Process,
     input: ChildStdin,
     output: Receiver<Result<Value, String>>,
@@ -435,6 +439,7 @@ impl Wire {
             });
         }
         Ok(Self {
+            model: None,
             process: Process(child),
             input,
             output: receive,
@@ -480,6 +485,9 @@ impl Wire {
             params["expectedTurnId"] = json!(turn);
             "turn/steer"
         } else {
+            if let Some(model) = &self.model {
+                params["model"] = json!(model);
+            }
             "turn/start"
         };
         self.submit_text(method, params, prompt)
@@ -897,6 +905,9 @@ fn fork_thread(
     params["deferGoalContinuation"] = json!(true);
     let result = wire.call("thread/fork", params, events, stop)?;
     let thread = thread_id(&result)?;
+    if wire.model.is_none() {
+        wire.model = result["model"].as_str().map(str::to_owned);
+    }
     if thread == previous {
         return Err("Codex did not create an independent conversation.".into());
     }
@@ -977,6 +988,9 @@ fn establish_thread(
         Err(error) => return Err(error),
     };
     let thread = thread_id(&result)?;
+    if let Some(model) = result["model"].as_str() {
+        wire.model = Some(model.into());
+    }
     announce_thread(events, &thread, replaced)?;
     Ok((thread, false))
 }
@@ -997,6 +1011,7 @@ fn run(
     diagnostics: &mut Diagnostics,
 ) -> Result<(), String> {
     let Start {
+        model: preferred,
         root,
         conversation: saved_thread,
         approval_mode,
@@ -1015,6 +1030,28 @@ fn run(
         events,
         stop,
     )?;
+    let mut catalog = fetch_models(&mut wire, events, stop);
+    let model_error = if let Some(preferred) = preferred {
+        if catalog
+            .as_ref()
+            .is_ok_and(|catalog| catalog.contains(&preferred))
+        {
+            wire.model = Some(preferred.clone());
+            if let Ok(catalog) = &mut catalog {
+                catalog.current = Some(preferred);
+            }
+            None
+        } else {
+            Some("The saved model is unavailable. Choose a provider model or reset to the provider default.".to_owned())
+        }
+    } else {
+        None
+    };
+    let mut model_error = model_error;
+    let _ = events.send(Event::Models(catalog.clone()));
+    if let Some(error) = &model_error {
+        let _ = events.send(Event::Models(Err(error.clone())));
+    }
     let mut voice = None::<Voice>;
     let mut work = Work::default();
     let mut desired = DesiredVoice::default();
@@ -1028,6 +1065,41 @@ fn run(
         desired.clear_stale(wanted_voice);
         for command in commands.try_iter().take(16) {
             match command {
+                Command::RefreshModels => {
+                    if work.id.is_some() || work.pending || voice.is_some() {
+                        let _ = events.send(Event::Models(Err(
+                            "Wait for the current turn to finish before refreshing models.".into(),
+                        )));
+                    } else {
+                        let refreshed = fetch_models(&mut wire, events, stop);
+                        if refreshed.is_ok() {
+                            catalog = refreshed.clone();
+                        }
+                        let _ = events.send(Event::Models(refreshed));
+                    }
+                }
+                Command::SelectModel(model) => {
+                    if work.id.is_some() || work.pending || voice.is_some() {
+                        let _ = events.send(Event::Models(Err(
+                            "Stop agent work and voice before changing models.".into(),
+                        )));
+                    } else if let Ok(catalog) = &mut catalog {
+                        if catalog.contains(&model) {
+                            wire.model = Some(model.clone());
+                            catalog.current = Some(model);
+                            model_error = None;
+                            let _ = events.send(Event::Models(Ok(catalog.clone())));
+                        } else {
+                            let _ = events.send(Event::Models(Err(
+                                "Choose a model returned by this provider.".into(),
+                            )));
+                        }
+                    } else {
+                        let _ = events.send(Event::Models(Err(
+                            "Load the provider's model catalog first.".into(),
+                        )));
+                    }
+                }
                 Command::Steer(prompt) => {
                     if let Some(id) = &work.id {
                         wire.submit_turn(&thread, Some(id), prompt)?;
@@ -1036,6 +1108,10 @@ fn run(
                     }
                 }
                 Command::Send(prompt) => {
+                    if let Some(error) = &model_error {
+                        deliver(events, prompt, Err(error.clone()))?;
+                        continue;
+                    }
                     if let Some(id) = &work.id {
                         wire.submit_turn(&thread, Some(id), prompt)?;
                     } else if voice.is_some() {
@@ -1358,6 +1434,46 @@ fn missing_rollout(error: &str, thread: Option<&str>) -> bool {
     })
 }
 
+fn fetch_models(
+    wire: &mut Wire,
+    events: &SyncSender<Event>,
+    stop: &AtomicBool,
+) -> Result<super::models::Catalog, String> {
+    let mut catalog = super::models::Catalog::default();
+    let mut cursor = None;
+    let mut cursors = std::collections::HashSet::new();
+    let mut ids = std::collections::HashSet::new();
+    loop {
+        let value = wire.call(
+            "model/list",
+            json!({"cursor":cursor,"limit":100,"includeHidden":false}),
+            events,
+            stop,
+        )?;
+        let (page, next) = super::models::codex_page(value)?;
+        if catalog.current.is_none() {
+            catalog.current = page.current;
+        }
+        catalog.choices.extend(
+            page.choices
+                .into_iter()
+                .filter(|model| ids.insert(model.id.clone())),
+        );
+        let Some(next) = next else { break };
+        if !cursors.insert(next.clone()) {
+            return Err("Provider repeated its model-list cursor.".into());
+        }
+        cursor = Some(next);
+    }
+    if catalog.choices.is_empty() {
+        return Err("Provider returned no selectable models.".into());
+    }
+    if let Some(current) = &wire.model {
+        catalog.current = Some(current.clone());
+    }
+    Ok(catalog)
+}
+
 pub(super) fn thread_params(
     root: &Path,
     executable: &Path,
@@ -1448,7 +1564,7 @@ for line in sys.stdin:
                     }
                 }}), flush=True)
     else:
-        assert method in ("initialize", "thread/realtime/stop"), method
+        assert method in ("initialize", "thread/realtime/stop", "model/list"), method
     print(json.dumps({"id": msg["id"], **({"error": {"message": error}} if error else {"result": result})}), flush=True)
 "#.replace("PHASE", phase);
             std::fs::write(&binary, script).unwrap();
@@ -1470,6 +1586,7 @@ for line in sys.stdin:
                 run(
                     wire,
                     Start {
+                        model: None,
                         root: worker_root,
                         conversation: Some("source".into()),
                         approval_mode: ApprovalMode::Automatic,
@@ -1519,6 +1636,140 @@ for line in sys.stdin:
                 assert_eq!(received_large_item, phase == "turn");
             }
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn model_selection_reads_every_page_rejects_unknown_ids_and_sets_the_next_turn() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = std::env::temp_dir().join(format!(
+            "city-models-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&folder).unwrap();
+        let binary = folder.join("codex");
+        std::fs::write(&binary, r#"#!/usr/bin/env python3
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    method, params = request['method'], request['params']
+    result = {}
+    if method == 'thread/start':
+        result = {'thread': {'id': 'thread'}, 'model': 'first'}
+    elif method == 'model/list':
+        assert params['limit'] == 100 and params['includeHidden'] is False
+        if params['cursor'] is None:
+            result = {'data': [{'model':'first','displayName':'First'}, {'model':'hidden','hidden':True}], 'nextCursor':'page-two'}
+        else:
+            assert params['cursor'] == 'page-two'
+            result = {'data': [{'model':'first'}, {'model':'second','displayName':'Second'}], 'nextCursor':None}
+    elif method == 'turn/start':
+        assert params['model'] == 'second'
+        assert params['input'][0]['text'].endswith('Accepted')
+        result = {'turn': {'id':'turn'}}
+    else:
+        assert method in ('initialize', 'thread/realtime/stop'), method
+    print(json.dumps({'id': request['id'], 'result':result}), flush=True)
+"#).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let wire = Wire::open_with(&folder, &binary).unwrap();
+        let (commands, input) = mpsc::sync_channel(8);
+        let (events, output) = mpsc::sync_channel(32);
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let root = folder.clone();
+        let worker = thread::spawn(move || {
+            run(
+                wire,
+                Start {
+                    root,
+                    model: Some("removed".into()),
+                    conversation: None,
+                    approval_mode: ApprovalMode::Ask,
+                    speaking: Arc::default(),
+                    diagnostics: None,
+                },
+                input,
+                &events,
+                &worker_stop,
+                &Mutex::new(None),
+                &mut Diagnostics::new(None),
+            )
+        });
+        let receive_models = || loop {
+            match output.recv_timeout(Duration::from_secs(5)).unwrap() {
+                Event::Models(result) => break result,
+                Event::Error(error) => panic!("{error}"),
+                _ => {}
+            }
+        };
+        let catalog = receive_models().unwrap();
+        assert_eq!(
+            catalog
+                .choices
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        assert_eq!(catalog.current.as_deref(), Some("first"));
+        assert!(receive_models().unwrap_err().contains("saved model"));
+        commands
+            .send(Command::Send(Prompt {
+                id: "blocked".into(),
+                text: "Blocked".into(),
+                context: String::new(),
+            }))
+            .unwrap();
+        match output.recv_timeout(Duration::from_secs(5)).unwrap() {
+            Event::Delivery { id, result } => {
+                assert_eq!(id, "blocked");
+                assert!(result.is_err());
+            }
+            _ => panic!("Saved unavailable model must block the turn"),
+        }
+        commands
+            .send(Command::SelectModel("invented".into()))
+            .unwrap();
+        assert!(
+            receive_models()
+                .unwrap_err()
+                .contains("returned by this provider")
+        );
+        commands
+            .send(Command::SelectModel("second".into()))
+            .unwrap();
+        assert_eq!(receive_models().unwrap().current.as_deref(), Some("second"));
+        commands.send(Command::RefreshModels).unwrap();
+        assert_eq!(receive_models().unwrap().current.as_deref(), Some("second"));
+        commands
+            .send(Command::Send(Prompt {
+                id: "accepted".into(),
+                text: "Accepted".into(),
+                context: String::new(),
+            }))
+            .unwrap();
+        loop {
+            match output.recv_timeout(Duration::from_secs(5)).unwrap() {
+                Event::Delivery { id, result } => {
+                    assert_eq!(id, "accepted");
+                    assert!(result.is_ok());
+                    break;
+                }
+                Event::Error(error) => panic!("{error}"),
+                _ => {}
+            }
+        }
+        commands.send(Command::SelectModel("first".into())).unwrap();
+        assert!(receive_models().unwrap_err().contains("Stop agent work"));
+        stop.store(true, Ordering::Release);
+        assert!(worker.join().unwrap().is_ok());
+        std::fs::remove_dir_all(folder).unwrap();
     }
     #[test]
     fn reconnects_back_off_stop_after_three_early_failures_and_cancel_immediately() {
@@ -1762,6 +2013,7 @@ for line in sys.stdin:
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
         let start = Start {
+            model: None,
             root: directory.clone(),
             conversation: None,
             approval_mode: ApprovalMode::Automatic,

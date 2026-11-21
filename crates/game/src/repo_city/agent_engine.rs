@@ -7,6 +7,7 @@ mod codex;
 mod codex_projection;
 mod codex_protocol;
 mod codex_transport;
+pub(super) mod models;
 pub(super) mod opus_codec;
 mod rtc;
 pub(super) mod state;
@@ -75,6 +76,7 @@ impl Default for Provider {
 }
 
 pub(super) struct Start {
+    pub model: Option<String>,
     pub root: PathBuf,
     pub conversation: Option<String>,
     pub approval_mode: ApprovalMode,
@@ -89,6 +91,8 @@ pub(super) struct Prompt {
 }
 
 pub(super) enum Command {
+    RefreshModels,
+    SelectModel(String),
     Send(Prompt),
     Steer(Prompt),
     Voice { id: String, context: String },
@@ -98,6 +102,7 @@ pub(super) enum Command {
 }
 
 pub(super) enum Event {
+    Models(Result<models::Catalog, String>),
     Connected(String),
     Replaced {
         conversation: String,

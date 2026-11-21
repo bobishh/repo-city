@@ -4,6 +4,7 @@
 
 use super::agent_engine::{self, Command, Dialogue, Engine, Event, Projection};
 mod controls;
+mod models;
 mod voice_hud;
 pub(super) use controls::settings;
 
@@ -31,6 +32,7 @@ impl bevy::app::Plugin for Plugin {
             .add_systems(Update, voice_hud::update.after(update))
             .add_systems(Update, update.after(review_tablet::update))
             .add_systems(Update, presence.after(update));
+        app.add_systems(Update, models::update.after(update));
         controls::register(app);
     }
 }
@@ -77,6 +79,7 @@ struct Approval {
 
 #[derive(Resource, Default)]
 pub(super) struct Session {
+    models: models::Picker,
     root: Option<PathBuf>,
     selected: agent_engine::Provider,
     interaction: controls::Settings,
@@ -221,7 +224,7 @@ impl Session {
                 "",
                 Phase::Ended,
             ),
-            Event::Changed { .. } => return,
+            Event::Changed { .. } | Event::Models(_) => return,
         };
         let mut details = Details::new(Kind::Session, title);
         details.body = detail.into();
@@ -308,6 +311,7 @@ impl Session {
             self.client = Some(agent_engine::connect(
                 self.selected,
                 agent_engine::Start {
+                    model: models::preferred(self.selected)?,
                     root,
                     conversation: self.projection.dialogue.thread.clone(),
                     approval_mode: self.interaction.approvals,
@@ -316,6 +320,7 @@ impl Session {
                         .map(|path| path.with_file_name("voice-status.json")),
                 },
             )?);
+            self.models.begin();
             self.status = format!("Connecting to local {}…", self.selected.label);
         }
         Ok(())
@@ -366,6 +371,7 @@ impl Session {
 
     fn can_send(&self) -> bool {
         !self.stopping
+            && !self.models.selecting()
             && self.pending_send.is_none()
             && !self.prompt.trim().is_empty()
             && (self.provider().capabilities.steer || self.projection.turn.is_none())
@@ -447,6 +453,7 @@ impl Session {
     }
 
     fn disconnect(&mut self) {
+        self.models.reset();
         self.follow_agent = false;
         if std::mem::take(&mut self.stopping) && self.status == "Stopping work…" {
             self.status = "Work stop unconfirmed. Agent disconnected.".into();
@@ -919,6 +926,10 @@ fn update(
     for event in events {
         session.record_engine_event(&event);
         match event {
+            Event::Models(result) => {
+                let provider = session.provider();
+                session.models.apply(result, provider);
+            }
             Event::Connected(thread) => {
                 session.projection.dialogue.thread = Some(thread);
                 session.connected = true;
@@ -1002,12 +1013,21 @@ fn update(
                 }
             }
             Event::Error(error) => {
+                if !session.connected {
+                    let provider = session.provider();
+                    session.models.apply(Err(error.clone()), provider);
+                }
                 session.notice(&error);
                 session.status = error;
             }
             Event::VoiceError(error) => session.voice_error = Some(error),
             Event::Closed => {
+                let error = session.models.failure();
+                let provider = session.provider();
                 session.disconnect();
+                if let Some(error) = error {
+                    session.models.apply(Err(error), provider);
+                }
                 if session.status == "Connected" {
                     session.status = "Disconnected".into();
                 }

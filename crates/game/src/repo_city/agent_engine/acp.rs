@@ -28,6 +28,7 @@ pub(super) struct Adapter {
 }
 
 enum Update {
+    Models(Result<super::models::Catalog, String>),
     Event(Event),
     Turn(Option<String>, &'static str),
     Delta {
@@ -95,6 +96,7 @@ impl Engine for Adapter {
         let mut events = Vec::new();
         for update in updates.try_iter().take(64) {
             match update {
+                Update::Models(models) => events.push(Event::Models(models)),
                 Update::Event(event) => events.push(event),
                 Update::Turn(turn, status) => {
                     if turn.is_none()
@@ -375,22 +377,93 @@ fn run(
         json!([])
     };
     let mut params = json!({"cwd":start.root,"mcpServers":servers});
-    let session = if let Some(session) = start.conversation {
+    let (session, opened) = if let Some(session) = start.conversation {
         params["sessionId"] = json!(session);
-        wire.call("session/load", params, stopped)?;
-        session
+        let opened = wire.call("session/load", params.clone(), stopped)?;
+        (session, opened)
     } else {
-        wire.call("session/new", params, stopped)?["sessionId"]
+        let opened = wire.call("session/new", params.clone(), stopped)?;
+        let session = opened["sessionId"]
             .as_str()
             .filter(|id| !id.is_empty())
             .ok_or("Agent did not return a session ID.")?
-            .to_owned()
+            .to_owned();
+        (session, opened)
     };
+    params["sessionId"] = json!(session);
+    let catalog = super::models::acp(&opened);
+    let catalog_error = catalog.as_ref().err().cloned();
+    let mut models = catalog.ok().flatten();
+    let mut model_error = None;
+    if let Some(requested) = start.model {
+        match models
+            .as_mut()
+            .ok_or_else(|| "Provider did not return a model catalog.".to_owned())
+            .and_then(|models| select_model(&mut wire, &session, models, &requested, stopped))
+        {
+            Ok(()) => {}
+            Err(error) => model_error = Some(error),
+        }
+    }
+    send(
+        updates,
+        Update::Models(models.as_ref().map(|m| m.catalog.clone()).ok_or_else(|| {
+            catalog_error.unwrap_or_else(|| "Provider did not return a model catalog.".into())
+        })),
+    )?;
+    if let Some(error) = &model_error {
+        send(updates, Update::Models(Err(error.clone())))?;
+    }
     send(updates, Update::Event(Event::Connected(session.clone())))?;
     let mut turn: Option<Turn> = None;
     let mut permissions = HashMap::new();
     while !stopped.load(Ordering::Acquire) {
         match commands.try_recv() {
+            Ok(Command::RefreshModels) if turn.is_none() => {
+                let refreshed = wire
+                    .call("session/load", params.clone(), stopped)
+                    .and_then(|value| super::models::acp(&value))
+                    .and_then(|value| {
+                        value.ok_or_else(|| "Provider did not return a model catalog.".to_owned())
+                    });
+                match refreshed {
+                    Ok(refreshed) => {
+                        send(updates, Update::Models(Ok(refreshed.catalog.clone())))?;
+                        models = Some(refreshed);
+                    }
+                    Err(error) => send(updates, Update::Models(Err(error)))?,
+                }
+            }
+            Ok(Command::SelectModel(id)) if turn.is_none() => {
+                let result = models
+                    .as_mut()
+                    .ok_or_else(|| "Load the provider's model catalog first.".to_owned())
+                    .and_then(|models| {
+                        select_model(&mut wire, &session, models, &id, stopped)?;
+                        Ok(models.catalog.clone())
+                    });
+                if result.is_ok() {
+                    model_error = None;
+                }
+                send(updates, Update::Models(result))?;
+            }
+            Ok(Command::RefreshModels | Command::SelectModel(_)) => {
+                send(
+                    updates,
+                    Update::Models(Err(
+                        "Wait for the current turn to finish before changing models.".into(),
+                    )),
+                )?;
+            }
+            Ok(Command::Send(prompt)) if turn.is_none() && model_error.is_some() => {
+                send(
+                    updates,
+                    Update::Event(Event::Delivery {
+                        id: prompt.id,
+                        result: Err(model_error.clone().unwrap()),
+                    }),
+                )?;
+            }
             Ok(Command::Send(prompt)) if turn.is_none() => {
                 let text = format!("{}\n\n{}", prompt.context, prompt.text);
                 let request = wire.request(
@@ -445,6 +518,16 @@ fn run(
         let method = frame["method"].as_str();
         let params = &frame["params"];
         let in_session = params["sessionId"].as_str() == Some(session.as_str());
+        if method == Some("session/update") && in_session {
+            match super::models::acp(&params["update"]) {
+                Ok(Some(refreshed)) => {
+                    send(updates, Update::Models(Ok(refreshed.catalog.clone())))?;
+                    models = Some(refreshed);
+                }
+                Err(error) => send(updates, Update::Models(Err(error)))?,
+                Ok(None) => {}
+            }
+        }
         match (method, frame.get("id"), &mut turn) {
             (Some("session/request_permission"), Some(id), Some(turn)) if in_session => {
                 turn.delivered(updates, Ok(()))?;
@@ -504,6 +587,40 @@ fn run(
             }
             _ => {}
         }
+    }
+    Ok(())
+}
+
+fn select_model(
+    wire: &mut Wire,
+    session: &str,
+    models: &mut super::models::AcpCatalog,
+    id: &str,
+    stopped: &AtomicBool,
+) -> Result<(), String> {
+    if !models.catalog.contains(id) {
+        return Err("Choose a model returned by this provider.".into());
+    }
+    let result = if let Some(config) = &models.config_id {
+        wire.call(
+            "session/set_config_option",
+            json!({"sessionId":session,"configId":config,"value":id}),
+            stopped,
+        )?
+    } else {
+        wire.call(
+            "session/set_model",
+            json!({"sessionId":session,"modelId":id}),
+            stopped,
+        )?
+    };
+    if let Some(updated) = super::models::acp(&result)? {
+        if updated.catalog.current.as_deref() != Some(id) {
+            return Err("Provider did not confirm the selected model.".into());
+        }
+        *models = updated;
+    } else {
+        models.catalog.current = Some(id.into());
     }
     Ok(())
 }
@@ -623,6 +740,69 @@ mod tests {
     use std::{os::unix::fs::PermissionsExt, time::SystemTime};
 
     #[test]
+    fn model_selection_validates_ids_and_keeps_the_confirmed_model_on_rejection() {
+        let root = std::env::temp_dir().join(format!(
+            "city-acp-models-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let binary = root.join("agent");
+        for config in [true, false] {
+            let script = r#"#!/usr/bin/env python3
+import json, sys
+config = CONFIG
+for line in sys.stdin:
+    request = json.loads(line)
+    assert request['method'] == ('session/set_config_option' if config else 'session/set_model')
+    params = request['params']
+    assert params['sessionId'] == 'session'
+    if config: assert params['configId'] == 'model'
+    selected = params['value' if config else 'modelId']
+    if selected == 'refused':
+        reply = {'error': {'message':'Model rejected'}}
+    else:
+        assert selected == 'next'
+        # Legacy ACP permits an empty successful acknowledgement.
+        reply = {'result': {'configOptions':[{'id':'model','type':'select','currentValue':selected,'options':[{'value':'next','name':'Next'}]}]} if config else {}}
+    print(json.dumps({'id':request['id'], **reply}), flush=True)
+"#.replace("CONFIG", if config { "True" } else { "False" });
+            std::fs::write(&binary, script).unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let mut wire = Wire::open(&binary, super::super::MUSE, &root).unwrap();
+            let mut models = super::super::models::AcpCatalog {
+                catalog: super::super::models::Catalog {
+                    choices: ["current", "refused", "next"]
+                        .into_iter()
+                        .map(|id| super::super::models::Model {
+                            id: id.into(),
+                            name: id.into(),
+                        })
+                        .collect(),
+                    current: Some("current".into()),
+                },
+                config_id: config.then(|| "model".into()),
+            };
+            let stop = AtomicBool::new(false);
+            assert!(
+                select_model(&mut wire, "session", &mut models, "invented", &stop)
+                    .unwrap_err()
+                    .contains("returned by this provider")
+            );
+            assert_eq!(
+                select_model(&mut wire, "session", &mut models, "refused", &stop).unwrap_err(),
+                "Model rejected"
+            );
+            assert_eq!(models.catalog.current.as_deref(), Some("current"));
+            select_model(&mut wire, "session", &mut models, "next", &stop).unwrap();
+            assert_eq!(models.catalog.current.as_deref(), Some("next"));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn cli_sessions_start_resume_and_cancel_with_tool_decisions() {
         let unique = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -655,7 +835,16 @@ if provider == "muse":
     assert servers[0]["env"] == []
 else:
     assert servers == []
-emit(id=load["id"], result={} if session == "saved" else {"sessionId":session})
+def catalog(current):
+    if provider == "grok":
+        return {"models":{"currentModelId":current,"availableModels":[{"modelId":"default","name":"Default"},{"modelId":"requested","name":"Requested"}]}}
+    return {"configOptions":[{"id":"model","type":"select","category":"model","currentValue":current,"options":[{"value":"default","name":"Default"},{"value":"requested","name":"Requested"}]}]}
+emit(id=load["id"], result={"sessionId":session, **catalog("default")})
+selection = json.loads(input())
+assert selection["method"] == ("session/set_model" if provider == "grok" else "session/set_config_option")
+assert selection["params"]["sessionId"] == session
+assert selection["params"].get("modelId", selection["params"].get("value")) == "requested"
+emit(id=selection["id"], result=catalog("requested"))
 prompt = json.loads(input())
 assert prompt["method"] == "session/prompt"
 assert prompt["params"]["sessionId"] == session
@@ -694,6 +883,7 @@ sys.stdin.read()
             let (commands, input) = mpsc::sync_channel(4);
             let (updates, events) = mpsc::sync_channel(16);
             let start = Start {
+                model: Some("requested".into()),
                 root: root.clone(),
                 conversation: restore.then(|| "saved".into()),
                 approval_mode: super::super::ApprovalMode::Ask,
@@ -722,9 +912,14 @@ sys.stdin.read()
                     .into(),
                 }))
                 .unwrap();
-            let (mut connected, mut delivered, mut file, mut answer) = (false, false, false, false);
+            let (mut connected, mut delivered, mut file, mut answer, mut model) =
+                (false, false, false, false, false);
             while let Ok(event) = events.recv_timeout(Duration::from_secs(5)) {
                 match event {
+                    Update::Models(Ok(catalog)) => {
+                        model = catalog.current.as_deref() == Some("requested")
+                            && catalog.choices.len() == 2
+                    }
                     Update::Event(Event::Connected(id)) => {
                         connected = id == if restore { "saved" } else { "created" }
                     }
@@ -758,7 +953,7 @@ sys.stdin.read()
             let outcome = worker.join().unwrap();
             assert!(outcome.is_ok(), "{}: {outcome:?}", provider.label);
             assert!(
-                connected && delivered && (file || deny) && answer,
+                connected && delivered && (file || deny) && answer && model,
                 "{}",
                 provider.label
             );

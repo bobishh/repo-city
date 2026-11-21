@@ -2608,7 +2608,7 @@ fn smoke(
         } else if check.stop == 31 {
             "Rendered both hunk button pages with reachable previous and next controls."
         } else if check.stop == 29 {
-            "Rendered reading and sound settings with both controls disabled, then enabled."
+            "Rendered model choices and a refresh failure alongside reading and sound settings."
         } else if check.stop == 27 {
             "Rendered agent approval controls with a multiline draft, then the rejected request without running an agent."
         } else if check.stop == 25 {
@@ -2840,6 +2840,7 @@ fn smoke(
                     tablet.open_page(review_tablet::Page::Agent);
                 }
                 27 | 28 => {
+                    session.smoke_models(check.stage == 28);
                     reading.enabled = check.stage == 28;
                     audio.muted = check.stage == 27;
                     tablet.open_page(review_tablet::Page::Settings);
