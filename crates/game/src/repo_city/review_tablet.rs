@@ -37,6 +37,8 @@ pub(super) struct Tablet {
     document: Option<Document>,
     links_version: u64,
     image: Option<ImageView>,
+    video: Option<super::video_preview::Preview>,
+    playing_videos: Vec<super::video_preview::Video>,
     history: Option<History>,
     search: String,
     search_input: Option<Entity>,
@@ -184,6 +186,7 @@ pub(super) enum Page {
     Document,
     Connections,
     Image,
+    Video,
     Git,
     Search,
     Terminal,
@@ -269,6 +272,7 @@ impl Tablet {
             Page::Settings => "settings",
             Page::Document => "document",
             Page::Image => "image",
+            Page::Video => "video",
             Page::Git => "git",
             Page::Search => "search",
             Page::Terminal => "terminal",
@@ -899,6 +903,15 @@ pub(super) fn update(
     } else {
         let page = match action {
             Some(Action::Switch(page)) => page,
+            _ if markdown.as_ref().is_some_and(|(index, _, _, _)| {
+                repo.0
+                    .files
+                    .get(*index)
+                    .is_some_and(|file| file_preview::video_extension(&file.path).is_some())
+            }) =>
+            {
+                Page::Video
+            }
             _ if markdown.is_some() => Page::Document,
             _ if image.is_some() => Page::Image,
             _ if plain_tab(&keys) => Page::Files,
@@ -923,11 +936,11 @@ pub(super) fn update(
             tablet.history = Some(History::open(&repo.0, 0));
         }
         if page == Page::Document
-            && let Some((index, before, range, edit)) = markdown
+            && let Some((index, before, range, edit)) = markdown.as_ref()
         {
-            tablet.document = Document::open(&repo.0, index, before, range);
+            tablet.document = Document::open(&repo.0, *index, *before, range.clone());
             if let Some(document) = tablet.document.as_mut() {
-                document.editing = edit;
+                document.editing = *edit;
             }
         }
         if page == Page::Image
@@ -942,6 +955,11 @@ pub(super) fn update(
                 }
                 Err(error) => tablet.status = error,
             }
+        }
+        if page == Page::Video
+            && let Some((index, before, _, _)) = markdown
+        {
+            tablet.video = super::video_preview::Preview::open(&repo.0, index, before);
         }
         review.blocked = true;
         review.tablet_open = true;
@@ -987,6 +1005,17 @@ pub(super) fn update(
                 .ok_or_else(|| "Image rendering is unavailable.".into())
         }));
         redraw |= tablet.view == Page::Image;
+    }
+    if tablet.view == Page::Video
+        && let Some(video) = tablet.video.as_mut()
+        && let Some(result) = video.pending.as_ref().and_then(native_github::Job::take)
+    {
+        video.pending = None;
+        match result {
+            Ok(video) => tablet.playing_videos.push(video),
+            Err(error) => video.status = Err(error),
+        }
+        redraw = true;
     }
     if tablet.view == Page::Search && tablet.panel.is_some() {
         let query = tablet
@@ -1156,6 +1185,10 @@ fn draw(
             .image
             .as_ref()
             .map_or("Image", |image| image.preview.path.as_str()),
+        Page::Video => tablet
+            .video
+            .as_ref()
+            .map_or("Video", |video| video.path.as_str()),
         Page::Document => tablet
             .document
             .as_ref()
@@ -1349,6 +1382,19 @@ fn draw(
                             ),
                         }
                     });
+                return;
+            }
+            Page::Video => {
+                let message = match &tablet.video {
+                    Some(video) if video.pending.is_some() => "Opening video…",
+                    Some(video) => video
+                        .status
+                        .as_ref()
+                        .err()
+                        .map_or("Opened in the system video player.", String::as_str),
+                    None => "Video is unavailable.",
+                };
+                native_panel::text(parent, message, native_panel::INK);
                 return;
             }
             Page::Help => {

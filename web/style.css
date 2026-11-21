@@ -256,4 +256,15 @@ canvas[data-touch-controls] { touch-action: none; }
 :root:has(canvas[data-touch-reading]) #touch-controls button:is([data-action="Space"], [data-action="ControlLeft"]) { display: none; }
 
 /* Browser services retain form state; the handheld screen is drawn by Bevy. */
-#review-dialog[data-renderer="bevy"] { display: none; }
+#review-dialog[data-renderer="bevy"]:not([data-view="video"]) { display: none; }
+#review-dialog[data-view="video"] .markdown-preview {
+  display: grid;
+  place-items: center;
+  height: min(58dvh, 55vw);
+  margin-bottom: 12px;
+}
+#review-dialog[data-view="video"] video {
+  display: block;
+  width: 100%;
+  max-height: 100%;
+}

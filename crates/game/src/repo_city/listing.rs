@@ -196,7 +196,7 @@ pub(super) struct Listing {
     partial_source: HashSet<(usize, bool, usize)>,
     reveal_progress: HashMap<(usize, bool), RevealProgress>,
     overview_dirty: HashSet<usize>,
-    facade_prints: HashMap<(usize, bool), Handle<StandardMaterial>>,
+    facade_prints: HashMap<(code_texture::FacadePrint, usize, bool), Handle<StandardMaterial>>,
     listing_facade: Option<usize>,
     viewing: Option<Face>,
     destination: Option<Face>,
@@ -328,13 +328,18 @@ pub(super) fn draw_overview(
             material.0 = palette.facade_neutral.clone();
             continue;
         }
-        let repeats = facade_repeats(block_size(&repo.0.files[index]).y);
+        let file = &repo.0.files[index];
+        let print = code_texture::FacadePrint::for_path(&file.path);
+        let repeats = facade_repeats(block_size(file).y);
         let reading = progress(index);
         if let Some(reading) = reading.filter(|reading| reading.opened < reading.rows) {
-            let overview = code_texture::facade_overview(reading.bands(), repeats);
-            if material.0 == palette.facade_closed
-                || material.0 == palette.facade_open
-                || material.0 == palette.facade_neutral
+            let overview = code_texture::facade_overview(reading.bands(), repeats, print);
+            if material.0 == palette.facade_neutral
+                || palette
+                    .facades
+                    .iter()
+                    .flatten()
+                    .any(|cached| *cached == material.0)
                 || facade_prints.values().any(|cached| *cached == material.0)
             {
                 material.0 = materials.add(overview_material(images.add(overview)));
@@ -348,14 +353,10 @@ pub(super) fn draw_overview(
         } else {
             let open = reading.is_some();
             material.0 = if repeats == 1 {
-                if open {
-                    palette.facade_open.clone()
-                } else {
-                    palette.facade_closed.clone()
-                }
+                palette.facades[print as usize][usize::from(open)].clone()
             } else {
                 facade_prints
-                    .entry((repeats, open))
+                    .entry((print, repeats, open))
                     .or_insert_with(|| {
                         use code_texture::Coverage;
                         let coverage = if open {
@@ -364,7 +365,11 @@ pub(super) fn draw_overview(
                             Coverage::Closed
                         };
                         materials.add(overview_material(images.add(
-                            code_texture::facade_overview(std::iter::once(coverage), repeats),
+                            code_texture::facade_overview(
+                                std::iter::once(coverage),
+                                repeats,
+                                print,
+                            ),
                         )))
                     })
                     .clone()
@@ -3528,17 +3533,25 @@ mod tests {
     }
 
     #[test]
-    fn tall_facades_repeat_the_print_but_keep_the_reading_bands() {
+    fn tall_code_facades_cycle_real_prints_and_keep_the_reading_bands() {
+        use code_texture::{Coverage, FacadePrint};
         let repeats = facade_repeats(112.);
         assert_eq!(repeats, 4);
-        let [closed, open] = [code_texture::Coverage::Closed, code_texture::Coverage::Open];
-        let image = code_texture::facade_overview([closed, open].into_iter(), repeats);
+        let [closed, open] = [Coverage::Closed, Coverage::Open];
+        let image =
+            code_texture::facade_overview([closed, open].into_iter(), repeats, FacadePrint::CodeA);
         let stride = image.width() as usize * 4;
         let rows: Vec<_> = image.data.as_ref().unwrap().chunks_exact(stride).collect();
         let period = rows.len() / repeats;
-        assert_eq!(&rows[..period], &rows[period..2 * period]);
-        assert_eq!(&rows[2 * period..3 * period], &rows[3 * period..]);
-        assert_ne!(&rows[..period], &rows[2 * period..3 * period]);
+        assert_ne!(&rows[..period], &rows[period..2 * period]);
+        assert_ne!(&rows[2 * period..3 * period], &rows[3 * period..]);
+        let gutter = image.width() as usize * 91 / code_texture::LISTING_WIDTH as usize * 4;
+        for row in &rows[..2 * period] {
+            assert_eq!(&row[gutter..gutter + 3], &closed.accent());
+        }
+        for row in &rows[2 * period..] {
+            assert_eq!(&row[gutter..gutter + 3], &open.accent());
+        }
         assert!(rows[..period].windows(2).any(|pair| pair[0] != pair[1]));
     }
 
@@ -3556,17 +3569,17 @@ mod tests {
         let mut materials = Assets::default();
         let neutral = materials.add(StandardMaterial::default());
         let rims = Coverage::ALL.map(|_| materials.add(StandardMaterial::default()));
+        let print = code_texture::FacadePrint::for_path(&file.path);
         let [closed, open] = [Coverage::Closed, Coverage::Open].map(|state| {
-            materials.add(overview_material(
-                images.add(code_texture::facade_overview(std::iter::once(state), 1)),
-            ))
+            materials.add(overview_material(images.add(
+                code_texture::facade_overview(std::iter::once(state), 1, print),
+            )))
         });
         let mut app = App::new();
         app.insert_resource(Repo(repo))
             .insert_resource(explorer)
             .insert_resource(Palette {
-                facade_closed: closed.clone(),
-                facade_open: open.clone(),
+                facades: code_texture::FacadePrint::ALL.map(|_| [closed.clone(), open.clone()]),
                 facade_neutral: neutral.clone(),
                 facade_rims: rims.clone(),
                 shell: default(),

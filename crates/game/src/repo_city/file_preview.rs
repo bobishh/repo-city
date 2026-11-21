@@ -6,6 +6,78 @@ pub(super) enum Format {
     Markdown,
     Text,
     Image,
+    Video,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FacadeKind {
+    Code,
+    License,
+    Text,
+    Markdown,
+    Media,
+    Asset,
+}
+
+pub(super) fn facade_kind(path: &str) -> FacadeKind {
+    let path_name = path.to_ascii_lowercase();
+    let path_parts = Path::new(&path_name);
+    let name = path_parts
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    let extension = path_parts
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("");
+    if matches!(format(path), Some(Format::Image | Format::Video))
+        || matches!(
+            extension,
+            "mp3" | "ogg" | "oga" | "opus" | "wav" | "flac" | "aac" | "m4a"
+        )
+    {
+        return FacadeKind::Media;
+    }
+    let stem = path_parts
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("");
+    if path_name
+        .split('/')
+        .any(|component| component == "licenses")
+        || stem
+            .split(['-', '_'])
+            .any(|part| matches!(part, "license" | "licence" | "copying"))
+    {
+        return FacadeKind::License;
+    }
+    if format(path) == Some(Format::Markdown) {
+        return FacadeKind::Markdown;
+    }
+    if matches!(extension, "txt" | "rst" | "adoc" | "tex")
+        || matches!(name, "readme" | "notice" | "changelog" | "authors")
+    {
+        return FacadeKind::Text;
+    }
+    if has_text_size_hint(path) {
+        FacadeKind::Code
+    } else if extension.is_empty() {
+        FacadeKind::Text
+    } else {
+        FacadeKind::Asset
+    }
+}
+
+pub(super) fn video_extension(path: &str) -> Option<&'static str> {
+    let extension = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
+    Some(match extension.as_str() {
+        "mp4" => "mp4",
+        "m4v" => "m4v",
+        "webm" => "webm",
+        "mov" => "mov",
+        "ogv" => "ogv",
+        _ => return None,
+    })
 }
 
 /// File names that can use a text size estimate before the content is loaded.
@@ -142,6 +214,9 @@ pub(super) fn format(path: &str) -> Option<Format> {
     if extension == "svg" || image_format(path).is_some() {
         return Some(Format::Image);
     }
+    if video_extension(path).is_some() {
+        return Some(Format::Video);
+    }
     // The bounded source reader validates UTF-8 and rejects binary data.
     // Text previews must not depend on a language or filename registry.
     Some(Format::Text)
@@ -215,5 +290,23 @@ mod tests {
         for name in ["", "/"] {
             assert_eq!(format(name), None);
         }
+    }
+
+    #[test]
+    fn facade_categories_keep_documents_and_media_distinct() {
+        for (path, expected) in [
+            ("src/main.rs", FacadeKind::Code),
+            ("docs/README.MD", FacadeKind::Markdown),
+            ("legal/UPSTREAM-LICENSE", FacadeKind::License),
+            ("licenses/MPL-2.0.txt", FacadeKind::License),
+            ("notes/plain.txt", FacadeKind::Text),
+            ("cover.svg", FacadeKind::Media),
+            ("sound/theme.ogg", FacadeKind::Media),
+            ("demo.WEBM", FacadeKind::Media),
+            ("fonts/title.ttf", FacadeKind::Asset),
+        ] {
+            assert_eq!(facade_kind(path), expected, "{path}");
+        }
+        assert_eq!(format("demo.WEBM"), Some(Format::Video));
     }
 }

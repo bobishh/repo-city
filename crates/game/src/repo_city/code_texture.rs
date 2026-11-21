@@ -509,10 +509,12 @@ pub(super) fn embedded_png(png: &[u8]) -> Image {
 pub(super) fn facade_overview(
     bands: impl ExactSizeIterator<Item = Coverage>,
     repeats: usize,
+    print: FacadePrint,
 ) -> Image {
-    static PRINTS: std::sync::OnceLock<[Image; 2]> = std::sync::OnceLock::new();
+    static PRINTS: std::sync::OnceLock<[[Image; 2]; FacadePrint::ALL.len()]> =
+        std::sync::OnceLock::new();
     let prints = PRINTS.get_or_init(facade_prints);
-    let mut image = prints[0].clone();
+    let mut image = prints[print as usize][0].clone();
     let width = image.width() as usize;
     let print_height = image.height() as usize;
     let height = (print_height * repeats).min(2048);
@@ -526,9 +528,11 @@ pub(super) fn facade_overview(
     let pixels = image.data.as_mut().expect("packed facade print");
     let gutter = width * 91 / LISTING_WIDTH as usize;
     for (y, row) in pixels.chunks_exact_mut(width * 4).enumerate() {
-        let pattern_row = y * print_height * repeats / height % print_height;
+        let offset = y * print_height * repeats / height;
+        let pattern_row = offset % print_height;
+        let pattern = print.tile(offset / print_height);
         let state = bands[y * count / height];
-        let print = &prints[usize::from(state == Coverage::Open)];
+        let print = &prints[pattern as usize][usize::from(state == Coverage::Open)];
         let source = pattern_row * width * 4;
         let print_pixels = print.data.as_ref().expect("packed facade print");
         row.copy_from_slice(&print_pixels[source..source + row.len()]);
@@ -540,83 +544,151 @@ pub(super) fn facade_overview(
     image
 }
 
-fn facade_prints() -> [Image; 2] {
-    use Kind::{Comment, Function, Keyword, Number, Plain, String as Literal, Type};
-    // Generic code for offscreen files, using the same ink and frost as the source preview.
-    #[rustfmt::skip]
-    const SAMPLE: [&[(&str, Kind)]; 32] = [
-        &[("use", Keyword), (" crate::layout::Panel;", Plain)],
-        &[],
-        &[("// Keep the source bounds.", Comment)],
-        &[("pub fn", Keyword), (" ", Plain), ("layout", Function), ("(width: ", Plain), ("u32", Type), (") {", Plain)],
-        &[("    let", Keyword), (" gutter = ", Plain), ("12", Number), (";", Plain)],
-        &[("    let", Keyword), (" label = ", Plain), (r#""source""#, Literal), (";", Plain)],
-        &[("    let", Keyword), (" inner = width.saturating_sub(gutter);", Plain)],
-        &[("    if", Keyword), (" inner == ", Plain), ("0", Number), (" {", Plain)],
-        &[("        return", Keyword), (";", Plain)],
-        &[("    }", Plain)],
-        &[],
-        &[("    let", Keyword), (" panel = ", Plain), ("Panel", Type), (" {", Plain)],
-        &[("        width: inner,", Plain)],
-        &[("        label,", Plain)],
-        &[("        padding: ", Plain), ("4", Number), (",", Plain)],
-        &[("    };", Plain)],
-        &[("    ", Plain), ("draw", Function), ("(panel);", Plain)],
-        &[("}", Plain)],
-        &[],
-        &[("fn", Keyword), (" ", Plain), ("draw", Function), ("(panel: ", Plain), ("Panel", Type), (") {", Plain)],
-        &[("    for", Keyword), (" row ", Plain), ("in", Keyword), (" panel.rows() {", Plain)],
-        &[("        let", Keyword), (" color = ", Plain), ("row_color", Function), ("(row);", Plain)],
-        &[("        row.paint(color);", Plain)],
-        &[("    }", Plain)],
-        &[("}", Plain)],
-        &[],
-        &[("// Pick an ink tone.", Comment)],
-        &[("fn", Keyword), (" ", Plain), ("row_color", Function), ("(row: ", Plain), ("Row", Type), (") -> ", Plain), ("Ink", Type), (" {", Plain)],
-        &[("    match", Keyword), (" row.kind() {", Plain)],
-        &[("        ", Plain), (r#""muted""#, Literal), (" => INK_SOFT,", Plain)],
-        &[("        _ => INK,", Plain)],
-        &[("    }}", Plain)],
+include!(concat!(env!("OUT_DIR"), "/facade_samples.rs"));
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum FacadePrint {
+    CodeA,
+    CodeB,
+    CodeC,
+    License,
+    Text,
+    Markdown,
+    Media,
+    Asset,
+}
+
+impl FacadePrint {
+    pub(super) const ALL: [Self; 8] = [
+        Self::CodeA,
+        Self::CodeB,
+        Self::CodeC,
+        Self::License,
+        Self::Text,
+        Self::Markdown,
+        Self::Media,
+        Self::Asset,
     ];
-    let lines: Vec<_> = SAMPLE
-        .into_iter()
+    const CODE: [Self; 3] = [Self::CodeA, Self::CodeB, Self::CodeC];
+
+    pub(super) fn for_path(path: &str) -> Self {
+        use super::file_preview::{FacadeKind, facade_kind};
+        match facade_kind(path) {
+            FacadeKind::Code => {
+                let hash = path.bytes().fold(0x811c9dc5u32, |hash, byte| {
+                    (hash ^ u32::from(byte)).wrapping_mul(0x01000193)
+                });
+                Self::CODE[hash as usize % Self::CODE.len()]
+            }
+            FacadeKind::License => Self::License,
+            FacadeKind::Text => Self::Text,
+            FacadeKind::Markdown => Self::Markdown,
+            FacadeKind::Media => Self::Media,
+            FacadeKind::Asset => Self::Asset,
+        }
+    }
+
+    fn tile(self, repeat: usize) -> Self {
+        match self {
+            Self::CodeA | Self::CodeB | Self::CodeC => {
+                Self::CODE[(self as usize + repeat) % Self::CODE.len()]
+            }
+            _ => self,
+        }
+    }
+}
+
+fn facade_prints() -> [[Image; 2]; FacadePrint::ALL.len()] {
+    use FacadePrint::*;
+    let code = code_samples();
+    let license = document_sample(include_str!("../../../../LICENSE-MIT"), false);
+    let text = document_sample(include_str!("../../../../.gitignore"), false);
+    let markdown = document_sample(include_str!("../../../../README.md"), true);
+    let media =
+        ::image::load_from_memory(include_bytes!("../../../../assets/repo-city-tablet.webp"))
+            .expect("bundled media facade sample")
+            .thumbnail(208, 128)
+            .to_rgba8();
+
+    FacadePrint::ALL.map(|print| {
+        [false, true].map(|open| match print {
+            CodeA | CodeB | CodeC => line_print(&code[print as usize], open, 1.8),
+            License => line_print(&license, open, 1.2),
+            Text => line_print(&text, open, 1.8),
+            Markdown => line_print(&markdown, open, 1.2),
+            Media => media_print(Some(&media), open),
+            Asset => media_print(None, open),
+        })
+    })
+}
+
+fn document_sample(source: &str, markdown: bool) -> Vec<Line> {
+    source
+        .lines()
+        .take(64)
         .enumerate()
-        .map(|(index, tokens)| {
-            let mut text = String::new();
+        .map(|(index, text)| {
             let mut spans = Vec::new();
-            for &(token, kind) in tokens {
-                let start = text.len();
-                text.push_str(token);
-                if kind != Kind::Plain {
-                    spans.push(Span {
-                        bytes: start..text.len(),
-                        kind,
-                    });
-                }
+            if markdown && text.starts_with('#') {
+                spans.push(Span {
+                    bytes: 0..text.len(),
+                    kind: Kind::Type,
+                });
+            }
+            if markdown && text.starts_with('[') {
+                spans.push(Span {
+                    bytes: 0..text.len(),
+                    kind: Kind::Function,
+                });
             }
             Line {
                 number: index + 1,
-                text,
+                text: text.into(),
                 spans,
             }
         })
-        .collect();
-    [false, true].map(|open| {
-        listing_preview(
-            lines.len() * 4,
-            |row| {
-                (
-                    row.is_multiple_of(2)
-                        .then(|| &lines[(row / 2) % lines.len()]),
-                    Mark::Context,
-                )
-            },
-            |_| open,
-            Face::Source,
-            Vec2::new(1.8, 1.),
-            |_| None,
-        )
-    })
+        .collect()
+}
+
+fn line_print(lines: &[Line], open: bool, scale: f32) -> Image {
+    listing_preview(
+        128,
+        |row| {
+            (
+                row.is_multiple_of(2).then(|| lines.get(row / 2)).flatten(),
+                Mark::Context,
+            )
+        },
+        |_| open,
+        Face::Source,
+        Vec2::new(scale, 1.),
+        |_| None,
+    )
+}
+
+fn media_print(thumbnail: Option<&::image::RgbaImage>, open: bool) -> Image {
+    let mut canvas = Canvas::new(256, 512);
+    canvas.band(0, 512, FACADE_GLASS);
+    if let Some(thumbnail) = thumbnail {
+        let frame = if open {
+            thumbnail.clone()
+        } else {
+            ::image::imageops::blur(thumbnail, 2.5)
+        };
+        let top = (512 - frame.height()) / 2;
+        let left = (256 - frame.width()) / 2;
+        let alpha = if open { 0.78 } else { 0.52 };
+        for (x, y, pixel) in frame.enumerate_pixels() {
+            let offset = (((y + top) * 256 + x + left) * 4) as usize;
+            for (channel, base) in FACADE_GLASS.into_iter().enumerate() {
+                canvas.pixels[offset + channel] =
+                    (f32::from(base) * (1. - alpha) + f32::from(pixel[channel]) * alpha) as u8;
+            }
+        }
+    }
+    let mut image = canvas.image();
+    image.sampler = ImageSampler::linear();
+    image
 }
 
 pub(super) fn listing_preview<'a>(
@@ -855,8 +927,8 @@ mod tests {
 
     #[test]
     fn distant_facades_preserve_syntax_colors_through_frost() {
-        let closed = facade_overview(std::iter::once(Coverage::Closed), 1);
-        let open = facade_overview(std::iter::once(Coverage::Open), 1);
+        let closed = facade_overview(std::iter::once(Coverage::Closed), 1, FacadePrint::CodeC);
+        let open = facade_overview(std::iter::once(Coverage::Open), 1, FacadePrint::CodeC);
         let width = closed.width() as usize;
         let source_start = (width * 106).div_ceil(LISTING_WIDTH as usize);
         for image in [&closed, &open] {

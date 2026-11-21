@@ -633,8 +633,7 @@ mod tests {
         .insert_resource(WorldSet::load(None).unwrap())
         .insert_resource(Palette {
             shell: Handle::default(),
-            facade_closed: Handle::default(),
-            facade_open: Handle::default(),
+            facades: Default::default(),
             facade_neutral: Handle::default(),
             facade_rims: default(),
             edge: Handle::default(),

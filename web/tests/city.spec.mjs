@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { readTablet, expectOpen, expectClosed, gpuClick, gpuFill, gpuSelect, gpuFocus } from "./gpu-tablet.mjs";
 
 const after = "b".repeat(40);
@@ -1143,6 +1143,47 @@ test("P previews images and keeps corrupt images and binary files inside VibePad
       await expect(preview.getByRole("img", { includeHidden: true })).toHaveAttribute("data-preview-source", /^blob:/);
     } else await expect(preview).toContainText(name === "broken.png" ? "Image data is invalid or unsupported." : "Binary asset: metadata only");
     await page.keyboard.press("Tab", { delay: 120 }); await expectClosed(page);
+  }
+});
+
+test("P plays a video from the selected snapshot and explains unsupported video data", async ({ page }) => {
+  await emulatePointerLock(page);
+  await page.addInitScript(() => localStorage.setItem("repo-city-guide-v1", "seen"));
+  const clip = await readFile(new URL("./fixtures/video-preview.webm", import.meta.url));
+  const invalid = Buffer.from("invalid video");
+  await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
+  await page.route("https://api.github.com/**", route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/repos/owner/video") return route.fulfill({ json: { default_branch: "main" } });
+    if (path.includes("/commits/")) return route.fulfill({ json: { sha: after, parents: [] } });
+    if (path.includes("/git/trees/")) return route.fulfill({ json: { tree: [
+      { path: "clip.webm", type: "blob", mode: "100644", sha: after, size: clip.length },
+      { path: "invalid.webm", type: "blob", mode: "100644", sha: before, size: invalid.length },
+    ] } });
+    const bytes = path.endsWith(before) ? invalid : clip;
+    return route.fulfill({ json: { size: bytes.length, encoding: "base64", content: bytes.toString("base64") } });
+  });
+  await page.goto("/?repo=owner%2Fvideo");
+  await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+  for (const name of ["clip.webm", "invalid.webm"]) {
+    await page.keyboard.press("Meta+p", { delay: 120 });
+    const preview = page.locator("#review-dialog");
+    await gpuClick(page, preview.getByRole("button", { includeHidden: true, name, exact: true }));
+    await expectClosed(page);
+    await page.waitForTimeout(1200);
+    await page.locator("canvas").evaluate(element => element.requestPointerLock());
+    await page.keyboard.press("KeyP", { delay: 180 });
+    await expect(preview).toBeVisible();
+    if (name === "clip.webm") {
+      const video = preview.locator("video");
+      await expect(video).toHaveAttribute("controls", "");
+      await video.evaluate(element => element.play());
+      await expect.poll(() => video.evaluate(element => element.currentTime)).toBeGreaterThan(0);
+    } else {
+      await expect(preview).toContainText("This video could not be played.");
+    }
+    await preview.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(preview).toBeHidden();
   }
 });
 

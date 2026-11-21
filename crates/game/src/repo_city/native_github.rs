@@ -625,6 +625,17 @@ pub(super) fn open_browser_url(url: &str) -> Result<(), String> {
         .map_err(|error| format!("Could not open your browser: {error}. Open {url} manually."))
 }
 
+pub(super) fn open_associated_path(path: &std::path::Path) -> Result<(), String> {
+    let path = path.to_str().ok_or("Video path is unavailable.")?;
+    let status = browser_command(std::env::consts::OS, path)?
+        .status()
+        .map_err(|error| format!("Could not open the system player: {error}"))?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| "Could not open the system player.".into())
+}
+
 fn browser_command(platform: &str, url: &str) -> Result<Command, String> {
     let mut command = match platform {
         "macos" => Command::new("open"),

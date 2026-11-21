@@ -140,7 +140,7 @@ The first city visit offers a controls tour. Open **H** to take it again.
 | Action | Control |
 | --- | --- |
 | Find a file by name or path | **P** in the browser, **⌘P** on Mac |
-| Preview a document or image | Aim at its building and press **P**. VibePad renders Markdown, plain text and code, and images including SVG (formats below). |
+| Preview a document, image or video | Aim at its building and press **P**. VibePad renders documents and images. Videos open in the browser player or the desktop system player. |
 | Fly | **WASD**, **Space** and **Ctrl** for altitude, **Shift** to boost |
 | Walk | Over a street, press **O** to descend and walk with **WASD**. Press **O** or **Space** to fly again. |
 | Capture or release the cursor | Click the scene to capture. **Esc** releases. |
@@ -210,6 +210,11 @@ DXT3 and DXT5 textures; unsupported layouts show a decoding error. SVG fits in a
 loads vector shapes and labels from the SVG document itself. Raster formats
 use the same bounded Rust decoder on desktop
 and in the browser: 16 MiB input, 8192 pixels per side and 16 megapixels total.
+
+Video previews read MP4, M4V, WebM, MOV and OGV files up to 16 MiB from the
+selected snapshot. Playback depends on the codecs available in the browser or
+the desktop system player.
+
 Repo City saves revealed lines and reviewed files in IndexedDB in your browser or
 SQLite on your Mac. Reading ranges carry their source content identity. After edits,
 only uniquely matched unchanged lines retain prior read credit; new or ambiguous

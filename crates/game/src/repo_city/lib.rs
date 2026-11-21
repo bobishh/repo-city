@@ -62,6 +62,8 @@ mod tablet_scroll;
 #[cfg(not(target_arch = "wasm32"))]
 mod terminal;
 mod trace_import;
+#[cfg(not(target_arch = "wasm32"))]
+mod video_preview;
 mod world_set;
 
 use avian3d::prelude::{Collider, PhysicsPlugins, RigidBody};
@@ -291,8 +293,7 @@ impl Explorer {
 #[derive(Resource)]
 struct Palette {
     shell: Handle<StandardMaterial>,
-    facade_closed: Handle<StandardMaterial>,
-    facade_open: Handle<StandardMaterial>,
+    facades: [[Handle<StandardMaterial>; 2]; code_texture::FacadePrint::ALL.len()],
     facade_neutral: Handle<StandardMaterial>,
     facade_rims: [Handle<StandardMaterial>; 3],
     edge: Handle<StandardMaterial>,
@@ -938,12 +939,13 @@ fn setup(
         perceptual_roughness: 0.35,
         ..default()
     });
-    let [facade_closed, facade_open] =
+    let facades = code_texture::FacadePrint::ALL.map(|print| {
         [code_texture::Coverage::Closed, code_texture::Coverage::Open].map(|coverage| {
-            materials.add(listing::overview_material(
-                images.add(code_texture::facade_overview(std::iter::once(coverage), 1)),
-            ))
-        });
+            materials.add(listing::overview_material(images.add(
+                code_texture::facade_overview(std::iter::once(coverage), 1, print),
+            )))
+        })
+    });
     let facade_rims = code_texture::Coverage::ALL.map(|state| {
         let [r, g, b] = state.accent();
         materials.add(StandardMaterial {
@@ -982,8 +984,7 @@ fn setup(
     });
     commands.insert_resource(Palette {
         shell: shell.clone(),
-        facade_closed,
-        facade_open,
+        facades,
         facade_neutral,
         facade_rims,
         edge: edge.clone(),
@@ -1415,6 +1416,7 @@ fn spawn_city(
             Item::File(index) => index,
         };
         let file = &repo.0.files[i];
+        let print = code_texture::FacadePrint::for_path(&file.path);
         if let Some(listing) = listing.as_mut() {
             listing.building_loaded(i);
         }
@@ -1424,7 +1426,7 @@ fn spawn_city(
                 CityObject,
                 Facade { index: i },
                 Mesh3d(assets.block.clone()),
-                MeshMaterial3d(palette.facade_closed.clone()),
+                MeshMaterial3d(palette.facades[print as usize][0].clone()),
                 transform(file, size, Part::Body),
                 RigidBody::Static,
                 Collider::cuboid(1., 1., 1.),

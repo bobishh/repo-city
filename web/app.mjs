@@ -276,11 +276,12 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
           const snapshot = JSON.parse(repository.snapshot);
           const blob = snapshot[before ? "before" : "after"][path];
           const image = /\.(png|jpe?g|webp|gif|bmp|ico|tiff?|tga|p[bnpg]m|pam|qoi|dds|hdr|rgbe|svg)$/i.test(path);
+          const video = /\.(mp4|m4v|webm|mov|ogv)$/i.test(path);
           const markdown = /\.(md|markdown|mdown|mkd)$/i.test(path);
           review.previewMarkdown(path, async () => {
             if (!blob || blob.mode === "120000") throw new Error("No readable source in this snapshot.");
-            if (image) {
-              if (blob.size > 16 * 1024 * 1024) throw new Error("Image exceeds the 16 MiB preview limit.");
+            if (image || video) {
+              if (blob.size > 16 * 1024 * 1024) throw new Error(`${video ? "Video" : "Image"} exceeds the 16 MiB preview limit.`);
               return { bytes: await repository.blob(blob.id), format: path.split(".").pop().toLowerCase() };
             }
             if (blob.size > 1024 * 1024) throw new Error("Source exceeds the 1 MiB inspection limit.");
@@ -295,7 +296,7 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
               baseline: repository.review.baseline ?? null, path, blob: blob.id, before,
               range: { start: Math.max(0, Math.min(rows, start)), end: Math.max(0, Math.min(rows, end)) },
             } };
-          }, image ? "image" : markdown ? "markdown" : "text", edit);
+          }, image ? "image" : video ? "video" : markdown ? "markdown" : "text", edit);
         },
         takeMarkdownRead: review.takeMarkdownRead,
         takeReadingSettings: review.takeReadingSettings,

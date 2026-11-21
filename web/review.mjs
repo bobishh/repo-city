@@ -173,13 +173,25 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     previewUrl = undefined;
     dialog.dataset.view = kind;
-    dialog.dataset.tablet = "";
+    if (kind === "video") delete dialog.dataset.tablet;
+    else dialog.dataset.tablet = "";
     view(path);
-    const content = make("article", "Loading document…", { class: "markdown-preview", "aria-live": "polite" });
+    const content = make("article", kind === "video" ? "Loading video…" : "Loading document…",
+      { class: "markdown-preview", "aria-live": "polite" });
     dialog.append(content);
+    if (kind === "video") actions(closeButton());
     show();
     void load().then(({ text, mark, bytes, format, identity, displayText }) => {
       if (!dialog.open || !content.isConnected) return;
+      if (kind === "video") {
+        const types = { mp4: "video/mp4", m4v: "video/mp4", mov: "video/quicktime", webm: "video/webm", ogv: "video/ogg" };
+        const video = make("video", undefined, { controls: "", playsinline: "", preload: "metadata", "aria-label": path });
+        video.addEventListener("error", () => { content.textContent = "This video could not be played."; }, { once: true });
+        previewUrl = URL.createObjectURL(new Blob([bytes], { type: types[format] }));
+        video.src = previewUrl;
+        content.replaceChildren(video);
+        return;
+      }
       if (kind === "image") {
         const image = make("img", undefined, { alt: path, class: "file-image-preview" });
         // The common Rust decoder validates dimensions and formats. Browser-native image
