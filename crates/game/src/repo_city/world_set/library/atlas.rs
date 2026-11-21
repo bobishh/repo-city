@@ -14,6 +14,7 @@ const TURN: f32 = 0.24;
 
 struct Lot {
     index: usize,
+    directory: usize,
     center: Vec3,
     size: Vec3,
     color: [f32; 3],
@@ -69,7 +70,7 @@ pub(super) struct Terrain {
 
 pub(super) struct Atlas {
     lots: Vec<Lot>,
-    terraces: Vec<Terrace>,
+    terraces: Vec<(usize, Terrace)>,
     center: Vec3,
     size: Vec2,
     distance: f32,
@@ -256,6 +257,7 @@ impl Atlas {
                 };
                 lots.push(Lot {
                     index,
+                    directory: group,
                     center: Vec3::new(point.x, height + level / 2. + 0.08, point.y),
                     size,
                     color,
@@ -263,7 +265,7 @@ impl Atlas {
             }
             min = min.min(center - radius * 1.06);
             max = max.max(center + radius * 1.06);
-            terraces.push(terrace);
+            terraces.push((group, terrace));
         }
         if lots.is_empty() {
             return None;
@@ -331,6 +333,23 @@ impl Atlas {
             .map(|(slot, _)| slot)
     }
 
+    pub(super) fn directory(&self, ray: Ray3d, lot: Option<usize>) -> Option<usize> {
+        if let Some(lot) = lot.and_then(|slot| self.lots.get(slot)) {
+            return Some(lot.directory);
+        }
+        if ray.direction.y.abs() < 0.001 {
+            return None;
+        }
+        self.terraces.iter().find_map(|&(directory, terrace)| {
+            let distance = (terrace.height - ray.origin.y) / ray.direction.y;
+            let point = ray.get_point(distance);
+            let offset = (Vec2::new(point.x, point.z) - terrace.center) / terrace.radius;
+            let angle = offset.y.atan2(offset.x);
+            let bevel = 0.89 + 0.10 * (angle * 3. + terrace.phase).sin();
+            (distance >= 0. && offset.length() <= bevel).then_some(directory)
+        })
+    }
+
     pub(super) fn view(&self, shift: Vec2, zoom: f32) -> (Transform, Projection) {
         let rotation = rotation();
         let center = self.center + rotation * shift.extend(0.);
@@ -357,15 +376,16 @@ impl Atlas {
         zoom: f32,
         aspect: f32,
     ) -> (Vec2, f32) {
-        let visible_height = |atlas: &Self| {
-            let size = atlas.minimum_view();
-            (size.x / aspect.max(0.1)).max(size.y)
-        };
         let center_offset = (rotation().inverse() * (old.center - self.center)).xy();
         (
             shift + center_offset,
-            zoom * visible_height(old) / visible_height(self),
+            zoom * old.view_height(aspect) / self.view_height(aspect),
         )
+    }
+
+    pub(super) fn view_height(&self, aspect: f32) -> f32 {
+        let size = self.minimum_view();
+        (size.x / aspect.max(0.1)).max(size.y)
     }
 
     fn minimum_view(&self) -> Vec2 {
@@ -387,7 +407,7 @@ impl Atlas {
         for lake in &self.lakes {
             mesh.lake(*lake);
         }
-        for terrace in &self.terraces {
+        for (_, terrace) in &self.terraces {
             mesh.terrace(terrace);
         }
         for lot in &self.lots {

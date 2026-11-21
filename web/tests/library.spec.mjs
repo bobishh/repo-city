@@ -60,6 +60,11 @@ test("fits every file and travels between folders before opening a distant scrol
   await press("KeyM");
   await expect(canvas).toHaveAttribute("data-library-map", "Folder · gallery-00");
   await expect(canvas).toHaveAttribute("data-library-map-files", "60");
+  await page.mouse.move(950, 366);
+  await expect(canvas).toHaveAttribute("data-library-map-hover", "gallery-00");
+  await page.screenshot({ path: testInfo.outputPath("folder-hover.png") });
+  await page.mouse.move(950, 722);
+  await expect(canvas).not.toHaveAttribute("data-library-map-hover");
   await page.screenshot({ path: testInfo.outputPath("folder.png") });
   await press("KeyM");
   await expect(canvas).toHaveAttribute("data-library-map", "Archive courtyards");
@@ -84,6 +89,9 @@ test("fits every file and travels between folders before opening a distant scrol
   await press("Enter");
   await expect(canvas).toHaveAttribute("data-library-travel", "gallery-99");
   await expect(canvas).toHaveAttribute("data-library-map", "Archive courtyards");
+  await page.waitForTimeout(900);
+  await expect(canvas).toHaveAttribute("data-library-travel", "gallery-99");
+  await expect(canvas).not.toHaveAttribute("data-library-reading");
   await page.screenshot({ path: testInfo.outputPath("crossing.png") });
   await expect(canvas).not.toHaveAttribute("data-library-map");
   await expect(canvas).not.toHaveAttribute("data-library-travel");
@@ -93,8 +101,14 @@ test("fits every file and travels between folders before opening a distant scrol
   await press("KeyM");
   await expect(canvas).toHaveAttribute("data-library-map", "Folder · gallery-99");
   await expect(canvas).toHaveAttribute("data-library-map-files", "60");
+  await press("Home");
+  await press("Enter");
+  await expect(canvas).toHaveAttribute("data-library-travel", "gallery-99");
+  await expect(canvas).toHaveAttribute("data-library-map", "Folder · gallery-99");
+  await expect(canvas).not.toHaveAttribute("data-library-reading");
   await press("Escape");
   await expect(canvas).not.toHaveAttribute("data-library-map-files");
+  await expect(canvas).not.toHaveAttribute("data-library-travel");
 });
 
 test("opens a repository in Repo Polis and unrolls a file at the requested line", async ({ page }, testInfo) => {
@@ -130,6 +144,7 @@ test("opens a repository in Repo Polis and unrolls a file at the requested line"
   await expect(page.locator("#city-progress")).toBeHidden();
   await expect(page.locator(".wordmark")).toHaveCSS("font-family", /GFS Didot/);
   await canvas.focus();
+  // The reading room stays navigable and legible on its shaded side.
   await page.screenshot({ path: testInfo.outputPath("library.png"), style: "#city-header { visibility: hidden }" });
   await page.keyboard.press("ArrowLeft", { delay: 450 });
   await page.screenshot({ path: testInfo.outputPath("shelf-labels.png"), style: "#city-header { visibility: hidden }" });
@@ -205,7 +220,11 @@ test("opens a repository in Repo Polis and unrolls a file at the requested line"
   await page.reload();
   await expect(canvas).toHaveAccessibleName("Repo Polis, src/scroll.rs, lines 1800–1821", { timeout: 30_000 });
   await canvas.focus();
+  await press("KeyM");
+  await expect(canvas).toHaveAttribute("data-library-map", "Folder · src");
   await press("Escape");
+  await expect(canvas).toHaveAccessibleName("Repo Polis, src/scroll.rs, lines 1800–1821");
+  await press("KeyS");
   await expect(canvas).toHaveAccessibleName("Repo Polis");
   await press("KeyM");
   await expect(canvas).toHaveAttribute("data-library-map", "Folder · src");
@@ -214,6 +233,8 @@ test("opens a repository in Repo Polis and unrolls a file at the requested line"
   await page.screenshot({ path: testInfo.outputPath("corridors.png"), style: "#city-header { visibility: hidden }" });
   await press("End");
   await press("Enter");
+  await expect(canvas).toHaveAttribute("data-library-travel", "src");
+  await expect(canvas).not.toHaveAttribute("data-library-reading");
   await expect(canvas).not.toHaveAttribute("data-library-travel");
   await expect(canvas).not.toHaveAttribute("data-library-map");
   await expect(canvas).toHaveAccessibleName("Repo Polis, src/scroll.rs, lines 1–22");

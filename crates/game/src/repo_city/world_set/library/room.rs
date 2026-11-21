@@ -1,4 +1,9 @@
-use bevy::{camera::visibility::RenderLayers, image::ImageSampler, render::view::Msaa};
+use bevy::{
+    camera::visibility::RenderLayers,
+    image::ImageSampler,
+    light::{CascadeShadowConfigBuilder, ShadowFilteringMethod},
+    render::view::Msaa,
+};
 
 use super::*;
 use layout::{CABINET_X, COURT_LENGTH, DEPTHS, EYE, FRONT};
@@ -10,10 +15,11 @@ const READ_DISTANCE: f32 = EYE;
 const ROOM_FOV: f32 = std::f32::consts::FRAC_PI_4;
 const BAY_COUNT: usize = 4;
 pub(super) const ROLLS_PER_CABINET: usize = 24;
-pub(super) const APPROACHED: f32 = 0.7;
-pub(super) const CLIMBED: f32 = 1.02;
-pub(super) const UNROLLED: f32 = 2.15;
-const STAGED: f32 = 2.40;
+pub(super) const APPROACHED: f32 = 1.15;
+pub(super) const CLIMBED: f32 = 1.50;
+pub(super) const UNROLLED: f32 = 2.62;
+const STAGED: f32 = 3.43;
+const ROOM_CHANGE: f32 = 0.40;
 const SCROLL_START: f32 = -12.9;
 const TABLE_LENGTH: f32 = 5.5;
 const SCROLL_Y: f32 = 0.05;
@@ -30,6 +36,32 @@ const INK: [f32; 3] = [0.20, 0.14, 0.09];
 
 #[derive(Component)]
 pub(super) struct Camera;
+
+pub(super) struct Retreat {
+    from: Transform,
+    to: Transform,
+    elapsed: f32,
+}
+
+impl Retreat {
+    const DURATION: f32 = 0.38;
+
+    pub(super) fn new(from: Transform, to: Transform) -> Self {
+        Self {
+            from,
+            to,
+            elapsed: 0.,
+        }
+    }
+
+    pub(super) fn advance(&mut self, pose: &mut Transform, seconds: f32) -> bool {
+        self.elapsed += seconds;
+        let t = smooth(self.elapsed / Self::DURATION);
+        pose.translation = self.from.translation.lerp(self.to.translation, t);
+        pose.rotation = self.from.rotation.slerp(self.to.rotation, t);
+        self.elapsed >= Self::DURATION
+    }
+}
 
 #[derive(Component)]
 pub(super) enum ScrollPart {
@@ -73,6 +105,9 @@ pub(super) struct Unrolling {
     pub x: f32,
     anchor: f32,
     bob: f32,
+    file: Option<usize>,
+    from: Transform,
+    relocation: Option<(Transform, f32)>,
 }
 
 impl Default for Unrolling {
@@ -83,6 +118,9 @@ impl Default for Unrolling {
             x: 0.,
             anchor: SCROLL_START,
             bob: 0.,
+            file: None,
+            from: Transform::IDENTITY,
+            relocation: None,
         }
     }
 }
@@ -93,6 +131,12 @@ impl Unrolling {
     }
     pub(super) fn stationary(&self) -> bool {
         self.elapsed >= STAGED
+    }
+
+    pub(super) fn shade(&self) -> f32 {
+        self.relocation.map_or(0., |(_, elapsed)| {
+            smooth(1. - (elapsed / ROOM_CHANGE - 1.).abs())
+        })
     }
     fn reading_blend(&self) -> f32 {
         ((self.elapsed - UNROLLED) / (STAGED - UNROLLED)).clamp(0., 1.)
@@ -146,8 +190,8 @@ pub(super) fn setup(
     );
     commands.insert_resource(stone);
     commands.insert_resource(GlobalAmbientLight {
-        color: Color::srgb(0.93, 0.88, 0.79),
-        brightness: 650.,
+        color: Color::srgb(0.93, 0.93, 0.92),
+        brightness: 1650.,
         ..default()
     });
     let eye = commands
@@ -155,6 +199,7 @@ pub(super) fn setup(
             Camera3d::default(),
             RenderLayers::layer(0),
             Msaa::Sample4,
+            ShadowFilteringMethod::Gaussian,
             Pilot::default(),
             DistanceFog {
                 color: color(set.background),
@@ -168,18 +213,43 @@ pub(super) fn setup(
             Camera,
         ))
         .id();
+    map::shade(&mut commands, eye);
+    owl::spawn(&mut commands, eye, &mut meshes, &mut materials);
     commands.spawn((
         DirectionalLight {
-            color: Color::srgb(1., 0.87, 0.71),
-            illuminance: 9200.,
+            color: Color::srgb(1., 0.94, 0.84),
+            illuminance: 6900.,
             shadow_maps_enabled: true,
             ..default()
         },
-        Transform::from_xyz(-8., 17., 6.).looking_at(Vec3::ZERO, Vec3::Y),
+        CascadeShadowConfigBuilder {
+            num_cascades: 3,
+            first_cascade_far_bound: 13.,
+            maximum_distance: 78.,
+            overlap_proportion: 0.24,
+            ..default()
+        }
+        .build(),
+        Transform::from_xyz(-6., 22., 8.).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+    commands.spawn((
+        DirectionalLight {
+            color: Color::srgb(0.82, 0.90, 1.),
+            illuminance: 1600.,
+            ..default()
+        },
+        RenderLayers::from_layers(&[0, atlas::LAYER]),
+        Transform::from_xyz(12., 8., -6.).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
-    let limestone = material(&mut materials, color(set.shell));
-    let floor = material(&mut materials, color(set.ground));
+    let limestone =
+        materials.add(surfaces::Stone::Limestone.material(color(set.shell), &mut images));
+    let paving = surfaces::Stone::Paving.material(color(set.ground), &mut images);
+    let plaza = materials.add(StandardMaterial {
+        base_color: color(set.shell),
+        ..paving.clone()
+    });
+    let floor = materials.add(paving);
     let trim = material(&mut materials, Color::srgb(0.46, 0.32, 0.23));
     let wood = material(&mut materials, Color::srgb(0.30, 0.16, 0.095));
     let dark = material(&mut materials, Color::srgb(0.15, 0.11, 0.085));
@@ -191,12 +261,12 @@ pub(super) fn setup(
         &mut commands,
         &mut meshes,
         [
-            &limestone, &floor, &trim, &wood, &dark, &bronze, &parchment, &leaves,
+            &limestone, &floor, &plaza, &trim, &wood, &dark, &bronze, &parchment, &leaves,
         ],
     );
 
     commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(34., 5.5, 0.5))),
+        Mesh3d(meshes.add(surfaces::Stone::block(Vec3::new(34., 5.5, 0.5)))),
         MeshMaterial3d(limestone),
         Transform::from_xyz(0., 2.75, -18.),
     ));
@@ -322,11 +392,12 @@ pub(super) fn setup(
 fn spawn_bays(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
-    surfaces: [&Handle<StandardMaterial>; 8],
+    surfaces: [&Handle<StandardMaterial>; 9],
 ) {
     let [
         limestone,
         floor,
+        plaza_surface,
         trim,
         wood,
         dark,
@@ -336,10 +407,10 @@ fn spawn_bays(
     ] = surfaces;
     let mut blocks = Vec::new();
     let mut cube = |size, surface: &Handle<StandardMaterial>| {
-        (meshes.add(Cuboid::from_size(size)), surface.clone())
+        (meshes.add(surfaces::Stone::block(size)), surface.clone())
     };
     let paving = cube(Vec3::new(35., 0.25, COURT_LENGTH), floor);
-    let plaza = cube(Vec3::new(12.5, 0.16, 29.), limestone);
+    let plaza = cube(Vec3::new(12.5, 0.16, 29.), plaza_surface);
     let floor_line = cube(Vec3::new(0.08, 0.02, 28.), bronze);
     let crosswalk = cube(Vec3::new(14.6, 0.028, 2.3), limestone);
     let planter = cube(Vec3::new(2.1, 0.44, 2.9), trim);
@@ -624,20 +695,36 @@ pub(super) fn draw(
     let dt = time.delta_secs();
     let mut camera_z = SCROLL_START;
     if let Ok((mut projection, mut camera)) = cameras.single_mut() {
+        if reading && unrolling.file != Some(explorer.selected) {
+            *unrolling = Unrolling::default();
+            unrolling.file = Some(explorer.selected);
+        }
         if let (Ok(window), Projection::Perspective(perspective)) =
             (windows.single(), &mut *projection)
         {
             let aspect = window.width().max(1.) / window.height().max(1.);
             let fit_width = 2. * (SCROLL_WIDTH * 0.58 / (READ_DISTANCE * aspect)).atan();
             let reading_fov = ROOM_FOV.max(fit_width).min(2.2);
-            let fov = ROOM_FOV + (reading_fov - ROOM_FOV) * unrolling.reading_blend();
+            let blend = if let Some(retreat) = &library.retreat {
+                1. - smooth(retreat.elapsed / Retreat::DURATION)
+            } else {
+                smooth(unrolling.reading_blend())
+            };
+            let fov = ROOM_FOV + (reading_fov - ROOM_FOV) * blend;
             if perspective.fov != fov {
                 perspective.fov = fov;
             }
         }
         if let Some(reader) = reader {
-            if unrolling.elapsed == 0. {
+            if unrolling.elapsed == 0. && unrolling.relocation.is_none() {
                 let from = library.walk_pose.as_ref().unwrap_or(&*camera);
+                let nearby = camera.translation.distance_squared(from.translation) < 8. * 8.;
+                unrolling.from = if nearby {
+                    *camera
+                } else {
+                    unrolling.relocation = Some((*camera, 0.));
+                    *from
+                };
                 let local = ((from.translation.z + COURT_LENGTH / 2.).rem_euclid(COURT_LENGTH)
                     - COURT_LENGTH / 2.)
                     .signum();
@@ -650,30 +737,48 @@ pub(super) fn draw(
                 } else {
                     -10.65
                 };
-                if reader.first > 0 {
-                    unrolling.elapsed = STAGED;
+            }
+            let mut departing = None;
+            if let Some((previous, elapsed)) = &mut unrolling.relocation {
+                *elapsed += dt;
+                if *elapsed < ROOM_CHANGE {
+                    departing = Some(*previous);
+                } else if *elapsed >= ROOM_CHANGE * 2. {
+                    unrolling.relocation = None;
                 }
             }
-            unrolling.elapsed = (unrolling.elapsed + dt).min(STAGED);
+            if departing.is_none() {
+                unrolling.elapsed = if unrolling.elapsed == 0. && reader.first > 0 {
+                    STAGED
+                } else {
+                    (unrolling.elapsed + dt).min(STAGED)
+                };
+            }
             let start = reader.page(extent.rows).start as f32 * line_height();
             unrolling.origin = unrolling.anchor - start;
             let origin = unrolling.origin;
             let close = extent.reading_view(reader, origin, unrolling.x);
-            if unrolling.elapsed < STAGED {
-                let from = library.walk_pose.as_ref().copied().unwrap_or_else(entrance);
+            if let Some(from) = departing {
+                *camera = from;
+            } else if unrolling.elapsed < STAGED {
+                let from = unrolling.from;
                 let approach = smooth(unrolling.elapsed / APPROACHED);
                 let step = smooth((unrolling.elapsed - APPROACHED) / (CLIMBED - APPROACHED));
                 let opening = extent.deployed(unrolling.reveal()).min(TABLE_LENGTH);
                 let watch = Transform::from_xyz(
                     unrolling.x - 0.92,
                     EYE + 0.10 * step,
-                    origin + 4.3 + 0.21 * step,
+                    unrolling.anchor + 4.3 + 0.21 * step,
                 )
                 .looking_at(
-                    Vec3::new(unrolling.x, SCROLL_Y, origin + 0.75 + opening.min(1.8)),
+                    Vec3::new(
+                        unrolling.x,
+                        SCROLL_Y,
+                        unrolling.anchor + 0.75 + opening.min(1.8),
+                    ),
                     Vec3::Y,
                 );
-                let bob = (unrolling.elapsed * 16.).sin() * (1. - approach) * 0.04;
+                let bob = (unrolling.elapsed * 16.).sin() * (approach * (1. - approach)) * 0.10;
                 let read = smooth(unrolling.reading_blend());
                 let position = from.translation.lerp(watch.translation, approach) + Vec3::Y * bob;
                 camera.translation = position.lerp(close.translation, read);
@@ -696,7 +801,7 @@ pub(super) fn draw(
                 }
                 camera.rotation = close.rotation;
             }
-        } else if unrolling.elapsed != 0. {
+        } else if unrolling.file.is_some() {
             *unrolling = Unrolling::default();
         }
         camera_z = camera.translation.z;
@@ -793,7 +898,7 @@ pub(super) fn draw(
                     let matches = if reader.is_some_and(|reader| !reader.matches.is_empty()) {
                         format!(" · {} matches · Enter next", reader.unwrap().matches.len())
                     } else { String::new() };
-                    let controls = format!("Scroll · G diff · B blame · K heat · J go to line · M map · Esc close{timer}{matches}");
+                    let controls = format!("Scroll · G diff · B blame · K heat · J go to line · M map · WASD leave{timer}{matches}");
                     let here = content.line_range(reader.expect("reading").page(content.len()));
                     match repo.0.files.get(explorer.selected) {
                         Some(file) => format!("{}   ·   {}   ·   line {}\n{controls}", file.path, paper::face_name(face), here.start()),

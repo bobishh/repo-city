@@ -1,6 +1,9 @@
 use bevy::{
-    camera::visibility::RenderLayers, input_focus::InputFocus, render::view::Msaa,
-    ui::RelativeCursorPosition,
+    camera::visibility::RenderLayers,
+    input_focus::InputFocus,
+    picking::Pickable,
+    render::view::Msaa,
+    ui::{RelativeCursorPosition, UiTargetCamera},
 };
 
 use super::*;
@@ -24,10 +27,17 @@ struct Scene {
     mesh: Entity,
     selection: Entity,
     panel: Entity,
+    hover: Entity,
 }
 
 #[derive(Component)]
 pub(super) struct PathLabel;
+
+#[derive(Component)]
+pub(super) struct DistrictLabel;
+
+#[derive(Component)]
+pub(super) struct LandingShade;
 
 #[derive(Resource, Default)]
 pub(super) struct Map {
@@ -42,6 +52,9 @@ pub(super) struct Map {
     shift: Vec2,
     zoom: f32,
     pointer: Option<Vec2>,
+    district: Option<usize>,
+    requested_folder: Option<usize>,
+    shade: f32,
     pub(super) consumed: bool,
 }
 
@@ -73,26 +86,51 @@ impl Framing {
 struct Passage {
     file: usize,
     start: (Vec2, f32),
-    from: Vec2,
     to: Vec2,
+    cruise: f32,
+    climb: f32,
+    zoom: f32,
+    duration: f32,
     elapsed: f32,
 }
 
 impl Passage {
-    const FLIGHT: f32 = 2.05;
-    const SETTLE: f32 = 0.20;
+    const LANDING: f32 = 0.48;
 
-    fn advance(&mut self, seconds: f32) -> ((Vec2, f32), Option<usize>) {
+    fn new(file: usize, start: (Vec2, f32), to: Vec2, height: f32) -> Self {
+        let distance = start.0.distance(to) / height.max(1.);
+        let cruise = start.1.max((distance * 1.15).min(1.));
+        let climb = (0.38 * (cruise / start.1).ln()).min(0.95);
+        let zoom = (62. / height.max(1.)).clamp(0.018, 1.).min(start.1);
+        let zoom_steps = (cruise / zoom).ln();
+        Self {
+            file,
+            start,
+            to,
+            cruise,
+            climb,
+            zoom,
+            duration: 2.05 + (2.65 * distance + 0.32 * zoom_steps).min(2.25),
+            elapsed: 0.,
+        }
+    }
+
+    fn advance(&mut self, seconds: f32) -> ((Vec2, f32), f32, Option<usize>) {
         self.elapsed += seconds;
-        let t = smooth(self.elapsed / Self::FLIGHT);
-        let approach = self.start.0.lerp(self.from, t);
-        let crossing = self.from.lerp(self.to, t);
-        let shift = approach.lerp(crossing, t);
-        let widen = blend_zoom(self.start.1, 0.55, t);
-        let descend = blend_zoom(0.55, 0.20, t);
+        let flying = self.elapsed - self.climb;
+        let t = (flying / self.duration).clamp(0., 1.);
+        let shift = self.start.0.lerp(self.to, smooth(t));
+        // Widen a tight view before crossing the terrain, then zoom in to land.
+        let zoom = if flying < 0. {
+            blend_zoom(self.start.1, self.cruise, smooth(self.elapsed / self.climb))
+        } else {
+            blend_zoom(self.cruise, self.zoom, smooth((t - 0.24) / 0.76))
+        };
+        let shade = smooth((flying - self.duration) / Self::LANDING);
         (
-            (shift, blend_zoom(widen, descend, t)),
-            (self.elapsed >= Self::FLIGHT + Self::SETTLE).then_some(self.file),
+            (shift, zoom),
+            shade,
+            (flying >= self.duration + Self::LANDING).then_some(self.file),
         )
     }
 }
@@ -109,6 +147,43 @@ fn blend_zoom(from: f32, to: f32, t: f32) -> f32 {
 impl Map {
     pub(super) fn open(&self) -> bool {
         self.level.is_some()
+    }
+
+    pub(super) fn flight_frame(&self, aspect: f32) -> Option<f32> {
+        let scene = self.scene.as_ref()?;
+        (self.level == Some(Level::Library) || self.passage.is_some())
+            .then(|| scene.atlas.view_height(aspect) * self.zoom)
+    }
+}
+
+pub(super) fn shade(commands: &mut Commands, camera: Entity) {
+    commands.spawn((
+        LandingShade,
+        UiTargetCamera(camera),
+        Pickable::IGNORE,
+        Node {
+            position_type: PositionType::Absolute,
+            width: percent(100.),
+            height: percent(100.),
+            ..default()
+        },
+        BackgroundColor(Color::NONE),
+        GlobalZIndex(20),
+    ));
+}
+
+pub(super) fn draw_shade(
+    map: Res<Map>,
+    room: Res<room::Unrolling>,
+    mut shade: Query<&mut BackgroundColor, With<LandingShade>>,
+) {
+    if let Ok(mut shade) = shade.single_mut() {
+        let opacity = if map.open() {
+            map.shade
+        } else {
+            smooth(map.shade).max(room.shade())
+        };
+        shade.set_if_neq(BackgroundColor(Color::srgba(0.07, 0.055, 0.043, opacity)));
     }
 }
 
@@ -149,13 +224,16 @@ pub(super) fn update(
     ),
     (mut meshes, mut materials): (ResMut<Assets<Mesh>>, ResMut<Assets<StandardMaterial>>),
     (mut labels, mut highlights): (
-        Query<&mut Text, With<PathLabel>>,
+        Query<&mut Text, (With<PathLabel>, Without<DistrictLabel>)>,
         Query<&mut Transform, With<Selection>>,
     ),
+    mut hover_label: Query<(&mut Node, &mut Text), With<DistrictLabel>>,
     #[cfg(not(target_arch = "wasm32"))] picker: Res<repository_picker::RepositoryPicker>,
 ) {
     map.consumed = map.open();
     let previous = map.level;
+    let requested_folder = map.requested_folder.take();
+    map.shade = (map.shade - time.delta_secs() / 0.55).max(0.);
     if repo.is_changed() {
         map.terrain = None;
     }
@@ -164,6 +242,9 @@ pub(super) fn update(
     else {
         return;
     };
+    let aspect = windows
+        .single()
+        .map_or(1.6, |window| window.width() / window.height().max(1.));
     let unavailable = repo.0.files.is_empty();
     #[cfg(not(target_arch = "wasm32"))]
     let unavailable = unavailable || picker.blocks_controls();
@@ -173,6 +254,8 @@ pub(super) fn update(
         || (map.open() && keys.any_just_pressed([KeyCode::Escape, KeyCode::Tab]))
     {
         map.level = None;
+    } else if let Some(folder) = requested_folder {
+        map.level = Some(Level::Folder(folder));
     } else if library.input.is_none()
         && !review.blocked
         && !review.tablet_open
@@ -181,7 +264,7 @@ pub(super) fn update(
         map.level = match previous {
             None => {
                 let from = library.walk_pose.as_ref().unwrap_or(&pose);
-                let index = match aim.0 {
+                let aimed = match aim.0 {
                     Some(aim::Target::Cabinet(folder)) => Some(folder),
                     Some(aim::Target::File(file)) | Some(aim::Target::Line { file, .. }) => repo
                         .0
@@ -189,8 +272,16 @@ pub(super) fn update(
                         .get(file)
                         .and_then(|file| library.catalog.folder(file.directory()))
                         .map(|(folder, _, _)| folder),
-                    None => layout::nearest(from.translation, library.catalog.folders.len()),
+                    None => None,
                 };
+                let index = library
+                    .reader
+                    .as_ref()
+                    .and_then(|_| repo.0.files.get(explorer.selected))
+                    .and_then(|file| library.catalog.folder(file.directory()))
+                    .map(|(folder, _, _)| folder)
+                    .or(aimed)
+                    .or_else(|| layout::nearest(from.translation, library.catalog.folders.len()));
                 index.map(Level::Folder).or(Some(Level::Library))
             }
             Some(Level::Folder(_)) => Some(Level::Library),
@@ -207,11 +298,14 @@ pub(super) fn update(
         if let Some(scene) = &old_scene {
             commands.entity(scene.mesh).despawn();
             commands.entity(scene.selection).despawn();
+            commands.entity(scene.hover).despawn();
             native_panel::close(&mut commands, scene.panel, &mut focus, &parents);
         }
+        set_district(&mut map, &library.catalog, None);
+        map.passage = None;
+        map.shade = 0.;
         match map.level {
             None => {
-                map.passage = None;
                 map.framing = None;
                 if let Some((ground, ground_projection, ground_msaa)) = map.ground.take() {
                     *pose = ground;
@@ -244,17 +338,12 @@ pub(super) fn update(
                     *layers = RenderLayers::layer(atlas::LAYER);
                     *msaa = Msaa::Off;
                     map.cursor = atlas.slot(selected).unwrap_or(0);
-                    let start =
-                        if matches!((previous, level), (Some(Level::Folder(_)), Level::Library))
-                            && let Some(old) = &old_scene
-                        {
-                            let aspect = windows
-                                .single()
-                                .map_or(1.6, |window| window.width() / window.height().max(1.));
+                    let start = old_scene
+                        .as_ref()
+                        .filter(|_| previous != map.level)
+                        .map_or((Vec2::ZERO, 1.), |old| {
                             atlas.framing_from(&old.atlas, map.shift, map.zoom, aspect)
-                        } else {
-                            (Vec2::ZERO, 1.)
-                        };
+                        });
                     map.framing =
                         (start != (Vec2::ZERO, 1.)).then_some(Framing { start, elapsed: 0. });
                     (map.shift, map.zoom) = start;
@@ -273,6 +362,7 @@ pub(super) fn update(
                         atlas,
                         camera_entity,
                         &title,
+                        level == Level::Library,
                     ));
                 } else {
                     map.close = true;
@@ -299,13 +389,17 @@ pub(super) fn update(
         .passage
         .as_mut()
         .map(|passage| passage.advance(time.delta_secs()));
+    if let Some(((shift, zoom), shade, _)) = passage {
+        (map.shift, map.zoom) = (shift, zoom);
+        map.shade = shade;
+    }
     let Some(scene) = map.scene.as_ref() else {
         return;
     };
     let count = scene.atlas.len();
     let mut selected = None;
     let mut arrived = false;
-    if let Some(((shift, zoom), destination)) = passage {
+    if let Some(((shift, zoom), _, destination)) = passage {
         (*pose, *projection) = scene.atlas.view(shift, zoom);
         if let Some(file) = destination {
             selected = Some(file);
@@ -318,13 +412,15 @@ pub(super) fn update(
     let mut zoom = map.zoom;
     let mut shift = map.shift;
     let mut pointer_position = map.pointer;
+    let mut district = map.district;
+    let mut requested_folder = None;
     if !arrived {
         if let Ok(window) = windows.single() {
-            let position = window.cursor_position();
             let on_panel = pointer
                 .get(scene.panel)
                 .is_ok_and(RelativeCursorPosition::cursor_over);
-            if !on_panel {
+            let position = window.cursor_position().filter(|_| !on_panel);
+            if let Some(position) = position {
                 let amount = match wheel.unit {
                     bevy::input::mouse::MouseScrollUnit::Line => wheel.delta.y,
                     bevy::input::mouse::MouseScrollUnit::Pixel => wheel.delta.y / 40.,
@@ -341,17 +437,25 @@ pub(super) fn update(
                         / Vec2::new(window.width(), window.height()).max(Vec2::ONE);
                     shift += Vec2::new(-motion.delta.x, motion.delta.y) * units;
                 }
-                if (position != map.pointer || buttons.just_pressed(MouseButton::Left))
-                    && let Some(position) = position
+                if (Some(position) != map.pointer || buttons.just_pressed(MouseButton::Left))
                     && let Ok(ray) =
                         camera.viewport_to_world(&GlobalTransform::from(*pose), position)
-                    && let Some(slot) = scene.atlas.hit(ray)
                 {
-                    cursor = slot;
-                    if buttons.just_pressed(MouseButton::Left) {
-                        selected = scene.atlas.file(slot);
+                    let hit = scene.atlas.hit(ray);
+                    district = scene.atlas.directory(ray, hit);
+                    if let Some(slot) = hit {
+                        cursor = slot;
+                        if buttons.just_pressed(MouseButton::Left) {
+                            selected = scene.atlas.file(slot);
+                        }
+                    } else if map.level == Some(Level::Library)
+                        && buttons.just_pressed(MouseButton::Left)
+                    {
+                        requested_folder = district;
                     }
                 }
+            } else {
+                district = None;
             }
             pointer_position = position;
         }
@@ -379,38 +483,19 @@ pub(super) fn update(
             .catalog
             .folder(file.directory())
             .map(|(folder, _, _)| folder);
-        let origin = library
-            .walk_pose
-            .as_ref()
-            .or(map.ground.as_ref().map(|(saved, _, _)| saved))
-            .and_then(|ground| layout::nearest(ground.translation, library.catalog.folders.len()));
-        if !arrived
-            && map.level == Some(Level::Library)
-            && let (Some(origin), Some(target)) = (origin, folder)
-            && origin != target
-            && let Some(&origin_file) = library.catalog.folders[origin].files.first()
-            && let (Some(from), Some(to)) = (
-                scene.atlas.focus_shift(origin_file),
-                scene.atlas.focus_shift(index),
-            )
-        {
+        if !arrived && let Some(to) = scene.atlas.focus_shift(index) {
             if let Ok(mut label) = labels.single_mut() {
-                label.0 = format!(
-                    "{} → {}",
-                    library.catalog.folders[origin].path,
-                    file.directory()
-                );
+                label.0.clone_from(&file.path);
             }
+            if let Ok((mut node, _)) = hover_label.get_mut(scene.hover) {
+                node.display = Display::None;
+            }
+            let height = scene.atlas.view_height(aspect);
+            set_district(&mut map, &library.catalog, None);
             #[cfg(target_arch = "wasm32")]
             browser_travel(file.directory());
             map.framing = None;
-            map.passage = Some(Passage {
-                file: index,
-                start: (map.shift, map.zoom),
-                from,
-                to,
-                elapsed: 0.,
-            });
+            map.passage = Some(Passage::new(index, (map.shift, map.zoom), to, height));
             return;
         }
         map.passage = None;
@@ -419,6 +504,7 @@ pub(super) fn update(
         if let Some(scene) = map.scene.take() {
             commands.entity(scene.mesh).despawn();
             commands.entity(scene.selection).despawn();
+            commands.entity(scene.hover).despawn();
             native_panel::close(&mut commands, scene.panel, &mut focus, &parents);
         }
         if let Some((saved, ground_projection, ground_msaa)) = map.ground.take() {
@@ -445,6 +531,26 @@ pub(super) fn update(
     if manual_view {
         (*pose, *projection) = scene.atlas.view(shift, zoom);
     }
+    if let Ok((mut node, mut label)) = hover_label.get_mut(scene.hover) {
+        let label_at = district
+            .zip(pointer_position)
+            .zip(camera.logical_viewport_size());
+        if let Some(((folder, point), size)) = label_at {
+            let path = &library.catalog.folders[folder].path;
+            let width = (path.chars().count() as f32 * 9.4 + 18.).min((size.x - 8.).max(0.));
+            let left = (point.x + 14.).min((size.x - width - 4.).max(4.));
+            let top = (point.y - 32.).max(4.);
+            let layout = (Display::Flex, px(left), px(top), px(width));
+            if (node.display, node.left, node.top, node.width) != layout {
+                (node.display, node.left, node.top, node.width) = layout;
+            }
+            if label.0 != *path {
+                label.0.clone_from(path);
+            }
+        } else if node.display != Display::None {
+            node.display = Display::None;
+        }
+    }
     if let Some(scene) = map.scene.as_ref() {
         if let Some((center, size)) = scene.atlas.lot_bounds(cursor)
             && let Ok(mut highlight) = highlights.get_mut(scene.selection)
@@ -458,12 +564,26 @@ pub(super) fn update(
             label.0.clone_from(&repo.0.files[file].path);
         }
     }
-    map.pointer = pointer_position;
+    map.pointer = if manual_view || map.framing.is_some() {
+        None
+    } else {
+        pointer_position
+    };
+    set_district(&mut map, &library.catalog, district);
     map.zoom = zoom;
     map.shift = shift;
     map.cursor = cursor;
+    map.requested_folder = requested_folder;
     if manual_view {
         map.framing = None;
+    }
+}
+
+fn set_district(map: &mut Map, _catalog: &Catalog, district: Option<usize>) {
+    if map.district != district {
+        map.district = district;
+        #[cfg(target_arch = "wasm32")]
+        browser_hover(district.map_or("", |index| &_catalog.folders[index].path));
     }
 }
 
@@ -485,6 +605,7 @@ fn spawn(
     atlas: atlas::Atlas,
     camera: Entity,
     title: &str,
+    overview: bool,
 ) -> Scene {
     let model = commands
         .spawn((
@@ -513,6 +634,28 @@ fn spawn(
         ))
         .id();
     let panel = native_panel::bottom_bar(commands, camera);
+    let hover = commands
+        .spawn((
+            DistrictLabel,
+            UiTargetCamera(camera),
+            Pickable::IGNORE,
+            Text::default(),
+            native_panel::panel_font(),
+            TextColor(PAPER),
+            BackgroundColor(Color::srgb_u8(40, 29, 22)),
+            BorderColor::all(GOLD),
+            Node {
+                display: Display::None,
+                position_type: PositionType::Absolute,
+                height: px(25.),
+                padding: UiRect::horizontal(px(7.)),
+                border: UiRect::all(px(1.)),
+                overflow: Overflow::clip(),
+                ..default()
+            },
+            GlobalZIndex(10),
+        ))
+        .id();
     commands
         .entity(panel)
         .insert(RelativeCursorPosition::default())
@@ -533,7 +676,11 @@ fn spawn(
             ));
             native_panel::text(
                 body,
-                "Click or Enter to read\nWheel zoom · Right-drag pan",
+                if overview {
+                    "Building opens file · Terrace opens folder\nWheel zoom · Right-drag pan"
+                } else {
+                    "Click or Enter to read\nWheel zoom · Right-drag pan"
+                },
                 PAPER,
             );
             native_panel::button::<Choice, Map>(body, "Close", PAPER, Choice::Close);
@@ -543,6 +690,7 @@ fn spawn(
         mesh: model,
         selection,
         panel,
+        hover,
     }
 }
 
@@ -553,6 +701,8 @@ extern "C" {
     fn browser_map(title: &str, files: u32);
     #[wasm_bindgen(js_namespace = repoCity, js_name = libraryTravel)]
     fn browser_travel(folder: &str);
+    #[wasm_bindgen(js_namespace = repoCity, js_name = libraryMapHover)]
+    fn browser_hover(folder: &str);
 }
 
 #[cfg(test)]
@@ -561,22 +711,28 @@ mod tests {
 
     #[test]
     fn a_passage_frames_both_folders_before_releasing_the_file() {
-        let mut passage = Passage {
-            file: 71,
-            start: (Vec2::ZERO, 1.),
-            from: Vec2::new(-20., 10.),
-            to: Vec2::new(45., -5.),
-            elapsed: 0.,
-        };
-        let ((start, zoom), destination) = passage.advance(0.);
-        assert_eq!((start, zoom, destination), (Vec2::ZERO, 1., None));
-        let ((middle, _), destination) = passage.advance(Passage::FLIGHT * 0.5);
-        assert!(middle.x > passage.from.x && middle.x < passage.to.x);
-        assert_eq!(destination, None);
-        let ((end, zoom), destination) = passage.advance(Passage::FLIGHT * 0.5);
-        assert!((end - passage.to).length() < 0.001);
-        assert!((zoom - 0.20).abs() < 0.001);
-        assert_eq!(destination, None);
-        assert_eq!(passage.advance(Passage::SETTLE + 0.01).1, Some(71));
+        let from = Vec2::new(-20., 10.);
+        let to = Vec2::new(45., -5.);
+        let mut passage = Passage::new(71, (from, 1.), to, 240.);
+        assert_eq!(passage.advance(0.), ((from, 1.), 0., None));
+        let ((middle, zoom), shade, destination) = passage.advance(passage.duration * 0.5);
+        assert_eq!(middle, from.midpoint(to));
+        assert!(zoom < 1. && zoom > passage.zoom);
+        assert_eq!((shade, destination), (0., None));
+        let ((end, zoom), shade, destination) = passage.advance(passage.duration * 0.5);
+        assert_eq!(end, to);
+        assert!((zoom - passage.zoom).abs() < 0.001);
+        assert_eq!((shade, destination), (0., None));
+        let (_, shade, destination) = passage.advance(Passage::LANDING + 0.01);
+        assert_eq!((shade, destination), (1., Some(71)));
+    }
+
+    #[test]
+    fn a_distant_flight_widens_a_zoomed_in_map_before_panning() {
+        let mut passage = Passage::new(71, (Vec2::ZERO, 0.10), Vec2::new(170., 0.), 210.);
+        let ((shift, zoom), _, destination) = passage.advance(passage.climb * 0.5);
+        assert_eq!(shift, Vec2::ZERO);
+        assert!(zoom > 0.10 && zoom < passage.cruise);
+        assert!(destination.is_none());
     }
 }

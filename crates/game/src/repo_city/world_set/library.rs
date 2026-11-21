@@ -13,11 +13,13 @@ mod journey;
 mod layout;
 mod librarian;
 mod map;
+mod owl;
 mod paper;
 mod place;
 mod room;
 mod seeing;
 mod signs;
+mod surfaces;
 mod tools;
 
 const SHELF_SIZE: usize = 8;
@@ -29,6 +31,7 @@ struct Library {
     reader: Option<Reader>,
     input: Option<Input>,
     walk_pose: Option<Transform>,
+    retreat: Option<room::Retreat>,
     arrival: Option<usize>,
     destination: Option<Destination>,
     history: city_navigation::History,
@@ -237,6 +240,8 @@ pub(super) fn install(app: &mut App, args: &[String]) {
             (
                 controls,
                 room::draw,
+                map::draw_shade,
+                owl::fly,
                 room::arrange_cabinets,
                 aim::update,
                 signs::draw,
@@ -391,6 +396,7 @@ fn controls(
         progress.visit(explorer.selected, file, false);
     }
     if let Some(destination) = library.destination.take() {
+        library.retreat = None;
         explorer.open(&repo.0, destination.index);
         library.catalog.query.clear();
         library
@@ -435,6 +441,13 @@ fn controls(
     let enter = keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]);
     let escape = keys.just_pressed(KeyCode::Escape);
     let find = keys.any_just_pressed([KeyCode::Slash, KeyCode::Backslash]);
+    if let Some(retreat) = &mut library.retreat {
+        if !retreat.advance(&mut camera, time.delta_secs()) {
+            typing.clear();
+            return;
+        }
+        library.retreat = None;
+    }
     if let Some(input) = &mut library.input {
         if escape || enter {
             match library.input.take().expect("active library input") {
@@ -503,10 +516,25 @@ fn controls(
     }
 
     if let Some(reader) = &mut library.reader {
-        if escape || joystick.length_squared() > 0.09 {
+        let moving = library.input.is_none()
+            && !keys.any_pressed([
+                KeyCode::ControlLeft,
+                KeyCode::ControlRight,
+                KeyCode::SuperLeft,
+                KeyCode::SuperRight,
+                KeyCode::AltLeft,
+                KeyCode::AltRight,
+            ])
+            && (keys.any_just_pressed([
+                KeyCode::KeyW,
+                KeyCode::KeyA,
+                KeyCode::KeyS,
+                KeyCode::KeyD,
+            ]) || joystick.length_squared() > 0.09);
+        if escape || moving {
             library.reader = None;
             if let Some(pose) = library.walk_pose.take() {
-                *camera = pose;
+                library.retreat = Some(room::Retreat::new(*camera, pose));
             }
             return;
         }
