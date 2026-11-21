@@ -24,7 +24,7 @@ A new adapter can be added without changing repository storage or services.
 | Scene target | A directory, file, line, hunk, note or other addressable element projected from the comparison. Geometry resolves to the same identity as a list or link. |
 | Interaction session | Owns current selection, input focus, route, history and device input. Menus, text editors, terminal, tablet and navigation prompts use the same focus arbitration. |
 | Review state | Read credit, visits, comments, presets, preferences and private drafts. Persist it using existing repository, revision and content identities. Store a world-specific pose separately from the file and its reading position. |
-| VibePad | A shared interactive screen with the current platform's tabs, data and actions. The world supplies the case, first-person hands and motion; the existing render target and input projection connect the screen to the scene. |
+| VibePad | A shared interactive screen with the current platform's tabs, data and actions. The world supplies the case, first-person hands, motion and form theme; the existing render target and input projection connect the screen to the scene. |
 
 Code City and Greek Library use the same directory key, including the root
 directory. A building and a scroll representing the same path share file
@@ -91,8 +91,11 @@ spec enters this contract when its supported route is available.
   longer files. At rest the player's viewpoint and selected line stay stable.
   Scrolling moves the reading location continuously or by the requested
   step. A distant line jump may reposition the camera immediately.
-- A skin supplies the case, tool/hands animation, lighting and material for
-  VibePad. The screen dimensions, fitting, hit projection, accessible UI,
+- A skin supplies the case, tool/hands animation, lighting, material and form
+  theme for VibePad. The library uses stone panels, bronze accents and
+  GFS Didot headings. Use the common control implementations and keep code,
+  notes, focus outlines, status colors and contrast legible. The screen
+  dimensions, fitting, hit projection, accessible UI,
   open/close lifecycle and actions come from the shared tablet. The stone
   tablet must produce the same input outcomes as the city tablet.
 - Keep common actions discoverable through input bindings and VibePad. In the
