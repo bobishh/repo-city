@@ -27,9 +27,8 @@ impl Place {
         let position = Vec3::from_array(self.position);
         let rotation = Quat::from_array(self.rotation);
         let pose = if position.is_finite()
-            && position.x.abs() <= 5.1
-            && position.z >= -10.91
-            && (position.y - 2.15).abs() < 0.01
+            && layout::walkable(position)
+            && (position.y - layout::EYE).abs() < 0.01
             && rotation.is_normalized()
         {
             Transform::from_translation(position).with_rotation(rotation)

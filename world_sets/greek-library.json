@@ -3,7 +3,7 @@
   "name": "Greek Library",
   "representation": "shelves-and-scrolls",
   "locomotion": "walking",
-  "background": [0.15, 0.18, 0.22],
+  "background": [0.51, 0.67, 0.76],
   "ground": [0.34, 0.30, 0.25],
   "shell": [0.71, 0.64, 0.52],
   "ink": [0.22, 0.14, 0.09],

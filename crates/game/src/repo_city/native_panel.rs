@@ -17,19 +17,32 @@ pub(super) struct Form;
 #[derive(Component)]
 pub(super) struct Heading;
 
+#[derive(Clone, Copy)]
+enum Placement {
+    Modal(f32),
+    Tablet,
+    Sidebar(f32, Entity),
+}
+
 pub(super) fn panel(commands: &mut Commands, title: &str, width: f32) -> Entity {
-    surface(commands, title, width, false)
+    surface(commands, title, Placement::Modal(width))
 }
 
 pub(super) fn tablet(commands: &mut Commands, title: &str) -> Entity {
-    surface(commands, title, 0., true)
+    surface(commands, title, Placement::Tablet)
 }
 
-fn surface(commands: &mut Commands, title: &str, width: f32, tablet: bool) -> Entity {
+pub(super) fn sidebar(commands: &mut Commands, title: &str, width: f32, camera: Entity) -> Entity {
+    surface(commands, title, Placement::Sidebar(width, camera))
+}
+
+fn surface(commands: &mut Commands, title: &str, placement: Placement) -> Entity {
+    let tablet = matches!(placement, Placement::Tablet);
+    let sidebar = matches!(placement, Placement::Sidebar(..));
     let backdrop = commands
         .spawn((
             GlobalZIndex(40),
-            BackgroundColor(if tablet {
+            BackgroundColor(if tablet || sidebar {
                 Color::NONE
             } else {
                 Color::srgba(0.01, 0.02, 0.04, 0.55)
@@ -39,21 +52,50 @@ fn surface(commands: &mut Commands, title: &str, width: f32, tablet: bool) -> En
                 width: percent(100.),
                 height: percent(100.),
                 align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
+                justify_content: if sidebar {
+                    JustifyContent::End
+                } else {
+                    JustifyContent::Center
+                },
+                padding: if sidebar {
+                    UiRect::right(px(14.))
+                } else {
+                    UiRect::ZERO
+                },
                 ..default()
             },
         ))
         .id();
+    if let Placement::Sidebar(_, camera) = placement {
+        commands
+            .entity(backdrop)
+            .insert(bevy::ui::UiTargetCamera(camera));
+    }
     let panel = commands
         .spawn((
             ChildOf(backdrop),
             Form,
             TabGroup::modal(),
             Node {
-                width: if tablet { percent(100.) } else { px(width) },
+                width: match placement {
+                    Placement::Modal(width) | Placement::Sidebar(width, _) => px(width),
+                    Placement::Tablet => percent(100.),
+                },
                 height: if tablet { percent(100.) } else { Val::Auto },
-                max_width: if tablet { percent(100.) } else { percent(94.) },
-                max_height: if tablet { percent(100.) } else { percent(94.) },
+                max_width: if tablet {
+                    percent(100.)
+                } else if sidebar {
+                    percent(60.)
+                } else {
+                    percent(94.)
+                },
+                max_height: percent(if tablet {
+                    100.
+                } else if sidebar {
+                    92.
+                } else {
+                    94.
+                }),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(10.),
                 border: UiRect::all(px(if tablet { 0. } else { 1. })),

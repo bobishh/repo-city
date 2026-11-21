@@ -48,6 +48,7 @@ pub(super) fn draw(
     repo: Res<Repo>,
     aim: Res<aim::Aim>,
     review: Res<review_notes::Review>,
+    map: Res<map::Map>,
     eye: Query<(&Camera, &Transform), With<room::Camera>>,
     cabinets: Query<(&room::Cabinet, &GlobalTransform, &Visibility, &Children)>,
     rolls: Query<(&room::CabinetFile, &GlobalTransform, &Visibility)>,
@@ -61,7 +62,8 @@ pub(super) fn draw(
 ) {
     let mut candidates = Vec::new();
     let mut viewport = Rect::EMPTY;
-    if library.reader.is_none()
+    if !map.open()
+        && library.reader.is_none()
         && library.input.is_none()
         && !review.blocked
         && !review.tablet_open
@@ -82,7 +84,7 @@ pub(super) fn draw(
             if *visible == Visibility::Hidden {
                 continue;
             }
-            let Some(group) = library.catalog.cabinets.get(cabinet.directory) else {
+            let Some(group) = library.catalog.folders.get(cabinet.directory) else {
                 continue;
             };
             let (center, size) = cabinet.bounds(transform);
@@ -91,7 +93,7 @@ pub(super) fn draw(
                 || matches!(aim.0, Some(aim::Target::File(file)) if group.files.contains(&file));
             if let Some((center, distance)) = project(center + front, CABINET_RANGE) {
                 candidates.push(Candidate {
-                    name: &group.path,
+                    name: &cabinet.label,
                     center,
                     distance,
                     active: aimed,

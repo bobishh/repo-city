@@ -1,23 +1,21 @@
 use bevy::image::ImageSampler;
 
 use super::*;
+use layout::{CABINET_X, COURT_LENGTH, DEPTHS, EYE, FRONT};
 
 const PAPER_WIDTH: u32 = 1120;
 const SCROLL_WIDTH: f32 = 5.6;
 pub(super) const PAPER_WIDTH_WORLD: f32 = SCROLL_WIDTH;
-const EYE_HEIGHT: f32 = 2.15;
-const READ_DISTANCE: f32 = EYE_HEIGHT;
+const READ_DISTANCE: f32 = EYE;
 const ROOM_FOV: f32 = std::f32::consts::FRAC_PI_4;
-const BAY_LENGTH: f32 = 24.;
 const BAY_COUNT: usize = 4;
-const CABINETS_PER_BAY: usize = 8;
-const CABINET_DEPTH: [f32; 4] = [0., 6., 11., 17.];
-const ROLLS_PER_CABINET: usize = 24;
+pub(super) const ROLLS_PER_CABINET: usize = 24;
 pub(super) const APPROACHED: f32 = 0.7;
 pub(super) const CLIMBED: f32 = 1.02;
 pub(super) const UNROLLED: f32 = 2.15;
 const STAGED: f32 = 2.40;
-const SCROLL_START: f32 = -4.7;
+const SCROLL_START: f32 = -12.9;
+const TABLE_LENGTH: f32 = 5.5;
 const SCROLL_Y: f32 = 0.05;
 pub(super) const PAPER_Y: f32 = SCROLL_Y + 0.018;
 const UNIT_PER_PIXEL: f32 = SCROLL_WIDTH / PAPER_WIDTH as f32;
@@ -46,19 +44,26 @@ pub(super) enum ScrollPart {
 pub(super) struct Bay(usize);
 
 #[derive(Component)]
+pub(super) struct Roof {
+    bay: usize,
+    folder: usize,
+}
+
+#[derive(Component)]
 pub(super) struct Cabinet {
     bay: usize,
     slot: usize,
     pub side: f32,
     pub directory: usize,
     pub page: usize,
+    pub label: String,
 }
 
 impl Cabinet {
     pub(super) fn bounds(&self, pose: &GlobalTransform) -> (Vec3, Vec3) {
         let (scale, _, translation) = pose.to_scale_rotation_translation();
         (
-            translation + Vec3::new(self.side * 7.35, 2.05 * scale.y, 0.),
+            translation + Vec3::new(self.side * CABINET_X, 2.05 * scale.y, 0.),
             Vec3::new(1.66, 4.12 * scale.y, 3.66),
         )
     }
@@ -71,6 +76,8 @@ pub(super) struct CabinetFile(pub usize);
 pub(super) struct Unrolling {
     pub elapsed: f32,
     pub origin: f32,
+    pub x: f32,
+    anchor: f32,
     bob: f32,
 }
 
@@ -79,6 +86,8 @@ impl Default for Unrolling {
         Self {
             elapsed: 0.,
             origin: SCROLL_START,
+            x: 0.,
+            anchor: SCROLL_START,
             bob: 0.,
         }
     }
@@ -120,7 +129,7 @@ fn material(materials: &mut Assets<StandardMaterial>, color: Color) -> Handle<St
 }
 
 pub(super) fn entrance() -> Transform {
-    Transform::from_xyz(0., 2.15, -10.7).looking_at(Vec3::new(0., 1.9, 8.0), Vec3::Y)
+    Transform::from_xyz(0., EYE, layout::ENTRANCE_Z).looking_at(Vec3::new(0., EYE, 7.), Vec3::Y)
 }
 
 pub(super) fn setup(
@@ -154,8 +163,8 @@ pub(super) fn setup(
             DistanceFog {
                 color: color(set.background),
                 falloff: FogFalloff::Linear {
-                    start: 30.,
-                    end: 62.,
+                    start: 42.,
+                    end: 78.,
                 },
                 ..default()
             },
@@ -180,16 +189,20 @@ pub(super) fn setup(
     let dark = material(&mut materials, Color::srgb(0.15, 0.11, 0.085));
     let bronze = material(&mut materials, color(set.accent));
     let parchment = material(&mut materials, Color::srgb(0.86, 0.71, 0.49));
+    let leaves = material(&mut materials, Color::srgb(0.31, 0.39, 0.23));
+    athens::spawn(&mut commands, &mut meshes, &mut materials);
     spawn_bays(
         &mut commands,
         &mut meshes,
-        [&limestone, &floor, &trim, &wood, &dark, &bronze, &parchment],
+        [
+            &limestone, &floor, &trim, &wood, &dark, &bronze, &parchment, &leaves,
+        ],
     );
 
     commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(18., 7.6, 0.5))),
+        Mesh3d(meshes.add(Cuboid::new(34., 5.5, 0.5))),
         MeshMaterial3d(limestone),
-        Transform::from_xyz(0., 3.8, -11.7),
+        Transform::from_xyz(0., 2.75, -18.),
     ));
     let texture = images.add(paper_canvas(0).image());
     let sheet = meshes.add(Rectangle::new(SCROLL_WIDTH, 1.));
@@ -243,6 +256,7 @@ pub(super) fn setup(
     }
 
     librarian::spawn(&mut commands, eye, &mut meshes, &mut materials, &mut images);
+    owl::spawn(&mut commands, eye, &mut meshes, &mut materials);
     aim::spawn(&mut commands);
     signs::spawn(&mut commands, eye);
     commands.spawn((
@@ -313,36 +327,80 @@ pub(super) fn setup(
 fn spawn_bays(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
-    surfaces: [&Handle<StandardMaterial>; 7],
+    surfaces: [&Handle<StandardMaterial>; 8],
 ) {
-    let [limestone, floor, trim, wood, dark, bronze, parchment] = surfaces;
+    let [
+        limestone,
+        floor,
+        trim,
+        wood,
+        dark,
+        bronze,
+        parchment,
+        leaves,
+    ] = surfaces;
     let mut blocks = Vec::new();
     let mut cube = |size, surface: &Handle<StandardMaterial>| {
         (meshes.add(Cuboid::from_size(size)), surface.clone())
     };
-    let paving = cube(Vec3::new(18., 0.25, BAY_LENGTH), floor);
-    let side_wall = cube(Vec3::new(0.55, 7.6, BAY_LENGTH), limestone);
-    let floor_line = cube(Vec3::new(0.12, 0.02, BAY_LENGTH), bronze);
-    let cornice = cube(Vec3::new(0.73, 0.42, BAY_LENGTH), trim);
+    let paving = cube(Vec3::new(35., 0.25, COURT_LENGTH), floor);
+    let plaza = cube(Vec3::new(12.5, 0.16, 29.), limestone);
+    let floor_line = cube(Vec3::new(0.08, 0.02, 28.), bronze);
+    let crosswalk = cube(Vec3::new(14.6, 0.028, 2.3), limestone);
+    let planter = cube(Vec3::new(2.1, 0.44, 2.9), trim);
+    let foundation = cube(Vec3::new(9., 0.39, 14.1), limestone);
+    let back_wall = cube(Vec3::new(0.45, 5.3, 28.8), limestone);
+    let partition = cube(Vec3::new(8.0, 5.3, 0.45), limestone);
+    let front_pier = cube(Vec3::new(0.54, 5.3, 2.75), limestone);
+    let lintel = cube(Vec3::new(1.18, 0.54, 13.9), trim);
+    let architrave = cube(Vec3::new(1.15, 0.38, 6.0), limestone);
+    let capital = cube(Vec3::new(1.22, 0.34, 1.22), limestone);
+    let roof = cube(Vec3::new(5.15, 0.25, 14.4), trim);
     let cabinet_back = cube(Vec3::new(0.18, 4.1, 3.45), dark);
     let cabinet_edge = cube(Vec3::new(1.6, 4.1, 0.18), wood);
     let shelf = cube(Vec3::new(1.65, 0.17, 3.65), wood);
-    let capital = cube(Vec3::new(1.35, 0.32, 1.35), limestone);
-    let column = (meshes.add(Cylinder::new(0.45, 6.25)), limestone.clone());
+    let column = (
+        meshes.add(Cylinder::new(0.49, 4.75).mesh().resolution(12)),
+        limestone.clone(),
+    );
+    let court_tree = (
+        meshes.add(Sphere::new(0.93).mesh().ico(1).expect("courtyard tree")),
+        leaves.clone(),
+    );
+    let trunk = (meshes.add(Cylinder::new(0.10, 1.57)), wood.clone());
     let scroll = meshes.add(Cylinder::new(0.11, 0.85));
     let mut block = |item: &(Handle<Mesh>, Handle<StandardMaterial>), x, y, z| {
         blocks.push((item.0.clone(), item.1.clone(), Transform::from_xyz(x, y, z)));
     };
-    block(&paving, 0., -0.13, 0.);
+    block(&paving, 0., -0.27, 0.);
+    block(&plaza, 0., -0.075, 0.);
+    for z in [-7.3, 7.3] {
+        block(&crosswalk, 0., 0.005, z);
+    }
     for side in [-1., 1.] {
-        block(&side_wall, side * 8.8, 3.8, 0.);
-        block(&floor_line, side * 2.98, 0.01, 0.);
-        block(&cornice, side * 8.45, 6.9, 0.);
-        for z in [-6., 0., 6., 11.] {
-            for y in [0.16, 6.48] {
-                block(&capital, side * 5.8, y, z - 1.5);
+        let front = side * FRONT;
+        block(&floor_line, side * 5.7, 0.02, 0.);
+        block(&back_wall, side * 16., 2.45, 0.);
+        block(&planter, side * 5.45, 0.18, 0.);
+        block(&trunk, side * 5.45, 1.06, 0.);
+        for offset in [-0.62, 0.62] {
+            block(&court_tree, side * 5.45, 2.01, offset);
+        }
+        for z in [-14.4, 0., 14.4] {
+            block(&partition, side * 12.1, 2.45, z);
+        }
+        for hall in [-1., 1.] {
+            let z = hall * 7.3;
+            block(&foundation, side * 11.65, -0.205, z);
+            block(&lintel, front, 5.36, z);
+            block(&architrave, front, 4.96, z);
+            for edge in [-5.5, 5.5] {
+                block(&front_pier, front, 2.52, z + edge);
             }
-            block(&column, side * 5.8, 3.28, z - 1.5);
+            for offset in [-2.6, 2.6] {
+                block(&column, front, 2.42, z + offset);
+                block(&capital, front, 4.83, z + offset);
+            }
         }
     }
 
@@ -350,7 +408,7 @@ fn spawn_bays(
         commands
             .spawn((
                 Bay(index),
-                Transform::from_xyz(0., 0., index as f32 * BAY_LENGTH),
+                Transform::from_xyz(0., 0., index as f32 * COURT_LENGTH),
                 Visibility::Visible,
             ))
             .with_children(|bay| {
@@ -361,7 +419,23 @@ fn spawn_bays(
                         *transform,
                     ));
                 }
-                for (position, z) in CABINET_DEPTH.into_iter().enumerate() {
+                for folder in 0..layout::FOLDERS_PER_COURT {
+                    let point = layout::folder(folder);
+                    for slope in [-1., 1.] {
+                        bay.spawn((
+                            Roof { bay: index, folder },
+                            Mesh3d(roof.0.clone()),
+                            MeshMaterial3d(roof.1.clone()),
+                            Transform::from_xyz(
+                                point.x.signum() * 11.63 + slope * 2.47,
+                                5.96,
+                                point.y,
+                            )
+                            .with_rotation(Quat::from_rotation_z(-slope * 0.19)),
+                        ));
+                    }
+                }
+                for (position, z) in DEPTHS.into_iter().enumerate() {
                     for (aisle_side, side) in [-1., 1.].into_iter().enumerate() {
                         let slot = position * 2 + aisle_side;
                         bay.spawn((
@@ -369,8 +443,9 @@ fn spawn_bays(
                                 bay: index,
                                 slot,
                                 side,
-                                directory: index * CABINETS_PER_BAY + slot,
+                                directory: layout::folder_at(index, slot),
                                 page: 0,
+                                label: String::new(),
                             },
                             Transform::from_xyz(0., 0., z),
                             Visibility::Hidden,
@@ -384,8 +459,8 @@ fn spawn_bays(
                                         Transform::from_xyz(x, y, z),
                                     ));
                                 };
-                            let x = side * 7.35;
-                            piece(&cabinet_back, side * 8.08, 2.05, 0.);
+                            let x = side * CABINET_X;
+                            piece(&cabinet_back, side * (CABINET_X + 0.73), 2.05, 0.);
                             for edge in [-1.72, 1.72] {
                                 piece(&cabinet_edge, x, 2.05, edge);
                             }
@@ -406,7 +481,7 @@ fn spawn_bays(
                                         Mesh3d(scroll.clone()),
                                         MeshMaterial3d(material.clone()),
                                         Transform::from_xyz(
-                                            side * (7.18 + depth),
+                                            side * (CABINET_X - 0.17 + depth),
                                             y,
                                             -1.26 + roll as f32 * 0.50,
                                         )
@@ -420,6 +495,36 @@ fn spawn_bays(
                     }
                 }
             });
+    }
+}
+
+pub(super) fn overview(
+    map: Res<map::Map>,
+    mut eyes: Query<(&Transform, &mut DistanceFog), With<Camera>>,
+    mut roofs: Query<(&Roof, &mut Visibility)>,
+) {
+    let Ok((eye, mut fog)) = eyes.single_mut() else {
+        return;
+    };
+    let range = if map.birds_eye() {
+        (105., 260.)
+    } else {
+        (42., 78.)
+    };
+    if !matches!(fog.falloff, FogFalloff::Linear { start, end } if (start, end) == range) {
+        fog.falloff = FogFalloff::Linear {
+            start: range.0,
+            end: range.1,
+        };
+    }
+    let first = first_bay(map.court_center().unwrap_or(eye.translation.z));
+    for (roof, mut visible) in &mut roofs {
+        let folder = (first + roof.bay) * layout::FOLDERS_PER_COURT + roof.folder;
+        visible.set_if_neq(if map.folder() == Some(folder) {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        });
     }
 }
 
@@ -451,7 +556,14 @@ pub(super) fn walk(
     );
     let position = camera.translation
         + Quat::from_rotation_y(yaw) * steering.clamp_length_max(1.) * (4.4 * seconds);
-    camera.translation = Vec3::new(position.x.clamp(-5.05, 5.05), 2.15, position.z.max(-10.9));
+    let on_x = Vec3::new(position.x, EYE, camera.translation.z);
+    if layout::walkable(on_x) {
+        camera.translation.x = on_x.x;
+    }
+    let on_z = Vec3::new(camera.translation.x, EYE, position.z);
+    if layout::walkable(on_z) {
+        camera.translation.z = on_z.z;
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -486,7 +598,7 @@ pub(super) fn draw(
         ResMut<guide::Tour>,
         Res<aim::Aim>,
     ),
-    time: Res<Time>,
+    (time, map): (Res<Time>, Res<map::Map>),
     mut scroll: Query<
         (&ScrollPart, &mut Transform, &mut Visibility),
         (Without<Bay>, Without<Camera>),
@@ -543,34 +655,51 @@ pub(super) fn draw(
             let aspect = window.width().max(1.) / window.height().max(1.);
             let fit_width = 2. * (SCROLL_WIDTH * 0.58 / (READ_DISTANCE * aspect)).atan();
             let reading_fov = ROOM_FOV.max(fit_width).min(2.2);
-            let fov = ROOM_FOV + (reading_fov - ROOM_FOV) * unrolling.reading_blend();
+            let fov = if map.open() {
+                0.92
+            } else {
+                ROOM_FOV + (reading_fov - ROOM_FOV) * unrolling.reading_blend()
+            };
             if perspective.fov != fov {
                 perspective.fov = fov;
             }
         }
-        if let Some(reader) = reader {
+        if let Some(destination) = map.camera() {
+            let t = 1. - (-5.0 * dt).exp();
+            camera.translation = camera.translation.lerp(destination.translation, t);
+            camera.rotation = camera.rotation.slerp(destination.rotation, t);
+        } else if let Some(reader) = reader {
             if unrolling.elapsed == 0. {
                 let from = library.walk_pose.as_ref().unwrap_or(&*camera);
-                unrolling.origin = (from.translation.z + 6.0).max(SCROLL_START);
+                let local = ((from.translation.z + COURT_LENGTH / 2.).rem_euclid(COURT_LENGTH)
+                    - COURT_LENGTH / 2.)
+                    .signum();
+                let court_center = ((from.translation.z + COURT_LENGTH / 2.) / COURT_LENGTH)
+                    .floor()
+                    * COURT_LENGTH;
+                unrolling.anchor = court_center + local * 7.5 - 2.75;
+                unrolling.x = if from.translation.x > 0. { 9.92 } else { -9.92 };
                 if reader.first > 0 {
                     unrolling.elapsed = STAGED;
                 }
             }
             unrolling.elapsed = (unrolling.elapsed + dt).min(STAGED);
+            let start = reader.page(extent.rows).start as f32 * line_height();
+            unrolling.origin = unrolling.anchor - start;
             let origin = unrolling.origin;
-            let close = extent.reading_view(reader, origin);
+            let close = extent.reading_view(reader, origin, unrolling.x);
             if unrolling.elapsed < STAGED {
                 let from = library.walk_pose.as_ref().copied().unwrap_or_else(entrance);
                 let approach = smooth(unrolling.elapsed / APPROACHED);
                 let step = smooth((unrolling.elapsed - APPROACHED) / (CLIMBED - APPROACHED));
-                let opening = extent.deployed(unrolling.reveal());
+                let opening = extent.deployed(unrolling.reveal()).min(TABLE_LENGTH);
                 let watch = Transform::from_xyz(
-                    -0.92,
-                    EYE_HEIGHT + 0.15 * step,
-                    origin - 2.1 + 0.31 * step,
+                    unrolling.x - 0.92,
+                    EYE + 0.10 * step,
+                    origin + 4.3 + 0.21 * step,
                 )
                 .looking_at(
-                    Vec3::new(0., SCROLL_Y, origin + 0.75 + opening.min(3.2)),
+                    Vec3::new(unrolling.x, SCROLL_Y, origin + 0.75 + opening.min(1.8)),
                     Vec3::Y,
                 );
                 let bob = (unrolling.elapsed * 16.).sin() * (1. - approach) * 0.04;
@@ -599,55 +728,56 @@ pub(super) fn draw(
         } else if unrolling.elapsed != 0. {
             *unrolling = Unrolling::default();
         }
-        camera_z = camera.translation.z;
+        camera_z = map.court_center().unwrap_or(camera.translation.z);
     }
     keep_hall(camera_z, &mut bays);
-    let origin = if reading {
-        unrolling.origin
-    } else {
-        SCROLL_START
-    };
+    let origin = unrolling.origin;
+    let first = (unrolling.anchor - origin).max(0.);
     let reveal = unrolling.reveal();
     let length = extent.deployed(reveal);
-    let ink = tile.as_ref().map(|tile| tile.deployed(length));
-    if let Some((_, size)) = ink
+    let shown = (length - first).clamp(0., TABLE_LENGTH);
+    let ink = tile.as_ref().map(|tile| tile.section(first, first + shown));
+    if let Some((top, size)) = ink
+        && let Some(tile) = &tile
         && let Some(mut material) = materials.get_mut(&paper.ink)
     {
-        let uv = bevy::math::Affine2::from_scale(Vec2::new(
-            1.,
-            size / (TILE_HEIGHT as f32 * UNIT_PER_PIXEL),
-        ));
+        let units = TILE_HEIGHT as f32 * UNIT_PER_PIXEL;
+        let uv = bevy::math::Affine2::from_scale_angle_translation(
+            Vec2::new(1., size / units),
+            0.,
+            Vec2::new(0., (top - tile.top as f32 * UNIT_PER_PIXEL) / units),
+        );
         if material.uv_transform != uv {
             material.uv_transform = uv;
         }
     }
     for (part, mut mesh, mut visibility) in &mut scroll {
         let visible = match part {
-            ScrollPart::Body if reading && length > 0. => {
-                *mesh = strip(origin, 0., length, SCROLL_Y);
+            ScrollPart::Body if reading && shown > 0. => {
+                *mesh = strip(unrolling.x, origin, first, shown, SCROLL_Y);
                 true
             }
             ScrollPart::Text if ink.is_some_and(|(_, size)| size > 0.) => {
                 let (top, size) = ink.expect("visible ink section");
-                *mesh = strip(origin, top, size, PAPER_Y);
+                *mesh = strip(unrolling.x, origin, top, size, PAPER_Y);
                 true
             }
             ScrollPart::Head if reading => {
                 let radius = if reveal > 0. { 0.09 } else { extent.radius() };
-                *mesh = coil(origin, radius);
+                *mesh = coil(unrolling.x, unrolling.anchor, radius);
                 true
             }
             ScrollPart::Tail if reading && reveal > 0. => {
-                let remaining = (1. - length / extent.length()).clamp(0., 1.);
+                let remaining = (1. - (first + shown) / extent.length()).clamp(0., 1.);
                 let radius = (0.11_f32.powi(2)
                     + (extent.radius().powi(2) - 0.11_f32.powi(2)) * remaining)
                     .sqrt();
-                *mesh = coil(origin + length, radius);
-                mesh.rotate_local_y(-length / extent.radius());
+                *mesh = coil(unrolling.x, unrolling.anchor + shown, radius);
+                mesh.rotate_local_y(-(first + shown) / extent.radius());
                 true
             }
             ScrollPart::Step if reading => {
-                *mesh = Transform::from_xyz(0., 0.09, origin - 0.74);
+                *mesh = Transform::from_xyz(unrolling.x, 0.09, unrolling.anchor - 0.74);
                 true
             }
             _ => false,
@@ -659,7 +789,7 @@ pub(super) fn draw(
         };
     }
     if let Ok(mut panel) = panels.single_mut() {
-        let display = if reading || review.tablet_open {
+        let display = if reading || review.tablet_open || map.open() {
             Display::None
         } else {
             Display::Flex
@@ -676,12 +806,12 @@ pub(super) fn draw(
         review.washing,
     );
     for (label, mut text) in &mut labels {
-        if (reading || review.tablet_open) && matches!(label, Label::Catalog) {
+        if (reading || review.tablet_open || map.open()) && matches!(label, Label::Catalog) {
             continue;
         }
         let content = match label {
             Label::Catalog => catalog_text(catalog, &repo.0, matches!(library.input, Some(Input::Catalog))),
-            Label::Help if review.tablet_open => String::new(),
+            Label::Help if review.tablet_open || map.open() => String::new(),
             Label::Help if !hint.is_empty() && library.input.is_none() => hint.into(),
             Label::Help if reading => match &library.input {
                 Some(Input::Line(line)) => format!("Go to line  ›  {line}▏    Enter go · Esc cancel"),
@@ -805,7 +935,7 @@ fn keep_hall(
 ) {
     let first = first_bay(camera_z);
     for (bay, mut location) in bays {
-        let z = (first + bay.0) as f32 * BAY_LENGTH;
+        let z = (first + bay.0) as f32 * COURT_LENGTH;
         if location.translation.z != z {
             location.translation.z = z;
         }
@@ -813,7 +943,9 @@ fn keep_hall(
 }
 
 fn first_bay(camera_z: f32) -> usize {
-    let center = ((camera_z + BAY_LENGTH * 0.5) / BAY_LENGTH).floor().max(0.) as usize;
+    let center = ((camera_z + COURT_LENGTH * 0.5) / COURT_LENGTH)
+        .floor()
+        .max(0.) as usize;
     center.saturating_sub(1)
 }
 
@@ -822,16 +954,15 @@ fn cabinet_height(files: usize) -> f32 {
 }
 
 pub(super) fn cabinet_marker(index: usize, files: usize) -> Vec3 {
-    let slot = index % CABINETS_PER_BAY;
-    let x = if slot % 2 == 0 { -7. } else { 7. };
-    let z = (index / CABINETS_PER_BAY) as f32 * BAY_LENGTH + CABINET_DEPTH[slot / 2];
-    Vec3::new(x, cabinet_height(files) + 0.6, z)
+    let point = layout::folder(index);
+    Vec3::new(point.x, cabinet_height(files) + 0.6, point.y)
 }
 
 pub(super) fn arrange_cabinets(
     library: Res<Library>,
     repo: Res<Repo>,
     filter: Res<file_facade::ChangesOnly>,
+    map: Res<map::Map>,
     camera: Query<&Transform, With<Camera>>,
     mut cabinets: Query<
         (&mut Cabinet, &mut Transform, &mut Visibility, &Children),
@@ -840,20 +971,38 @@ pub(super) fn arrange_cabinets(
     mut rolls: Query<(&CabinetFile, &mut Visibility), Without<Cabinet>>,
 ) {
     let Ok(eye) = camera.single() else { return };
-    let first = first_bay(eye.translation.z);
-    let selected = library.catalog.files.get(library.catalog.selected);
+    let first = first_bay(map.court_center().unwrap_or(eye.translation.z));
+    let selected = map
+        .focused_scroll(&library.catalog)
+        .or_else(|| library.catalog.files.get(library.catalog.selected).copied());
     for (mut cabinet, mut location, mut visibility, children) in &mut cabinets {
-        let index = (first + cabinet.bay) * CABINETS_PER_BAY + cabinet.slot;
+        let index = layout::folder_at(first + cabinet.bay, cabinet.slot);
+        let new_directory = cabinet.directory != index || repo.is_changed();
         cabinet.directory = index;
-        let group = library.catalog.cabinets.get(index);
+        let group = library.catalog.folders.get(index);
         let shown = if let Some(group) = group {
-            let scale = cabinet_height(group.files.len()) / 4.12;
-            if location.scale.y != scale {
-                location.scale.y = scale;
+            let batch_size = 2 * ROLLS_PER_CABINET;
+            let batch = selected
+                .and_then(|selected| group.files.iter().position(|&file| file == selected))
+                .map_or(0, |index| index / batch_size * batch_size);
+            let page = batch + layout::rack(cabinet.slot) * ROLLS_PER_CABINET;
+            let slots = group
+                .files
+                .len()
+                .saturating_sub(page)
+                .min(ROLLS_PER_CABINET);
+            location.scale.y = cabinet_height(slots) / 4.12;
+            if slots > 0 && (new_directory || cabinet.page != page || cabinet.label.is_empty()) {
+                let initial = |offset: usize| {
+                    let path = &repo.0.files[group.files[page + offset]].path;
+                    path.rsplit('/')
+                        .next()
+                        .and_then(|name| name.chars().next())
+                        .unwrap_or('–')
+                        .to_ascii_uppercase()
+                };
+                cabinet.label = format!("{} · {}–{}", group.path, initial(0), initial(slots - 1));
             }
-            let page = selected
-                .and_then(|selected| group.files.iter().position(|file| file == selected))
-                .map_or(0, |index| index / ROLLS_PER_CABINET * ROLLS_PER_CABINET);
             cabinet.page = page;
             for child in children.iter() {
                 if let Ok((slot, mut visibility)) = rolls.get_mut(child) {
@@ -871,7 +1020,11 @@ pub(super) fn arrange_cabinets(
                     }
                 }
             }
-            Visibility::Inherited
+            if slots > 0 {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            }
         } else {
             Visibility::Hidden
         };
@@ -903,12 +1056,12 @@ pub(super) fn visible_columns(
     pose: &GlobalTransform,
     face: listing::Face,
     row: usize,
-    origin: f32,
+    scroll: &Unrolling,
 ) -> Option<usize> {
     let start = code_x(face) as f32;
-    let x = start * UNIT_PER_PIXEL - SCROLL_WIDTH / 2.;
+    let x = scroll.x + start * UNIT_PER_PIXEL - SCROLL_WIDTH / 2.;
     let unit = 12.0 * UNIT_PER_PIXEL;
-    let z = line_center(row, origin);
+    let z = line_center(row, scroll.origin);
     let viewport = camera.logical_viewport_rect()?;
     let fits = |x| {
         camera
@@ -938,14 +1091,14 @@ pub(super) fn line_at(z: f32, origin: f32, rows: usize) -> Option<(usize, f32)> 
     }
 }
 
-fn strip(origin: f32, top: f32, length: f32, y: f32) -> Transform {
-    Transform::from_xyz(0., y, origin + top + length / 2.)
+fn strip(x: f32, origin: f32, top: f32, length: f32, y: f32) -> Transform {
+    Transform::from_xyz(x, y, origin + top + length / 2.)
         .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
         .with_scale(Vec3::new(1., length.max(0.001), 1.))
 }
 
-fn coil(z: f32, radius: f32) -> Transform {
-    Transform::from_xyz(0., SCROLL_Y + radius, z)
+fn coil(x: f32, z: f32, radius: f32) -> Transform {
+    Transform::from_xyz(x, SCROLL_Y + radius, z)
         .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2))
         .with_scale(Vec3::new(radius, 1., radius))
 }
@@ -982,13 +1135,13 @@ impl Extent {
         (0.15 + 0.16 * (1. + self.rows as f32 / 20.).log2()).min(1.12)
     }
 
-    fn reading_view(&self, reader: &Reader, origin: f32) -> Transform {
+    fn reading_view(&self, reader: &Reader, origin: f32, x: f32) -> Transform {
         let first = reader.page(self.rows).start as f32;
         let y = HEADER_HEIGHT as f32 + (first + SCROLL_ROWS as f32 / 2.) * ROW_HEIGHT as f32;
         let center = (y * UNIT_PER_PIXEL)
             .min(self.length() * 0.5 + first * ROW_HEIGHT as f32 * UNIT_PER_PIXEL * 0.5);
-        let focus = Vec3::new(0., SCROLL_Y, origin + center);
-        let mut camera = Transform::from_xyz(0., SCROLL_Y + READ_DISTANCE, focus.z - 0.85)
+        let focus = Vec3::new(x, SCROLL_Y, origin + center);
+        let mut camera = Transform::from_xyz(x, SCROLL_Y + READ_DISTANCE, focus.z)
             .looking_at(focus, Vec3::NEG_Z);
         camera.rotate_local(Quat::from_euler(
             EulerRot::YXZ,
@@ -1028,10 +1181,11 @@ struct Tile {
 }
 
 impl Tile {
-    fn deployed(&self, length: f32) -> (f32, f32) {
+    fn section(&self, from: f32, to: f32) -> (f32, f32) {
         let top = self.top as f32 * UNIT_PER_PIXEL;
-        let amount = (length - top).clamp(0., self.height as f32 * UNIT_PER_PIXEL);
-        (top, amount)
+        let start = top.max(from);
+        let end = to.min(top + self.height as f32 * UNIT_PER_PIXEL);
+        (start, (end - start).max(0.))
     }
 }
 
@@ -1062,7 +1216,7 @@ fn catalog_text(catalog: &Catalog, repo: &Repository, editing: bool) -> String {
         return menu;
     }
     if let Some(&selected) = catalog.files.get(catalog.selected)
-        && let Some((_, directory, files)) = catalog.cabinet(repo.files[selected].directory())
+        && let Some((_, directory, files)) = catalog.folder(repo.files[selected].directory())
     {
         menu.push_str(&format!(
             "\n{directory} · {files} {}",
@@ -1221,7 +1375,7 @@ mod tests {
         assert!(cabinet_height(50) > 2. * cabinet_height(1));
         assert_eq!(cabinet_height(10_000), 6.3);
         assert_eq!(first_bay(0.), 0);
-        assert!(first_bay(160.) >= 5);
+        assert!(first_bay(240.) >= 5);
     }
 
     #[test]
@@ -1237,6 +1391,23 @@ mod tests {
     }
 
     #[test]
+    fn reading_late_rows_keeps_the_camera_square_to_the_same_patch_of_floor() {
+        let extent = Extent::new(100_000);
+        let first = Reader::new(1);
+        let late = Reader::new(58_007);
+        let anchor = 43.;
+        let offset = late.first as f32 * line_height();
+        let early_view = extent.reading_view(&first, anchor, 9.92);
+        let late_view = extent.reading_view(&late, anchor - offset, 9.92);
+        assert!(early_view.translation.distance(late_view.translation) < 0.002);
+        assert!(late_view.forward().dot(Vec3::NEG_Y) > 0.999);
+        let tile = extent.tile(&late);
+        let (top, visible) = tile.section(offset, offset + TABLE_LENGTH);
+        assert_eq!(top, offset);
+        assert!(visible > SCROLL_ROWS as f32 * line_height());
+    }
+
+    #[test]
     fn a_long_scroll_opens_near_the_reader_before_its_tail_leaves_the_aisle() {
         let extent = Extent::new(2400);
         let state = Unrolling {
@@ -1249,7 +1420,7 @@ mod tests {
             "opening edge jumped {opened} metres"
         );
         let tile = extent.tile(&Reader::new(1));
-        let (top, size) = tile.deployed(opened);
+        let (top, size) = tile.section(0., opened);
         assert_eq!((top, size), (0., opened));
         assert_eq!(extent.deployed(1.), extent.length());
     }

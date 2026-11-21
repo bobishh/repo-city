@@ -110,12 +110,16 @@ fn grip(
 pub(super) fn animate(
     library: Res<Library>,
     review: Res<review_notes::Review>,
+    map: Res<map::Map>,
     unrolling: Res<room::Unrolling>,
     mut hands: Query<(&Hands, &mut Transform, &mut Visibility)>,
 ) {
     let t = unrolling.elapsed;
-    let changing =
-        library.reader.is_some() && !review.blocked && t >= room::APPROACHED && t < room::UNROLLED;
+    let changing = !map.open()
+        && library.reader.is_some()
+        && !review.blocked
+        && t >= room::APPROACHED
+        && t < room::UNROLLED;
     let push = (std::f32::consts::PI * unrolling.reveal()).sin().max(0.);
     for (hand, mut pose, mut visibility) in &mut hands {
         *visibility = if changing {

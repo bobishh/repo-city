@@ -24,6 +24,9 @@ struct Cover {
 #[derive(Component)]
 pub(super) struct CityOverlay;
 
+#[derive(Component)]
+struct CoverCredit;
+
 const CAVEAT: Handle<Font> = bevy::asset::uuid_handle!("3194a8cc-e336-433d-aaf4-d056ceed4871");
 
 pub(super) fn wordmark_font() -> TextFont {
@@ -46,7 +49,7 @@ fn spawn(
         .expect("Repo City wordmark font");
     let library = set.is_library();
     let bytes: &[u8] = if library {
-        include_bytes!("../../../../assets/greek-library-tablet.webp")
+        include_bytes!("../../../../assets/greek-library-cover.webp")
     } else {
         include_bytes!("../../../../assets/repo-city-tablet.webp")
     };
@@ -63,7 +66,7 @@ fn spawn(
     commands.spawn((
         Cover {
             aspect,
-            focus: Vec2::new(if library { 0.69 } else { 0.67 }, 0.47),
+            focus: Vec2::new(if library { 0.42 } else { 0.67 }, 0.47),
             library,
         },
         ImageNode::new(images.add(image)),
@@ -71,6 +74,23 @@ fn spawn(
         GlobalZIndex(-1),
         bevy::picking::Pickable::IGNORE,
     ));
+    if library {
+        commands.spawn((
+            CoverCredit,
+            Text::new("© OpenStreetMap contributors · ODbL"),
+            TextFont::from_font_size(11.),
+            TextColor(Color::WHITE),
+            BackgroundColor(Color::srgba(0.13, 0.09, 0.06, 0.85)),
+            Node {
+                position_type: PositionType::Absolute,
+                right: px(10.),
+                bottom: px(9.),
+                padding: UiRect::axes(px(5.), px(3.)),
+                ..default()
+            },
+            bevy::picking::Pickable::IGNORE,
+        ));
+    }
 }
 
 fn layout(
@@ -79,6 +99,7 @@ fn layout(
     buildings: Query<(), With<Facade>>,
     mut cover: Query<(&Cover, &mut Node)>,
     mut overlays: Query<&mut Node, (With<CityOverlay>, Without<Cover>)>,
+    mut credit: Query<&mut Node, (With<CoverCredit>, Without<Cover>, Without<CityOverlay>)>,
     mut city_seen: Local<bool>,
 ) {
     let (Ok(window), Ok((cover, mut node))) = (windows.single(), cover.single_mut()) else {
@@ -96,6 +117,16 @@ fn layout(
         };
         if overlay.display != display {
             overlay.display = display;
+        }
+    }
+    if let Ok(mut credit) = credit.single_mut() {
+        let display = if visible {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if credit.display != display {
+            credit.display = display;
         }
     }
     node.set_if_neq(Node {

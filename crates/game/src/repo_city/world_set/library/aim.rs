@@ -103,7 +103,7 @@ pub(super) fn update(
     repo: Res<Repo>,
     explorer: Res<Explorer>,
     world: Res<WorldSet>,
-    scroll: Res<room::Unrolling>,
+    (scroll, map): (Res<room::Unrolling>, Res<map::Map>),
     eye: Query<(&Camera, &GlobalTransform, &Pilot), With<room::Camera>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     review: Res<review_notes::Review>,
@@ -127,7 +127,7 @@ pub(super) fn update(
     #[cfg(target_arch = "wasm32")] mut announced: Local<Option<Target>>,
     #[cfg(target_arch = "wasm32")] touch: Res<browser_touch::Touch>,
 ) {
-    let blocked = review.blocked || review.tablet_open || library.input.is_some();
+    let blocked = map.open() || review.blocked || review.tablet_open || library.input.is_some();
     #[cfg(not(target_arch = "wasm32"))]
     let blocked = blocked || picker.blocks_controls();
     let view = eye.single().ok().zip(windows.single().ok());
@@ -163,7 +163,7 @@ pub(super) fn update(
             let distance = (room::PAPER_Y - ray.origin.y) / direction.y;
             let point = ray.origin + distance * direction;
             if distance > 0.
-                && point.x.abs() < room::PAPER_WIDTH_WORLD / 2.
+                && (point.x - scroll.x).abs() < room::PAPER_WIDTH_WORLD / 2.
                 && let Some((line, z)) = room::line_at(point.z, scroll.origin, content.len())
                 && let Some(row) = content.row(line - 1)
             {
@@ -174,7 +174,7 @@ pub(super) fn update(
                         before: row.before,
                         number: row.line.number,
                     },
-                    center: Vec3::new(0., room::PAPER_Y + 0.023, z),
+                    center: Vec3::new(scroll.x, room::PAPER_Y + 0.023, z),
                     size: Vec3::new(room::PAPER_WIDTH_WORLD - 0.12, 0.012, room::line_height()),
                     distance,
                 });
@@ -187,7 +187,7 @@ pub(super) fn update(
             if *visibility == Visibility::Hidden {
                 continue;
             }
-            let Some(group) = library.catalog.cabinets.get(cabinet.directory) else {
+            let Some(group) = library.catalog.folders.get(cabinet.directory) else {
                 continue;
             };
             let (center, size) = cabinet.bounds(pose);
@@ -245,7 +245,7 @@ pub(super) fn update(
     let caption_text = hit.and_then(|hit| match hit.target {
         Target::Cabinet(group) => library
             .catalog
-            .cabinets
+            .folders
             .get(group)
             .map(|group| group.path.clone()),
         Target::File(index) => repo.0.files.get(index).map(|file| file.path.clone()),

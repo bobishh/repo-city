@@ -4,6 +4,7 @@ pub(super) fn update(
     library: Res<Library>,
     aim: Res<aim::Aim>,
     opened: Res<room::Unrolling>,
+    map: Res<map::Map>,
     settings: Res<reading::Settings>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -19,9 +20,9 @@ pub(super) fn update(
         .reader
         .as_ref()
         .zip(repo.0.files.get(explorer.selected));
-    let frozen = review.blocked
+    let frozen = map.open()
+        || review.blocked
         || review.tablet_open
-        || library.input.is_some()
         || !windows.single().is_ok_and(|window| window.focused);
     if frozen || focus.is_none() {
         listing.clear_observation();
@@ -29,6 +30,10 @@ pub(super) fn update(
         if focus.is_none() {
             *heat = None;
         }
+        return;
+    }
+    if library.input.is_some() {
+        review.drag = None;
         return;
     }
     let (reader, file) = focus.expect("visible reader");
@@ -176,7 +181,11 @@ pub(super) fn publish(
     let reader = library.reader.as_ref();
     let face = reader.map(|reader| reader.face);
     let visible = reader.filter(|_| {
-        !review.blocked && !review.tablet_open && library.input.is_none() && opening.stationary()
+        !map.open()
+            && !review.blocked
+            && !review.tablet_open
+            && library.input.is_none()
+            && opening.stationary()
     });
     let mut printed = Vec::new();
     if let Some(reader) = visible {
@@ -186,8 +195,7 @@ pub(super) fn publish(
             let Some(row) = paper.row(index) else {
                 continue;
             };
-            let Some(columns) =
-                room::visible_columns(camera, &pose, reader.face, index, opening.origin)
+            let Some(columns) = room::visible_columns(camera, &pose, reader.face, index, &opening)
             else {
                 continue;
             };

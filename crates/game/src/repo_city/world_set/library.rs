@@ -6,10 +6,13 @@ use bevy::input::keyboard::KeyboardInput;
 use super::super::*;
 
 mod aim;
+mod athens;
 mod forms;
 mod journey;
+mod layout;
 mod librarian;
 mod map;
+mod owl;
 mod paper;
 mod place;
 mod room;
@@ -44,11 +47,11 @@ struct Destination {
 struct Catalog {
     query: String,
     files: Vec<usize>,
-    cabinets: Vec<CatalogCabinet>,
+    folders: Vec<CatalogFolder>,
     selected: usize,
 }
 
-struct CatalogCabinet {
+struct CatalogFolder {
     path: String,
     files: Vec<usize>,
 }
@@ -62,21 +65,24 @@ impl Catalog {
                 .or_default()
                 .push(index);
         }
-        self.cabinets = directories
+        self.folders = directories
             .into_iter()
             .map(|(path, mut files)| {
-                files.sort_unstable_by_key(|&index| &repo.files[index].path);
-                CatalogCabinet { path, files }
+                files.sort_by_cached_key(|&index| {
+                    let path = &repo.files[index].path;
+                    (path.to_lowercase(), path)
+                });
+                CatalogFolder { path, files }
             })
             .collect();
     }
 
-    fn cabinet(&self, name: &str) -> Option<(usize, &str, usize)> {
+    fn folder(&self, name: &str) -> Option<(usize, &str, usize)> {
         let index = self
-            .cabinets
+            .folders
             .binary_search_by(|cabinet| cabinet.path.as_str().cmp(name))
             .ok()?;
-        let cabinet = &self.cabinets[index];
+        let cabinet = &self.folders[index];
         Some((index, &cabinet.path, cabinet.files.len()))
     }
 
@@ -122,6 +128,7 @@ impl Catalog {
 
 struct Reader {
     first: usize,
+    arrival: Option<usize>,
     column: usize,
     target: Option<usize>,
     face: listing::Face,
@@ -134,6 +141,7 @@ impl Reader {
     fn new(line: usize) -> Self {
         Self {
             first: line.saturating_sub(1),
+            arrival: (line > 1).then_some(line),
             column: 0,
             target: Some(line),
             face: listing::Face::Source,
@@ -229,6 +237,7 @@ pub(super) fn install(app: &mut App, args: &[String]) {
             (
                 controls,
                 room::draw,
+                room::overview,
                 room::arrange_cabinets,
                 aim::update,
                 signs::draw,
@@ -236,6 +245,7 @@ pub(super) fn install(app: &mut App, args: &[String]) {
                 seeing::share,
                 place::save,
                 librarian::animate,
+                owl::fly,
                 progress::sync.run_if(repository_picker::has_city),
                 android::show_tablet,
             )
@@ -290,7 +300,7 @@ fn refresh_repository(
     }
     library.catalog.index(&repo.0);
     room.positions.clear();
-    for (index, cabinet) in library.catalog.cabinets.iter().enumerate() {
+    for (index, cabinet) in library.catalog.folders.iter().enumerate() {
         let position = room::cabinet_marker(index, cabinet.files.len());
         for &file in &cabinet.files {
             room.positions
@@ -372,7 +382,12 @@ fn controls(
         return;
     };
     if let Some(line) = library.arrival.take() {
-        library.walk_pose = Some(*camera);
+        library.walk_pose = Some(
+            library
+                .catalog
+                .folder(file.directory())
+                .map_or(*camera, |(folder, _, _)| layout::view(folder)),
+        );
         let mut reader = Reader::new(line);
         reader.first = paper::Rows::new(&explorer, reader.face).locate(line);
         library.reader = Some(reader);
@@ -380,12 +395,31 @@ fn controls(
     }
     if let Some(destination) = library.destination.take() {
         explorer.open(&repo.0, destination.index);
+        library.catalog.query.clear();
+        library
+            .catalog
+            .collect(&repo.0, Some(destination.index), &filter);
         if explorer.before != destination.before {
             explorer.before = destination.before;
             explorer.reload(&repo.0);
         }
         progress.visit(destination.index, &repo.0.files[destination.index], false);
-        library.walk_pose.get_or_insert(*camera);
+        let saved = library.walk_pose.unwrap_or(*camera);
+        library.walk_pose = Some(
+            library
+                .catalog
+                .folder(repo.0.files[destination.index].directory())
+                .map_or(saved, |(folder, _, _)| {
+                    if layout::nearest(saved.translation, library.catalog.folders.len())
+                        == Some(folder)
+                        && saved.translation.x.abs() > layout::FRONT
+                    {
+                        saved
+                    } else {
+                        layout::view(folder)
+                    }
+                }),
+        );
         library.input = None;
         let mut reader = Reader::new(destination.line);
         reader.face = destination.face;
@@ -403,6 +437,7 @@ fn controls(
     let joystick = Vec2::ZERO;
     let enter = keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]);
     let escape = keys.just_pressed(KeyCode::Escape);
+    let find = keys.any_just_pressed([KeyCode::Slash, KeyCode::Backslash]);
     if let Some(input) = &mut library.input {
         if escape || enter {
             match library.input.take().expect("active library input") {
@@ -486,7 +521,13 @@ fn controls(
                 (reader.look - motion.delta * 0.0025).clamp(Vec2::splat(-0.27), Vec2::splat(0.27));
         }
         let rows = paper::Rows::new(&explorer, reader.face);
-        if keys.just_pressed(KeyCode::Slash)
+        // Remote blobs can arrive after the repository and its saved reading position.
+        if rows.len() != 0
+            && let Some(line) = reader.arrival.take()
+        {
+            reader.first = rows.locate(line);
+        }
+        if find
             || (keys.just_pressed(KeyCode::KeyF)
                 && keys.any_pressed([
                     KeyCode::ControlLeft,
@@ -631,9 +672,7 @@ fn controls(
         KeyCode::ControlLeft,
         KeyCode::ControlRight,
     ]);
-    if library.input.is_none()
-        && (keys.just_pressed(KeyCode::Slash) || (command && keys.just_pressed(KeyCode::KeyP)))
-    {
+    if library.input.is_none() && (find || (command && keys.just_pressed(KeyCode::KeyP))) {
         library.catalog.query.clear();
         library
             .catalog
@@ -657,7 +696,7 @@ fn controls(
         match aim.0 {
             Some(aim::Target::File(index)) => chosen = Some(index),
             Some(aim::Target::Cabinet(group)) => {
-                if let Some(group) = library.catalog.cabinets.get(group)
+                if let Some(group) = library.catalog.folders.get(group)
                     && let Some(&first) = group
                         .files
                         .iter()
@@ -676,7 +715,12 @@ fn controls(
     {
         explorer.open(&repo.0, index);
         progress.visit(index, &repo.0.files[index], false);
-        library.walk_pose = Some(*camera);
+        library.walk_pose = Some(
+            library
+                .catalog
+                .folder(repo.0.files[index].directory())
+                .map_or(*camera, |(cabinet, _, _)| layout::view(cabinet)),
+        );
         library.input = None;
         library.reader = Some(Reader::new(1));
     } else if library.input.is_none() && !command {
@@ -809,8 +853,8 @@ mod tests {
         }
         let mut catalog = Catalog::default();
         catalog.index(&repo);
-        assert_eq!(catalog.cabinet("/"), Some((0, "/", 1)));
-        assert_eq!(catalog.cabinet("src"), Some((1, "src", 2)));
-        assert_eq!(catalog.cabinet("src/ui"), Some((2, "src/ui", 1)));
+        assert_eq!(catalog.folder("/"), Some((0, "/", 1)));
+        assert_eq!(catalog.folder("src"), Some((1, "src", 2)));
+        assert_eq!(catalog.folder("src/ui"), Some((2, "src/ui", 1)));
     }
 }

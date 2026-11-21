@@ -95,8 +95,10 @@ canvas[data-pointer-locked] { cursor: none !important; }
   text-shadow: 0 1px 2px #2f2119;
 }
 [data-world="greek-library"] #start-screen { background: #221811; }
-[data-world="greek-library"] #start-screen img { object-fit: cover; object-position: 55% 50%; }
-[data-world="greek-library"] #start-screen::after { background: linear-gradient(120deg, #1a100be0, transparent 70%); }
+[data-world="greek-library"] #start-screen img { object-fit: cover; object-position: 40% 50%; }
+[data-world="greek-library"] #start-screen::after { background: linear-gradient(145deg, #251a11a6, transparent 52%); }
+#landscape-credit { display: none; position: absolute; z-index: 2; bottom: 4px; left: 9px; padding: 2px 4px; background: #21150add; color: #f8e6c7; font: .625rem/1.1 system-ui, sans-serif; }
+[data-world="greek-library"]:not([data-playing]) #landscape-credit { display: block; }
 #repo-city[data-library-reading] ~ #city-header :is(.wordmark, #city-repository) {
   text-shadow: 0 1px 2px #1a100a, 0 0 7px #1a100a;
 }

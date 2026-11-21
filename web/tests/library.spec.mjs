@@ -31,19 +31,63 @@ test("styles the shared repository form for the selected world", async ({ page }
   await expect(form).toHaveCSS("background-color", "rgb(10, 19, 26)");
 });
 
+test("travels from the owl view to a distant folder and returns there after reading", async ({ page }, testInfo) => {
+  const revision = "c".repeat(40);
+  const tree = Array.from({ length: 10 }, (_, index) => ({
+    path: `gallery-${index}/index.rs`,
+    type: "blob",
+    mode: "100644",
+    sha: (index + 10).toString(16).padStart(40, "0"),
+    size: 15,
+  }));
+  await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
+  await page.route("https://api.github.com/**", route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/repos/owner/library") return route.fulfill({ json: { default_branch: "main" } });
+    if (path.includes("/commits/")) return route.fulfill({ json: { sha: revision, parents: [] } });
+    if (path.includes("/git/trees/")) return route.fulfill({ json: { tree } });
+    return route.fulfill({ json: { encoding: "base64", content: Buffer.from("pub struct Roll;\n").toString("base64") } });
+  });
+  await page.goto("/?repo=owner%2Flibrary&world=greek-library");
+  await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+  const canvas = page.locator("#repo-city");
+  await canvas.focus();
+  const press = key => page.keyboard.press(key, { delay: 135 });
+  await press("KeyM");
+  await expect(canvas).toHaveAttribute("data-library-map", "Folder · gallery-0");
+  await page.screenshot({ path: testInfo.outputPath("folder.png") });
+  await press("KeyM");
+  await expect(canvas).toHaveAttribute("data-library-map", "Archive courtyards");
+  await page.screenshot({ path: testInfo.outputPath("owl-view.png") });
+  await press("End");
+  await press("Enter");
+  await expect(canvas).toHaveAttribute("data-library-map", "Folder · gallery-9");
+  await press("Escape");
+  await expect(canvas).not.toHaveAttribute("data-library-map");
+  await press("KeyM");
+  await expect(canvas).toHaveAttribute("data-library-map", "Folder · gallery-9");
+  await press("Enter");
+  await expect(canvas).toHaveAccessibleName("Greek Library, gallery-9/index.rs, lines 1–1");
+  await press("Escape");
+  await expect(canvas).toHaveAccessibleName("Greek Library");
+  await press("KeyM");
+  await expect(canvas).toHaveAttribute("data-library-map", "Folder · gallery-9");
+});
+
 test("opens a repository in the Greek Library and unrolls a file at the requested line", async ({ page }, testInfo) => {
   page.on("pageerror", error => console.error(error));
   page.on("console", message => { if (message.type() === "error") console.error(message.text()); });
   const revision = "a".repeat(40);
   const document = "b".repeat(40);
   const source = Array.from({ length: 2400 }, (_, row) => `pub const ROW_${row + 1}: usize = ${row + 1};\n`).join("");
+  let slowSource = false;
   await page.addInitScript(() => {
     if (!localStorage.getItem("repo-city-reading-v1")) {
       localStorage.setItem("repo-city-reading-v1", JSON.stringify({ block_kind: "lines", min_seconds: 0.1, max_seconds: 0.2 }));
     }
   });
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
-  await page.route("https://api.github.com/**", route => {
+  await page.route("https://api.github.com/**", async route => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/repos/owner/library") return route.fulfill({ json: { default_branch: "main" } });
     if (path.includes("/commits/")) return route.fulfill({ json: { sha: revision, parents: [] } });
@@ -51,6 +95,7 @@ test("opens a repository in the Greek Library and unrolls a file at the requeste
       { path: "README.md", type: "blob", mode: "100644", sha: revision, size: 9 },
       { path: "src/scroll.rs", type: "blob", mode: "100644", sha: document, size: source.length },
     ] } });
+    if (slowSource && path.endsWith(document)) await new Promise(resolve => setTimeout(resolve, 750));
     const body = Buffer.from(path.endsWith(document) ? source : "# Library");
     return route.fulfill({ json: { size: body.length, encoding: "base64", content: body.toString("base64") } });
   });
@@ -122,8 +167,10 @@ test("opens a repository in the Greek Library and unrolls a file at the requeste
   await page.screenshot({ path: testInfo.outputPath("scroll.png") });
   await press("End");
   await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 2379–2400");
-  await press("Slash");
+  await press("Backslash");
   await expect(canvas).toHaveAccessibleDescription("Find text in this scroll. Press Enter to search.");
+  await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 2379–2400");
+  await expect.poll(visibleInk, { timeout: 7500 }).toBeGreaterThan(150);
   await page.keyboard.type("ROW_1800", { delay: 55 });
   await press("Enter");
   await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 1800–1821");
@@ -131,19 +178,20 @@ test("opens a repository in the Greek Library and unrolls a file at the requeste
     const key = Object.keys(localStorage).find(key => key.includes("|world=greek-library"));
     return key ? JSON.parse(localStorage.getItem(key)).line : 0;
   })).toBe(1800);
+  slowSource = true;
   await page.reload();
   await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 1800–1821", { timeout: 30_000 });
   await canvas.focus();
   await press("Escape");
   await expect(canvas).toHaveAccessibleName("Greek Library");
   await press("KeyM");
-  await expect(canvas).toHaveAttribute("data-library-map", "Cabinet · src");
+  await expect(canvas).toHaveAttribute("data-library-map", "Folder · src");
   await press("KeyM");
-  await expect(canvas).toHaveAttribute("data-library-map", "Library corridors");
+  await expect(canvas).toHaveAttribute("data-library-map", "Archive courtyards");
   await page.screenshot({ path: testInfo.outputPath("corridors.png"), style: "#city-header { visibility: hidden }" });
   await press("End");
   await press("Enter");
-  await expect(canvas).toHaveAttribute("data-library-map", "Cabinet · src");
+  await expect(canvas).toHaveAttribute("data-library-map", "Folder · src");
   await press("Enter");
   await expect(canvas).not.toHaveAttribute("data-library-map");
   await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 1–22");

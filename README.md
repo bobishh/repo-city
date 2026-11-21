@@ -78,14 +78,14 @@ On desktop, launch with `--world-picker` to choose a world before opening
 the explorer. To skip the chooser on a Mac, use
 `open -n -a "Repo City" --args --repo /path/to/checkout --world-set greek-library`.
 On desktop, append `--file src/main.rs --line 120` to open a scroll at a line.
-Browse with **WASD**, turn with **Left/Right** or drag with the right mouse
-button. Use **Up/Down** to select a file, **Page Up/Down** to change shelves,
-and **/** to search the full repository. Each directory has a cabinet sized
-by its file count. With **Enter**, follow the librarian as it steps up to the
-roll and unrolls the selected file along the gallery at a fixed scale per line.
-Use the wheel or **Page Up/Down**
-to move along the scroll, **J** to go to a line, and **Esc** to return to the
-aisle. The gallery extends as you move.
+Walk between the courtyards with **WASD**. Turn with **Left/Right** or drag
+with the right mouse button. Each folder occupies a reading room. Its
+cabinets hold files in alphabetical order. Press **M** to look into the
+current room from above and choose a scroll. Press **M** again to fly over
+the courtyards with the owl, then select a room. **Esc** returns to the room.
+Use **/** or **\\** to search the repository or the open scroll. Press
+**Enter** to open the selected file and read the parchment from directly
+above. Use the wheel, **Page Up/Down**, or **J** to move through the file.
 
 The library reads the same snapshots as Code City and shares visited-file
 progress. Its scrolls show source, including the previous snapshot for removed
