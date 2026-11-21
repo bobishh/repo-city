@@ -30,11 +30,11 @@ Caveat Project Authors. The desktop font (`assets/fonts/Caveat-Latin.ttf`) is
 the TrueType form of the web font (`web/assets/caveat-latin-wght.woff2`). See
 `assets/fonts/Caveat-LICENSE` and `web/assets/OFL-Caveat.txt`.
 
-The Greek Library wordmark uses GFS Didot Regular by Greek Font Society.
+The Repo Polis wordmark uses GFS Didot Regular by Greek Font Society.
 The unmodified font comes from [Google Fonts](https://github.com/google/fonts/tree/main/ofl/gfsdidot)
 and ships with SIL Open Font License 1.1 in `assets/fonts/GFSDidot-LICENSE`.
 
-The Greek Library landscape includes [OpenStreetMap contributors' map
+The Repo Polis landscape includes [OpenStreetMap contributors' map
 data](https://www.openstreetmap.org/copyright) under ODbL 1.0. The
 [bundled extract](world_sets/athens-osm.json) contains streets and simplified
 building bounds around [Hadrian's Library](https://www.openstreetmap.org/way/729674865).

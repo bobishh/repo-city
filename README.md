@@ -70,13 +70,13 @@ The app uses Git to fetch snapshots and the GitHub API for review comments.
 In large repositories the city loads nearby buildings as you fly. File search
 still covers the entire comparison.
 
-### Greek Library
+### Repo Polis
 
-Add `?world=greek-library` to the web URL to open the library directly, or
+Add `?world=repo-polis` to the web URL to open the library directly, or
 enable the world selector in the repository picker with `?world-picker=1`.
 On desktop, launch with `--world-picker` to choose a world before opening
 the explorer. To skip the chooser on a Mac, use
-`open -n -a "Repo City" --args --repo /path/to/checkout --world-set greek-library`.
+`open -n -a "Repo City" --args --repo /path/to/checkout --world-set repo-polis`.
 On desktop, append `--file src/main.rs --line 120` to open a scroll at a line.
 Walk between the courtyards with **WASD**. Turn with **Left/Right** or drag
 with the right mouse button. Each folder occupies a reading room. Its

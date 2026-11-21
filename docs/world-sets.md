@@ -5,7 +5,7 @@ appearance of Repo City's tools. It receives the current repository comparison
 and presents its operations. The repository, review state and services have
 the same identities in every world.
 
-Code City is the default. Greek Library is a preview with its own geometry.
+Code City is the default. Repo Polis is a preview with its own geometry.
 Desktop accepts `--world-set ID`, a compatible JSON descriptor, or
 `--world-picker`. Browser URLs accept `?world=ID` and expose the picker only
 with `?world-picker=1`. The picker preserves repository, revision, comparison
@@ -26,7 +26,7 @@ A new adapter can be added without changing repository storage or services.
 | Review state | Read credit, visits, comments, presets, preferences and private drafts. Persist it using existing repository, revision and content identities. Store a world-specific pose separately from the file and its reading position. |
 | VibePad | A shared interactive screen with the current platform's tabs, data and actions. The world supplies the case, first-person hands, motion and form theme; the existing render target and input projection connect the screen to the scene. |
 
-Code City and Greek Library use the same directory key, including the root
+Code City and Repo Polis use the same directory key, including the root
 directory. A building and a scroll representing the same path share file
 identity. Persisted filesystem, GitHub, agent and review records do not
 contain city or library geometry.
@@ -39,7 +39,7 @@ that context before declaring it supported. Differences in animation,
 geometry and movement style are presentation choices. The previews may
 remain opt-in while a feature is still missing.
 
-| Capability | Code City behavior to preserve | Greek Library presentation |
+| Capability | Code City behavior to preserve | Repo Polis presentation |
 | --- | --- | --- |
 | Repository selection | Local folder, live worktree, frozen revision, recent checkout, GitHub repository or PR, revision and base selection. GitHub sign-in, private repo access and historical PR rules remain in effect. | Open the same comparison in the gallery. Keep the world and selection when changing repository or revision. |
 | Frame and aim | First-person view, mouse capture and Esc, keyboard look, common input focus and pointer-based hover. The reticle and label identify the current target. | First-person eye camera and the same focus states. Render hands near the lower edge during tool use. Highlight the actual aimed cabinet or file and name it. |
@@ -116,7 +116,7 @@ spec enters this contract when its supported route is available.
 
 | Given | When | Then |
 | --- | --- | --- |
-| The default launch and an opt-in launch open the same comparison | Open Code City, then Greek Library with the world flag | Code City remains the default, the picker is opt-in, and the comparison and progress identities match. A custom descriptor chooses a registered presentation. |
+| The default launch and an opt-in launch open the same comparison | Open Code City, then Repo Polis with the world flag | Code City remains the default, the picker is opt-in, and the comparison and progress identities match. A custom descriptor chooses a registered presentation. |
 | A small directory and a large directory both contain visible files | Aim at a cabinet, then at a file with mouse capture and with the free pointer | The larger cabinet is visibly taller, the correct target is highlighted and named, and E or a selection opens the intended file. A modal suppresses aim until closed. |
 | A repository has multiple directories with scrolls | Press M twice, choose a cabinet from the corridor plan, then choose a scroll | The Stone Pad shows the cabinet and full-library maps in order. Selecting an entry opens the corresponding cabinet or file. Escape and an empty map leave the current location usable. |
 | A file has 2,400 lines | Approach, unroll, wheel through it, then jump to line 1,750 and press End | The camera remains first-person, the animation shows the roll extending through the hall, the code and line numbers are legible, the highlight reaches line 1,750 and End reaches line 2,400. Recycled bays preserve scale. |

@@ -83,22 +83,22 @@ canvas[data-pointer-locked] { cursor: none !important; }
   src: url("./assets/GFSDidot-Regular.ttf") format("truetype");
   font-display: swap;
 }
-[data-world="greek-library"] #city-header {
+[data-world="repo-polis"] #city-header {
   --library-ink: #f6deb0;
 }
-[data-world="greek-library"] #city-header :is(#logo, #city-repository) { color: var(--library-ink); }
-[data-world="greek-library"] :is(.android, .city-title) { display: none; }
-[data-world="greek-library"] .library-title { display: inline; }
-[data-world="greek-library"] #city-header .wordmark {
+[data-world="repo-polis"] #city-header :is(#logo, #city-repository) { color: var(--library-ink); }
+[data-world="repo-polis"] :is(.android, .city-title) { display: none; }
+[data-world="repo-polis"] .library-title { display: inline; }
+[data-world="repo-polis"] #city-header .wordmark {
   padding-left: 8px;
   font: 400 clamp(1.65rem, 4vw, 2.55rem)/1 "GFS Didot", Georgia, serif;
   text-shadow: 0 1px 2px #2f2119;
 }
-[data-world="greek-library"] #start-screen { background: #221811; }
-[data-world="greek-library"] #start-screen img { object-fit: cover; object-position: 40% 50%; }
-[data-world="greek-library"] #start-screen::after { background: linear-gradient(145deg, #251a11a6, transparent 52%); }
+[data-world="repo-polis"] #start-screen { background: #221811; }
+[data-world="repo-polis"] #start-screen img { object-fit: cover; object-position: 40% 50%; }
+[data-world="repo-polis"] #start-screen::after { background: linear-gradient(145deg, #251a11a6, transparent 52%); }
 #landscape-credit { display: none; position: absolute; z-index: 2; bottom: 4px; left: 9px; padding: 2px 4px; background: #21150add; color: #f8e6c7; font: .625rem/1.1 system-ui, sans-serif; }
-[data-world="greek-library"]:not([data-playing]) #landscape-credit { display: block; }
+[data-world="repo-polis"]:not([data-playing]) #landscape-credit { display: block; }
 #repo-city[data-library-reading] ~ #city-header :is(.wordmark, #city-repository) {
   text-shadow: 0 1px 2px #1a100a, 0 0 7px #1a100a;
 }
@@ -212,7 +212,7 @@ form button:focus-visible, form summary:focus-visible, form a:focus-visible { ou
 .suggestions li[aria-selected="true"], .suggestions li:hover { background: #153333; box-shadow: inset 2px 0 #76ebd6; }
 .suggestions small { color: #a8c6cc; padding-inline: 12px; }
 
-:root[data-world="greek-library"] {
+:root[data-world="repo-polis"] {
   --stone-form: #251d17;
   --stone-field: #342a21;
   --stone-rule: #604b37;
@@ -220,47 +220,47 @@ form button:focus-visible, form summary:focus-visible, form a:focus-visible { ou
   --stone-muted: #c7ad8b;
   --stone-focus: #d3a568;
 }
-[data-world="greek-library"] :is(#repository-form, .city-dialog, .picker-menu) {
+[data-world="repo-polis"] :is(#repository-form, .city-dialog, .picker-menu) {
   background: var(--stone-form);
   border-color: var(--stone-rule);
   color: var(--stone-ink);
 }
-[data-world="greek-library"] :is(.picker-row, #revision-editor, #pull-editor, #picker-footer) {
+[data-world="repo-polis"] :is(.picker-row, #revision-editor, #pull-editor, #picker-footer) {
   border-color: var(--stone-rule);
 }
-[data-world="greek-library"] #repository-form .picker-search:focus-within,
-[data-world="greek-library"] .city-dialog button:hover {
+[data-world="repo-polis"] #repository-form .picker-search:focus-within,
+[data-world="repo-polis"] .city-dialog button:hover {
   border-color: var(--stone-focus);
 }
-[data-world="greek-library"] :is(form button, form summary, #picker-links a, .picker-menu a, .world-picker, .suggestions small),
-[data-world="greek-library"] .picker-search input::placeholder {
+[data-world="repo-polis"] :is(form button, form summary, #picker-links a, .picker-menu a, .world-picker, .suggestions small),
+[data-world="repo-polis"] .picker-search input::placeholder {
   color: var(--stone-muted);
 }
-[data-world="greek-library"] :is(.picker-search input, .city-dialog h2, form button:hover, form summary:hover, #picker-links a:hover) {
+[data-world="repo-polis"] :is(.picker-search input, .city-dialog h2, form button:hover, form summary:hover, #picker-links a:hover) {
   color: var(--stone-ink);
 }
-[data-world="greek-library"] .city-dialog h2 { font-family: "GFS Didot", Georgia, serif; }
-[data-world="greek-library"] :is(.city-dialog button, .world-picker select) {
+[data-world="repo-polis"] .city-dialog h2 { font-family: "GFS Didot", Georgia, serif; }
+[data-world="repo-polis"] :is(.city-dialog button, .world-picker select) {
   background: var(--stone-field);
   border-color: var(--stone-rule);
   color: var(--stone-ink);
 }
-[data-world="greek-library"] #city-header :is(#help, #blame) {
+[data-world="repo-polis"] #city-header :is(#help, #blame) {
   background: var(--stone-form);
   border-color: var(--stone-rule);
   color: var(--stone-ink);
 }
-[data-world="greek-library"] :is(form button, form summary, form a, form select, .city-dialog button):focus-visible {
+[data-world="repo-polis"] :is(form button, form summary, form a, form select, .city-dialog button):focus-visible {
   outline: 2px solid var(--stone-focus);
 }
-[data-world="greek-library"] .suggestions li:is([aria-selected="true"], :hover) {
+[data-world="repo-polis"] .suggestions li:is([aria-selected="true"], :hover) {
   background: var(--stone-field);
   box-shadow: inset 2px 0 var(--stone-focus);
 }
-[data-world="greek-library"] #repository-form #open-city { color: #21150a; background: var(--stone-focus); }
-[data-world="greek-library"] #repository-form #open-city:hover { background: #ecd1a7; }
-[data-world="greek-library"] #repository-form #open-city:disabled { color: #f0dfc7; background: #584636; opacity: 1; }
-[data-world="greek-library"] form[aria-busy="true"] #status { color: var(--stone-ink); }
+[data-world="repo-polis"] #repository-form #open-city { color: #21150a; background: var(--stone-focus); }
+[data-world="repo-polis"] #repository-form #open-city:hover { background: #ecd1a7; }
+[data-world="repo-polis"] #repository-form #open-city:disabled { color: #f0dfc7; background: #584636; opacity: 1; }
+[data-world="repo-polis"] form[aria-busy="true"] #status { color: var(--stone-ink); }
 
 @media (max-width: 560px) {
   #city-header { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "brand commands" "progress progress"; }

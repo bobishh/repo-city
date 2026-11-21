@@ -49,7 +49,7 @@ fn spawn(
         .expect("Repo City wordmark font");
     let library = set.is_library();
     let bytes: &[u8] = if library {
-        include_bytes!("../../../../assets/greek-library-cover.webp")
+        include_bytes!("../../../../assets/repo-polis-cover.webp")
     } else {
         include_bytes!("../../../../assets/repo-city-tablet.webp")
     };

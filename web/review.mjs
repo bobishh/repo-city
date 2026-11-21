@@ -231,7 +231,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     dialog.dataset.tablet = "";
     view("Help");
     if (library()) {
-      dialog.append(make("p", "Click Greek Library to open the repository picker."));
+      dialog.append(make("p", "Click Repo Polis to open the repository picker."));
       const controls = make("dl", undefined, { class: "review-controls" });
       for (const [keys, purpose] of [
         ["WASD / mouse", "Walk and look around"],

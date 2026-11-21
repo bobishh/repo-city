@@ -36,12 +36,38 @@ pub(super) struct Map {
     scene: Option<Scene>,
     terrain: Option<Vec<atlas::Terrace>>,
     passage: Option<Passage>,
+    framing: Option<Framing>,
     ground: Option<(Transform, Projection, Msaa)>,
     close: bool,
     shift: Vec2,
     zoom: f32,
     pointer: Option<Vec2>,
     pub(super) consumed: bool,
+}
+
+struct Framing {
+    start: (Vec2, f32),
+    elapsed: f32,
+}
+
+impl Framing {
+    fn advance(&mut self, seconds: f32) -> ((Vec2, f32), bool) {
+        self.elapsed += seconds;
+        let (start_shift, start_zoom) = self.start;
+        let duration = 1.02 + (start_zoom.ln().abs() * 0.18).min(0.95);
+        let t = smooth(self.elapsed / duration);
+        let zoom = blend_zoom(start_zoom, 1., t);
+        // Keep the originating folder in view until the lens has widened.
+        let pan = if (1. - start_zoom).abs() > 0.001 {
+            ((zoom - start_zoom) / (1. - start_zoom)).clamp(0., 1.)
+        } else {
+            t
+        };
+        (
+            (start_shift.lerp(Vec2::ZERO, pan), zoom),
+            self.elapsed >= duration,
+        )
+    }
 }
 
 struct Passage {
@@ -53,26 +79,31 @@ struct Passage {
 }
 
 impl Passage {
-    const APPROACH: f32 = 0.32;
-    const CROSSING: f32 = 1.26;
-    const ARRIVAL: f32 = 1.57;
+    const FLIGHT: f32 = 2.05;
+    const SETTLE: f32 = 0.20;
 
     fn advance(&mut self, seconds: f32) -> ((Vec2, f32), Option<usize>) {
         self.elapsed += seconds;
-        let ease = |start: f32, end: f32| {
-            let t = ((self.elapsed - start) / (end - start)).clamp(0., 1.);
-            t * t * (3. - 2. * t)
-        };
-        let aim = ease(0., Self::APPROACH);
-        let cross = ease(Self::APPROACH, Self::CROSSING);
-        let land = ease(Self::CROSSING, Self::ARRIVAL);
-        let shifted = self.start.0.lerp(self.from, aim).lerp(self.to, cross);
-        let zoom = self.start.1.lerp(0.42, aim).lerp(0.16, land);
+        let t = smooth(self.elapsed / Self::FLIGHT);
+        let approach = self.start.0.lerp(self.from, t);
+        let crossing = self.from.lerp(self.to, t);
+        let shift = approach.lerp(crossing, t);
+        let widen = blend_zoom(self.start.1, 0.55, t);
+        let descend = blend_zoom(0.55, 0.20, t);
         (
-            (shifted, zoom),
-            (self.elapsed >= Self::ARRIVAL).then_some(self.file),
+            (shift, blend_zoom(widen, descend, t)),
+            (self.elapsed >= Self::FLIGHT + Self::SETTLE).then_some(self.file),
         )
     }
+}
+
+fn smooth(t: f32) -> f32 {
+    let t = t.clamp(0., 1.);
+    t * t * t * (10. + t * (-15. + t * 6.))
+}
+
+fn blend_zoom(from: f32, to: f32, t: f32) -> f32 {
+    from.ln().lerp(to.ln(), t).exp()
 }
 
 impl Map {
@@ -172,7 +203,8 @@ pub(super) fn update(
             .as_ref()
             .and_then(|scene| scene.atlas.file(map.cursor))
             .unwrap_or(explorer.selected);
-        if let Some(scene) = map.scene.take() {
+        let old_scene = map.scene.take();
+        if let Some(scene) = &old_scene {
             commands.entity(scene.mesh).despawn();
             commands.entity(scene.selection).despawn();
             native_panel::close(&mut commands, scene.panel, &mut focus, &parents);
@@ -180,6 +212,7 @@ pub(super) fn update(
         match map.level {
             None => {
                 map.passage = None;
+                map.framing = None;
                 if let Some((ground, ground_projection, ground_msaa)) = map.ground.take() {
                     *pose = ground;
                     *projection = ground_projection;
@@ -211,8 +244,20 @@ pub(super) fn update(
                     *layers = RenderLayers::layer(atlas::LAYER);
                     *msaa = Msaa::Off;
                     map.cursor = atlas.slot(selected).unwrap_or(0);
-                    map.zoom = 1.;
-                    map.shift = Vec2::ZERO;
+                    let start =
+                        if matches!((previous, level), (Some(Level::Folder(_)), Level::Library))
+                            && let Some(old) = &old_scene
+                        {
+                            let aspect = windows
+                                .single()
+                                .map_or(1.6, |window| window.width() / window.height().max(1.));
+                            atlas.framing_from(&old.atlas, map.shift, map.zoom, aspect)
+                        } else {
+                            (Vec2::ZERO, 1.)
+                        };
+                    map.framing =
+                        (start != (Vec2::ZERO, 1.)).then_some(Framing { start, elapsed: 0. });
+                    (map.shift, map.zoom) = start;
                     map.pointer = None;
                     (*pose, *projection) = atlas.view(map.shift, map.zoom);
                     let title = folder.map_or_else(
@@ -235,6 +280,19 @@ pub(super) fn update(
                 map.consumed = true;
                 return;
             }
+        }
+    }
+    if let Some(((shift, zoom), done)) = map
+        .framing
+        .as_mut()
+        .map(|framing| framing.advance(time.delta_secs()))
+    {
+        (map.shift, map.zoom) = (shift, zoom);
+        if done {
+            map.framing = None;
+        }
+        if let Some(scene) = &map.scene {
+            (*pose, *projection) = scene.atlas.view(shift, zoom);
         }
     }
     let passage = map
@@ -271,7 +329,9 @@ pub(super) fn update(
                     bevy::input::mouse::MouseScrollUnit::Line => wheel.delta.y,
                     bevy::input::mouse::MouseScrollUnit::Pixel => wheel.delta.y / 40.,
                 };
-                zoom = (zoom * (-amount * 0.16).exp()).clamp(0.025, 1.0);
+                if amount != 0. {
+                    zoom = (zoom * (-amount * 0.16).exp()).clamp(0.025, 1.0);
+                }
                 if zoom == 1. {
                     shift = Vec2::ZERO;
                 } else if buttons.pressed(MouseButton::Right)
@@ -343,6 +403,7 @@ pub(super) fn update(
             }
             #[cfg(target_arch = "wasm32")]
             browser_travel(file.directory());
+            map.framing = None;
             map.passage = Some(Passage {
                 file: index,
                 start: (map.shift, map.zoom),
@@ -353,6 +414,7 @@ pub(super) fn update(
             return;
         }
         map.passage = None;
+        map.framing = None;
         let ground = folder.map(layout::view);
         if let Some(scene) = map.scene.take() {
             commands.entity(scene.mesh).despawn();
@@ -379,10 +441,11 @@ pub(super) fn update(
         browser_map("", 0);
         return;
     }
+    let manual_view = zoom != map.zoom || shift != map.shift;
+    if manual_view {
+        (*pose, *projection) = scene.atlas.view(shift, zoom);
+    }
     if let Some(scene) = map.scene.as_ref() {
-        if zoom != map.zoom || shift != map.shift {
-            (*pose, *projection) = scene.atlas.view(shift, zoom);
-        }
         if let Some((center, size)) = scene.atlas.lot_bounds(cursor)
             && let Ok(mut highlight) = highlights.get_mut(scene.selection)
         {
@@ -399,6 +462,9 @@ pub(super) fn update(
     map.zoom = zoom;
     map.shift = shift;
     map.cursor = cursor;
+    if manual_view {
+        map.framing = None;
+    }
 }
 
 #[derive(Component)]
@@ -502,16 +568,15 @@ mod tests {
             to: Vec2::new(45., -5.),
             elapsed: 0.,
         };
-        let ((shift, zoom), destination) = passage.advance(Passage::APPROACH);
-        assert!((shift - passage.from).length() < 0.001);
-        assert!((zoom - 0.42).abs() < 0.001);
+        let ((start, zoom), destination) = passage.advance(0.);
+        assert_eq!((start, zoom, destination), (Vec2::ZERO, 1., None));
+        let ((middle, _), destination) = passage.advance(Passage::FLIGHT * 0.5);
+        assert!(middle.x > passage.from.x && middle.x < passage.to.x);
         assert_eq!(destination, None);
-        let crossing = passage.advance((Passage::CROSSING - Passage::APPROACH) * 0.5);
-        assert!((crossing.0.0 - passage.from.lerp(passage.to, 0.5)).length() < 0.001);
-        assert_eq!(crossing.1, None);
-        let ((shift, zoom), destination) = passage.advance(1.);
-        assert!((shift - passage.to).length() < 0.001);
-        assert!((zoom - 0.16).abs() < 0.001);
-        assert_eq!(destination, Some(71));
+        let ((end, zoom), destination) = passage.advance(Passage::FLIGHT * 0.5);
+        assert!((end - passage.to).length() < 0.001);
+        assert!((zoom - 0.20).abs() < 0.001);
+        assert_eq!(destination, None);
+        assert_eq!(passage.advance(Passage::SETTLE + 0.01).1, Some(71));
     }
 }

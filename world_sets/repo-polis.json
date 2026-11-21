@@ -1,6 +1,6 @@
 {
-  "id": "greek-library",
-  "name": "Greek Library",
+  "id": "repo-polis",
+  "name": "Repo Polis",
   "representation": "shelves-and-scrolls",
   "locomotion": "walking",
   "background": [0.51, 0.67, 0.76],

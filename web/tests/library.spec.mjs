@@ -14,20 +14,23 @@ test("keeps the world selector behind the preview flag", async ({ page }) => {
 test("styles the shared repository form for the selected world", async ({ page }) => {
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
   const form = page.getByRole("form", { name: "Open repository" });
-  await page.goto("/?world=greek-library");
+  await page.goto("/?world=repo-polis");
   await expect(form).toHaveCSS("background-color", "rgb(37, 29, 23)");
   const search = form.locator("#repository-query");
   await search.focus({ timeout: 5000 });
   await expect(form.locator("#repository-search .picker-search")).toHaveCSS("border-bottom-color", "rgb(211, 165, 104)");
   await expect(page.locator(".library-title")).toBeVisible();
-  await expect(page.locator("#start-screen img")).toHaveAttribute("src", "./assets/greek-library-start.webp");
+  await expect(page.locator(".library-title")).toHaveText("Repo Polis");
+  await expect(page).toHaveTitle("Repo Polis · Repo City Web");
+  await expect(page.locator("#start-screen img")).toHaveAttribute("src", "./assets/repo-polis-start.webp");
   await expect.poll(() => page.locator("#start-screen img").evaluate(image => image.naturalWidth)).toBeGreaterThan(1000);
   const colors = await form.locator("#open-city").evaluate(button => {
     const style = getComputedStyle(button);
     return [style.color, style.backgroundColor];
   });
   expect(colors).toEqual(["rgb(33, 21, 10)", "rgb(211, 165, 104)"]);
-  await page.goto("/");
+  await page.goto("/?world=greek-library");
+  await expect(page.locator("html")).toHaveAttribute("data-world", "code-city");
   await expect(form).toHaveCSS("background-color", "rgb(10, 19, 26)");
 });
 
@@ -49,7 +52,7 @@ test("fits every file and travels between folders before opening a distant scrol
     if (path.includes("/git/trees/")) return route.fulfill({ json: { tree } });
     return route.fulfill({ json: { encoding: "base64", content: Buffer.from("pub struct Roll;\n").toString("base64") } });
   });
-  await page.goto("/?repo=owner%2Flibrary&world=greek-library");
+  await page.goto("/?repo=owner%2Flibrary&world=repo-polis");
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
   const canvas = page.locator("#repo-city");
   await canvas.focus();
@@ -61,6 +64,11 @@ test("fits every file and travels between folders before opening a distant scrol
   await press("KeyM");
   await expect(canvas).toHaveAttribute("data-library-map", "Archive courtyards");
   await expect(canvas).toHaveAttribute("data-library-map-files", "6000");
+  const view = { x: 380, y: 110, width: 1140, height: 480 };
+  const firstProjectFrame = await page.screenshot({ clip: view });
+  await page.waitForTimeout(220);
+  const laterProjectFrame = await page.screenshot({ clip: view });
+  expect(firstProjectFrame.equals(laterProjectFrame)).toBe(false);
   await page.screenshot({ path: testInfo.outputPath("archive.png") });
   await press("End");
   await press("Enter");
@@ -68,7 +76,7 @@ test("fits every file and travels between folders before opening a distant scrol
   await expect(canvas).not.toHaveAttribute("data-library-reading");
   await press("Escape");
   await expect(canvas).not.toHaveAttribute("data-library-travel");
-  await expect(canvas).toHaveAccessibleName("Greek Library");
+  await expect(canvas).toHaveAccessibleName("Repo Polis");
   await press("KeyM");
   await expect(canvas).toHaveAttribute("data-library-map", "Folder · gallery-00");
   await press("KeyM");
@@ -79,9 +87,9 @@ test("fits every file and travels between folders before opening a distant scrol
   await page.screenshot({ path: testInfo.outputPath("crossing.png") });
   await expect(canvas).not.toHaveAttribute("data-library-map");
   await expect(canvas).not.toHaveAttribute("data-library-travel");
-  await expect(canvas).toHaveAccessibleName("Greek Library, gallery-99/file-5999.rs, lines 1–1");
+  await expect(canvas).toHaveAccessibleName("Repo Polis, gallery-99/file-5999.rs, lines 1–1");
   await press("Escape");
-  await expect(canvas).toHaveAccessibleName("Greek Library");
+  await expect(canvas).toHaveAccessibleName("Repo Polis");
   await press("KeyM");
   await expect(canvas).toHaveAttribute("data-library-map", "Folder · gallery-99");
   await expect(canvas).toHaveAttribute("data-library-map-files", "60");
@@ -89,7 +97,7 @@ test("fits every file and travels between folders before opening a distant scrol
   await expect(canvas).not.toHaveAttribute("data-library-map-files");
 });
 
-test("opens a repository in the Greek Library and unrolls a file at the requested line", async ({ page }, testInfo) => {
+test("opens a repository in Repo Polis and unrolls a file at the requested line", async ({ page }, testInfo) => {
   page.on("pageerror", error => console.error(error));
   page.on("console", message => { if (message.type() === "error") console.error(message.text()); });
   const revision = "a".repeat(40);
@@ -114,11 +122,11 @@ test("opens a repository in the Greek Library and unrolls a file at the requeste
     const body = Buffer.from(path.endsWith(document) ? source : "# Library");
     return route.fulfill({ json: { size: body.length, encoding: "base64", content: body.toString("base64") } });
   });
-  await page.goto("/?repo=owner%2Flibrary&world=greek-library");
+  await page.goto("/?repo=owner%2Flibrary&world=repo-polis");
   const canvas = page.locator("#repo-city");
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
-  await expect(canvas).toHaveAccessibleName("Greek Library");
-  await expect(page).toHaveURL(/world=greek-library/);
+  await expect(canvas).toHaveAccessibleName("Repo Polis");
+  await expect(page).toHaveURL(/world=repo-polis/);
   await expect(page.locator("#city-progress")).toBeHidden();
   await expect(page.locator(".wordmark")).toHaveCSS("font-family", /GFS Didot/);
   await canvas.focus();
@@ -130,11 +138,11 @@ test("opens a repository in the Greek Library and unrolls a file at the requeste
   await press("Slash");
   await page.keyboard.type("no_such_file", { delay: 65 });
   await press("Enter");
-  await expect(canvas).toHaveAccessibleName("Greek Library");
+  await expect(canvas).toHaveAccessibleName("Repo Polis");
   await press("Slash");
   await page.keyboard.type("scroll.rs", { delay: 65 });
   await press("Enter");
-  await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 1–22", { timeout: 30_000 });
+  await expect(canvas).toHaveAccessibleName("Repo Polis, src/scroll.rs, lines 1–22", { timeout: 30_000 });
   await page.screenshot({ path: testInfo.outputPath("unrolling.png") });
 
   const visibleInk = async () => {
@@ -177,28 +185,28 @@ test("opens a repository in the Greek Library and unrolls a file at the requeste
   await expect(canvas).toHaveAccessibleDescription("Enter a line number. Press Enter to go.");
   await page.keyboard.type("1750", { delay: 100 });
   await press("Enter");
-  await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 1750–1771");
+  await expect(canvas).toHaveAccessibleName("Repo Polis, src/scroll.rs, lines 1750–1771");
   await expect.poll(visibleInk, { timeout: 7500 }).toBeGreaterThan(150);
   await page.screenshot({ path: testInfo.outputPath("scroll.png") });
   await press("End");
-  await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 2379–2400");
+  await expect(canvas).toHaveAccessibleName("Repo Polis, src/scroll.rs, lines 2379–2400");
   await press("Backslash");
   await expect(canvas).toHaveAccessibleDescription("Find text in this scroll. Press Enter to search.");
-  await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 2379–2400");
+  await expect(canvas).toHaveAccessibleName("Repo Polis, src/scroll.rs, lines 2379–2400");
   await expect.poll(visibleInk, { timeout: 7500 }).toBeGreaterThan(150);
   await page.keyboard.type("ROW_1800", { delay: 55 });
   await press("Enter");
-  await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 1800–1821");
+  await expect(canvas).toHaveAccessibleName("Repo Polis, src/scroll.rs, lines 1800–1821");
   await expect.poll(() => page.evaluate(() => {
-    const key = Object.keys(localStorage).find(key => key.includes("|world=greek-library"));
+    const key = Object.keys(localStorage).find(key => key.includes("|world=repo-polis"));
     return key ? JSON.parse(localStorage.getItem(key)).line : 0;
   })).toBe(1800);
   slowSource = true;
   await page.reload();
-  await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 1800–1821", { timeout: 30_000 });
+  await expect(canvas).toHaveAccessibleName("Repo Polis, src/scroll.rs, lines 1800–1821", { timeout: 30_000 });
   await canvas.focus();
   await press("Escape");
-  await expect(canvas).toHaveAccessibleName("Greek Library");
+  await expect(canvas).toHaveAccessibleName("Repo Polis");
   await press("KeyM");
   await expect(canvas).toHaveAttribute("data-library-map", "Folder · src");
   await press("KeyM");
@@ -208,12 +216,12 @@ test("opens a repository in the Greek Library and unrolls a file at the requeste
   await press("Enter");
   await expect(canvas).not.toHaveAttribute("data-library-travel");
   await expect(canvas).not.toHaveAttribute("data-library-map");
-  await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 1–22");
+  await expect(canvas).toHaveAccessibleName("Repo Polis, src/scroll.rs, lines 1–22");
   await press("Escape");
   await press("Tab");
   await expectOpen(page, "Changed files");
   const file = servicePanel(page).getByRole("button", { name: /src\/scroll\.rs/, includeHidden: true });
   await gpuClick(page, file);
   await expectClosed(page);
-  await expect(canvas).toHaveAccessibleName("Greek Library, src/scroll.rs, lines 1–22");
+  await expect(canvas).toHaveAccessibleName("Repo Polis, src/scroll.rs, lines 1–22");
 });

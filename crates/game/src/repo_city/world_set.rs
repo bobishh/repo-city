@@ -25,8 +25,8 @@ const ADAPTERS: &[Adapter] = &[
         install: super::install_city,
     },
     Adapter {
-        id: "greek-library",
-        descriptor: include_str!("../../../../world_sets/greek-library.json"),
+        id: "repo-polis",
+        descriptor: include_str!("../../../../world_sets/repo-polis.json"),
         representation: "shelves-and-scrolls",
         locomotion: "walking",
         install: library::install,
@@ -124,20 +124,20 @@ mod tests {
     fn the_same_explorer_can_select_the_city_or_library_by_name() {
         assert_eq!(WorldSet::load(None).unwrap().id, "code-city");
         assert_eq!(WorldSet::load(Some("code-city")).unwrap().id, "code-city");
+        assert_eq!(WorldSet::load(Some("repo-polis")).unwrap().id, "repo-polis");
         assert_eq!(
-            WorldSet::load(Some("greek-library")).unwrap().id,
-            "greek-library"
+            WorldSet::load(Some("repo-polis")).unwrap().name,
+            "Repo Polis"
         );
+        assert!(WorldSet::load(Some("greek-library")).is_err());
     }
 
     #[test]
     fn a_descriptor_can_customize_a_world_but_cannot_mix_presentation_contracts() {
-        let descriptor = ADAPTERS[1]
-            .descriptor
-            .replace("greek-library", "my-library");
+        let descriptor = ADAPTERS[1].descriptor.replace("repo-polis", "my-library");
         assert_eq!(
             WorldSet::parse(&descriptor).unwrap().adapter().unwrap().id,
-            "greek-library"
+            "repo-polis"
         );
         let unsupported = descriptor.replace("walking", "flight-and-anchor");
         assert!(

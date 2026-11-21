@@ -97,13 +97,14 @@ if (Array.from(worldSelect.options).some(option => option.value === requestedWor
   worldSelect.value = requestedWorld;
 }
 function nameOpenButton() {
-  submit.textContent = worldSelect.selectedOptions[0].dataset.openLabel ?? "Open world";
+  const option = worldSelect.selectedOptions[0];
+  submit.textContent = option.dataset.openLabel ?? "Open world";
   document.documentElement.dataset.world = worldSelect.value;
-  const library = worldSelect.value === "greek-library";
-  const artwork = library ? "./assets/greek-library-start.webp" : "./assets/repo-city-start.webp";
+  const library = worldSelect.value === "repo-polis";
+  const artwork = library ? "./assets/repo-polis-start.webp" : "./assets/repo-city-start.webp";
   const image = startScreen.querySelector("img");
   if (image.getAttribute("src") !== artwork) image.src = artwork;
-  document.title = library ? "Greek Library · Repo City Web" : "Repo City Web";
+  document.title = library ? `${option.label} · Repo City Web` : "Repo City Web";
 }
 worldSelect.addEventListener("change", nameOpenButton);
 nameOpenButton();

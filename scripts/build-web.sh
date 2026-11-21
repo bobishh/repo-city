@@ -29,7 +29,7 @@ cp web/node_modules/vscode-oniguruma/LICENSE.txt "$output/syntax-licenses/vscode
 cp web/node_modules/vscode-textmate/LICENSE.md "$output/syntax-licenses/vscode-textmate.txt"
 cp web/node_modules/@wooorm/starry-night/lang/*.js "$output/syntax-source/"
 cp web/assets/repo-city-start.webp web/assets/caveat-latin-wght.woff2 web/assets/OFL-Caveat.txt "$output/assets/"
-cp assets/greek-library-cover.webp "$output/assets/greek-library-start.webp"
+cp assets/repo-polis-cover.webp "$output/assets/repo-polis-start.webp"
 cp web/assets/robot-head.svg web/assets/apple-touch-icon.png "$output/assets/"
 cp assets/fonts/GFSDidot-Regular.ttf "$output/assets/"
 wasm-bindgen --target web --remove-name-section --remove-producers-section \

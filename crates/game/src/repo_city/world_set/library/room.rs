@@ -142,7 +142,7 @@ pub(super) fn setup(
         &font(13.),
         Color::srgb_u8(246, 222, 176),
         &mut images,
-        Some(("Greek Library", stone.heading(34.))),
+        Some((set.name.as_str(), stone.heading(34.))),
     );
     commands.insert_resource(stone);
     commands.insert_resource(GlobalAmbientLight {

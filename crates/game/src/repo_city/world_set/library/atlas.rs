@@ -40,8 +40,14 @@ impl Atlas {
     pub(super) fn terrain(catalog: &Catalog) -> Vec<Terrace> {
         const TURN: f32 = 2.39996;
         const GRID: f32 = 40.;
-        let mut order = (0..catalog.folders.len()).collect::<Vec<_>>();
-        order.sort_by_key(|&index| std::cmp::Reverse(catalog.folders[index].files.len()));
+        let mut groups: [Vec<usize>; 3] = std::array::from_fn(|_| Vec::new());
+        for (index, folder) in catalog.folders.iter().enumerate() {
+            let branch = folder.path.split('/').next().unwrap_or("");
+            let seed = branch.bytes().fold(0_u32, |seed, byte| {
+                seed.wrapping_mul(31).wrapping_add(u32::from(byte))
+            });
+            groups[seed as usize % 3].push(index);
+        }
         let mut positions = vec![
             Terrace {
                 center: Vec2::ZERO,
@@ -49,70 +55,82 @@ impl Atlas {
                 height: 0.,
                 phase: 0.,
             };
-            order.len()
+            catalog.folders.len()
         ];
-        let span = (catalog
-            .folders
-            .iter()
-            .map(|folder| {
-                let radius = 12.8 * (folder.files.len() as f32).sqrt() + 5.2;
-                radius * radius
-            })
-            .sum::<f32>()
-            .sqrt()
-            * 0.69)
-            .max(1.);
-        let mut cells = std::collections::HashMap::<(i32, i32), Vec<usize>>::new();
         let cell = |point: Vec2| (point / GRID).floor().as_ivec2();
-        for index in order {
-            let phase = index as f32 * TURN;
-            let path = &catalog.folders[index].path;
-            let branch = path.split('/').next().unwrap_or("");
-            let seed = branch.bytes().fold(0_u32, |seed, byte| {
-                seed.wrapping_mul(31).wrapping_add(u32::from(byte))
-            });
-            let ridge = match seed % 3 {
-                0 => Vec2::new(-span, -span * 0.14),
-                1 => Vec2::new(0., span * 0.24),
-                _ => Vec2::new(span * 0.97, -span * 0.32),
-            };
-            let radius = 12.8 * (catalog.folders[index].files.len() as f32).sqrt() + 5.2;
-            let dimensions = Vec2::new(radius * (1. + phase.sin() * 0.11), radius);
-            let padding = dimensions.max_element() * 1.05 + 3.8;
-            for attempt in 0.. {
-                let angle = phase + attempt as f32 * TURN;
-                let step = (attempt as f32).sqrt() * 15.;
-                let center = ridge + Vec2::new(angle.cos() * 1.36, angle.sin() * 0.74) * step;
-                let low = cell(center - Vec2::splat(padding));
-                let high = cell(center + Vec2::splat(padding));
-                let overlaps = (low.x..=high.x).any(|x| {
-                    (low.y..=high.y).any(|y| {
-                        cells.get(&(x, y)).is_some_and(|group| {
-                            group.iter().any(|&other| {
-                                let old = positions[other];
-                                let gap = padding + old.radius.max_element() * 1.05 + 3.8;
-                                old.center.distance_squared(center) < gap * gap
+        let mut ridge_bounds = [None; 3];
+        for (ridge, group) in groups.iter_mut().enumerate() {
+            group.sort_by_key(|&index| std::cmp::Reverse(catalog.folders[index].files.len()));
+            let mut cells = std::collections::HashMap::<(i32, i32), Vec<usize>>::new();
+            let mut minimum = Vec2::splat(f32::INFINITY);
+            let mut maximum = Vec2::splat(f32::NEG_INFINITY);
+            for &index in group.iter() {
+                let phase = index as f32 * TURN;
+                let radius = 12.8 * (catalog.folders[index].files.len() as f32).sqrt() + 5.2;
+                let dimensions = Vec2::new(radius * (1. + phase.sin() * 0.11), radius);
+                let padding = dimensions.max_element() * 1.05 + 3.8;
+                for attempt in 0.. {
+                    let angle = phase + attempt as f32 * TURN;
+                    let step = (attempt as f32).sqrt() * 15.;
+                    let center = Vec2::new(angle.cos() * 1.36, angle.sin() * 0.74) * step;
+                    let low = cell(center - Vec2::splat(padding));
+                    let high = cell(center + Vec2::splat(padding));
+                    let overlaps = (low.x..=high.x).any(|x| {
+                        (low.y..=high.y).any(|y| {
+                            cells.get(&(x, y)).is_some_and(|group| {
+                                group.iter().any(|&other| {
+                                    let old = positions[other];
+                                    let gap = padding + old.radius.max_element() * 1.05 + 3.8;
+                                    old.center.distance_squared(center) < gap * gap
+                                })
                             })
                         })
-                    })
-                });
-                if overlaps {
-                    continue;
-                }
-                let height =
-                    (ground_height(center) + dimensions.max_element() * 0.17).min(39.) + 7.;
-                positions[index] = Terrace {
-                    center,
-                    radius: dimensions,
-                    height,
-                    phase,
-                };
-                for x in low.x..=high.x {
-                    for y in low.y..=high.y {
-                        cells.entry((x, y)).or_default().push(index);
+                    });
+                    if overlaps {
+                        continue;
                     }
+                    positions[index] = Terrace {
+                        center,
+                        radius: dimensions,
+                        height: 0.,
+                        phase,
+                    };
+                    minimum = minimum.min(center - dimensions * 1.06);
+                    maximum = maximum.max(center + dimensions * 1.06);
+                    for x in low.x..=high.x {
+                        for y in low.y..=high.y {
+                            cells.entry((x, y)).or_default().push(index);
+                        }
+                    }
+                    break;
                 }
-                break;
+            }
+            if !group.is_empty() {
+                ridge_bounds[ridge] = Some((minimum, maximum));
+            }
+        }
+        let (width, depth) = ridge_bounds
+            .iter()
+            .flatten()
+            .fold((0_f32, 0_f32), |(width, depth), (min, max)| {
+                (width + max.x - min.x, depth.max(max.y - min.y))
+            });
+        let valley = (depth * 0.19).max(24.);
+        let ridges = ridge_bounds.iter().flatten().count().saturating_sub(1) as f32;
+        let mut left = -(width + valley * ridges) * 0.5;
+        for ((group, bounds), stagger) in groups.iter().zip(ridge_bounds).zip([-0.12, 0.16, -0.18])
+        {
+            if let Some((min, max)) = bounds {
+                let shift = Vec2::new(left - min.x, -(min.y + max.y) * 0.5 + depth * stagger);
+                for &index in group {
+                    let terrace = &mut positions[index];
+                    terrace.center += shift;
+                    terrace.height = (ground_height(terrace.center)
+                        + terrace.radius.max_element() * 0.17)
+                        .min(39.)
+                        + 7.;
+                }
+                left += max.x - min.x + valley;
             }
         }
         positions
@@ -240,18 +258,41 @@ impl Atlas {
         let rotation = rotation();
         let center = self.center + rotation * shift.extend(0.);
         let position = center + rotation * Vec3::Z * self.distance;
+        let size = self.minimum_view();
         (
             Transform::from_translation(position).with_rotation(rotation),
             Projection::Orthographic(OrthographicProjection {
                 scaling_mode: ScalingMode::AutoMin {
-                    min_width: self.size.x * 1.13,
-                    min_height: self.size.y * 1.28,
+                    min_width: size.x,
+                    min_height: size.y,
                 },
                 scale: zoom,
                 far: self.distance * 3.,
                 ..OrthographicProjection::default_3d()
             }),
         )
+    }
+
+    pub(super) fn framing_from(
+        &self,
+        old: &Self,
+        shift: Vec2,
+        zoom: f32,
+        aspect: f32,
+    ) -> (Vec2, f32) {
+        let visible_height = |atlas: &Self| {
+            let size = atlas.minimum_view();
+            (size.x / aspect.max(0.1)).max(size.y)
+        };
+        let center_offset = (rotation().inverse() * (old.center - self.center)).xy();
+        (
+            shift + center_offset,
+            zoom * visible_height(old) / visible_height(self),
+        )
+    }
+
+    fn minimum_view(&self) -> Vec2 {
+        self.size * Vec2::new(1.13, 1.28)
     }
 
     pub(super) fn lot_bounds(&self, slot: usize) -> Option<(Vec3, Vec3)> {
@@ -462,6 +503,24 @@ impl Blocks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn valleys_separate_the_ridges() {
+        let mut catalog = Catalog::default();
+        catalog.folders = ["a", "b", "c"]
+            .into_iter()
+            .map(|path| CatalogFolder {
+                path: path.into(),
+                files: vec![0],
+            })
+            .collect();
+        let mut ridges = Atlas::terrain(&catalog);
+        ridges.sort_by(|a, b| a.center.x.total_cmp(&b.center.x));
+        for pair in ridges.windows(2) {
+            let gap = pair[1].center.x - pair[1].radius.x - (pair[0].center.x + pair[0].radius.x);
+            assert!(gap >= 24.);
+        }
+    }
 
     #[test]
     fn a_large_map_keeps_every_lot_as_a_solid_pickable_building() {

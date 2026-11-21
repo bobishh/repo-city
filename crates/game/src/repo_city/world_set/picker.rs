@@ -156,7 +156,7 @@ fn choosing_a_world_keeps_the_same_repository_revision_and_file() {
     ]
     .map(str::to_owned);
     assert_eq!(
-        world_args(&args, "greek-library"),
+        world_args(&args, "repo-polis"),
         [
             "--repo",
             "/my checkout",
@@ -165,7 +165,7 @@ fn choosing_a_world_keeps_the_same_repository_revision_and_file() {
             "--file",
             "a.rs",
             "--world-set",
-            "greek-library"
+            "repo-polis"
         ]
     );
 }
