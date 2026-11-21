@@ -99,6 +99,8 @@ representation and locomotion and supplies a palette. A custom descriptor
 can also be selected on desktop through `--world-set /path/to/world.json`.
 For the browser, add the bundled world's ID to the world selector in
 `web/index.html`.
+See the [world set contract](docs/world-sets.md) for shared capabilities and
+presentation requirements.
 
 ### On Linux or Windows
 
