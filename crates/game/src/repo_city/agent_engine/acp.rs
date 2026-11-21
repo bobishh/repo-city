@@ -1,4 +1,4 @@
-//! Desktop ACP client for Grok and Agy. Ecky 9ea94d7 informed the Grok handshake.
+//! Desktop ACP client for Grok, Agy and Muse. Ecky 9ea94d7 informed the Grok handshake.
 use super::{
     Command, Engine, Event, Projection, Prompt, Provider, Start,
     activity::{Details, Kind, Location, Phase},
@@ -171,10 +171,11 @@ impl Drop for Wire {
 
 impl Wire {
     fn open(binary: &Path, provider: Provider, root: &Path) -> Result<Self, String> {
-        let args = if provider == super::AGY {
-            ["acp", "--sandbox"]
-        } else {
-            ["agent", "stdio"]
+        let args: &[&str] = match provider.id {
+            "agy" => &["acp", "--sandbox"],
+            "grok" => &["agent", "stdio"],
+            "muse" => &["acp"],
+            _ => return Err(format!("Unsupported ACP provider {}.", provider.label)),
         };
         let mut child = Process::new(binary)
             .args(args)
@@ -366,7 +367,14 @@ fn run(
             return Err("Grok needs a CLI login. Run `grok login`, then reconnect.".into());
         }
     }
-    let mut params = json!({"cwd":start.root,"mcpServers":[]});
+    let servers = if provider == super::MUSE {
+        let executable = std::env::current_exe()
+            .map_err(|error| format!("Could not locate Repo City's MCP server: {error}"))?;
+        json!([{"name":"repo_city","command":executable,"args":["--notes-mcp","--repo",start.root],"env":[]}])
+    } else {
+        json!([])
+    };
+    let mut params = json!({"cwd":start.root,"mcpServers":servers});
     let session = if let Some(session) = start.conversation {
         params["sessionId"] = json!(session);
         wire.call("session/load", params, stopped)?;
@@ -615,7 +623,7 @@ mod tests {
     use std::{os::unix::fs::PermissionsExt, time::SystemTime};
 
     #[test]
-    fn cli_session_resumes_prompts_as_text_and_waits_for_a_tool_decision() {
+    fn cli_sessions_start_resume_and_cancel_with_tool_decisions() {
         let unique = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
@@ -624,35 +632,71 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         let cli = root.join("agent");
         std::fs::write(&cli, r#"#!/usr/bin/env python3
-import json, sys
-assert sys.argv[1:] in (["agent", "stdio"], ["acp", "--sandbox"])
+import json, pathlib, sys
+provider = pathlib.Path(sys.argv[0]).name
+expected = {"agy": ["acp", "--sandbox"], "grok": ["agent", "stdio"], "muse": ["acp"]}
+assert sys.argv[1:] == expected[provider], (provider, sys.argv[1:])
 def emit(**value):
     print(json.dumps({"jsonrpc": "2.0", **value}), flush=True)
 init = json.loads(input())
 assert init["method"] == "initialize"
 emit(id=init["id"], result={"protocolVersion": 1, "authMethods": []})
 load = json.loads(input())
-assert load["method"] == "session/load" and load["params"]["sessionId"] == "saved"
-emit(id=load["id"], result={})
+assert load["method"] in ("session/load", "session/new")
+session = "saved" if load["method"] == "session/load" else "created"
+if session == "saved":
+    assert load["params"]["sessionId"] == session
+servers = load["params"]["mcpServers"]
+if provider == "muse":
+    assert len(servers) == 1 and servers[0]["name"] == "repo_city"
+    assert pathlib.Path(servers[0]["command"]).is_absolute()
+    assert servers[0]["args"][:2] == ["--notes-mcp", "--repo"]
+    assert pathlib.Path(servers[0]["args"][2]).resolve() == pathlib.Path.cwd()
+    assert servers[0]["env"] == []
+else:
+    assert servers == []
+emit(id=load["id"], result={} if session == "saved" else {"sessionId":session})
 prompt = json.loads(input())
-assert prompt["method"] == "session/prompt" and prompt["params"]["prompt"][0]["text"] == "camera\n\nRead the file"
-emit(method="session/request_permission", id=99, params={"sessionId":"saved", "toolCall":{"title":"Read the file"}, "options":[{"optionId":"one","kind":"allow_once"},{"optionId":"all","kind":"allow_always"}]})
+assert prompt["method"] == "session/prompt"
+assert prompt["params"]["sessionId"] == session
+text = prompt["params"]["prompt"][0]["text"]
+assert text in ("camera\n\nRead the file", "camera\n\nStop after denied tool")
+denied = text.endswith("Stop after denied tool")
+emit(method="session/request_permission", id=99, params={"sessionId":session, "toolCall":{"title":"Read the file"}, "options":[{"optionId":"one","kind":"allow_once"},{"optionId":"all","kind":"allow_always"},{"optionId":"no","kind":"reject_once"}]})
 decision = json.loads(input())
-assert decision["id"] == 99 and decision["result"]["outcome"] == {"outcome":"selected","optionId":"one"}
-emit(method="session/update", params={"sessionId":"saved", "update":{"sessionUpdate":"tool_call", "locations":[{"path":"src/main.rs","line":7}]}})
-emit(method="session/update", params={"sessionId":"saved", "update":{"sessionUpdate":"agent_message_chunk", "content":{"type":"text","text":"Answer"}}})
-emit(id=prompt["id"], result={"stopReason":"end_turn"})
+assert decision["id"] == 99 and decision["result"]["outcome"] == {"outcome":"selected","optionId":"no" if denied else "one"}
+if denied:
+    emit(method="session/update", params={"sessionId":session,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Permission denied"}}})
+    cancel = json.loads(input())
+    assert cancel["method"] == "session/cancel" and cancel["params"]["sessionId"] == session
+    emit(id=prompt["id"], result={"stopReason":"cancelled"})
+else:
+    emit(method="session/update", params={"sessionId":session, "update":{"sessionUpdate":"tool_call", "locations":[{"path":"src/main.rs","line":7}]}})
+    emit(method="session/update", params={"sessionId":session, "update":{"sessionUpdate":"agent_message_chunk", "content":{"type":"text","text":"Answer"}}})
+    emit(id=prompt["id"], result={"stopReason":"end_turn"})
 sys.stdin.read()
 "#).unwrap();
         std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
-        for provider in [super::super::AGY, super::super::GROK] {
-            let wire = Wire::open(&cli, provider, &root).unwrap();
+        for (provider, restore, deny) in [
+            (super::super::AGY, false, false),
+            (super::super::AGY, true, false),
+            (super::super::GROK, false, false),
+            (super::super::GROK, true, false),
+            (super::super::MUSE, false, false),
+            (super::super::MUSE, true, false),
+            (super::super::MUSE, false, true),
+        ] {
+            let binary = root.join(provider.id);
+            if !binary.exists() {
+                std::fs::hard_link(&cli, &binary).unwrap();
+            }
+            let wire = Wire::open(&binary, provider, &root).unwrap();
             let (commands, input) = mpsc::sync_channel(4);
             let (updates, events) = mpsc::sync_channel(16);
             let start = Start {
                 root: root.clone(),
-                conversation: Some("saved".into()),
-                automatic_review: false,
+                conversation: restore.then(|| "saved".into()),
+                approval_mode: super::super::ApprovalMode::Ask,
                 speaking: Arc::default(),
                 diagnostics: None,
             };
@@ -670,13 +714,20 @@ sys.stdin.read()
                 .send(Command::Send(Prompt {
                     id: "prompt".into(),
                     context: "camera".into(),
-                    text: "Read the file".into(),
+                    text: if deny {
+                        "Stop after denied tool"
+                    } else {
+                        "Read the file"
+                    }
+                    .into(),
                 }))
                 .unwrap();
             let (mut connected, mut delivered, mut file, mut answer) = (false, false, false, false);
             while let Ok(event) = events.recv_timeout(Duration::from_secs(5)) {
                 match event {
-                    Update::Event(Event::Connected(id)) => connected = id == "saved",
+                    Update::Event(Event::Connected(id)) => {
+                        connected = id == if restore { "saved" } else { "created" }
+                    }
                     Update::Event(Event::Delivery { id, result }) => {
                         delivered = id == "prompt" && result.is_ok()
                     }
@@ -685,20 +736,29 @@ sys.stdin.read()
                         commands
                             .send(Command::Approval {
                                 token,
-                                accept: true,
+                                accept: !deny,
                             })
                             .unwrap();
                     }
                     Update::File { path, line } => file = path == "src/main.rs" && line == 7,
-                    Update::Delta { text, .. } => answer = text == "Answer",
-                    Update::Turn(None, _) => break,
+                    Update::Delta { text, .. } => {
+                        answer = text == if deny { "Permission denied" } else { "Answer" };
+                        if deny {
+                            commands.send(Command::Interrupt).unwrap();
+                        }
+                    }
+                    Update::Turn(None, status) => {
+                        assert_eq!(status, if deny { "Work stopped" } else { "Connected" });
+                        break;
+                    }
                     _ => {}
                 }
             }
             drop(commands);
-            assert!(worker.join().unwrap().is_ok());
+            let outcome = worker.join().unwrap();
+            assert!(outcome.is_ok(), "{}: {outcome:?}", provider.label);
             assert!(
-                connected && delivered && file && answer,
+                connected && delivered && (file || deny) && answer,
                 "{}",
                 provider.label
             );

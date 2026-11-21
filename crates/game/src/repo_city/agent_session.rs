@@ -310,8 +310,7 @@ impl Session {
                 agent_engine::Start {
                     root,
                     conversation: self.projection.dialogue.thread.clone(),
-                    automatic_review: self.interaction.approvals
-                        == controls::ApprovalMode::Automatic,
+                    approval_mode: self.interaction.approvals,
                     speaking: self.speaking.clone(),
                     diagnostics: repository_picker::settings_file()
                         .map(|path| path.with_file_name("voice-status.json")),
@@ -1031,6 +1030,9 @@ fn update(
             KeyCode::ShiftRight,
         ]);
     controls::shortcuts(&mut keys, &mut session, window_focused, keyboard_allowed);
+    if let Err(error) = session.approve_pending() {
+        session.status = error;
+    }
     if let Some(action) = session.action.take() {
         session.version = session.version.wrapping_add(1);
         let result = match action {
@@ -1162,6 +1164,7 @@ fn update(
     let approval = session
         .approvals
         .first()
+        .filter(|_| session.approval_pending())
         .map_or("", |approval| approval.title.as_str());
     for (mut text, _, connection_label, voice_label, state, request) in &mut labels {
         let value = if connection_label.is_some() {
@@ -1179,7 +1182,7 @@ fn update(
     }
     for (entity, action, mut node, children, disabled) in &mut controls {
         let approval_control = matches!(action, Action::Approve | Action::Reject);
-        let display = if approval_control && session.approvals.is_empty() {
+        let display = if approval_control && !session.approval_pending() {
             Display::None
         } else {
             Display::Flex
@@ -1195,7 +1198,7 @@ fn update(
             Action::RestoreMessage => session.restorable_message().is_some(),
             Action::Voice => session.provider().capabilities.voice,
             Action::Follow | Action::SendKey | Action::ApprovalMode | Action::FollowKey => true,
-            Action::Approve | Action::Reject => !session.approvals.is_empty(),
+            Action::Approve | Action::Reject => session.approval_pending(),
         };
         if enabled && disabled.is_some() {
             commands
@@ -1228,13 +1231,11 @@ fn action_label(action: &Action, session: &Session) -> Option<&'static str> {
         } else {
             "Send: Cmd/Ctrl+Enter"
         }),
-        Action::ApprovalMode => Some(
-            if session.interaction.approvals == controls::ApprovalMode::Automatic {
-                "Codex review: automatic"
-            } else {
-                "Codex review: ask me"
-            },
-        ),
+        Action::ApprovalMode => Some(match session.interaction.approvals {
+            controls::ApprovalMode::Ask => "Permissions: ask me",
+            controls::ApprovalMode::Automatic => "Permissions: automatic review",
+            controls::ApprovalMode::Never => "Permissions: no confirmations",
+        }),
         Action::FollowKey => Some(if session.follow_key() == KeyCode::F7 {
             "Follow shortcut: F7"
         } else {

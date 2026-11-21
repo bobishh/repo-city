@@ -1,6 +1,6 @@
 //! Owned stdio app-server process. No provider connection exists before a user action.
 use super::{
-    Prompt, Start,
+    ApprovalMode, Prompt, Start,
     audio::{Devices, Opening},
     rtc::Connection,
 };
@@ -889,11 +889,11 @@ fn fork_thread(
     root: &Path,
     executable: &Path,
     previous: &str,
-    automatic_review: bool,
+    approval_mode: ApprovalMode,
     events: &SyncSender<Event>,
     stop: &AtomicBool,
 ) -> Result<String, String> {
-    let mut params = thread_params(root, executable, Some(previous), automatic_review);
+    let mut params = thread_params(root, executable, Some(previous), approval_mode);
     params["deferGoalContinuation"] = json!(true);
     let result = wire.call("thread/fork", params, events, stop)?;
     let thread = thread_id(&result)?;
@@ -937,7 +937,7 @@ fn establish_thread(
     root: &Path,
     executable: &Path,
     saved: Option<&str>,
-    automatic_review: bool,
+    approval_mode: ApprovalMode,
     events: &SyncSender<Event>,
     stop: &AtomicBool,
 ) -> Result<(String, bool), String> {
@@ -948,7 +948,7 @@ fn establish_thread(
     };
     let (result, replaced) = match wire.call(
         method,
-        thread_params(root, executable, saved, automatic_review),
+        thread_params(root, executable, saved, approval_mode),
         events,
         stop,
     ) {
@@ -959,7 +959,7 @@ fn establish_thread(
                 root,
                 executable,
                 saved.unwrap(),
-                automatic_review,
+                approval_mode,
                 events,
                 stop,
             )
@@ -968,7 +968,7 @@ fn establish_thread(
         Err(error) if missing_rollout(&error, saved) => (
             wire.call(
                 "thread/start",
-                thread_params(root, executable, None, automatic_review),
+                thread_params(root, executable, None, approval_mode),
                 events,
                 stop,
             )?,
@@ -999,7 +999,7 @@ fn run(
     let Start {
         root,
         conversation: saved_thread,
-        automatic_review,
+        approval_mode,
         speaking,
         ..
     } = start;
@@ -1011,7 +1011,7 @@ fn run(
         &root,
         &executable,
         saved_thread.as_deref(),
-        automatic_review,
+        approval_mode,
         events,
         stop,
     )?;
@@ -1204,7 +1204,7 @@ fn run(
                                 &root,
                                 &executable,
                                 &thread,
-                                automatic_review,
+                                approval_mode,
                                 events,
                                 stop,
                             ) {
@@ -1362,15 +1362,15 @@ pub(super) fn thread_params(
     root: &Path,
     executable: &Path,
     thread: Option<&str>,
-    automatic_review: bool,
+    approval_mode: ApprovalMode,
 ) -> Value {
     // Ecky 9ea94d7 uses Codex review for sandbox requests and trusts its own bound MCP server.
-    let reviewer = if automatic_review {
+    let reviewer = if approval_mode == ApprovalMode::Automatic {
         "auto_review"
     } else {
         "user"
     };
-    let mut params = json!({"cwd":root,"approvalPolicy":"on-request","approvalsReviewer":reviewer,"sandbox":"workspace-write","developerInstructions":instructions(),"config":{
+    let mut params = json!({"cwd":root,"approvalPolicy":if approval_mode == ApprovalMode::Never { "never" } else { "on-request" },"approvalsReviewer":reviewer,"sandbox":"workspace-write","developerInstructions":instructions(),"config":{
         "mcp_servers.repo_city.command":executable,
         "mcp_servers.repo_city.args":["--notes-mcp","--repo",root],
         "mcp_servers.repo_city.required":true,
@@ -1472,7 +1472,7 @@ for line in sys.stdin:
                     Start {
                         root: worker_root,
                         conversation: Some("source".into()),
-                        automatic_review: true,
+                        approval_mode: ApprovalMode::Automatic,
                         speaking: Arc::default(),
                         diagnostics: None,
                     },
@@ -1647,12 +1647,27 @@ for line in sys.stdin:
         std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]
+    fn no_confirmation_mode_sets_never_for_fresh_and_resumed_codex_threads() {
+        for previous in [None, Some("saved")] {
+            let params = thread_params(
+                Path::new("/repo"),
+                Path::new("/app"),
+                previous,
+                ApprovalMode::Never,
+            );
+            assert_eq!(params["approvalPolicy"], "never");
+            assert_eq!(params["approvalsReviewer"], "user");
+            assert_eq!(params["sandbox"], "workspace-write");
+        }
+    }
+
+    #[test]
     fn agent_connection_scopes_tools_and_uses_ecky_approval_routing() {
         let params = thread_params(
             Path::new("/repo with spaces"),
             Path::new("/Applications/Repo City.app/Contents/MacOS/repo-city"),
             Some("saved"),
-            true,
+            ApprovalMode::Automatic,
         );
         assert_eq!(params["threadId"], "saved");
         assert_eq!(params["approvalPolicy"], "on-request");
@@ -1749,7 +1764,7 @@ for line in sys.stdin:
         let start = Start {
             root: directory.clone(),
             conversation: None,
-            automatic_review: true,
+            approval_mode: ApprovalMode::Automatic,
             speaking: Arc::default(),
             diagnostics: None,
         };
@@ -1804,8 +1819,8 @@ for line in sys.stdin:
         ));
         let root = Path::new("/repo");
         let exe = Path::new("/app");
-        let old = thread_params(root, exe, Some("lost"), false);
-        let fresh = thread_params(root, exe, None, false);
+        let old = thread_params(root, exe, Some("lost"), ApprovalMode::Ask);
+        let fresh = thread_params(root, exe, None, ApprovalMode::Ask);
         assert!(fresh.get("threadId").is_none());
         assert_eq!(fresh["approvalPolicy"], old["approvalPolicy"]);
         assert_eq!(fresh["approvalsReviewer"], "user");

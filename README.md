@@ -334,11 +334,14 @@ platforms can set `CC_wasm32_unknown_unknown` to a compatible Clang.
 ## Talk to a coding agent
 
 On desktop, choose **Settings → Agent provider** in VibePad, then open **Chat**
-to connect to the locally installed Codex, Agy (Antigravity), or Grok CLI.
+to connect to the locally installed Codex, Agy (Antigravity), Grok, or Muse Code CLI.
 Sign in with that CLI first. City keeps a separate conversation for each
 checkout and provider. Agy requires a CLI with `agy acp`; Grok uses
-`grok agent stdio`. Agy and Grok stream text and ask before tool calls that
-require permission. Voice and steering are available with Codex.
+`grok agent stdio`; Muse uses `muse acp`. Sign in to Muse with `muse login`
+before connecting. Agy, Grok and Muse stream text and ask before tool calls that
+require permission. Muse receives the current checkout's Repo City MCP server
+when a session is created or loaded; no global Muse configuration is changed.
+Voice and steering are available with Codex.
 Enter a message and choose **Send**, or press **Enter**. **Shift+Enter** inserts a
 new line. Settings can restore **Cmd/Ctrl+Enter** for sending. During an active
 Codex turn, **Steer** sends new instructions into that same work.
@@ -349,10 +352,13 @@ most recent rejected or unconfirmed message into an empty composer for manual re
 Requested command and file permissions appear in the same tablet with
 **Approve once** and **Reject**, plus a city overlay with **Y/N** shortcuts.
 Y/N remain text while an editor, message field, search, or terminal has focus.
-Agent requests take priority over flight proposals. **Settings → Agent provider**
-selects who reviews Codex permission requests. The default uses Codex's
-automatic review. Codex applies the setting on the next connection. Repo City
-shows any requests the provider sends to the user. These preferences are stored
+Agent requests take priority over flight proposals. **Settings → Agent provider →
+Permissions** selects **Ask me**, **Automatic review**, or **No confirmations**
+for every provider. The default uses automatic review for Codex and shows any
+requests a provider sends to the user. **No confirmations** answers tool requests
+without a Y/N prompt for Codex, Agy, Grok and Muse. Codex also receives approval
+policy `never` on its next connection. **Ask me** keeps tool decisions manual.
+These preferences are stored
 in `agent-interaction.json` beside desktop preferences. **Stop work** shows
 **Stopping…** until the provider reports the outcome. If only voice is active,
 it requests that the voice session close.
@@ -395,7 +401,7 @@ message field or terminal has focus.
 
 Agent sessions use a shared engine contract for commands, normalized conversation
 state, capabilities and lifecycle events. The Codex adapter owns its authentication,
-app-server messages and native media. The Agy and Grok adapters use ACP over stdio.
+app-server messages and native media. The Agy, Grok and Muse adapters use ACP over stdio.
 
 The local dialogue view and conversation ID persist beside preferences in
 `agent-conversations`. Codex manages the underlying agent conversation. This

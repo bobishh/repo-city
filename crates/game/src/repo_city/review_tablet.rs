@@ -2373,6 +2373,7 @@ mod tests {
             })
             .collect();
         assert_eq!(providers, agent_engine::PROVIDERS);
+        assert!(providers.contains(&agent_engine::MUSE));
         assert_eq!(
             app.world().resource::<Tablet>().panel,
             screen_root,

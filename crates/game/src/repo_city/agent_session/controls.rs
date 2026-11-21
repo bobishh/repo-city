@@ -12,13 +12,7 @@ pub(super) fn register(app: &mut App) {
         .add_systems(Update, banner.after(super::update));
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum ApprovalMode {
-    Ask,
-    #[default]
-    Automatic,
-}
+pub(super) use agent_engine::ApprovalMode;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum FollowKey {
@@ -120,7 +114,7 @@ pub(super) fn shortcuts(
     if keys.just_pressed(session.follow_key()) {
         session.action = Some(Action::Follow);
     }
-    if keyboard_allowed && !session.approvals.is_empty() {
+    if keyboard_allowed && session.approval_pending() {
         if keys.just_pressed(KeyCode::KeyY) {
             session.action = Some(Action::Approve);
             keys.clear_just_pressed(KeyCode::KeyY);
@@ -134,7 +128,7 @@ pub(super) fn shortcuts(
 pub(crate) fn settings(parent: &mut ChildSpawnerCommands) {
     for (label, action) in [
         ("Send: Enter", Action::SendKey),
-        ("Codex review: automatic", Action::ApprovalMode),
+        ("Permissions: automatic review", Action::ApprovalMode),
         ("Follow shortcut: F7", Action::FollowKey),
     ] {
         let button =
@@ -147,7 +141,7 @@ pub(crate) fn settings(parent: &mut ChildSpawnerCommands) {
     }
     native_panel::text(
         parent,
-        "Shift+Enter inserts a new line. Codex review mode applies on reconnect. Manual requests use Y/N.",
+        "Permissions applies to every provider. No confirmations answers tool requests automatically. Codex's server policy applies on reconnect. Ask mode uses Y/N.",
         native_panel::INK,
     );
 }
@@ -217,7 +211,10 @@ fn banner(
     mut banners: Query<&mut Node, With<Banner>>,
     mut labels: Query<(&mut Text, Option<&Hint>, Option<&BannerText>)>,
 ) {
-    let approval = session.approvals.first();
+    let approval = session
+        .approvals
+        .first()
+        .filter(|_| session.approval_pending());
     for mut node in &mut banners {
         node.display = if approval.is_some() {
             Display::Flex
@@ -295,7 +292,7 @@ impl Session {
         self.interaction.follow_key.code()
     }
     pub(crate) fn approval_pending(&self) -> bool {
-        !self.approvals.is_empty()
+        self.interaction.approvals != ApprovalMode::Never && !self.approvals.is_empty()
     }
     pub(super) fn notice(&mut self, text: &str) {
         if self
@@ -362,10 +359,10 @@ impl Session {
         match action {
             Action::SendKey => next.send_with_enter = !next.send_with_enter,
             Action::ApprovalMode => {
-                next.approvals = if next.approvals == ApprovalMode::Ask {
-                    ApprovalMode::Automatic
-                } else {
-                    ApprovalMode::Ask
+                next.approvals = match next.approvals {
+                    ApprovalMode::Ask => ApprovalMode::Automatic,
+                    ApprovalMode::Automatic => ApprovalMode::Never,
+                    ApprovalMode::Never => ApprovalMode::Ask,
                 }
             }
             Action::FollowKey => {
@@ -484,12 +481,13 @@ mod interaction_tests {
     use std::sync::mpsc;
 
     struct QueueEngine {
+        provider: agent_engine::Provider,
         send: mpsc::Sender<bool>,
         fail: bool,
     }
     impl Engine for QueueEngine {
         fn provider(&self) -> agent_engine::Provider {
-            agent_engine::CODEX
+            self.provider
         }
         fn poll(&self, _: &mut Projection) -> Vec<Event> {
             vec![]
@@ -508,8 +506,60 @@ mod interaction_tests {
     fn session(fail: bool) -> (Session, mpsc::Receiver<bool>) {
         let (send, receive) = mpsc::channel();
         let mut session = Session::default();
-        session.client = Some(Box::new(QueueEngine { send, fail }));
+        session.client = Some(Box::new(QueueEngine {
+            provider: agent_engine::CODEX,
+            send,
+            fail,
+        }));
         (session, receive)
+    }
+    #[test]
+    fn no_confirmation_mode_answers_tool_requests_for_every_provider() {
+        for provider in agent_engine::PROVIDERS {
+            let (send, receive) = mpsc::channel();
+            let mut session = Session::default();
+            session.client = Some(Box::new(QueueEngine {
+                provider,
+                send,
+                fail: false,
+            }));
+            session.interaction = serde_json::from_str(r#"{"approvals":"never"}"#).unwrap();
+            session
+                .request_approval("token".into(), "Read file".into())
+                .unwrap();
+            assert!(
+                receive.try_recv().unwrap(),
+                "{} did not approve",
+                provider.label
+            );
+            assert!(!session.approval_pending());
+        }
+    }
+    #[test]
+    fn no_confirmation_mode_retries_failed_delivery_without_capturing_flight_keys() {
+        let (mut session, _) = session(true);
+        session.interaction.approvals = ApprovalMode::Never;
+        assert!(
+            session
+                .request_approval("retry".into(), "Read file".into())
+                .is_err()
+        );
+        assert_eq!(session.approvals[0].token, "retry");
+        assert!(!session.approval_pending());
+        let mut keys = ButtonInput::default();
+        keys.press(KeyCode::KeyY);
+        shortcuts(&mut keys, &mut session, true, true);
+        assert!(session.action.is_none());
+        assert!(keys.just_pressed(KeyCode::KeyY));
+        let (send, receive) = mpsc::channel();
+        session.client = Some(Box::new(QueueEngine {
+            provider: agent_engine::MUSE,
+            send,
+            fail: false,
+        }));
+        session.approve_pending().unwrap();
+        assert!(receive.try_recv().unwrap());
+        assert!(session.approvals.is_empty());
     }
     #[test]
     fn automatic_review_leaves_provider_fallback_requests_for_the_user() {
@@ -583,6 +633,15 @@ impl Session {
     pub(super) fn request_approval(&mut self, token: String, title: String) -> Result<(), String> {
         self.notice(&format!("Agent permission requested\n{title}"));
         self.approvals.push(Approval { token, title });
+        self.approve_pending()
+    }
+
+    pub(super) fn approve_pending(&mut self) -> Result<(), String> {
+        if self.interaction.approvals == ApprovalMode::Never {
+            while !self.approvals.is_empty() {
+                self.answer_approval(true)?;
+            }
+        }
         Ok(())
     }
 }

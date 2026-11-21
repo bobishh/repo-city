@@ -29,6 +29,15 @@ pub(super) struct Provider {
     pub capabilities: Capabilities,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ApprovalMode {
+    Ask,
+    #[default]
+    Automatic,
+    Never,
+}
+
 pub(super) const CODEX: Provider = Provider {
     id: "codex",
     label: "Codex",
@@ -52,7 +61,12 @@ pub(super) const GROK: Provider = Provider {
     label: "Grok",
     capabilities: TEXT_ONLY,
 };
-pub(super) const PROVIDERS: [Provider; 3] = [CODEX, AGY, GROK];
+pub(super) const MUSE: Provider = Provider {
+    id: "muse",
+    label: "Muse",
+    capabilities: TEXT_ONLY,
+};
+pub(super) const PROVIDERS: [Provider; 4] = [CODEX, AGY, GROK, MUSE];
 
 impl Default for Provider {
     fn default() -> Self {
@@ -63,7 +77,7 @@ impl Default for Provider {
 pub(super) struct Start {
     pub root: PathBuf,
     pub conversation: Option<String>,
-    pub automatic_review: bool,
+    pub approval_mode: ApprovalMode,
     pub speaking: Arc<AtomicBool>,
     pub diagnostics: Option<PathBuf>,
 }
@@ -127,7 +141,7 @@ pub(super) trait Engine: Send + Sync {
 pub(super) fn connect(provider: Provider, start: Start) -> Result<Box<dyn Engine>, String> {
     match provider.id {
         "codex" => Ok(Box::new(codex::Adapter::start(start))),
-        "agy" | "grok" => Ok(Box::new(acp::Adapter::start(provider, start)?)),
+        "agy" | "grok" | "muse" => Ok(Box::new(acp::Adapter::start(provider, start)?)),
         _ => Err(format!("Unknown agent provider {}.", provider.label)),
     }
 }
