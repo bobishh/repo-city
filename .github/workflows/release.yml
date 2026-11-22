@@ -98,6 +98,7 @@ jobs:
       REVIEW_PARTY_TURN_SECRET: ${{ secrets.REVIEW_PARTY_TURN_SECRET }}
       REPO_CITY_TLS_CERTIFICATE: ${{ secrets.REPO_CITY_TLS_CERTIFICATE }}
       REPO_CITY_TLS_PRIVATE_KEY: ${{ secrets.REPO_CITY_TLS_PRIVATE_KEY }}
+      REPO_CITY_BROWSER_SCRIPT: ${{ secrets.REPO_CITY_BROWSER_SCRIPT }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

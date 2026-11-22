@@ -16,6 +16,8 @@ async function check(path, status = 200, headers = {}, method = "GET") {
 
 await (await check("/up")).arrayBuffer();
 const html = await (await check("/")).text();
+assert.equal(html.includes('id="deployment-browser-script"'), Boolean(process.env.REPO_CITY_BROWSER_SCRIPT),
+  "The served index matches the deployment's browser script configuration");
 const build = html.match(/data-engine-build="([a-f0-9]{24})"/)?.[1];
 assert.ok(build, "Engine fingerprint in HTML");
 assert.ok(html.includes(`app.mjs?v=${build}`), "Entrypoint uses the selected engine build");

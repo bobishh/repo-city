@@ -3,6 +3,14 @@ defmodule RepoCity.Application do
 
   @impl true
   def start(_type, _args) do
+    deployment_index =
+      RepoCityWeb.Static.deployment_index!(
+        Application.get_env(:repo_city, :static_root),
+        Application.get_env(:repo_city, :browser_script)
+      )
+
+    Application.put_env(:repo_city, :deployment_index, deployment_index)
+
     [
       {Task.Supervisor, name: RepoCity.GitHub.Tasks},
       RepoCity.GitHub.PublicCache,

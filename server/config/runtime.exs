@@ -11,6 +11,7 @@ if config_env() != :test do
     review_party_turn_secret: System.get_env("REVIEW_PARTY_TURN_SECRET"),
     review_party_turn_urls: System.get_env("REVIEW_PARTY_TURN_URLS", ""),
     static_root: Path.expand(System.get_env("STATIC_ROOT", "../web/dist")),
+    browser_script: System.get_env("BROWSER_SCRIPT"),
     revision: System.get_env("REPO_CITY_REVISION")
 
   for {setting, variable, default} <- [

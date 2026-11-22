@@ -189,8 +189,14 @@ key share a request. Reuse requires a public conditional response from GitHub.
 If validation fails, clients fall back to the ordinary GitHub read path.
 Private objects, credentials, account lists, and review data stay outside this cache.
 
-The browser does not send usage analytics or telemetry. Builds and deployments
-do not inject event collectors or browser tracking keys.
+A standard build serves the original HTML and has no browser collector. An
+operator can set the production `REPO_CITY_BROWSER_SCRIPT` secret to enable an
+external browser script at runtime. The JSON value takes an HTTPS `src` and an
+optional `data` object of string attributes, for example
+`{"src":"https://collector.example/client.js","data":{"project":"example"}}`.
+Kamal passes it to Phoenix as `BROWSER_SCRIPT`. Phoenix adds the script to the
+served index. Use only browser-scoped values in `data`, which visitors can read.
+Clear the deployment setting and redeploy to disable the script.
 
 The optional GitHub App needs **Pull requests: write** for explicit PR
 comment publication. Read access still permits private drafts and GitHub
