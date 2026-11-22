@@ -1,17 +1,30 @@
 # Repo City
 
-[Repo City Web](https://repo-city.meta-uber-engineer.dev/) opens GitHub repositories
-and pull requests as a 3D city in your browser. The desktop app opens local Git
-checkouts, including live worktrees, an integrated terminal and
-local review notes shared through MCP.
+Use Repo City to find a file in an unfamiliar Git repository, read its
+source, and inspect the changes in a pull request. In the 3D city,
+directories form districts, and files are buildings with source, diff,
+and blame walls.
 
-Directories become districts; files become buildings with source, diff, and
-blame walls. Both applications use the same Rust engine in this workspace.
-Licensed under **MIT OR Apache-2.0**; choose either license.
+[Open Repo City Web](https://repo-city.meta-uber-engineer.dev/) · [Desktop previews](https://github.com/bobishh/repo-city/releases)
 
-![Repo City Web’s repository picker](docs/repo-city-web.webp)
+![Repo City looking down a street between source-file buildings](docs/repo-city-desktop.webp)
 
-![Repo City desktop flying between file buildings](docs/repo-city-desktop.webp)
+## Try it in your browser
+
+Use a browser with WebGPU. You can explore this public example without
+signing in.
+
+1. Open [Repo City Web](https://repo-city.meta-uber-engineer.dev/) and paste
+   `rails/solid_queue`. Select the repository, then choose **Open city**.
+2. Close the controls tour. Press **⌘P** on Mac or **P** on other keyboards.
+   Search for `concurrency_controls.rb` and select it to fly to its source wall.
+3. Click the Repo City logo and open
+   [Rails Solid Queue PR #831](https://github.com/rails/solid_queue/pull/831).
+   Paste the URL into the picker to load its comparison. Press **F** to
+   show changed files and **G** at a file to see its diff.
+
+The [desktop app](#on-your-mac) opens local Git checkouts and worktrees. It
+includes an integrated terminal and exposes local review notes through MCP.
 
 ## Workspace
 
@@ -29,7 +42,7 @@ The former `bobishh/vibe-city` repository is superseded by this workspace.
 
 ### On your Mac
 
-Download the desktop package from [GitHub Releases](https://github.com/bobishh/repo-city/releases),
+Download a macOS preview from [GitHub Releases](https://github.com/bobishh/repo-city/releases),
 or install Rust and CMake to build the app and its bundled Opus codec.
 
 ```sh
