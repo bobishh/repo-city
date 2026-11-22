@@ -367,6 +367,7 @@ struct Nearest {
     file_distance: f32,
     near_source: Option<usize>,
     district: Option<usize>,
+    district_point: Option<Vec2>,
     screen: Option<(Vec2, Vec2)>,
     function: Option<usize>,
     hunk: Option<usize>,
@@ -734,7 +735,7 @@ fn install_city(app: &mut App, args: &[String]) {
     app.add_systems(Startup, district::setup);
     app.add_systems(
         Update,
-        city_stream::draw_project_map.after(city_navigation::navigate),
+        city_stream::draw_distant_city.after(city_navigation::navigate),
     );
     app.add_systems(Update, district::reflect.after(listing::draw_overview));
     #[cfg(target_arch = "wasm32")]
@@ -1904,6 +1905,7 @@ fn targeting(
     nearest.hunk = None;
     nearest.near_source = None;
     nearest.district = None;
+    nearest.district_point = None;
     if navigation.overview_level() == Some(city_navigation::Overview::Project) {
         if nearest.screen.is_some() {
             if repo.is_changed()
@@ -1922,7 +1924,27 @@ fn targeting(
         nearest.file_distance = f32::INFINITY;
         return;
     }
-    let mut distance = 1000.;
+    const FILE_REACH: f32 = 1_000.;
+    const MIN_FILE_TARGET_PX: f32 = 36.;
+    let district_from_air = nearest.screen.and_then(|(_, viewport)| {
+        (!navigation.overview()
+            && !navigation.guides_camera()
+            && !explorer.anchored
+            && explorer.comparison_mode == 0
+            && direction.y < -0.5)
+            .then(|| {
+                // The flight camera has a 45° vertical field of view.
+                viewport.y * listing::WIDTH
+                    / (2. * std::f32::consts::FRAC_PI_8.tan() * MIN_FILE_TARGET_PX)
+            })
+    });
+    let mut distance = if district_from_air.is_some()
+        || navigation.overview_level() == Some(city_navigation::Overview::District)
+    {
+        f32::INFINITY
+    } else {
+        FILE_REACH
+    };
     let reading = file_facade::reading_plane(&repo.0, &explorer, camera);
     let mut near_distance = f32::INFINITY;
     // The aim ray may use the free cursor. Proximity follows the camera.
@@ -2002,6 +2024,7 @@ fn targeting(
             distance = d;
             nearest.function = Some(section.index);
             nearest.file = None;
+            nearest.district = None;
         }
     }
     for (hunk, transform) in &hunks {
@@ -2016,6 +2039,29 @@ fn targeting(
             nearest.hunk = Some(hunk.index);
             nearest.function = None;
             nearest.file = None;
+            nearest.district = None;
+        }
+    }
+    if let Some(minimum) = district_from_air
+        && nearest.function.is_none()
+        && nearest.hunk.is_none()
+    {
+        if nearest.file.is_none_or(|_| distance > minimum) {
+            let ground = city_stream::district_ground_point(origin, direction).and_then(|point| {
+                city_stream::district_at_point(&repo.0, point).map(|index| (index, point))
+            });
+            let aimed = nearest.file.and_then(|aim| {
+                let point = repo.0.files[aim.index].position.into();
+                city_stream::district_at_point(&repo.0, point).map(|index| (index, point))
+            });
+            if let Some((district, point)) = aimed.or(ground) {
+                nearest.district = Some(district);
+                nearest.district_point = Some(match ground {
+                    Some((index, ground)) if index == district => ground,
+                    _ => point,
+                });
+                nearest.file = None;
+            }
         }
     }
     nearest.file_distance = distance;

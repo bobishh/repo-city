@@ -10,6 +10,8 @@ const FILE_LIMIT: usize = 5000;
 const DISTRICT_LIMIT: usize = 256;
 const SPAWNS_PER_FRAME: usize = 24;
 const REMOVALS_PER_FRAME: usize = 48;
+const DISTRICT_VERTICES: usize = 4;
+const BUILDING_VERTICES: usize = 12;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) enum Item {
@@ -189,11 +191,64 @@ mod tests {
         assert_eq!(repo.files.len(), 6000);
     }
 
+    #[test]
+    fn free_flight_draws_distant_districts_and_buildings_beyond_the_stream_limit() {
+        let mut repo = repository_picker::empty();
+        repo.districts.push(repo_world::District {
+            name: "remote".into(),
+            position: [4000., 20.],
+            size: [120., 80.],
+        });
+        repo.files = (0..=FILE_LIMIT)
+            .map(|index| repo_world::File {
+                path: format!("remote/{index}.bin"),
+                before: None,
+                after: None,
+                change: Change::Unchanged,
+                position: [4000. + index as f32 * 20., 40.],
+            })
+            .collect();
+        let last = repo.files.last().unwrap().position[0];
+        let mut app = App::new();
+        app.insert_resource(Repo(repo))
+            .insert_resource(WorldSet::load(None).unwrap())
+            .init_resource::<file_facade::ChangesOnly>()
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .add_systems(Update, draw_distant_city);
+        app.update();
+        let world = app.world_mut();
+        let (_, mesh) = world
+            .query_filtered::<(Entity, &Mesh3d), With<DistantCity>>()
+            .single(world)
+            .expect("distant city is visible while flying freely");
+        let handle = mesh.0.clone();
+        let meshes = world.resource::<Assets<Mesh>>();
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(vertices)) = meshes
+            .get(&handle)
+            .unwrap()
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("distant city must contain districts and buildings");
+        };
+        assert!(vertices[0][0] > 3999.);
+        assert!(
+            vertices
+                .iter()
+                .any(|[x, y, _]| (*x - last).abs() < 10. && *y > 10.)
+        );
+        assert!(
+            vertices
+                .iter()
+                .any(|[x, y, _]| (*x - last).abs() < 10. && y.abs() < 0.1)
+        );
+    }
+
     // Given a project map and detailed buildings, filtering and restoring at
     // intermediate frames must keep each map roof attached to its moving body.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn project_map_roofs_follow_the_same_filter_motion_as_building_parts() {
+    fn distant_buildings_follow_the_same_filter_motion_as_building_parts() {
         use file_facade::{Part, SinkPart, transform};
         use std::time::Duration;
 
@@ -236,7 +291,7 @@ mod tests {
             })
             .collect();
         app.update();
-        let mut mesh = project_map(
+        let mut mesh = distant_city(
             &repo,
             app.world().resource::<file_facade::ChangesOnly>(),
             &set,
@@ -258,7 +313,7 @@ mod tests {
                     .advance_by(Duration::from_millis(65));
                 app.update();
                 let filter = app.world().resource::<file_facade::ChangesOnly>();
-                assert!(move_project_roofs(&mut mesh, &repo, filter));
+                assert!(move_distant_buildings(&mut mesh, &repo, filter));
                 let Some(bevy::mesh::VertexAttributeValues::Float32x3(vertices)) =
                     mesh.attribute(Mesh::ATTRIBUTE_POSITION)
                 else {
@@ -266,18 +321,18 @@ mod tests {
                 };
                 assert_eq!(
                     vertices.len(),
-                    8,
+                    BUILDING_VERTICES * 2,
                     "keep moving roofs until they sink below the street"
                 );
                 for (index, body) in parts.iter().enumerate() {
                     let body = app.world().get::<Transform>(*body).unwrap();
                     let top = body.translation.y + body.scale.y / 2.;
                     assert!(
-                        (vertices[index * 4][1] - (top - 0.05)).abs() < 0.0001,
+                        (vertices[index * BUILDING_VERTICES][1] - (top - 0.05)).abs() < 0.0001,
                         "map roof {index} must move with the body while filter is {enabled}"
                     );
                 }
-                let rebuilt = project_map(&repo, filter, &set);
+                let rebuilt = distant_city(&repo, filter, &set);
                 let Some(bevy::mesh::VertexAttributeValues::Float32x3(rebuilt_vertices)) =
                     rebuilt.attribute(Mesh::ATTRIBUTE_POSITION)
                 else {
@@ -299,11 +354,15 @@ mod tests {
     }
 }
 
-/// A single inexpensive mesh fills the overview beyond the detailed city stream.
+/// The city silhouette stays visible while detailed buildings enter and leave the stream.
 #[derive(Component)]
-pub(super) struct ProjectMap;
+pub(super) struct DistantCity;
 
 pub(super) fn district_at_ray(repo: &Repository, origin: Vec3, direction: Vec3) -> Option<usize> {
+    district_at_point(repo, district_ground_point(origin, direction)?)
+}
+
+pub(super) fn district_ground_point(origin: Vec3, direction: Vec3) -> Option<Vec2> {
     if direction.y.abs() < 0.00001 {
         return None;
     }
@@ -311,7 +370,10 @@ pub(super) fn district_at_ray(repo: &Repository, origin: Vec3, direction: Vec3) 
     if distance < 0. || !distance.is_finite() {
         return None;
     }
-    let point = (origin + direction * distance).xz();
+    Some((origin + direction * distance).xz())
+}
+
+pub(super) fn district_at_point(repo: &Repository, point: Vec2) -> Option<usize> {
     repo.districts.iter().position(|district| {
         let min = Vec2::from_array(district.position);
         let max = min + Vec2::from_array(district.size);
@@ -319,19 +381,17 @@ pub(super) fn district_at_ray(repo: &Repository, origin: Vec3, direction: Vec3) 
     })
 }
 
-pub(super) fn draw_project_map(
+pub(super) fn draw_distant_city(
     mut commands: Commands,
     repo: Res<Repo>,
-    navigation: Res<city_navigation::Navigation>,
     focus: Res<file_facade::ChangesOnly>,
     set: Res<WorldSet>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    maps: Query<(Entity, &Mesh3d), With<ProjectMap>>,
+    maps: Query<(Entity, &Mesh3d), With<DistantCity>>,
     mut previous_progress: Local<Option<f32>>,
 ) {
-    let enabled = repo.0.files.len() > EAGER_FILES
-        && navigation.overview_level() == Some(city_navigation::Overview::Project);
+    let enabled = repo.0.files.len() > EAGER_FILES;
     let progress = focus.animation_progress();
     if enabled
         && !repo.is_changed()
@@ -341,7 +401,7 @@ pub(super) fn draw_project_map(
             return;
         }
         if let Some(mut mesh) = meshes.get_mut(&handle.0)
-            && move_project_roofs(&mut mesh, &repo.0, &focus)
+            && move_distant_buildings(&mut mesh, &repo.0, &focus)
         {
             *previous_progress = Some(progress);
             return;
@@ -356,8 +416,9 @@ pub(super) fn draw_project_map(
     if enabled {
         *previous_progress = Some(progress);
         commands.spawn((
-            ProjectMap,
-            Mesh3d(meshes.add(project_map(&repo.0, &focus, &set))),
+            DistantCity,
+            bevy::light::NotShadowCaster,
+            Mesh3d(meshes.add(distant_city(&repo.0, &focus, &set))),
             MeshMaterial3d(materials.add(StandardMaterial {
                 unlit: true,
                 cull_mode: None,
@@ -367,15 +428,17 @@ pub(super) fn draw_project_map(
     }
 }
 
-fn project_roof_height(
+fn distant_building_heights(
     file: &repo_world::File,
     focus: &file_facade::ChangesOnly,
     size: Vec3,
-) -> f32 {
-    (size.y - 0.05).max(0.05) + focus.vertical_offset(file, size)
+) -> [f32; 2] {
+    let floor = focus.vertical_offset(file, size);
+    // Leave the stand-in inside the detailed facade to avoid z-fighting while it streams.
+    [floor + (size.y - 0.05).max(0.05), floor]
 }
 
-fn move_project_roofs(
+fn move_distant_buildings(
     mesh: &mut Mesh,
     repo: &Repository,
     focus: &file_facade::ChangesOnly,
@@ -385,71 +448,99 @@ fn move_project_roofs(
     else {
         return false;
     };
-    let first = repo.districts.len() * 4;
-    let count = repo.files.len().min(FILE_LIMIT);
-    if vertices.len() != first + count * 4 {
+    let first = repo.districts.len() * DISTRICT_VERTICES;
+    if vertices.len() != first + repo.files.len() * BUILDING_VERTICES {
         return false;
     }
-    for (file, corners) in repo.files.iter().zip(vertices[first..].chunks_exact_mut(4)) {
-        let height = project_roof_height(file, focus, listing::block_size(file));
-        for corner in corners {
-            corner[1] = height;
+    for (file, building) in repo
+        .files
+        .iter()
+        .zip(vertices[first..].chunks_exact_mut(BUILDING_VERTICES))
+    {
+        let [roof, floor] = distant_building_heights(file, focus, listing::block_size(file));
+        for (corners, height) in building
+            .chunks_exact_mut(DISTRICT_VERTICES)
+            .zip([roof, roof, floor])
+        {
+            for corner in corners {
+                corner[1] = height;
+            }
         }
     }
     true
 }
 
-fn project_map(repo: &Repository, focus: &file_facade::ChangesOnly, set: &WorldSet) -> Mesh {
+fn distant_city(repo: &Repository, focus: &file_facade::ChangesOnly, set: &WorldSet) -> Mesh {
     use bevy::{
         asset::RenderAssetUsages,
         mesh::{Indices, PrimitiveTopology},
     };
 
-    let mut positions = Vec::new();
-    let mut colors = Vec::new();
-    let mut indices = Vec::new();
-    let mut roof = |center: Vec2, size: Vec2, height: f32, ink| {
-        let first = positions.len() as u32;
-        for corner in [
-            Vec2::new(-1., -1.),
-            Vec2::new(-1., 1.),
-            Vec2::new(1., 1.),
-            Vec2::new(1., -1.),
-        ] {
-            let corner = center + corner * size * 0.5;
-            positions.push([corner.x, height, corner.y]);
-            colors.push(ink);
-        }
-        indices.extend([first, first + 1, first + 2, first, first + 2, first + 3]);
-    };
+    let corners = [
+        Vec2::new(-1., -1.),
+        Vec2::new(-1., 1.),
+        Vec2::new(1., 1.),
+        Vec2::new(1., -1.),
+    ];
+    let roof = [0, 1, 2, 0, 2, 3];
+    let roof_trim = [
+        0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7,
+    ];
+    let walls = [
+        0, 8, 9, 0, 9, 1, 1, 9, 10, 1, 10, 2, 2, 10, 11, 2, 11, 3, 3, 11, 8, 3, 8, 0,
+    ];
+    let vertices = repo.files.len() * BUILDING_VERTICES + repo.districts.len() * DISTRICT_VERTICES;
+    let mut positions = Vec::with_capacity(vertices);
+    let mut colors = Vec::with_capacity(vertices);
+    let mut indices = Vec::with_capacity(
+        repo.files.len() * (roof.len() + roof_trim.len() + walls.len())
+            + repo.districts.len() * roof.len(),
+    );
     let ink = |rgb: [f32; 3]| {
         let linear = color(rgb).to_linear();
         [linear.red, linear.green, linear.blue, 1.]
     };
+    let glass = code_texture::FACADE_GLASS.map(|value| f32::from(value) / 255.);
     for district in &repo.districts {
         let size = Vec2::from_array(district.size);
         let min = Vec2::from_array(district.position);
-        roof(
-            min + size * 0.5,
-            size - Vec2::splat(0.5),
-            -0.15,
-            ink(set.ground),
-        );
+        let center = min + size * 0.5;
+        let first = positions.len() as u32;
+        for corner in corners {
+            let point = center + corner * (size - Vec2::splat(0.5)) * 0.5;
+            positions.push([point.x, -0.15, point.y]);
+            colors.push(ink(set.ground));
+        }
+        indices.extend(roof.map(|index| first + index));
     }
-    for file in repo.files.iter().take(FILE_LIMIT) {
+    for file in &repo.files {
         let size = listing::block_size(file);
         let tint = match file.change {
-            Change::Unchanged => file_facade::INK[file_facade::kind(&file.path)],
+            Change::Unchanged => code_texture::Coverage::Closed
+                .accent()
+                .map(|value| f32::from(value) / 255.),
             Change::Added => set.added,
             Change::Removed => set.removed,
             Change::Modified => set.accent,
         };
-        roof(
-            file.position.into(),
-            size.xz() * 0.96,
-            project_roof_height(file, focus, size),
-            ink(tint),
-        );
+        let first = positions.len() as u32;
+        let center = Vec2::from_array(file.position);
+        let [top, floor] = distant_building_heights(file, focus, size);
+        let trim = Vec3::from_array(glass).lerp(Vec3::from_array(tint), 0.52);
+        for (height, scale, tone) in [
+            (top, 0.48, ink(trim.to_array())),
+            (top, 0.456, ink(glass)),
+            (floor, 0.48, ink(set.shell)),
+        ] {
+            for corner in corners {
+                let point = center + corner * size.xz() * scale;
+                positions.push([point.x, height, point.y]);
+                colors.push(tone);
+            }
+        }
+        indices.extend(roof.map(|index| first + 4 + index));
+        indices.extend(roof_trim.map(|index| first + index));
+        indices.extend(walls.map(|index| first + index));
     }
     Mesh::new(
         PrimitiveTopology::TriangleList,

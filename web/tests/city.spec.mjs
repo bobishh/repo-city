@@ -1307,3 +1307,54 @@ test("a tall code facade renders after a partial thaw", async ({ page }, testInf
   await expect(page.locator("#progress-summary")).toContainText("6 lines revealed");
   expect(faults).toEqual([]);
 });
+
+test("clicking from high flight approaches a district before opening a file", async ({ page }, testInfo) => {
+  await emulatePointerLock(page);
+  const tower = "district/000-tower.rs";
+  const source = "pub const BUILDING: &str = \"skyline preview\";\n".repeat(3600);
+  const tree = [{ path: tower, type: "blob", mode: "100644", sha: after, size: source.length }];
+  for (let index = 1; index <= 900; index++) {
+    tree.push({
+      path: `district/${String(index).padStart(3, "0")}.ts`,
+      type: "blob", mode: "100644", sha: index.toString(16).padStart(40, "0"),
+      size: 18,
+    });
+  }
+  await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
+  await page.route("https://api.github.com/**", route => {
+    const url = new URL(route.request().url()).pathname;
+    if (url === "/repos/owner/aerial") return route.fulfill({ json: { default_branch: "main" } });
+    if (url.includes("/commits/")) return route.fulfill({ json: { sha: after, parents: [] } });
+    if (url.includes("/git/trees/")) return route.fulfill({ json: { tree } });
+    const text = url.endsWith(after) ? source : "export const n=1;\n";
+    return route.fulfill({ json: { size: text.length, encoding: "base64", content: Buffer.from(text).toString("base64") } });
+  });
+  const towerBlob = page.waitForResponse(response => response.url().endsWith("/git/blobs/" + after));
+  await page.goto("/?repo=owner%2Faerial");
+  await towerBlob;
+  await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+  const canvas = page.locator("canvas");
+  await page.mouse.move(640, 400);
+  await canvas.evaluate(element => element.requestPointerLock());
+  await expect(canvas).toHaveAttribute("data-pointer-locked", "");
+  await page.keyboard.press("KeyS", { delay: 950 });
+  await page.keyboard.press("ArrowDown", { delay: 1350 });
+  await expect(canvas).not.toHaveAttribute("data-overview", "");
+  await page.screenshot({ path: testInfo.outputPath("free-flight.png") });
+  await page.mouse.click(640, 400);
+  await expect(canvas).toHaveAttribute("data-overview", "");
+  await expect(canvas).not.toHaveAttribute("data-pointer-locked", "");
+  await expect(page.locator("#progress-summary")).toContainText("0 lines revealed");
+  const selected = page.waitForResponse(response =>
+    response.url().includes("/git/blobs/") && !response.url().endsWith(after)
+  );
+  const candidates = [[640, 400], [560, 400], [700, 400], [640, 320], [640, 480], [580, 460], [710, 340]];
+  let attempt = 0;
+  await expect.poll(async () => {
+    if (await canvas.getAttribute("data-overview") === null) return true;
+    await page.mouse.click(...candidates[attempt++ % candidates.length]);
+    return false;
+  }, { timeout: 16_000, intervals: [500] }).toBe(true);
+  await selected;
+  await expect(canvas).not.toHaveAttribute("data-overview", "");
+});

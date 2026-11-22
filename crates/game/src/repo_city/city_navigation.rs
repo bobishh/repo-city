@@ -208,7 +208,7 @@ pub(super) struct Navigation {
     hop: Option<Hop>,
     redraw: bool,
     overview: Option<(Overview, Transform)>,
-    district_from_project: bool,
+    return_from_district: bool,
     history: History,
     review_line: Option<(usize, f32)>,
     review_face: Option<listing::Face>,
@@ -294,10 +294,10 @@ impl Navigation {
     }
 
     fn cycle_overview(&mut self, camera: Transform) -> (Option<Overview>, Transform) {
-        let from_project = std::mem::take(&mut self.district_from_project);
+        let return_from_district = std::mem::take(&mut self.return_from_district);
         let (level, origin) = match self.overview.take() {
             None => (Some(Overview::District), camera),
-            Some((Overview::District, origin)) if from_project => (None, origin),
+            Some((Overview::District, origin)) if return_from_district => (None, origin),
             Some((Overview::District, origin)) => (Some(Overview::Project), origin),
             Some((Overview::Project, origin)) => (None, origin),
         };
@@ -362,7 +362,7 @@ impl Navigation {
                 Overview::Project => {
                     "Click a district to approach its files · M returns to your previous view"
                 }
-                Overview::District if self.district_from_project => {
+                Overview::District if self.return_from_district => {
                     "Click a building to read its code · M returns to your previous view"
                 }
                 Overview::District => {
@@ -478,6 +478,10 @@ pub(super) fn district_view(
 ) -> Transform {
     let min = Vec2::from_array(district.position);
     let max = min + Vec2::from_array(district.size);
+    district_view_between(min, max, repo, aspect)
+}
+
+fn district_view_between(min: Vec2, max: Vec2, repo: &Repository, aspect: f32) -> Transform {
     let roof = repo
         .files
         .iter()
@@ -488,6 +492,40 @@ pub(super) fn district_view(
         .map(|file| listing::block_size(file).y)
         .fold(0., f32::max);
     overview_view(min, max, roof, aspect)
+}
+
+fn district_approach(
+    district: &repo_world::District,
+    repo: &Repository,
+    point: Vec2,
+    aspect: f32,
+) -> Transform {
+    let start = Vec2::from_array(district.position);
+    let extent = Vec2::from_array(district.size);
+    let radius = Vec2::splat(48.);
+    let min = start.max(point - radius);
+    let max = (start + extent).min(point + radius);
+    let mut view = overview_view(min, max, 0., aspect);
+    let mut roofs = Vec::new();
+    let mut clearance = 0_f32;
+    let eye = view.translation.xz();
+    for file in &repo.files {
+        let position = Vec2::from_array(file.position);
+        let size = listing::block_size(file);
+        if position.cmpge(min).all() && position.cmple(max).all() {
+            roofs.push(size.y);
+        }
+        if (eye - position).abs().cmple(size.xz() * 0.5 + 1.).all() {
+            clearance = clearance.max(size.y + 4.);
+        }
+    }
+    if let Some(last) = roofs.len().checked_sub(1) {
+        // Frame the nearby roofs even when a single tower stands above the neighborhood.
+        let (_, roof, _) = roofs.select_nth_unstable_by(last * 3 / 4, f32::total_cmp);
+        view.translation.y += *roof;
+    }
+    view.translation.y = view.translation.y.max(clearance);
+    view
 }
 
 fn project_view(repo: &Repository, aspect: f32) -> Transform {
@@ -763,17 +801,34 @@ pub(super) fn navigate(
         return;
     }
 
-    if navigation.overview_level() == Some(Overview::Project)
-        && (pilot.map_click || keys.just_pressed(KeyCode::KeyE))
+    let approach_district = match navigation.overview_level() {
+        Some(Overview::Project) => pilot.map_click || keys.just_pressed(KeyCode::KeyE),
+        Some(Overview::District) => false,
+        None => {
+            !navigation.guides_camera()
+                && !explorer.anchored
+                && explorer.comparison_mode == 0
+                && !listing.water_on()
+                && (keys.just_pressed(KeyCode::KeyE)
+                    || (pilot.shot && !keys.just_pressed(KeyCode::KeyK)))
+        }
+    };
+    if approach_district
+        && !navigation.is_flying()
         && let Some(district) = nearest
             .district
             .and_then(|index| repo.0.districts.get(index))
     {
-        let origin = navigation.overview.expect("project overview").1;
+        let origin = navigation.overview.map_or(*camera, |(_, origin)| origin);
         navigation.overview = Some((Overview::District, origin));
-        navigation.district_from_project = true;
+        navigation.return_from_district = true;
         let aspect = window.width() / window.height().max(1.);
-        navigation.overview_hop(*camera, district_view(district, &repo.0, aspect));
+        if let Some(point) = nearest.district_point {
+            let end = district_approach(district, &repo.0, point, aspect);
+            navigation.hop = Some(Hop::facade(*camera, end, &repo.0));
+        } else {
+            navigation.overview_hop(*camera, district_view(district, &repo.0, aspect));
+        }
         return;
     }
 
@@ -1122,7 +1177,10 @@ pub(super) fn draw(
     mut gizmos: Gizmos,
     nearest: Res<Nearest>,
 ) {
-    if navigation.overview_level() == Some(Overview::Project)
+    if navigation.overview_level() != Some(Overview::District)
+        && !navigation.guides_camera()
+        && !explorer.anchored
+        && explorer.comparison_mode == 0
         && let Some(district) = nearest
             .district
             .and_then(|index| repo.0.districts.get(index))
@@ -1282,8 +1340,7 @@ mod tests {
     use super::*;
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn project_overview_click_reaches_an_unloaded_district_and_keeps_return_view() {
+    fn district_navigation_app() -> (App, Entity) {
         let mut repo = repository_picker::empty();
         repo.files = ["near/current.rs", "far/target.rs"]
             .into_iter()
@@ -1305,14 +1362,10 @@ mod tests {
                 size: [20., 20.],
             })
             .collect();
-        let origin = Transform::from_xyz(10., 3., 30.);
-        let mut navigation = Navigation::default();
-        navigation.cycle_overview(origin);
-        navigation.cycle_overview(origin);
         let mut app = App::new();
         app.insert_resource(Repo(repo))
             .insert_resource(Explorer::new(0))
-            .insert_resource(navigation)
+            .init_resource::<Navigation>()
             .init_resource::<Nearest>()
             .init_resource::<Time>()
             .init_resource::<ButtonInput<KeyCode>>()
@@ -1342,6 +1395,80 @@ mod tests {
                 },
             ))
             .id();
+        (app, camera)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn high_flight_click_approaches_district_before_opening_a_small_building() {
+        let (mut app, camera) = district_navigation_app();
+        app.world_mut()
+            .resource_mut::<Repo>()
+            .0
+            .files
+            .push(repo_world::File {
+                path: "far/tower.rs".into(),
+                before: None,
+                after: Some(repo_world::Blob {
+                    id: "tower".into(),
+                    size: 500_000,
+                    mode: "100644".into(),
+                }),
+                change: Change::Unchanged,
+                position: [5000., 5003.],
+            });
+        let far_building = app.world_mut().spawn(Facade { index: 1 }).id();
+        let click = |app: &mut App| {
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .press(MouseButton::Left);
+            app.update();
+        };
+        let release = |app: &mut App| {
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .reset(MouseButton::Left);
+            app.update();
+        };
+        let high = Transform::from_xyz(5010., 920., 5010.).looking_to(Vec3::NEG_Y, Vec3::Z);
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() = high;
+        release(&mut app);
+        assert_eq!(app.world().resource::<Nearest>().district, Some(1));
+        click(&mut app);
+        let navigation = app.world().resource::<Navigation>();
+        assert_eq!(navigation.overview_level(), Some(Overview::District));
+        let arrival = navigation.hop.as_ref().unwrap().end;
+        assert!(arrival.translation.y < high.translation.y);
+        assert_eq!(app.world().resource::<Explorer>().selected, 0);
+
+        app.world_mut().resource_mut::<Navigation>().hop = None;
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() = arrival;
+        release(&mut app);
+        assert_eq!(app.world().resource::<Nearest>().file.unwrap().index, 1);
+        click(&mut app);
+        assert_eq!(app.world().resource::<Explorer>().selected, 1);
+
+        *app.world_mut().resource_mut::<Navigation>() = Navigation::default();
+        app.world_mut().despawn(far_building);
+        let empty_district =
+            Transform::from_xyz(5003., 2500., 5010.).looking_to(Vec3::NEG_Y, Vec3::Z);
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() = empty_district;
+        release(&mut app);
+        assert_eq!(app.world().resource::<Nearest>().district, Some(1));
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() =
+            empty_district.with_translation(Vec3::new(4990., 2500., 5010.));
+        release(&mut app);
+        assert_eq!(app.world().resource::<Nearest>().district, None);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_overview_click_reaches_an_unloaded_district_and_keeps_return_view() {
+        let origin = Transform::from_xyz(10., 3., 30.);
+        let (mut app, camera) = district_navigation_app();
+        let mut navigation = app.world_mut().resource_mut::<Navigation>();
+        navigation.cycle_overview(origin);
+        navigation.cycle_overview(origin);
         app.update();
         assert_eq!(app.world().resource::<Nearest>().district, Some(1));
         assert!(!app.world().get::<Pilot>(camera).unwrap().captured);
