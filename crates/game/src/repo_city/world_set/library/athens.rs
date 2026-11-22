@@ -14,6 +14,7 @@ pub(super) fn spawn(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    assets: &AssetServer,
 ) {
     let athens: Athens =
         serde_json::from_str(include_str!("../../../../../../world_sets/athens-osm.json"))
@@ -25,8 +26,6 @@ pub(super) fn spawn(
     let roofs = [surface(166, 99, 73), surface(186, 124, 87)];
     let walls = surface(206, 181, 143);
     let hills = [surface(132, 136, 102), surface(157, 148, 113)];
-    let olive = surface(101, 122, 75);
-    let cypress = surface(63, 91, 65);
     let cloud = materials.add(StandardMaterial {
         base_color: Color::srgba(0.95, 0.96, 0.94, 0.38),
         alpha_mode: AlphaMode::Blend,
@@ -102,25 +101,6 @@ pub(super) fn spawn(
             Transform::from_xyz(x, -2., z).with_scale(Vec3::new(width, height, width * 0.72)),
         );
     }
-    for (x, z, height) in [
-        (-18.4, -12.0, 6.1),
-        (18.5, -10.2, 4.6),
-        (-18.6, 10.1, 5.2),
-        (19.3, 14., 6.9),
-        (25., -22., 5.8),
-        (-21.1, 33.1, 6.4),
-    ] {
-        piece(
-            &mound,
-            &cypress,
-            Transform::from_xyz(x, height / 2., z).with_scale(Vec3::new(1.8, height, 1.8)),
-        );
-        piece(
-            &mound,
-            &olive,
-            Transform::from_xyz(x * 1.1, 1.5, z + 2.1).with_scale(Vec3::new(4.0, 2.4, 3.2)),
-        );
-    }
     for (x, y, z, width) in [
         (-53., 44., 22., 21.),
         (68., 42., 31., 26.),
@@ -138,4 +118,25 @@ pub(super) fn spawn(
             );
         }
     }
+    for (x, z, height) in [
+        (-18.4, -12., 6.1),
+        (18.5, -10.2, 4.6),
+        (-18.6, 10.1, 5.2),
+        (19.3, 14., 6.9),
+        (25., -22., 5.8),
+        (-21.1, 33.1, 6.4),
+    ] {
+        commands.spawn((
+            models::scene(assets, "cypress.glb"),
+            Transform::from_xyz(x, -0.08, z).with_scale(Vec3::new(3.1, height / 1.38, 3.1)),
+            Visibility::Inherited,
+        ));
+    }
+    commands.spawn((
+        models::scene(assets, "temple.glb"),
+        Transform::from_xyz(39., 2.7, -13.)
+            .with_scale(Vec3::splat(27.))
+            .with_rotation(Quat::from_rotation_y(-0.43)),
+        Visibility::Inherited,
+    ));
 }

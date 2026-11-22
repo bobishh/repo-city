@@ -1,10 +1,10 @@
 use super::*;
 
 pub(super) fn update(
-    library: Res<Library>,
+    mut library: ResMut<Library>,
     aim: Res<aim::Aim>,
     opened: Res<room::Unrolling>,
-    map: Res<map::Map>,
+    (map, menu): (Res<map::Map>, Res<city_menu::Menu>),
     settings: Res<reading::Settings>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -21,6 +21,7 @@ pub(super) fn update(
         .as_ref()
         .zip(repo.0.files.get(explorer.selected));
     let frozen = map.open()
+        || menu.blocks_controls()
         || review.blocked
         || review.tablet_open
         || !windows.single().is_ok_and(|window| window.focused);
@@ -29,6 +30,8 @@ pub(super) fn update(
         review.drag = None;
         if focus.is_none() {
             *heat = None;
+            review.aim_note = None;
+            review.washing = false;
         }
         return;
     }
@@ -47,6 +50,20 @@ pub(super) fn update(
         }) if file == explorer.selected && viewport.contains(&row) => Some((row, before, number)),
         _ => None,
     };
+    let point = hit.map(|(_, before, number)| review_notes::Anchor {
+        path: file.path.clone(),
+        before,
+        start: number,
+        end: number,
+    });
+    review.aim_note = point.as_ref().and_then(|point| {
+        review
+            .notes
+            .iter()
+            .rev()
+            .find(|note| review.shows_paint(note, &repo.0) && note.anchor.includes(point))
+            .map(|note| note.id.clone())
+    });
     let key = (explorer.selected, explorer.before);
     if *heat != Some(key) || review.slot != 0 {
         *heat = None;
@@ -61,20 +78,6 @@ pub(super) fn update(
         return;
     }
     if review.paint().is_some() {
-        let point = hit.map(|(_, before, number)| review_notes::Anchor {
-            path: file.path.clone(),
-            before,
-            start: number,
-            end: number,
-        });
-        if let Some(point) = &point {
-            review.aim_note = review
-                .notes
-                .iter()
-                .rev()
-                .find(|note| review.shows_paint(note, &repo.0) && note.anchor.includes(point))
-                .map(|note| note.id.clone());
-        }
         if keys.pressed(KeyCode::KeyK) {
             if let Some(point) = point {
                 if warming {
@@ -143,15 +146,31 @@ pub(super) fn update(
             }
             Some((row.before, row.line.clone()))
         });
-    for mark in listing.observe_rows(
+    let marks = listing.observe_rows(
         &explorer,
         file,
         block.clone(),
         source,
         time.delta_secs(),
         *settings,
-    ) {
+    );
+    let completed = !marks.is_empty();
+    for mark in marks {
         progress.mark(mark, true);
+    }
+    if completed
+        && settings.auto_advance
+        && review.washing
+        && reader.face == listing::Face::Source
+        && let Some(next) = (block.end..rows.len()).find(|&index| {
+            rows.row(index).is_some_and(|row| {
+                !listing.has_read_line(explorer.selected, row.before, row.line.number)
+            })
+        })
+        && let Some(reader) = &mut library.reader
+    {
+        reader.first = next.saturating_sub(center - viewport.start);
+        reader.target = None;
     }
 }
 

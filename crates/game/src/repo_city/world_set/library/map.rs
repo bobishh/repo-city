@@ -145,6 +145,9 @@ fn blend_zoom(from: f32, to: f32, t: f32) -> f32 {
 }
 
 impl Map {
+    pub(super) fn show_folder(&mut self, folder: usize) {
+        self.requested_folder = Some(folder);
+    }
     pub(super) fn open(&self) -> bool {
         self.level.is_some()
     }
@@ -208,9 +211,9 @@ pub(super) fn update(
     repo: Res<Repo>,
     explorer: Res<Explorer>,
     aim: Res<aim::Aim>,
-    mut library: ResMut<Library>,
+    (mut library, mut filter): (ResMut<Library>, ResMut<file_facade::ChangesOnly>),
     mut map: ResMut<Map>,
-    review: Res<review_notes::Review>,
+    (review, menu): (Res<review_notes::Review>, Res<city_menu::Menu>),
     mut eye: Query<Eye<'_>, (With<room::Camera>, Without<Selection>)>,
     (mut focus, parents): (ResMut<InputFocus>, Query<&ChildOf>),
     (buttons, motion, wheel): (
@@ -259,6 +262,7 @@ pub(super) fn update(
     } else if library.input.is_none()
         && !review.blocked
         && !review.tablet_open
+        && !menu.blocks_controls()
         && keys.just_pressed(KeyCode::KeyM)
     {
         map.level = match previous {
@@ -500,7 +504,7 @@ pub(super) fn update(
         }
         map.passage = None;
         map.framing = None;
-        let ground = folder.map(layout::view);
+        let ground = folder.map(layout::doorway);
         if let Some(scene) = map.scene.take() {
             commands.entity(scene.mesh).despawn();
             commands.entity(scene.selection).despawn();
@@ -508,7 +512,16 @@ pub(super) fn update(
             native_panel::close(&mut commands, scene.panel, &mut focus, &parents);
         }
         if let Some((saved, ground_projection, ground_msaa)) = map.ground.take() {
-            *pose = ground.unwrap_or(saved);
+            *pose = ground.map_or(saved, |destination| {
+                let mut approach = destination;
+                approach.translation += Vec3::Y * 7. - Vec3::from(destination.forward()) * 4.8;
+                approach.look_at(
+                    destination.translation + Vec3::from(destination.forward()) * 4.,
+                    Vec3::Y,
+                );
+                library.flight = Some(room::Flight::landing(approach, destination));
+                approach
+            });
             *projection = ground_projection;
             *msaa = ground_msaa;
             *layers = RenderLayers::layer(0);
@@ -516,13 +529,12 @@ pub(super) fn update(
         map.level = None;
         library.reader = None;
         library.walk_pose = None;
-        library.destination = Some(Destination {
-            index,
-            before: file.after.is_none(),
-            line: 1,
-            end: None,
-            face: listing::Face::Source,
-        });
+        library.retreat = None;
+        if !filter.includes(file) {
+            filter.toggle();
+        }
+        library.catalog.query.clear();
+        library.catalog.collect(&repo.0, Some(index), &filter);
         #[cfg(target_arch = "wasm32")]
         browser_map("", 0);
         return;
@@ -677,9 +689,9 @@ fn spawn(
             native_panel::text(
                 body,
                 if overview {
-                    "Building opens file · Terrace opens folder\nWheel zoom · Right-drag pan"
+                    "Scroll lands at library · Terrace opens folder map\nWheel zoom · Right-drag pan"
                 } else {
-                    "Click or Enter to read\nWheel zoom · Right-drag pan"
+                    "Click or Enter to land at entrance\nWheel zoom · Right-drag pan"
                 },
                 PAPER,
             );

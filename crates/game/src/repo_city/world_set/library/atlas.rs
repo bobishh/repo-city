@@ -82,13 +82,15 @@ impl Atlas {
     pub(super) fn terrain(catalog: &Catalog) -> Terrain {
         const TURN: f32 = 2.39996;
         const GRID: f32 = 40.;
-        let mut groups: [Vec<usize>; 3] = std::array::from_fn(|_| Vec::new());
+        let mut groups = BTreeMap::<&str, Vec<usize>>::new();
         for (index, folder) in catalog.folders.iter().enumerate() {
-            let branch = folder.path.split('/').next().unwrap_or("");
-            let seed = branch.bytes().fold(0_u32, |seed, byte| {
-                seed.wrapping_mul(31).wrapping_add(u32::from(byte))
-            });
-            groups[seed as usize % 3].push(index);
+            let branch = folder
+                .path
+                .split('/')
+                .next()
+                .filter(|part| !part.is_empty())
+                .unwrap_or("/");
+            groups.entry(branch).or_default().push(index);
         }
         let mut positions = vec![
             Terrace {
@@ -100,8 +102,8 @@ impl Atlas {
             catalog.folders.len()
         ];
         let cell = |point: Vec2| (point / GRID).floor().as_ivec2();
-        let mut ridge_bounds = [None; 3];
-        for (ridge, group) in groups.iter_mut().enumerate() {
+        let mut districts = Vec::with_capacity(groups.len());
+        for (_, mut group) in groups {
             group.sort_by_key(|&index| std::cmp::Reverse(catalog.folders[index].files.len()));
             let mut cells = std::collections::HashMap::<(i32, i32), Vec<usize>>::new();
             let mut minimum = Vec2::splat(f32::INFINITY);
@@ -147,56 +149,58 @@ impl Atlas {
                     break;
                 }
             }
-            if !group.is_empty() {
-                ridge_bounds[ridge] = Some((minimum, maximum));
-            }
+            let half = (maximum - minimum) * 0.5;
+            districts.push((group, (minimum + maximum) * 0.5, half));
         }
-        let (width, depth) = ridge_bounds
-            .iter()
-            .flatten()
-            .fold((0_f32, 0_f32), |(width, depth), (min, max)| {
-                (width + max.x - min.x, depth.max(max.y - min.y))
-            });
-        let valley = (depth * 0.19).max(24.);
-        let ridge_count = ridge_bounds.iter().flatten().count();
-        let gaps = ridge_count.saturating_sub(1);
-        let mut left = -(width + valley * gaps as f32) * 0.5;
-        let mut lakes = Vec::new();
-        let mut placed = 0;
-        for ((group, bounds), stagger) in groups.iter().zip(ridge_bounds).zip([-0.12, 0.16, -0.18])
-        {
-            if let Some((min, max)) = bounds {
-                let shift = Vec2::new(left - min.x, -(min.y + max.y) * 0.5 + depth * stagger);
-                for &index in group {
-                    let terrace = &mut positions[index];
-                    terrace.center += shift;
-                    terrace.height = (ground_height(terrace.center)
-                        + terrace.radius.max_element() * 0.17)
-                        .min(39.)
+        districts.sort_by(|a, b| b.2.length_squared().total_cmp(&a.2.length_squared()));
+        let mut occupied = Vec::<(Vec2, Vec2)>::new();
+        for (files, origin, half) in districts {
+            let padding = 16. + half.min_element() * 0.12;
+            let extent = half + Vec2::splat(padding);
+            let center = (0..)
+                .find_map(|attempt| {
+                    let angle = attempt as f32 * TURN;
+                    let radius = (attempt as f32).sqrt() * 36.;
+                    let candidate = Vec2::new(angle.cos() * 1.15, angle.sin()) * radius;
+                    occupied
+                        .iter()
+                        .all(|(placed, bounds)| {
+                            ((candidate - *placed).abs() - extent - *bounds).max_element() >= 0.
+                        })
+                        .then_some(candidate)
+                })
+                .expect("unbounded atlas");
+            occupied.push((center, extent));
+            for index in files {
+                let terrace = &mut positions[index];
+                terrace.center += center - origin;
+                terrace.height =
+                    (ground_height(terrace.center) + terrace.radius.max_element() * 0.17).min(39.)
                         + 7.;
-                }
-                left += max.x - min.x;
-                if placed < gaps {
-                    let y = depth * if placed == 0 { 0.08 } else { -0.19 };
-                    lakes.push(Lake::new(
-                        Vec2::new(left + valley * 0.5, y),
-                        Vec2::new(
-                            valley * 0.34,
-                            valley * if placed == 0 { 0.84 } else { 0.74 },
-                        ),
-                        0.95 + placed as f32 * 1.8,
-                    ));
-                }
-                placed += 1;
-                left += valley;
             }
         }
-        if ridge_count == 1 {
-            lakes.push(Lake::new(
-                Vec2::new(left - valley * 0.35, depth * 0.17),
-                Vec2::new(valley * 0.34, valley * 0.68),
-                2.3,
-            ));
+        let mut lakes = Vec::<Lake>::new();
+        // Place water in the gaps near the largest districts, clear of every terrace.
+        for (index, &(center, extent)) in occupied.iter().take(8).enumerate() {
+            let radius = (extent.min_element() * 0.29).clamp(10., 32.);
+            for step in 0..12 {
+                let angle = (index * 3 + step) as f32 * TURN;
+                let axis = Vec2::new(angle.cos(), angle.sin());
+                let shore = center + axis * (extent + Vec2::splat(radius * 0.72));
+                let room = radius * 1.42;
+                let clear = positions.iter().all(|terrace| {
+                    shore.distance(terrace.center) > terrace.radius.max_element() + room
+                }) && lakes.iter().all(|lake| {
+                    shore.distance(lake.center) > lake.radius.max_element() + room * 2.
+                });
+                if clear {
+                    lakes.push(Lake::new(shore, Vec2::new(radius * 0.67, radius), angle));
+                    break;
+                }
+            }
+            if lakes.len() >= 3 {
+                break;
+            }
         }
         Terrain {
             terraces: positions,
@@ -230,11 +234,11 @@ impl Atlas {
             for (slot, &index) in members.files.iter().enumerate() {
                 let file = &repo.files[index];
                 let dimensions = listing::block_size(file);
-                let level = (2.3 + dimensions.y.ln_1p() * 2.15).min(15.);
+                let level = (1.6 + dimensions.y.ln_1p() * 0.42).min(4.7);
                 let size = Vec3::new(
                     dimensions.x.clamp(7., spacing),
                     level,
-                    dimensions.z.clamp(7., spacing),
+                    dimensions.z.clamp(7., spacing) * 0.55,
                 ) * Vec3::new(0.83, 1., 0.83);
                 let offset = if members.files.len() == 1 {
                     Vec2::ZERO
@@ -411,7 +415,7 @@ impl Atlas {
             mesh.terrace(terrace);
         }
         for lot in &self.lots {
-            mesh.building(lot);
+            mesh.scroll(lot);
         }
         mesh.finish()
     }
@@ -507,79 +511,33 @@ impl Blocks {
         }
     }
 
-    fn building(&mut self, lot: &Lot) {
-        let half = lot.size / 2.;
-        let [x, y, z] = lot.center.to_array();
-        let [left, right] = [x - half.x, x + half.x];
-        let [front, back] = [z - half.z, z + half.z];
-        let [low, top] = [y - half.y, y + half.y];
-        let wall = top - half.y * 0.53;
-        for (corners, shade) in [
-            (
-                [
-                    [left, low, front],
-                    [right, low, front],
-                    [right, wall, front],
-                    [left, wall, front],
+    fn scroll(&mut self, lot: &Lot) {
+        let edge = |slot: usize, side: f32| {
+            let angle = slot as f32 * std::f32::consts::TAU / 6.;
+            (lot.center
+                + Vec3::new(
+                    side * lot.size.x * 0.5,
+                    angle.cos() * lot.size.y * 0.5,
+                    angle.sin() * lot.size.z * 0.5,
+                ))
+            .to_array()
+        };
+        for slot in 0..6 {
+            let light = [1.0, 0.93, 0.78, 0.66, 0.75, 0.95][slot];
+            self.face(
+                &[
+                    edge(slot, -1.),
+                    edge(slot, 1.),
+                    edge(slot + 1, 1.),
+                    edge(slot + 1, -1.),
                 ],
-                0.85,
-            ),
-            (
-                [
-                    [right, low, front],
-                    [right, low, back],
-                    [right, wall, back],
-                    [right, wall, front],
-                ],
-                0.77,
-            ),
-            (
-                [
-                    [right, low, back],
-                    [left, low, back],
-                    [left, wall, back],
-                    [right, wall, back],
-                ],
-                0.90,
-            ),
-            (
-                [
-                    [left, low, back],
-                    [left, low, front],
-                    [left, wall, front],
-                    [left, wall, back],
-                ],
-                0.80,
-            ),
-        ] {
-            self.face(&corners, [0.87, 0.78, 0.64].map(|v| v * shade));
+                lot.color.map(|shade| shade * light),
+            );
         }
-        self.face(
-            &[
-                [left, wall, front],
-                [left, wall, back],
-                [x, top, back],
-                [x, top, front],
-            ],
-            lot.color,
-        );
-        self.face(
-            &[
-                [x, top, front],
-                [x, top, back],
-                [right, wall, back],
-                [right, wall, front],
-            ],
-            lot.color.map(|v| v * 0.79),
-        );
-        self.face(
-            &[[left, wall, front], [x, top, front], [right, wall, front]],
-            [0.67, 0.59, 0.48],
-        );
-        self.face(
-            &[[left, wall, back], [x, top, back], [right, wall, back]],
-            [0.71, 0.61, 0.48],
-        );
+        for side in [-1., 1.] {
+            let rim = std::array::from_fn::<_, 6, _>(|slot| edge(slot, side));
+            self.face(&rim, [0.88, 0.74, 0.52]);
+        }
     }
 
     fn face(&mut self, points: &[[f32; 3]], tint: [f32; 3]) {
@@ -616,6 +574,37 @@ impl Blocks {
                 ],
                 [0.56 + var, 0.56 + var, 0.41],
             );
+            if slot != 1 {
+                let lip = (terrace.radius.min_element() * 0.12).clamp(1.3, 5.3);
+                let floor = terrace.height;
+                self.face(
+                    &[
+                        edge(slot, 0.85, floor + lip),
+                        edge(slot + 1, 0.85, floor + lip),
+                        edge(slot + 1, 0.91, floor + lip),
+                        edge(slot, 0.91, floor + lip),
+                    ],
+                    [0.83, 0.73, 0.57],
+                );
+                self.face(
+                    &[
+                        edge(slot, 0.91, floor),
+                        edge(slot + 1, 0.91, floor),
+                        edge(slot + 1, 0.91, floor + lip),
+                        edge(slot, 0.91, floor + lip),
+                    ],
+                    [0.68, 0.58, 0.45],
+                );
+                self.face(
+                    &[
+                        edge(slot, 0.85, floor + lip),
+                        edge(slot + 1, 0.85, floor + lip),
+                        edge(slot + 1, 0.85, floor),
+                        edge(slot, 0.85, floor),
+                    ],
+                    [0.72, 0.61, 0.46],
+                );
+            }
             self.face(
                 &[
                     edge(slot, 0.91, terrace.height),
@@ -656,16 +645,15 @@ mod tests {
             })
             .collect();
         let terrain = Atlas::terrain(&catalog);
-        assert_eq!(terrain.lakes.len(), 2);
-        let mut ridges = terrain.terraces;
-        ridges.sort_by(|a, b| a.center.x.total_cmp(&b.center.x));
-        for (pair, lake) in ridges.windows(2).zip(terrain.lakes) {
-            let left = pair[0].center.x + pair[0].radius.x;
-            let right = pair[1].center.x - pair[1].radius.x;
-            assert!(right - left >= 24.);
-            assert!(lake.center.x - lake.radius.x * 1.17 > left);
-            assert!(lake.center.x + lake.radius.x * 1.17 < right);
+        assert!(terrain.lakes.len() >= 2);
+        for lake in terrain.lakes {
             assert!(lake.basin(lake.center, ground_height(lake.center)) < lake.level);
+            for terrace in &terrain.terraces {
+                assert!(
+                    lake.center.distance(terrace.center)
+                        > terrace.radius.max_element() + lake.radius.max_element()
+                );
+            }
         }
     }
 

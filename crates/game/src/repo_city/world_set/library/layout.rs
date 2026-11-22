@@ -36,6 +36,13 @@ pub(super) fn view(index: usize) -> Transform {
         .looking_at(Vec3::new(cabinet.x, EYE, cabinet.y), Vec3::Y)
 }
 
+pub(super) fn doorway(index: usize) -> Transform {
+    let cabinet = folder(index);
+    let side = cabinet.x.signum();
+    Transform::from_xyz(side * (FRONT - 1.8), EYE, cabinet.y)
+        .looking_at(Vec3::new(cabinet.x, EYE - 0.16, cabinet.y), Vec3::Y)
+}
+
 pub(super) fn nearest(position: Vec3, total: usize) -> Option<usize> {
     let center = ((position.z + COURT_LENGTH / 2.) / COURT_LENGTH).max(0.) as usize;
     let start = center.saturating_sub(1) * FOLDERS_PER_COURT;

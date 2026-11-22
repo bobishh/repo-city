@@ -18,10 +18,15 @@ pub(super) fn update(
     explorer: Res<Explorer>,
     repo: Res<Repo>,
     review: Res<review_notes::Review>,
-    map: Res<map::Map>,
+    (map, menu): (Res<map::Map>, Res<city_menu::Menu>),
     #[cfg(not(target_arch = "wasm32"))] picker: Res<repository_picker::RepositoryPicker>,
 ) {
-    if review.blocked || review.tablet_open || library.input.is_some() || map.consumed {
+    if review.blocked
+        || review.tablet_open
+        || library.input.is_some()
+        || map.consumed
+        || menu.blocks_controls()
+    {
         return;
     }
     #[cfg(not(target_arch = "wasm32"))]

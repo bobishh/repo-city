@@ -78,12 +78,16 @@ On desktop, launch with `--world-picker` to choose a world before opening
 the explorer. To skip the chooser on a Mac, use
 `open -n -a "Repo City" --args --repo /path/to/checkout --world-set repo-polis`.
 On desktop, append `--file src/main.rs --line 120` to open a scroll at a line.
-Walk between the courtyards with **WASD**. Turn with **Left/Right** or drag
-with the right mouse button. Each folder occupies a reading room. Its
+Walk between the courtyards with **WASD**, or take off with **Space** and
+land with **O**. Turn with **Left/Right** or drag with the right mouse
+button. Right-click without dragging opens the actions menu, as does
+**Shift+F10**. **Esc** releases the cursor. Each folder occupies a reading room. Its
 cabinets hold files in alphabetical order. Press **M** to see every file in
 the current folder. Press **M** again to fit all repository files on the
-terrain map. Hover over a terrace or a building to see its folder. Click a
-terrace to open the folder map, or click a building to fly to its scroll.
+terrain map. Top-level directories occupy separate districts. Hover over
+a reading room or a scroll to see its folder. Click the terrace to open
+the folder map, or select a scroll to land at the entrance of its reading
+room. Click the scroll on its shelf or press **Enter** to read it.
 Zoom with the mouse wheel, pan with right drag, and press **Esc** to close
 the map or cancel a flight.
 Use **/** or **\\** to search the repository or the open scroll. Press

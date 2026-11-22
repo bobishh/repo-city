@@ -21,29 +21,69 @@ pub(super) struct Aim(pub Option<Target>);
 pub(super) struct Reticle;
 
 #[derive(Component)]
+pub(super) struct HeatTick(usize);
+const HEAT_TICKS: usize = 32;
+
+#[derive(Component)]
 pub(super) struct Caption;
 
 pub(super) fn spawn(commands: &mut Commands) {
-    commands.spawn((
-        Reticle,
-        Pickable::IGNORE,
-        Node {
-            position_type: PositionType::Absolute,
-            left: percent(50.),
-            top: percent(50.),
-            margin: UiRect {
-                left: px(-5),
-                top: px(-5),
+    commands
+        .spawn((
+            Reticle,
+            Pickable::IGNORE,
+            Visibility::Hidden,
+            GlobalZIndex(4),
+            Node {
+                position_type: PositionType::Absolute,
+                width: px(20),
+                height: px(20),
                 ..default()
             },
-            width: px(10),
-            height: px(10),
-            border: UiRect::all(px(1)),
-            ..default()
-        },
-        BorderColor::all(Color::srgb_u8(240, 220, 182)),
-        Visibility::Hidden,
-    ));
+        ))
+        .with_children(|root| {
+            for (x, y, width, height) in [
+                (0., 8., 7., 4.),
+                (13., 8., 7., 4.),
+                (8., 0., 4., 7.),
+                (8., 13., 4., 7.),
+            ] {
+                root.spawn((
+                    Pickable::IGNORE,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: px(x),
+                        top: px(y),
+                        width: px(width),
+                        height: px(height),
+                        border: UiRect::all(px(1)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb_u8(255, 229, 177)),
+                    BorderColor::all(Color::srgb_u8(32, 22, 14)),
+                ));
+            }
+            for index in 0..HEAT_TICKS {
+                let angle = index as f32 * std::f32::consts::TAU / HEAT_TICKS as f32;
+                root.spawn((
+                    HeatTick(index),
+                    Pickable::IGNORE,
+                    Visibility::Hidden,
+                    BackgroundColor(Color::srgb_u8(251, 181, 91)),
+                    BorderColor::all(Color::srgb_u8(51, 30, 14)),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: px(8.5 + angle.sin() * 19.),
+                        top: px(7. - angle.cos() * 19.),
+                        width: px(3),
+                        height: px(6),
+                        border: UiRect::all(px(1)),
+                        ..default()
+                    },
+                    UiTransform::from_rotation(Rot2::radians(-angle)),
+                ));
+            }
+        });
     commands.spawn((
         Caption,
         Pickable::IGNORE,
@@ -103,10 +143,10 @@ pub(super) fn update(
     repo: Res<Repo>,
     explorer: Res<Explorer>,
     world: Res<WorldSet>,
-    (scroll, map): (Res<room::Unrolling>, Res<map::Map>),
+    (scroll, map, listing): (Res<room::Unrolling>, Res<map::Map>, Res<listing::Listing>),
     eye: Query<(&Camera, &GlobalTransform, &Pilot), With<room::Camera>>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    review: Res<review_notes::Review>,
+    (review, menu): (Res<review_notes::Review>, Res<city_menu::Menu>),
     mut aim: ResMut<Aim>,
     mut nearest: ResMut<Nearest>,
     (cabinets, rolls): (
@@ -114,20 +154,36 @@ pub(super) fn update(
         Query<(&room::CabinetFile, &GlobalTransform, &Visibility)>,
     ),
     mut crosshair: Query<
-        &mut Visibility,
+        (&mut Visibility, &mut Node),
         (
             With<Reticle>,
             Without<room::Cabinet>,
             Without<room::CabinetFile>,
+            Without<Caption>,
+            Without<HeatTick>,
         ),
     >,
-    mut caption: Query<(&mut Text, &mut Node), With<Caption>>,
+    (mut caption, mut ticks): (
+        Query<(&mut Text, &mut Node), With<Caption>>,
+        Query<
+            (&HeatTick, &mut Visibility),
+            (
+                Without<Reticle>,
+                Without<room::Cabinet>,
+                Without<room::CabinetFile>,
+            ),
+        >,
+    ),
     mut gizmos: Gizmos,
     #[cfg(not(target_arch = "wasm32"))] picker: Res<repository_picker::RepositoryPicker>,
-    #[cfg(target_arch = "wasm32")] mut announced: Local<Option<Target>>,
+    #[cfg(target_arch = "wasm32")] mut announced: Local<(Option<Target>, bool)>,
     #[cfg(target_arch = "wasm32")] touch: Res<browser_touch::Touch>,
 ) {
-    let blocked = map.open() || review.blocked || review.tablet_open || library.input.is_some();
+    let blocked = map.open()
+        || menu.is_open()
+        || review.blocked
+        || review.tablet_open
+        || library.input.is_some();
     #[cfg(not(target_arch = "wasm32"))]
     let blocked = blocked || picker.blocks_controls();
     let view = eye.single().ok().zip(windows.single().ok());
@@ -136,24 +192,23 @@ pub(super) fn update(
     let centered = view.is_some_and(|((_, _, pilot), _)| pilot.captured);
     #[cfg(target_arch = "wasm32")]
     let centered = centered || touch.enabled;
-    if let Ok(mut marker) = crosshair.single_mut() {
-        *marker = if active && centered {
-            Visibility::Visible
+    let screen = view.and_then(|((_, _, _), window)| {
+        let size = Vec2::new(window.width(), window.height());
+        let point = if centered {
+            Some(size * 0.5)
         } else {
-            Visibility::Hidden
-        };
-    }
+            window.cursor_position()
+        }?;
+        Some((point, size))
+    });
+    nearest.screen = screen;
 
     let hit = (|| {
-        let ((camera, pose, _), window) = view?;
+        let ((camera, pose, _), _) = view?;
         if !active {
             return None;
         }
-        let point = if centered {
-            Vec2::new(window.width(), window.height()) / 2.
-        } else {
-            window.cursor_position()?
-        };
+        let (point, _) = screen?;
         let ray = camera.viewport_to_world(pose, point).ok()?;
         let direction = *ray.direction;
         if let Some(reader) = &library.reader
@@ -234,6 +289,35 @@ pub(super) fn update(
     })();
 
     aim.0 = hit.map(|hit| hit.target);
+    let reticle =
+        active && !repo.0.files.is_empty() && screen.is_some() && (centered || hit.is_some());
+    let remaining = listing
+        .reading_seconds()
+        .filter(|(_, total)| *total > 0.)
+        .map_or(0., |(elapsed, total)| 1. - elapsed / total);
+    for (tick, mut visible) in &mut ticks {
+        visible.set_if_neq(
+            if reticle && (tick.0 as f32) < remaining * HEAT_TICKS as f32 {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            },
+        );
+    }
+    if let Ok((mut visible, mut node)) = crosshair.single_mut() {
+        visible.set_if_neq(if reticle {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        });
+        if let Some((point, _)) = screen.filter(|_| reticle) {
+            let left = px(point.x - 10.);
+            let top = px(point.y - 10.);
+            if node.left != left || node.top != top {
+                (node.left, node.top) = (left, top);
+            }
+        }
+    }
     nearest.file = aim.0.and_then(|target| match target {
         Target::File(index) | Target::Line { file: index, .. } => Some(file_facade::Aim {
             index,
@@ -273,9 +357,9 @@ pub(super) fn update(
         }
     }
     #[cfg(target_arch = "wasm32")]
-    if *announced != aim.0 {
-        *announced = aim.0;
-        browser_target(caption_text.as_deref().unwrap_or_default());
+    if *announced != (aim.0, reticle) {
+        *announced = (aim.0, reticle);
+        browser_target(caption_text.as_deref().unwrap_or_default(), reticle);
     }
 }
 
@@ -283,7 +367,7 @@ pub(super) fn update(
 #[wasm_bindgen::prelude::wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = repoCity, js_name = libraryTarget)]
-    fn browser_target(target: &str);
+    fn browser_target(target: &str, reticle: bool);
 }
 
 #[test]

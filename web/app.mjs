@@ -132,7 +132,7 @@ window.addEventListener("keydown", event => {
     event.preventDefault(); event.stopPropagation(); review.dismissTablet(); logo.click(); return;
   }
   if (running && !cityControls() && event.target === canvas &&
-      (/^(Arrow|Page)/.test(event.code) || ["Home", "End"].includes(event.code))) {
+      (/^(Arrow|Page)/.test(event.code) || ["Home", "End", "Space"].includes(event.code))) {
     event.preventDefault();
   }
   if (event.altKey && !event.ctrlKey && !event.metaKey && /^Digit[1-9]$/.test(event.code) && review.selectTab(Number(event.code.slice(-1)) - 1)) {
@@ -169,6 +169,7 @@ window.addEventListener("keydown", event => {
   }
   if (review.tabletVisible() && (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Space", "Enter", "Backspace", "F6"].includes(event.code) || ((event.metaKey || event.ctrlKey) && ["KeyA", "KeyC", "KeyF", "KeyS", "KeyV", "KeyX", "KeyY", "KeyZ"].includes(event.code)))) event.preventDefault();
   if (event.code !== "KeyF" || event.repeat || event.metaKey || event.ctrlKey ||
+      (!cityControls() && canvas.hasAttribute("data-action-menu")) ||
       event.altKey || (!locked && (event.target !== canvas || (canvas.hasAttribute("data-pointer-ui") && !canvas.hasAttribute("data-overview")))) ||
       document.querySelector("dialog[open]") || !active?.canFilterChanges) return;
   event.preventDefault();
@@ -292,7 +293,8 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
           if (path) canvas.dataset.libraryFace = face.toLowerCase();
           else canvas.removeAttribute("data-library-face");
         },
-        libraryTarget(target) {
+        libraryTarget(target, reticle) {
+          canvas.toggleAttribute("data-library-reticle", reticle);
           if (target) canvas.dataset.libraryTarget = target;
           else canvas.removeAttribute("data-library-target");
         },
@@ -309,6 +311,10 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
         },
         libraryTravel(folder) {
           canvas.dataset.libraryTravel = folder;
+        },
+        libraryFlight(state) {
+          if (state) canvas.dataset.libraryFlight = state;
+          else canvas.removeAttribute("data-library-flight");
         },
         libraryMapHover(folder) {
           if (folder) canvas.dataset.libraryMapHover = folder;

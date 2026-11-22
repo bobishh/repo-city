@@ -37,6 +37,121 @@ const INK: [f32; 3] = [0.20, 0.14, 0.09];
 #[derive(Component)]
 pub(super) struct Camera;
 
+pub(super) enum Flight {
+    TakingOff {
+        from: Vec3,
+        aisle: Vec3,
+        elapsed: f32,
+    },
+    Flying {
+        height: f32,
+    },
+    Landing {
+        from: Transform,
+        to: Transform,
+        elapsed: f32,
+    },
+}
+
+impl Flight {
+    pub(super) fn takeoff(pose: Transform, rooms: usize) -> Self {
+        let from = pose.translation;
+        let aisle = if from.x.abs() > FRONT - 0.3 {
+            layout::nearest(from, rooms).map_or(from, |room| layout::doorway(room).translation)
+        } else {
+            from
+        };
+        Self::TakingOff {
+            from,
+            aisle,
+            elapsed: 0.,
+        }
+    }
+
+    pub(super) fn landing(from: Transform, to: Transform) -> Self {
+        Self::Landing {
+            from,
+            to,
+            elapsed: 0.,
+        }
+    }
+
+    pub(super) fn land_at(&mut self, from: Transform, to: Transform) {
+        if !matches!(self, Self::Landing { .. }) {
+            *self = Self::landing(from, to);
+        }
+    }
+
+    pub(super) fn advance(
+        &mut self,
+        camera: &mut Transform,
+        keys: &ButtonInput<KeyCode>,
+        look: Vec2,
+        stick: Vec2,
+        seconds: f32,
+    ) -> bool {
+        match self {
+            Self::TakingOff {
+                from,
+                aisle,
+                elapsed,
+            } => {
+                *elapsed += seconds;
+                let exit: f32 = if from.distance_squared(*aisle) > 0.1 {
+                    0.52
+                } else {
+                    0.
+                };
+                let t = smooth(*elapsed / exit.max(0.001));
+                let rise = smooth((*elapsed - exit) / 0.91);
+                camera.translation = from.lerp(*aisle, t);
+                camera.translation.y = aisle.y.lerp(10., rise);
+                if rise >= 1. {
+                    *self = Self::Flying { height: 10. };
+                }
+                false
+            }
+            Self::Flying { height } => {
+                let axis = |up, down| f32::from(keys.pressed(up)) - f32::from(keys.pressed(down));
+                let (yaw, pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
+                let yaw = yaw + axis(KeyCode::ArrowLeft, KeyCode::ArrowRight) * 1.6 * seconds
+                    - look.x * 0.004;
+                let pitch = (pitch - look.y * 0.004).clamp(-1.2, 1.2);
+                camera.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.);
+                let direction = Vec3::new(
+                    axis(KeyCode::KeyD, KeyCode::KeyA) + stick.x,
+                    0.,
+                    axis(KeyCode::KeyS, KeyCode::KeyW) - stick.y,
+                );
+                let speed = if keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
+                    25.
+                } else {
+                    12.
+                };
+                let step =
+                    Quat::from_rotation_y(yaw) * direction.clamp_length_max(1.) * speed * seconds;
+                camera.translation += step;
+                camera.translation.z = camera.translation.z.max(layout::ENTRANCE_Z);
+                *height = (*height + axis(KeyCode::Space, KeyCode::ControlLeft) * seconds * 7.)
+                    .clamp(8., 36.);
+                camera.translation.y = camera
+                    .translation
+                    .y
+                    .lerp(*height, 1. - (-2.6 * seconds).exp());
+                false
+            }
+            Self::Landing { from, to, elapsed } => {
+                *elapsed += seconds;
+                let duration = (1.25 + from.translation.distance(to.translation) * 0.055).min(3.4);
+                let t = smooth(*elapsed / duration);
+                camera.translation = from.translation.lerp(to.translation, t);
+                camera.rotation = from.rotation.slerp(to.rotation, t);
+                *elapsed >= duration
+            }
+        }
+    }
+}
+
 pub(super) struct Retreat {
     from: Transform,
     to: Transform,
@@ -176,6 +291,7 @@ pub(super) fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut fonts: ResMut<Assets<Font>>,
+    assets: Res<AssetServer>,
     set: Res<WorldSet>,
 ) {
     load_ui_font(&mut fonts);
@@ -214,7 +330,7 @@ pub(super) fn setup(
         ))
         .id();
     map::shade(&mut commands, eye);
-    owl::spawn(&mut commands, eye, &mut meshes, &mut materials);
+    owl::spawn(&mut commands, eye, &assets);
     commands.spawn((
         DirectionalLight {
             color: Color::srgb(1., 0.94, 0.84),
@@ -255,13 +371,13 @@ pub(super) fn setup(
     let dark = material(&mut materials, Color::srgb(0.15, 0.11, 0.085));
     let bronze = material(&mut materials, color(set.accent));
     let parchment = material(&mut materials, Color::srgb(0.86, 0.71, 0.49));
-    let leaves = material(&mut materials, Color::srgb(0.31, 0.39, 0.23));
-    athens::spawn(&mut commands, &mut meshes, &mut materials);
+    athens::spawn(&mut commands, &mut meshes, &mut materials, &assets);
     spawn_bays(
         &mut commands,
         &mut meshes,
+        &assets,
         [
-            &limestone, &floor, &plaza, &trim, &wood, &dark, &bronze, &parchment, &leaves,
+            &limestone, &floor, &plaza, &trim, &wood, &dark, &bronze, &parchment,
         ],
     );
 
@@ -323,6 +439,7 @@ pub(super) fn setup(
 
     librarian::spawn(&mut commands, eye, &mut meshes, &mut materials, &mut images);
     aim::spawn(&mut commands);
+    city_menu::spawn_stone(&mut commands, &native_panel::panel_font());
     signs::spawn(&mut commands, eye);
     commands.spawn((
         ScrollPart::Step,
@@ -392,7 +509,8 @@ pub(super) fn setup(
 fn spawn_bays(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
-    surfaces: [&Handle<StandardMaterial>; 9],
+    assets: &AssetServer,
+    surfaces: [&Handle<StandardMaterial>; 8],
 ) {
     let [
         limestone,
@@ -403,7 +521,6 @@ fn spawn_bays(
         dark,
         bronze,
         parchment,
-        leaves,
     ] = surfaces;
     let mut blocks = Vec::new();
     let mut cube = |size, surface: &Handle<StandardMaterial>| {
@@ -425,15 +542,6 @@ fn spawn_bays(
     let cabinet_back = cube(Vec3::new(0.18, 4.1, 3.45), dark);
     let cabinet_edge = cube(Vec3::new(1.6, 4.1, 0.18), wood);
     let shelf = cube(Vec3::new(1.65, 0.17, 3.65), wood);
-    let column = (
-        meshes.add(Cylinder::new(0.49, 4.75).mesh().resolution(12)),
-        limestone.clone(),
-    );
-    let court_tree = (
-        meshes.add(Sphere::new(0.93).mesh().ico(1).expect("courtyard tree")),
-        leaves.clone(),
-    );
-    let trunk = (meshes.add(Cylinder::new(0.10, 1.57)), wood.clone());
     let scroll = meshes.add(Cylinder::new(0.11, 0.85));
     let mut block = |item: &(Handle<Mesh>, Handle<StandardMaterial>), x, y, z| {
         blocks.push((item.0.clone(), item.1.clone(), Transform::from_xyz(x, y, z)));
@@ -448,10 +556,6 @@ fn spawn_bays(
         block(&floor_line, side * 5.7, 0.02, 0.);
         block(&back_wall, side * 16., 2.45, 0.);
         block(&planter, side * 5.45, 0.18, 0.);
-        block(&trunk, side * 5.45, 1.06, 0.);
-        for offset in [-0.62, 0.62] {
-            block(&court_tree, side * 5.45, 2.01, offset);
-        }
         for z in [-14.4, 0., 14.4] {
             block(&partition, side * 12.1, 2.45, z);
         }
@@ -464,7 +568,6 @@ fn spawn_bays(
                 block(&front_pier, front, 2.52, z + edge);
             }
             for offset in [-2.6, 2.6] {
-                block(&column, front, 2.42, z + offset);
                 block(&capital, front, 4.83, z + offset);
             }
         }
@@ -478,6 +581,24 @@ fn spawn_bays(
                 Visibility::Visible,
             ))
             .with_children(|bay| {
+                for side in [-1., 1.] {
+                    bay.spawn((
+                        models::scene(assets, "oak.glb"),
+                        Transform::from_xyz(side * 5.45, 0.53, 0.).with_scale(Vec3::splat(2.25)),
+                        Visibility::Inherited,
+                    ));
+                    for z in [-7.3, 7.3] {
+                        for offset in [-2.6, 2.6] {
+                            // The column source is off-center and stands 1.93 m tall.
+                            bay.spawn((
+                                models::scene(assets, "column.glb"),
+                                Transform::from_xyz(side * FRONT + 0.98, 5.48, z + offset)
+                                    .with_scale(Vec3::splat(2.52)),
+                                Visibility::Inherited,
+                            ));
+                        }
+                    }
+                }
                 for (mesh, material, transform) in &blocks {
                     bay.spawn((
                         Mesh3d(mesh.clone()),
@@ -865,7 +986,10 @@ pub(super) fn draw(
         };
     }
     if let Ok(mut panel) = panels.single_mut() {
-        let display = if reading || review.tablet_open || map.open() {
+        let display = if (reading && !matches!(library.input, Some(Input::Catalog)))
+            || review.tablet_open
+            || map.open()
+        {
             Display::None
         } else {
             Display::Flex
@@ -882,36 +1006,68 @@ pub(super) fn draw(
         review.washing,
     );
     for (label, mut text) in &mut labels {
-        if (reading || review.tablet_open || map.open()) && matches!(label, Label::Catalog) {
+        if ((reading && !matches!(library.input, Some(Input::Catalog)))
+            || review.tablet_open
+            || map.open())
+            && matches!(label, Label::Catalog)
+        {
             continue;
         }
         let content = match label {
-            Label::Catalog => catalog_text(catalog, &repo.0, matches!(library.input, Some(Input::Catalog))),
+            Label::Catalog => catalog_text(
+                catalog,
+                &repo.0,
+                matches!(library.input, Some(Input::Catalog)),
+            ),
             Label::Help if review.tablet_open || map.open() => String::new(),
             Label::Help if !hint.is_empty() && library.input.is_none() => hint.into(),
             Label::Help if reading => match &library.input {
-                Some(Input::Line(line)) => format!("Go to line  ›  {line}▏    Enter go · Esc cancel"),
-                Some(Input::Text(text)) => format!("Find in scroll  ›  {text}▏    Enter search · Esc cancel"),
+                Some(Input::Line(line)) => {
+                    format!("Go to line  ›  {line}▏    Enter go · Esc cancel")
+                }
+                Some(Input::Text(text)) => {
+                    format!("Find in scroll  ›  {text}▏    Enter search · Esc cancel")
+                }
                 _ => {
-                    let timer = listing.reading_seconds()
-                        .map_or(String::new(), |(elapsed, total)| format!(" · {:.1}s left", (total - elapsed).max(0.)));
+                    let timer = listing
+                        .reading_seconds()
+                        .map_or(String::new(), |(elapsed, total)| {
+                            format!(" · {:.1}s left", (total - elapsed).max(0.))
+                        });
                     let matches = if reader.is_some_and(|reader| !reader.matches.is_empty()) {
                         format!(" · {} matches · Enter next", reader.unwrap().matches.len())
-                    } else { String::new() };
-                    let controls = format!("Scroll · G diff · B blame · K heat · J go to line · M map · WASD leave{timer}{matches}");
+                    } else {
+                        String::new()
+                    };
+                    let controls = format!(
+                        "Scroll · G diff · B blame · K heat · J go to line · M map · WASD leave{timer}{matches}"
+                    );
                     let here = content.line_range(reader.expect("reading").page(content.len()));
                     match repo.0.files.get(explorer.selected) {
-                        Some(file) => format!("{}   ·   {}   ·   line {}\n{controls}", file.path, paper::face_name(face), here.start()),
+                        Some(file) => format!(
+                            "{}   ·   {}   ·   line {}\n{controls}",
+                            file.path,
+                            paper::face_name(face),
+                            here.start()
+                        ),
                         _ => controls,
                     }
-                },
+                }
             },
-            Label::Help if repo.0.files.is_empty() => if cfg!(target_arch = "wasm32") {
-                "Open a GitHub repository from the Repo City menu".into()
-            } else {
-                "Cmd+O open repository".into()
-            },
-            Label::Help => "WASD walk · ←/→ turn · Right drag look · ↑/↓ select · PgUp/PgDn shelves · / find · Enter read".into(),
+            Label::Help if repo.0.files.is_empty() => {
+                if cfg!(target_arch = "wasm32") {
+                    "Open a GitHub repository from the Repo City menu".into()
+                } else {
+                    "Cmd+O open repository".into()
+                }
+            }
+            Label::Help if library.flight.is_some() => {
+                "WASD fly · Space/Ctrl altitude · O land · M map".into()
+            }
+            Label::Help => {
+                "WASD walk · Space take off · Right-click actions · M map · / find · Enter read"
+                    .into()
+            }
         };
         if text.0 != content {
             text.0 = content;

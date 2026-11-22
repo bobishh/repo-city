@@ -61,7 +61,7 @@ pub(super) fn register(app: &mut App, _args: &[String]) {
 pub(super) fn requests(
     keys: Res<ButtonInput<KeyCode>>,
     library: Res<Library>,
-    map: Res<map::Map>,
+    (map, menu): (Res<map::Map>, Res<city_menu::Menu>),
     repo: Res<Repo>,
     explorer: Res<Explorer>,
     mut review: ResMut<review_notes::Review>,
@@ -72,7 +72,12 @@ pub(super) fn requests(
     if picker.blocks_controls() {
         return;
     }
-    if map.open() || review.blocked || review.tablet_open || library.input.is_some() {
+    if map.open()
+        || menu.blocks_controls()
+        || review.blocked
+        || review.tablet_open
+        || library.input.is_some()
+    {
         return;
     }
     let modifier = keys.any_pressed([

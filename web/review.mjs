@@ -235,6 +235,8 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       const controls = make("dl", undefined, { class: "review-controls" });
       for (const [keys, purpose] of [
         ["WASD / mouse", "Walk and look around"],
+        ["Space / O", "Take off or land in front of a reading room"],
+        ["Right-click / Shift+F10", "Open actions for the current target"],
         ["E / M", "Open the aimed scroll or cycle the cabinet and library maps"],
         ["Tab / Cmd+P / P", "Open Stone Pad, find a file, or preview the scroll"],
         ["G / B / Q", "Compare, open blame, or switch snapshot side"],

@@ -805,10 +805,12 @@ test("restores review progress after reload and resets only the open comparison"
   await page.keyboard.type("row 2", { delay: 40 });
   await canvas.screenshot({ path: testInfo.outputPath("city-find-text.png") });
   await page.keyboard.press("Enter", { delay: 150 });
+  await page.keyboard.press("Tab", { delay: 150 });
+  await expectClosed(page);
   await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
   await page.keyboard.press("KeyN", { delay: 150 });
   await page.keyboard.press("Shift+KeyN", { delay: 150 });
-  await canvas.evaluate(element => element.requestPointerLock());
+  await canvas.click({ position: { x: 640, y: 400 }, delay: 150 });
   await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
   await page.keyboard.press("KeyM", { delay: 150 });
   // Both overview stages keep the cursor free for map navigation.

@@ -5,6 +5,7 @@ use bevy::input::keyboard::KeyboardInput;
 
 use super::super::*;
 
+mod actions;
 mod aim;
 mod athens;
 mod atlas;
@@ -13,6 +14,7 @@ mod journey;
 mod layout;
 mod librarian;
 mod map;
+mod models;
 mod owl;
 mod paper;
 mod place;
@@ -32,6 +34,7 @@ struct Library {
     input: Option<Input>,
     walk_pose: Option<Transform>,
     retreat: Option<room::Retreat>,
+    flight: Option<room::Flight>,
     arrival: Option<usize>,
     destination: Option<Destination>,
     history: city_navigation::History,
@@ -184,6 +187,7 @@ pub(super) fn install(app: &mut App, args: &[String]) {
             .max(1)
     });
     tools::register(app, args);
+    models::register(app);
     app.insert_resource(Library {
         arrival,
         ..default()
@@ -210,10 +214,15 @@ pub(super) fn install(app: &mut App, args: &[String]) {
                 review_notes::refresh,
                 #[cfg(target_arch = "wasm32")]
                 touch_input,
+                actions::update,
                 city_menu::apply_filter_shortcut.run_if(
-                    |library: Res<Library>, map: Res<map::Map>, keys: Res<ButtonInput<KeyCode>>| {
+                    |library: Res<Library>,
+                     map: Res<map::Map>,
+                     menu: Res<city_menu::Menu>,
+                     keys: Res<ButtonInput<KeyCode>>| {
                         library.input.is_none()
                             && !map.open()
+                            && !menu.blocks_controls()
                             && !keys.any_pressed([
                                 KeyCode::ControlLeft,
                                 KeyCode::ControlRight,
@@ -341,12 +350,13 @@ fn controls(
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     wheel: Res<AccumulatedMouseScroll>,
-    (review, aim, map, filter, settings): (
+    (review, aim, map, filter, settings, menu): (
         Res<review_notes::Review>,
         Res<aim::Aim>,
         Res<map::Map>,
         Res<file_facade::ChangesOnly>,
         Res<reading::Settings>,
+        Res<city_menu::Menu>,
     ),
     windows: Query<&Window, With<PrimaryWindow>>,
     mut typing: MessageReader<KeyboardInput>,
@@ -363,7 +373,13 @@ fn controls(
     let Ok((mut camera, mut pilot)) = camera.single_mut() else {
         return;
     };
-    if review.blocked || review.tablet_open || map.consumed {
+    if review.blocked || review.tablet_open || map.consumed || menu.blocks_controls() {
+        #[cfg(target_arch = "wasm32")]
+        if pilot.captured
+            && let Some(document) = web_sys::window().and_then(|window| window.document())
+        {
+            document.exit_pointer_lock();
+        }
         pilot.captured = false;
         typing.clear();
         return;
@@ -397,6 +413,7 @@ fn controls(
     }
     if let Some(destination) = library.destination.take() {
         library.retreat = None;
+        library.flight = None;
         explorer.open(&repo.0, destination.index);
         library.catalog.query.clear();
         library
@@ -458,6 +475,20 @@ fn controls(
                             .catalog
                             .collect(&repo.0, Some(explorer.selected), &filter);
                     }
+                    if enter
+                        && let Some(&index) = library.catalog.files.get(library.catalog.selected)
+                    {
+                        let file = &repo.0.files[index];
+                        library.destination = Some(Destination {
+                            index,
+                            before: file.after.is_none(),
+                            line: 1,
+                            end: None,
+                            face: listing::Face::Source,
+                        });
+                    }
+                    typing.clear();
+                    return;
                 }
                 Input::Line(line) if enter => {
                     if let Ok(line) = line.parse::<usize>()
@@ -516,6 +547,7 @@ fn controls(
     }
 
     if let Some(reader) = &mut library.reader {
+        let takeoff = library.input.is_none() && keys.just_pressed(KeyCode::Space);
         let moving = library.input.is_none()
             && !keys.any_pressed([
                 KeyCode::ControlLeft,
@@ -531,10 +563,17 @@ fn controls(
                 KeyCode::KeyS,
                 KeyCode::KeyD,
             ]) || joystick.length_squared() > 0.09);
-        if escape || moving {
+        if escape || moving || takeoff {
             library.reader = None;
-            if let Some(pose) = library.walk_pose.take() {
+            let standing = library.walk_pose.take();
+            if let Some(pose) = standing {
                 library.retreat = Some(room::Retreat::new(*camera, pose));
+            }
+            if takeoff {
+                library.flight = Some(room::Flight::takeoff(
+                    standing.unwrap_or(*camera),
+                    library.catalog.folders.len(),
+                ));
             }
             return;
         }
@@ -715,7 +754,45 @@ fn controls(
     }
     let approach = library.input.is_none()
         && (keys.just_pressed(KeyCode::KeyE)
-            || (was_captured && buttons.just_pressed(MouseButton::Left)));
+            || (buttons.just_pressed(MouseButton::Left)
+                && (was_captured || matches!(aim.0, Some(aim::Target::File(_))))));
+    if library.input.is_none() && !command {
+        if library.flight.is_none() && keys.just_pressed(KeyCode::Space) {
+            library.flight = Some(room::Flight::takeoff(
+                *camera,
+                library.catalog.folders.len(),
+            ));
+        }
+        if let Some(flight) = &mut library.flight {
+            if keys.just_pressed(KeyCode::KeyO) || approach {
+                let folder = match aim.0 {
+                    Some(aim::Target::Cabinet(index)) => Some(index),
+                    Some(aim::Target::File(index) | aim::Target::Line { file: index, .. }) => repo
+                        .0
+                        .files
+                        .get(index)
+                        .and_then(|file| library.catalog.folder(file.directory()))
+                        .map(|(index, _, _)| index),
+                    None => None,
+                }
+                .or_else(|| layout::nearest(camera.translation, library.catalog.folders.len()));
+                if let Some(folder) = folder {
+                    flight.land_at(*camera, layout::doorway(folder));
+                }
+            }
+            let look = if captured || buttons.pressed(MouseButton::Right) {
+                motion.delta
+            } else {
+                Vec2::ZERO
+            };
+            #[cfg(target_arch = "wasm32")]
+            let look = look + Vec2::from_array(touch.look);
+            if flight.advance(&mut camera, &keys, look, joystick, time.delta_secs()) {
+                library.flight = None;
+            }
+            return;
+        }
+    }
     let mut chosen = library.catalog.files.get(library.catalog.selected).copied();
     if approach {
         match aim.0 {

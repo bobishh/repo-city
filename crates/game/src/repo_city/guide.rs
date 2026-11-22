@@ -306,7 +306,12 @@ fn section(
 pub(super) fn draw_controls(parent: &mut ChildSpawnerCommands, library: bool) {
     const LIBRARY_NAVIGATION: &[(&str, &str)] = &[
         ("W A S D", "Walk in the gallery"),
+        ("Space / O", "Take off or land in front of a reading room"),
         ("Mouse / arrows", "Look around the gallery"),
+        (
+            "Right-click / Shift+F10",
+            "Open actions for the current target",
+        ),
         ("E", "Open the aimed scroll or select the aimed cabinet"),
         ("M", "Open the cabinet map, the corridor map, or return"),
         ("Tab", "Open or put away Stone Pad"),

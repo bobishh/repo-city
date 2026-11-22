@@ -95,6 +95,10 @@ test("fits every file and travels between folders before opening a distant scrol
   await page.screenshot({ path: testInfo.outputPath("crossing.png") });
   await expect(canvas).not.toHaveAttribute("data-library-map");
   await expect(canvas).not.toHaveAttribute("data-library-travel");
+  await expect(canvas).toHaveAttribute("data-library-flight", "landing");
+  await expect(canvas).not.toHaveAttribute("data-library-reading");
+  await expect(canvas).not.toHaveAttribute("data-library-flight");
+  await press("Enter");
   await expect(canvas).toHaveAccessibleName("Repo Polis, gallery-99/file-5999.rs, lines 1–1");
   await press("Escape");
   await expect(canvas).toHaveAccessibleName("Repo Polis");
@@ -141,6 +145,17 @@ test("opens a repository in Repo Polis and unrolls a file at the requested line"
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
   await expect(canvas).toHaveAccessibleName("Repo Polis");
   await expect(page).toHaveURL(/world=repo-polis/);
+  await canvas.focus();
+  await canvas.click({ button: "right", position: { x: 480, y: 270 } });
+  await expect(canvas).toHaveAttribute("data-action-menu", /Find file/);
+  await expect(canvas).not.toHaveAttribute("data-pointer-locked");
+  await page.keyboard.press("Escape");
+  await expect(canvas).not.toHaveAttribute("data-action-menu");
+  await page.keyboard.press("Space");
+  await expect(canvas).toHaveAttribute("data-library-flight", "flying");
+  await page.keyboard.press("KeyO");
+  await expect(canvas).toHaveAttribute("data-library-flight", "landing");
+  await expect(canvas).not.toHaveAttribute("data-library-flight");
   await expect(page.locator("#city-progress")).toBeHidden();
   await expect(page.locator(".wordmark")).toHaveCSS("font-family", /GFS Didot/);
   await canvas.focus();
@@ -176,6 +191,15 @@ test("opens a repository in Repo Polis and unrolls a file at the requested line"
     }, png.toString("base64"));
   };
   await expect.poll(visibleInk, { timeout: 7500 }).toBeGreaterThan(150);
+  await page.mouse.move(490, 350);
+  await expect(canvas).toHaveAttribute("data-library-reticle", "");
+  await canvas.click({ button: "right", position: { x: 490, y: 350 } });
+  await expect(canvas).toHaveAttribute("data-action-menu", /Open scroll/);
+  await page.keyboard.press("b");
+  await expect(canvas).not.toHaveAttribute("data-action-menu");
+  await expect(canvas).toHaveAttribute("data-library-face", "blame");
+  await page.keyboard.press("b");
+  await expect(canvas).toHaveAttribute("data-library-face", "source");
   await page.screenshot({ path: testInfo.outputPath("printed-scroll.png") });
   const reveals = () => page.evaluate(async () => {
     const db = await new Promise((resolve, reject) => {
@@ -237,6 +261,10 @@ test("opens a repository in Repo Polis and unrolls a file at the requested line"
   await expect(canvas).not.toHaveAttribute("data-library-reading");
   await expect(canvas).not.toHaveAttribute("data-library-travel");
   await expect(canvas).not.toHaveAttribute("data-library-map");
+  await expect(canvas).toHaveAttribute("data-library-flight", "landing");
+  await expect(canvas).not.toHaveAttribute("data-library-reading");
+  await expect(canvas).not.toHaveAttribute("data-library-flight");
+  await press("Enter");
   await expect(canvas).toHaveAccessibleName("Repo Polis, src/scroll.rs, lines 1–22");
   await press("Escape");
   await press("Tab");

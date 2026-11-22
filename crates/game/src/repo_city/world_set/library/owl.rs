@@ -1,5 +1,7 @@
-//! Owl mesh from d2974c2, framed against the orthographic atlas.
-use bevy::{camera::visibility::RenderLayers, light::NotShadowCaster};
+use bevy::{
+    camera::visibility::RenderLayers, light::NotShadowCaster,
+    world_serialization::WorldInstanceReady,
+};
 
 use super::*;
 
@@ -7,138 +9,75 @@ use super::*;
 pub(super) struct Owl;
 
 #[derive(Component)]
-pub(super) struct Wing(f32);
+pub(super) struct Wing {
+    side: f32,
+    rest: Quat,
+}
 
 #[derive(Component)]
-pub(super) struct Head;
+pub(super) struct Head(Quat);
 
-pub(super) fn spawn(
-    commands: &mut Commands,
-    eye: Entity,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-) {
-    let mut surface = |r, g, b| {
-        materials.add(StandardMaterial {
-            base_color: Color::srgb_u8(r, g, b),
-            perceptual_roughness: 0.94,
-            fog_enabled: false,
-            ..default()
-        })
-    };
-    let brown = surface(108, 70, 51);
-    let feather = surface(143, 99, 63);
-    let face = surface(220, 182, 127);
-    let dark = surface(34, 24, 23);
-    let gold = surface(242, 170, 66);
-    let paper = surface(248, 212, 153);
-    let ball = meshes.add(Sphere::new(0.5).mesh().ico(2).expect("owl body"));
-    let roll = meshes.add(Cylinder::new(0.10, 0.92).mesh().resolution(12));
-    let part = |root: &mut ChildSpawnerCommands, material: &Handle<StandardMaterial>, pos, size| {
-        root.spawn((
-            Mesh3d(ball.clone()),
-            MeshMaterial3d(material.clone()),
-            Transform::from_translation(pos).with_scale(size),
-            RenderLayers::layer(atlas::LAYER),
-            NotShadowCaster,
-        ));
-    };
+pub(super) fn spawn(commands: &mut Commands, eye: Entity, assets: &AssetServer) {
     commands
-        .spawn((ChildOf(eye), Owl, Transform::default(), Visibility::Hidden))
-        .with_children(|root| {
-            part(root, &brown, Vec3::ZERO, Vec3::new(0.58, 0.69, 0.67));
-            part(
-                root,
-                &face,
-                Vec3::new(0., -0.13, -0.26),
-                Vec3::new(0.47, 0.60, 0.21),
-            );
-            root.spawn((Head, Transform::from_xyz(0., 0.36, -0.16)))
-                .with_children(|head| {
-                    part(head, &brown, Vec3::ZERO, Vec3::new(0.68, 0.54, 0.55));
-                    part(
-                        head,
-                        &gold,
-                        Vec3::new(0., -0.09, -0.30),
-                        Vec3::new(0.13, 0.14, 0.19),
-                    );
-                    for side in [-1., 1.] {
-                        part(
-                            head,
-                            &face,
-                            Vec3::new(side * 0.148, 0., -0.20),
-                            Vec3::splat(0.31),
-                        );
-                        part(
-                            head,
-                            &gold,
-                            Vec3::new(side * 0.15, 0.013, -0.324),
-                            Vec3::splat(0.125),
-                        );
-                        part(
-                            head,
-                            &dark,
-                            Vec3::new(side * 0.15, 0.013, -0.377),
-                            Vec3::splat(0.066),
-                        );
-                    }
-                });
-            for s in [-1., 1.] {
-                part(
-                    root,
-                    &gold,
-                    Vec3::new(s * 0.16, -0.37, 0.01),
-                    Vec3::new(0.12, 0.17, 0.24),
-                );
-                root.spawn((Wing(s), Transform::from_xyz(s * 0.23, 0.07, 0.)))
-                    .with_children(|wing| {
-                        part(
-                            wing,
-                            &brown,
-                            Vec3::new(s * 0.49, 0., 0.07),
-                            Vec3::new(1.12, 0.16, 0.55),
-                        );
-                        for step in 0..4 {
-                            let step = step as f32;
-                            part(
-                                wing,
-                                &feather,
-                                Vec3::new(s * (0.47 + step * 0.14), -0.02, 0.27 + step * 0.07),
-                                Vec3::new(0.39, 0.11, 0.45 - step * 0.03),
-                            );
-                        }
-                    });
+        .spawn((
+            models::scene(assets, "owl.glb"),
+            ChildOf(eye),
+            Owl,
+            Transform::default(),
+            Visibility::Hidden,
+        ))
+        .observe(rig);
+}
+
+fn rig(
+    ready: On<WorldInstanceReady>,
+    mut commands: Commands,
+    children: Query<&Children>,
+    parts: Query<(
+        Option<&Name>,
+        &Transform,
+        Option<&MeshMaterial3d<StandardMaterial>>,
+    )>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    for descendant in children.iter_descendants(ready.entity) {
+        let Ok((name, transform, mesh)) = parts.get(descendant) else {
+            continue;
+        };
+        if let Some(mesh) = mesh {
+            if let Some(mut material) = materials.get_mut(&mesh.0) {
+                material.fog_enabled = false;
             }
-            part(
-                root,
-                &feather,
-                Vec3::new(0., -0.11, 0.43),
-                Vec3::new(0.48, 0.14, 0.47),
-            );
-            root.spawn((
-                Mesh3d(roll),
-                MeshMaterial3d(paper),
-                Transform::from_xyz(0., -0.44, 0.03)
-                    .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
-                RenderLayers::layer(atlas::LAYER),
+            commands.entity(descendant).insert((
+                RenderLayers::from_layers(&[0, atlas::LAYER]),
                 NotShadowCaster,
             ));
-            part(
-                root,
-                &dark,
-                Vec3::new(0., -0.44, 0.03),
-                Vec3::new(0.073, 0.216, 0.216),
-            );
-        });
+        }
+        match name.map(Name::as_str) {
+            Some("Wing.L" | "Wing.R") => {
+                commands.entity(descendant).insert(Wing {
+                    side: transform.translation.x.signum(),
+                    rest: transform.rotation,
+                });
+            }
+            Some("Head") => {
+                commands.entity(descendant).insert(Head(transform.rotation));
+            }
+            _ => {}
+        }
+    }
 }
 
 pub(super) fn fly(
+    library: Res<Library>,
     map: Res<map::Map>,
     time: Res<Time>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    camera: Query<&Projection, With<room::Camera>>,
     mut owls: Query<(&mut Transform, &mut Visibility), (With<Owl>, Without<Wing>, Without<Head>)>,
     mut wings: Query<(&Wing, &mut Transform), Without<Head>>,
-    mut heads: Query<&mut Transform, With<Head>>,
+    mut heads: Query<(&Head, &mut Transform), Without<Wing>>,
+    #[cfg(target_arch = "wasm32")] mut announced: Local<&'static str>,
 ) {
     let Ok((mut pose, mut visible)) = owls.single_mut() else {
         return;
@@ -146,27 +85,66 @@ pub(super) fn fly(
     let aspect = windows
         .single()
         .map_or(1.6, |window| window.width() / window.height().max(1.));
-    let frame = map.flight_frame(aspect);
-    visible.set_if_neq(if frame.is_some() {
+    let overhead = map.flight_frame(aspect);
+    let perspective = camera
+        .single()
+        .ok()
+        .and_then(|projection| match projection {
+            Projection::Perspective(lens) => Some(8. * (lens.fov * 0.5).tan()),
+            _ => None,
+        });
+    let flight = library.flight.is_some();
+    let landing = matches!(library.flight, Some(room::Flight::Landing { .. }));
+    #[cfg(target_arch = "wasm32")]
+    {
+        let state = if map.open() || !flight {
+            ""
+        } else if landing {
+            "landing"
+        } else {
+            "flying"
+        };
+        if *announced != state {
+            *announced = state;
+            browser_flight(state);
+        }
+    }
+    let height = overhead.or(perspective.filter(|_| !map.open() && flight));
+    visible.set_if_neq(if height.is_some() {
         Visibility::Inherited
     } else {
         Visibility::Hidden
     });
-    let Some(height) = frame else {
+    let Some(height) = height else {
         return;
     };
     let t = time.elapsed_secs();
+    let depth = if overhead.is_some() {
+        height * 0.23
+    } else {
+        4.
+    };
     pose.translation = Vec3::new(
-        height * (0.28_f32.min(aspect * 0.31) + (t * 0.7).sin() * 0.018),
-        height * (-0.29 + (t * 3.9).sin() * 0.008),
-        -height * 0.35,
+        height * (0.28_f32.min(aspect * 0.31) + (t * 0.92).sin() * 0.025),
+        height * (-0.35 + (t * 3.9).sin() * 0.015),
+        -depth,
     );
-    pose.scale = Vec3::splat(height * 0.083);
-    pose.rotation = Quat::from_euler(EulerRot::YXZ, -0.48, 0.29, (t * 1.3).sin() * 0.09);
-    for mut head in &mut heads {
-        head.rotation = Quat::from_rotation_y(-2.55 + (t * 1.2).sin() * 0.23);
+    pose.scale = Vec3::splat(height * 0.245);
+    pose.rotation = Quat::from_euler(EulerRot::YXZ, -0.46, 0.56, (t * 1.3).sin() * 0.13);
+    for (head, mut joint) in &mut heads {
+        joint.rotation = Quat::from_rotation_y((t * 1.1).sin() * 0.29) * head.0;
     }
     for (wing, mut joint) in &mut wings {
-        joint.rotation = Quat::from_rotation_z(wing.0 * (0.13 + 0.48 * (t * 5.8).sin()));
+        let flap = 0.31 + (t * if landing { 10.5 } else { 7.4 }).sin() * 0.58;
+        joint.rotation = Quat::from_rotation_z(wing.side * flap)
+            * Quat::from_rotation_y(-wing.side * 1.12)
+            * wing.rest;
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = repoCity, js_name = libraryFlight)]
+    fn browser_flight(state: &str);
 }

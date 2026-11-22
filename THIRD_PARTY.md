@@ -34,6 +34,15 @@ The Repo Polis wordmark uses GFS Didot Regular by Greek Font Society.
 The unmodified font comes from [Google Fonts](https://github.com/google/fonts/tree/main/ofl/gfsdidot)
 and ships with SIL Open Font License 1.1 in `assets/fonts/GFSDidot-LICENSE`.
 
+Repo Polis uses the [Owl by Pixor](https://pixor.art/library/creatures/owl/)
+and two trees from [Kenney's Nature Kit 2.1](https://kenney.nl/assets/nature-kit),
+under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
+It also uses [Doric Greek Column by Victor Viña](https://poly.pizza/m/5VD5-v8NBZ4)
+and [Greek Temple by Alexandre Thomas (Ashtom)](https://poly.pizza/m/cdMQnl19MB9),
+under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).
+The game scales and places the models, adjusts the stone and foliage colors,
+and animates the owl's wing and head joints.
+
 The Repo Polis landscape includes [OpenStreetMap contributors' map
 data](https://www.openstreetmap.org/copyright) under ODbL 1.0. The
 [bundled extract](world_sets/athens-osm.json) contains streets and simplified

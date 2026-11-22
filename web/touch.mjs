@@ -50,6 +50,8 @@ export function createTouchControls({ canvas, document = globalThis.document, br
     element.addEventListener("pointerdown", event => {
       event.preventDefault(); event.stopPropagation();
       if (walking() && key === "Fire") { pulses.push("KeyK"); return; }
+      if (walking() && key === "Space" && !canvas.hasAttribute("data-library-flight")) { pulses.push("Space"); return; }
+      if (walking() && key === "ControlLeft") { pulses.push("KeyO"); return; }
       element.setPointerCapture(event.pointerId); held.add(key);
     });
     const release = () => held.delete(key);
@@ -115,7 +117,13 @@ export function createTouchControls({ canvas, document = globalThis.document, br
       use.setAttribute("aria-label", foot ? "Use heat" : "Use water or paint");
       utility.querySelector("button").setAttribute("aria-label", foot ? "Open Stone Pad" : "Open VibePad");
       tools.querySelector("button").setAttribute("aria-label", foot ? "Open aimed scroll" : "Fly to aimed wall");
-      for (const element of flight.children) if (element !== use && element.hidden !== foot) element.hidden = foot;
+      const airborne = canvas.hasAttribute("data-library-flight");
+      flight.querySelector('[data-action="Space"]').setAttribute("aria-label", foot && !airborne ? "Take off" : "Fly up");
+      flight.querySelector('[data-action="ControlLeft"]').setAttribute("aria-label", foot ? "Land" : "Fly down");
+      for (const element of flight.children) {
+        const hide = foot && !airborne && ["ControlLeft", "ShiftLeft"].includes(element.dataset.action);
+        if (element.hidden !== hide) element.hidden = hide;
+      }
     }
     if (hidden) reset();
     if (panel.hidden !== hidden) panel.hidden = hidden;
@@ -125,7 +133,7 @@ export function createTouchControls({ canvas, document = globalThis.document, br
   viewport.append(panel);
   const observer = new browser.MutationObserver(refresh);
   observer.observe(document.documentElement, { attributeFilter: ["data-playing"] });
-  observer.observe(viewport, { subtree: true, attributeFilter: ["open", "hidden", "data-touch-reading", "data-library-map"] });
+  observer.observe(viewport, { subtree: true, attributeFilter: ["open", "hidden", "data-touch-reading", "data-library-map", "data-library-flight"] });
   browser.addEventListener("blur", reset); document.addEventListener("visibilitychange", refresh);
   browser.matchMedia("(pointer: coarse)").addEventListener("change", refresh);
   refresh();
