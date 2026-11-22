@@ -1230,3 +1230,80 @@ test("keyboard-only navigation can find a building and wash source without point
   expect(await page.evaluate(() => document.pointerLockElement)).toBeNull();
   await page.keyboard.press("Tab", { delay: 120 }); await expectOpen(page, "Changed files");
 });
+
+test("a tall code facade renders after a partial thaw", async ({ page }, testInfo) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("repo-city-reading-v1", JSON.stringify({
+      mode: "immediate", block_lines: 6, block_kind: "lines", auto_advance: false,
+      min_seconds: null, max_seconds: null,
+    }));
+  });
+  const faults = [];
+  const logs = [];
+  page.on("pageerror", error => faults.push(error.message));
+  page.on("console", message => {
+    logs.push(message.text());
+    if (message.type() === "error" || /%cERROR|DeviceLost|Validation Error/.test(message.text())) {
+      faults.push(message.text());
+    }
+  });
+  const path = "workers/automation/worker-configuration.d.ts";
+  const count = 3200;
+  const source = Array.from({ length: count }, (_, row) =>
+    `export interface Binding${row} { namespace: string; enabled: boolean; }`
+  ).join("\n") + "\n";
+  await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
+  await page.route("https://api.github.com/**", route => {
+    const url = new URL(route.request().url()).pathname;
+    if (url === "/repos/owner/tall-facade") return route.fulfill({ json: { default_branch: "main" } });
+    if (url.includes("/commits/")) return route.fulfill({ json: { sha: after, parents: [] } });
+    if (url.includes("/git/trees/")) return route.fulfill({ json: {
+      tree: [{ path, type: "blob", mode: "100644", sha: after, size: source.length }],
+    } });
+    return route.fulfill({ json: { size: source.length, encoding: "base64", content: Buffer.from(source).toString("base64") } });
+  });
+  const blob = page.waitForResponse(response => response.url().endsWith("/git/blobs/" + after));
+  await page.goto("/?repo=owner%2Ftall-facade");
+  await blob;
+  await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+  const canvas = page.locator("canvas");
+  await canvas.focus();
+  await expect(page.locator("#progress-summary")).toContainText("0 lines revealed");
+  await expect.poll(async () => {
+    await page.keyboard.press("KeyK", { delay: 180 });
+    return Number((await page.locator("#progress-summary").textContent()).match(/(\d+) lines revealed/)?.[1]);
+  }, { timeout: 25_000, intervals: [500, 1000] }).toBeGreaterThan(0);
+  await expect(page.locator("#progress-summary")).toContainText("6 lines revealed");
+  await page.screenshot({ path: testInfo.outputPath("tall-near.png") });
+  // Back away past the readable tiles to render the partially thawed facade itself.
+  await page.keyboard.press("KeyS", { delay: 300 });
+  let far;
+  try {
+    await expect.poll(async () => {
+      far = await page.screenshot();
+      return page.evaluate(async png => {
+        const bytes = Uint8Array.from(atob(png), byte => byte.charCodeAt(0));
+        const image = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+        const context = new OffscreenCanvas(1, 240).getContext("2d");
+        context.drawImage(image, 610, 420, 1, 240, 0, 0, 1, 240);
+        image.close();
+        const { data } = context.getImageData(0, 0, 1, 240);
+        let transitions = 0;
+        for (let index = 4; index < data.length; index += 4) {
+          if (Math.abs(data[index + 2] - data[index - 2]) > 5) transitions++;
+        }
+        return transitions;
+      }, far.toString("base64"));
+    }, { timeout: 8_000 }).toBeGreaterThan(20);
+  } finally {
+    if (far) await writeFile(testInfo.outputPath("tall-facade.png"), far);
+    await writeFile(testInfo.outputPath("tall-console.txt"), logs.join("\n"));
+  }
+  await page.keyboard.press("KeyM", { delay: 180 });
+  await expect(canvas).toHaveAttribute("data-overview", "");
+  await page.keyboard.press("KeyM", { delay: 180 });
+  await page.keyboard.press("KeyM", { delay: 180 });
+  await expect(canvas).not.toHaveAttribute("data-overview", "");
+  await expect(page.locator("#progress-summary")).toContainText("6 lines revealed");
+  expect(faults).toEqual([]);
+});

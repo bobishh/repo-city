@@ -16,6 +16,7 @@ impl bevy::app::Plugin for Plugin {
     fn build(&self, app: &mut App) {
         load_internal_asset!(app, SHADER, "cover.wesl", Shader::from_wesl);
         app.add_plugins(MaterialPlugin::<Material>::default());
+        super::overview::install(app);
     }
 }
 

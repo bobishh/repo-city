@@ -511,6 +511,7 @@ pub(super) enum Coverage {
 
 pub(super) const FACADE_GLASS: [u8; 3] = [23, 29, 40];
 pub(super) const FACADE_TILE_HEIGHT: usize = 512;
+pub(super) const MAX_PREVIEW_HEIGHT: usize = 2048;
 
 impl Coverage {
     pub(super) const ALL: [Self; 3] = [Self::Closed, Self::Partial, Self::Open];
@@ -536,51 +537,64 @@ pub(super) fn embedded_png(png: &[u8]) -> Image {
     .expect("valid bundled city texture")
 }
 
-pub(super) fn facade_overview(
-    bands: impl ExactSizeIterator<Item = Coverage>,
-    wall_rows: usize,
-    print: FacadePrint,
-) -> Image {
+pub(super) fn facade_atlas(state: Coverage, print: FacadePrint) -> Image {
     static PRINTS: std::sync::OnceLock<[[Image; 2]; FacadePrint::ALL.len()]> =
         std::sync::OnceLock::new();
     let prints = PRINTS.get_or_init(facade_prints);
-    let mut image = prints[print as usize][0].clone();
-    let width = image.width() as usize;
-    let print_height = image.height() as usize;
-    let height = wall_rows.min(2048);
-    image.resize(Extent3d {
-        width: width as u32,
-        height: height as u32,
-        depth_or_array_layers: 1,
-    });
-    let count = bands.len();
-    let bands: Vec<_> = bands.collect();
-    let pixels = image.data.as_mut().expect("packed facade print");
+    let width = prints[print as usize][0].width() as usize;
+    let height = print.atlas_height();
+    let mut pixels = Vec::with_capacity(width * height * 4);
+    for tile in 0..height / FACADE_TILE_HEIGHT {
+        let pattern = print.tile(tile);
+        let image = &prints[pattern as usize][usize::from(state == Coverage::Open)];
+        pixels.extend(image.data.as_ref().expect("facade print pixels"));
+    }
     let gutter = width * 91 / LISTING_WIDTH as usize;
-    for (y, row) in pixels.chunks_exact_mut(width * 4).enumerate() {
-        let offset = y * wall_rows / height;
-        let pattern_row = offset % print_height;
-        let pattern = print.tile(offset / print_height);
-        let state = bands[y * count / height];
-        let print = &prints[pattern as usize][usize::from(state == Coverage::Open)];
-        let source = pattern_row * width * 4;
-        let print_pixels = print.data.as_ref().expect("packed facade print");
-        row.copy_from_slice(&print_pixels[source..source + row.len()]);
-        let accent = state.accent();
+    for row in pixels.chunks_exact_mut(width * 4) {
         for x in gutter..gutter + 2 {
-            row[x * 4..x * 4 + 3].copy_from_slice(&accent);
+            row[x * 4..x * 4 + 3].copy_from_slice(&state.accent());
         }
     }
+    let mut image = Image::new(
+        Extent3d {
+            width: width as u32,
+            height: height as u32,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    mipmap_preview(&mut image, ImageAddressMode::Repeat);
     image
 }
 
-pub(super) fn facade_atlas(state: Coverage, print: FacadePrint) -> Image {
-    let mut image = facade_overview(std::iter::once(state), print.atlas_height(), print);
+pub(super) fn mipmap_preview(image: &mut Image, vertical: ImageAddressMode) {
+    let pixels = image.data.take().expect("preview pixels");
+    let mut level = ::image::RgbaImage::from_raw(image.width(), image.height(), pixels)
+        .expect("packed RGBA preview");
+    let mut data = Vec::new();
+    loop {
+        data.extend_from_slice(level.as_raw());
+        let (width, height) = level.dimensions();
+        if width == 1 && height == 1 {
+            break;
+        }
+        level = ::image::imageops::resize(
+            &level,
+            (width / 2).max(1),
+            (height / 2).max(1),
+            ::image::imageops::FilterType::Triangle,
+        );
+        image.texture_descriptor.mip_level_count += 1;
+    }
+    image.data = Some(data);
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-        address_mode_v: ImageAddressMode::Repeat,
+        address_mode_v: vertical,
+        anisotropy_clamp: 4,
         ..ImageSamplerDescriptor::linear()
     });
-    image
 }
 
 include!(concat!(env!("OUT_DIR"), "/facade_samples.rs"));
@@ -772,7 +786,7 @@ pub(super) fn listing_preview<'a>(
     paint_at: impl Fn(usize) -> Option<Vec4>,
 ) -> Image {
     const WIDTH: usize = 256;
-    let height = (count * 4).clamp(64, 2048);
+    let height = (count * 4).clamp(64, MAX_PREVIEW_HEIGHT);
     let mut pixels = vec![0; WIDTH * height * 4];
     for (y, pixels) in pixels.chunks_exact_mut(WIDTH * 4).enumerate() {
         let index = y * count / height;

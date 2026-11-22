@@ -11,6 +11,7 @@ mod cover;
 pub(super) mod exposure;
 pub(super) mod find;
 pub(super) mod layout;
+mod overview;
 mod paint;
 pub(super) use cover::Plugin as CoverPlugin;
 pub(super) use paint::draw as paint_notes;
@@ -282,6 +283,10 @@ fn facade_rows(height: f32, print: code_texture::FacadePrint) -> usize {
     }
 }
 
+fn fits_wall_preview(rows: usize) -> bool {
+    rows <= code_texture::MAX_PREVIEW_HEIGHT
+}
+
 pub(super) fn scale_facade(
     material: &mut StandardMaterial,
     print: code_texture::FacadePrint,
@@ -292,13 +297,22 @@ pub(super) fn scale_facade(
 }
 
 pub(super) fn draw_overview(
+    mut commands: Commands,
     repo: Res<Repo>,
     palette: Res<Palette>,
     mut listing: ResMut<Listing>,
-    mut facades: Query<(&Facade, &mut MeshMaterial3d<StandardMaterial>), Without<FacadeRim>>,
+    mut facades: Query<
+        (
+            Entity,
+            &Facade,
+            Option<&mut MeshMaterial3d<StandardMaterial>>,
+            Option<&MeshMaterial3d<overview::Material>>,
+        ),
+        Without<FacadeRim>,
+    >,
     mut rims: Query<(&FacadeRim, &mut MeshMaterial3d<StandardMaterial>), Without<Facade>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut images: ResMut<Assets<Image>>,
+    mut partials: ResMut<Assets<overview::Material>>,
 ) {
     let active = listing.rendered.map(|(index, _, _)| index);
     if listing.listing_facade != active {
@@ -333,41 +347,49 @@ pub(super) fn draw_overview(
             material.0 = palette.facade_rims[state as usize].clone();
         }
     }
-    for (facade, mut material) in &mut facades {
+    for (entity, facade, plain, partial) in &mut facades {
         let index = facade.index;
         if !dirty.contains(&index) {
-            continue;
-        }
-        if active == Some(index) {
-            material.0 = palette.facade_neutral.clone();
             continue;
         }
         let file = &repo.0.files[index];
         let print = code_texture::FacadePrint::for_path(&file.path);
         let rows = facade_rows(block_size(file).y, print);
         let reading = progress(index);
-        if let Some(reading) = reading.filter(|reading| reading.opened < reading.rows) {
-            let overview = code_texture::facade_overview(reading.bands(), rows, print);
-            if material.0 == palette.facade_neutral
-                || palette
-                    .facades
-                    .iter()
-                    .flatten()
-                    .any(|cached| *cached == material.0)
-                || facade_prints.values().any(|cached| *cached == material.0)
-            {
-                material.0 = materials.add(overview_material(images.add(overview)));
-            } else if let Some(mut texture) = materials
-                .get(&material.0)
-                .and_then(|material| material.base_color_texture.as_ref())
-                .and_then(|texture| images.get_mut(texture))
-            {
-                *texture = overview;
+        let preview = active == Some(index) && fits_wall_preview(rows);
+        let atlas = |open: bool| &palette.facades[print as usize][usize::from(open)];
+        if let Some(reading) = reading.filter(|reading| !preview && reading.opened < reading.rows) {
+            let open = materials.get(atlas(true)).expect("open facade atlas");
+            let extension = overview::ReadingBands::new(
+                open.base_color_texture
+                    .clone()
+                    .expect("open facade texture"),
+                print,
+                rows,
+                reading.bands(),
+            );
+            if let Some(mut material) = partial.and_then(|handle| partials.get_mut(&handle.0)) {
+                material.extension = extension;
+            } else {
+                let mut base = materials
+                    .get(atlas(false))
+                    .expect("closed facade atlas")
+                    .clone();
+                scale_facade(&mut base, print, rows);
+                let handle = partials.add(overview::Material { base, extension });
+                commands
+                    .entity(entity)
+                    .remove::<MeshMaterial3d<StandardMaterial>>()
+                    .insert(MeshMaterial3d(handle));
             }
+            continue;
+        }
+        let handle = if preview {
+            palette.facade_neutral.clone()
         } else {
             let open = reading.is_some();
-            let base = &palette.facades[print as usize][usize::from(open)];
-            material.0 = if rows == code_texture::FACADE_TILE_HEIGHT {
+            let base = atlas(open);
+            if rows == code_texture::FACADE_TILE_HEIGHT {
                 base.clone()
             } else {
                 facade_prints
@@ -379,6 +401,14 @@ pub(super) fn draw_overview(
                     })
                     .clone()
             }
+        };
+        if let Some(mut plain) = plain {
+            plain.0 = handle;
+        } else {
+            commands
+                .entity(entity)
+                .remove::<MeshMaterial3d<overview::Material>>()
+                .insert(MeshMaterial3d(handle));
         }
     }
 }
@@ -1905,11 +1935,17 @@ impl WallRender<'_, '_, '_> {
                 && let Some(mut image) = self.images.get_mut(existing)
             {
                 *image = texture();
+                code_texture::mipmap_preview(
+                    &mut image,
+                    bevy::image::ImageAddressMode::ClampToEdge,
+                );
             }
         } else {
+            let mut image = texture();
+            code_texture::mipmap_preview(&mut image, bevy::image::ImageAddressMode::ClampToEdge);
             let tile = self.plane(
                 side,
-                texture(),
+                image,
                 side.wall.y(count as f32 / 2.),
                 count as f32 * side.wall.row_height,
                 Layer::Preview,
@@ -2369,30 +2405,33 @@ pub(super) fn draw(
             })
             .map(|(_, paint)| *paint)
     };
-    render.preview(&source, source_tiles, source_count, || {
-        code_texture::listing_preview(
-            source_count,
-            source_row,
-            display_revealed,
-            Face::Source,
-            source.glyph_scale(),
-            |index| line_paint(explorer.before, explorer.source_layout.rows[index].number),
-        )
-    });
-    render.preview(&diff, diff_tiles, diff_count, || {
-        code_texture::listing_preview(
-            diff_count,
-            diff_row,
-            |_| true,
-            Face::Diff,
-            diff.glyph_scale(),
-            |index| {
-                let (line, mark) = &diff_lines[index];
-                line.as_ref()
-                    .and_then(|line| line_paint(*mark == Mark::Removed, line.number))
-            },
-        )
-    });
+    let print = code_texture::FacadePrint::for_path(&file.path);
+    if fits_wall_preview(facade_rows(size.y, print)) {
+        render.preview(&source, source_tiles, source_count, || {
+            code_texture::listing_preview(
+                source_count,
+                source_row,
+                display_revealed,
+                Face::Source,
+                source.glyph_scale(),
+                |index| line_paint(explorer.before, explorer.source_layout.rows[index].number),
+            )
+        });
+        render.preview(&diff, diff_tiles, diff_count, || {
+            code_texture::listing_preview(
+                diff_count,
+                diff_row,
+                |_| true,
+                Face::Diff,
+                diff.glyph_scale(),
+                |index| {
+                    let (line, mark) = &diff_lines[index];
+                    line.as_ref()
+                        .and_then(|line| line_paint(*mark == Mark::Removed, line.number))
+                },
+            )
+        });
+    }
     if let Some(review) = review.as_ref() {
         if let (Some((_, anchor)), Some(preset)) = (&review.drag, review.paint())
             && anchor.path == file.path
@@ -3540,27 +3579,31 @@ mod tests {
     #[test]
     fn tall_code_facades_cycle_real_prints_and_keep_the_reading_bands() {
         use code_texture::{Coverage, FACADE_TILE_HEIGHT, FacadePrint};
-        let wall_rows = facade_rows(112., FacadePrint::CodeA);
-        assert_eq!(wall_rows, 4 * FACADE_TILE_HEIGHT);
+        let print = FacadePrint::CodeA;
+        let wall_rows = facade_rows(931., print);
+        assert!(wall_rows > 32 * FACADE_TILE_HEIGHT);
         let [closed, open] = [Coverage::Closed, Coverage::Open];
-        let image = code_texture::facade_overview(
-            [closed, open].into_iter(),
-            wall_rows,
-            FacadePrint::CodeA,
-        );
+        let image = code_texture::facade_atlas(closed, print);
+        assert!(image.texture_descriptor.mip_level_count > 1);
         let stride = image.width() as usize * 4;
-        let rows: Vec<_> = image.data.as_ref().unwrap().chunks_exact(stride).collect();
+        let rows: Vec<_> = image.data.as_ref().unwrap()[..stride * print.atlas_height()]
+            .chunks_exact(stride)
+            .collect();
         let period = FACADE_TILE_HEIGHT;
         assert_ne!(&rows[..period], &rows[period..2 * period]);
-        assert_ne!(&rows[2 * period..3 * period], &rows[3 * period..]);
-        let gutter = image.width() as usize * 91 / code_texture::LISTING_WIDTH as usize * 4;
-        for row in &rows[..2 * period] {
-            assert_eq!(&row[gutter..gutter + 3], &closed.accent());
-        }
-        for row in &rows[2 * period..] {
-            assert_eq!(&row[gutter..gutter + 3], &open.accent());
-        }
+        assert_ne!(&rows[period..2 * period], &rows[2 * period..]);
         assert!(rows[..period].windows(2).any(|pair| pair[0] != pair[1]));
+        let coverage = (0..OVERVIEW_BANDS).map(|index| match index {
+            15 | 47 => Coverage::Partial,
+            16 | 48 | 63 => open,
+            _ => closed,
+        });
+        let bands = overview::ReadingBands::new(default(), print, wall_rows, coverage.clone());
+        let tile_height = 931. * period as f32 / (bands.repeats() * print.atlas_height() as f32);
+        assert!((tile_height - 2. * WIDTH).abs() < 0.1);
+        for (index, state) in coverage.enumerate() {
+            assert_eq!(bands.state(index), state as u32);
+        }
     }
 
     #[test]
@@ -3615,6 +3658,7 @@ mod tests {
             })
             .insert_resource(materials)
             .insert_resource(images)
+            .init_resource::<Assets<overview::Material>>()
             .init_resource::<Listing>()
             .add_systems(Update, draw_overview);
         let facade = app
@@ -3672,48 +3716,49 @@ mod tests {
 
         app.world_mut().resource_mut::<Listing>().rendered = None;
         app.update();
-        let partial = current(&app);
-        assert_ne!(partial, closed);
-        assert_ne!(partial, open);
+        let partial_handle = |app: &App| {
+            app.world()
+                .get::<MeshMaterial3d<overview::Material>>(facade)
+                .unwrap()
+                .0
+                .clone()
+        };
+        let partial = partial_handle(&app);
+        assert!(
+            app.world()
+                .get::<MeshMaterial3d<StandardMaterial>>(facade)
+                .is_none()
+        );
         {
-            let materials = app.world().resource::<Assets<StandardMaterial>>();
-            let images = app.world().resource::<Assets<Image>>();
-            let rail = |material: &Handle<StandardMaterial>, band: usize| {
-                let texture = materials
-                    .get(material)
-                    .unwrap()
-                    .base_color_texture
-                    .as_ref()
-                    .unwrap();
-                let image = images.get(texture).unwrap();
-                let width = image.width() as usize;
-                let y = (2 * band + 1) * image.height() as usize / (2 * bands.len());
-                let start = (y * width + width * 91 / code_texture::LISTING_WIDTH as usize) * 4;
-                let pixels = image.data.as_ref().unwrap();
-                [pixels[start], pixels[start + 1], pixels[start + 2]]
-            };
-            let [r, g, b] = rail(&closed, 13);
-            assert!(b > 120 && b > r && b > g, "unread rail should read as blue");
-            let [r, g, b] = rail(&open, 0);
-            assert!(
-                g > 150 && g > r + 35 && b > r + 35,
-                "read rail should read as cyan"
+            let material = app
+                .world()
+                .resource::<Assets<overview::Material>>()
+                .get(&partial)
+                .unwrap();
+            assert_eq!(material.base.base_color_texture, texture(&app, &closed));
+            assert_eq!(
+                material.base.uv_transform.transform_point2(Vec2::Y).y,
+                material.extension.repeats()
             );
-            assert_eq!(rail(&partial, 0), rail(&open, 0));
-            assert_eq!(rail(&partial, 13), rail(&closed, 13));
-            let [r, g, b] = rail(&partial, 12);
-            assert!(r > g && b > g, "a mixed band should read as violet");
+            for (index, state) in bands.into_iter().enumerate() {
+                assert_eq!(material.extension.state(index), state as u32);
+            }
         }
         wash(&mut app, 17.);
         app.update();
-        assert_eq!(current(&app), partial);
-        assert_eq!(app.world().resource::<Assets<Image>>().len(), 3);
+        assert_eq!(partial_handle(&app), partial);
+        assert_eq!(app.world().resource::<Assets<Image>>().len(), 2);
         for row in (TILE_ROWS * 2..count).step_by(TILE_ROWS) {
             wash(&mut app, row as f32 + 0.5);
         }
         app.update();
         assert_eq!(texture(&app, &current(&app)), texture(&app, &open));
         assert_eq!(rim_material(&app), rims[2]);
+        assert!(
+            app.world()
+                .get::<MeshMaterial3d<overview::Material>>(facade)
+                .is_none()
+        );
         app.world_mut().resource_mut::<Listing>().rendered = Some((0, true, count));
         app.update();
         assert_eq!(current(&app), neutral);
@@ -3853,6 +3898,9 @@ mod tests {
             .spawn((Camera3d::default(), view(&file, count)))
             .id();
         app.update();
+        let listing = app.world().resource::<Listing>();
+        assert!(listing.source_tiles.preview.is_none());
+        assert!(listing.diff_tiles.preview.is_none());
         assert!(app.world().resource::<Assets<Image>>().len() <= 7);
         let limit = 5 + TILES_PER_SIDE + RETIRING_TILES;
         let source = WallSide::new(&file, count, Face::Source, size_from_rows(count));
