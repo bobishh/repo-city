@@ -23,6 +23,8 @@ signing in.
    Paste the URL into the picker to load its comparison. Press **F** to
    show changed files and **G** at a file to see its diff.
 
+[Watch the 32-second walkthrough](docs/repo-city-demo.mp4).
+
 The [desktop app](#on-your-mac) opens local Git checkouts and worktrees. It
 includes an integrated terminal and exposes local review notes through MCP.
 
