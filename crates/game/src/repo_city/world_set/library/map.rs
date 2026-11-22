@@ -25,6 +25,7 @@ enum Choice {
 struct Scene {
     atlas: atlas::Atlas,
     mesh: Entity,
+    pins: Option<Entity>,
     selection: Entity,
     panel: Entity,
     hover: Entity,
@@ -301,6 +302,9 @@ pub(super) fn update(
         let old_scene = map.scene.take();
         if let Some(scene) = &old_scene {
             commands.entity(scene.mesh).despawn();
+            if let Some(pins) = scene.pins {
+                commands.entity(pins).despawn();
+            }
             commands.entity(scene.selection).despawn();
             commands.entity(scene.hover).despawn();
             native_panel::close(&mut commands, scene.panel, &mut focus, &parents);
@@ -367,6 +371,8 @@ pub(super) fn update(
                         camera_entity,
                         &title,
                         level == Level::Library,
+                        &repo.0,
+                        &review,
                     ));
                 } else {
                     map.close = true;
@@ -507,6 +513,9 @@ pub(super) fn update(
         let ground = folder.map(layout::doorway);
         if let Some(scene) = map.scene.take() {
             commands.entity(scene.mesh).despawn();
+            if let Some(pins) = scene.pins {
+                commands.entity(pins).despawn();
+            }
             commands.entity(scene.selection).despawn();
             commands.entity(scene.hover).despawn();
             native_panel::close(&mut commands, scene.panel, &mut focus, &parents);
@@ -618,7 +627,41 @@ fn spawn(
     camera: Entity,
     title: &str,
     overview: bool,
+    repo: &Repository,
+    review: &review_notes::Review,
 ) -> Scene {
+    let mut colors = BTreeMap::new();
+    for note in review
+        .notes
+        .iter()
+        .rev()
+        .filter(|note| review.shows_paint(note, repo))
+    {
+        if let Some(index) = repo
+            .files
+            .iter()
+            .position(|file| file.path == note.anchor.path)
+        {
+            colors.entry(index).or_insert_with(|| note.ink());
+        }
+    }
+    let marks = atlas.note_pins(&colors);
+    #[cfg(target_arch = "wasm32")]
+    browser_pins(marks.as_ref().map_or(0, |(_, count)| *count as u32));
+    let pins = marks.map(|(mesh, _)| {
+        commands
+            .spawn((
+                Mesh3d(meshes.add(mesh)),
+                MeshMaterial3d(materials.add(StandardMaterial {
+                    unlit: true,
+                    fog_enabled: false,
+                    cull_mode: None,
+                    ..default()
+                })),
+                RenderLayers::layer(atlas::LAYER),
+            ))
+            .id()
+    });
     let model = commands
         .spawn((
             Mesh3d(meshes.add(atlas.mesh())),
@@ -700,6 +743,7 @@ fn spawn(
     Scene {
         atlas,
         mesh: model,
+        pins,
         selection,
         panel,
         hover,
@@ -715,6 +759,8 @@ extern "C" {
     fn browser_travel(folder: &str);
     #[wasm_bindgen(js_namespace = repoCity, js_name = libraryMapHover)]
     fn browser_hover(folder: &str);
+    #[wasm_bindgen(js_namespace = repoCity, js_name = libraryNotePins)]
+    fn browser_pins(count: u32);
 }
 
 #[cfg(test)]

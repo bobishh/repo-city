@@ -7,7 +7,7 @@ pub(super) fn update(
     (map, menu): (Res<map::Map>, Res<city_menu::Menu>),
     settings: Res<reading::Settings>,
     time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
+    (keys, mouse): (Res<ButtonInput<KeyCode>>, Res<ButtonInput<MouseButton>>),
     repo: Res<Repo>,
     mut explorer: ResMut<Explorer>,
     mut listing: ResMut<listing::Listing>,
@@ -68,7 +68,8 @@ pub(super) fn update(
     if *heat != Some(key) || review.slot != 0 {
         *heat = None;
     }
-    let warming = keys.just_pressed(KeyCode::KeyK);
+    let warming = keys.just_pressed(KeyCode::KeyK)
+        || (mouse.just_pressed(MouseButton::Left) && point.is_some());
     if warming && review.slot == 0 && reader.face == listing::Face::Source {
         *heat = heat.is_none().then_some(key);
     }
@@ -78,17 +79,18 @@ pub(super) fn update(
         return;
     }
     if review.paint().is_some() {
-        if keys.pressed(KeyCode::KeyK) {
-            if let Some(point) = point {
-                if warming {
-                    review.drag = Some((point.clone(), point));
-                } else if let Some((first, range)) = &mut review.drag
-                    && let Some(extended) = first.extend(&point)
-                {
-                    *range = extended;
-                }
+        if let Some(point) = &point {
+            if warming {
+                review.drag = Some((point.clone(), point.clone()));
+            } else if let Some((first, range)) = &mut review.drag
+                && let Some(extended) = first.extend(point)
+            {
+                *range = extended;
             }
-        } else if let Some((_, anchor)) = review.drag.take()
+        }
+        if !keys.pressed(KeyCode::KeyK)
+            && !mouse.pressed(MouseButton::Left)
+            && let Some((_, anchor)) = review.drag.take()
             && point.as_ref().is_some_and(|point| anchor.includes(point))
         {
             let readable = reader.face != listing::Face::Source

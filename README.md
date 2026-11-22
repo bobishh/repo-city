@@ -94,6 +94,10 @@ Use **/** or **\\** to search the repository or the open scroll. Press
 **Enter** to open the selected file and read the parchment from directly
 above. Use the wheel, **Page Up/Down**, or **J** to move through the file.
 Press **WASD** or **Esc** to step away from the scroll.
+Choose a paint with **1–9** and drag across readable lines to mark them.
+The map shows marks in their paint color. Right-click a marked line and
+choose **Review notes** to open its note. In the browser, sign in and open
+a pull request to save a draft.
 
 The library reads the same snapshots as Code City and shares visited-file
 progress. Its scrolls show source, including the previous snapshot for removed

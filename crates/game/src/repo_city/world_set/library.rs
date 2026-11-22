@@ -392,7 +392,7 @@ fn controls(
         windows.single().ok(),
         &keys,
         &buttons,
-        library.input.is_some(),
+        library.input.is_some() || library.reader.is_some(),
     );
     pilot.captured = captured;
     let Some(file) = repo.0.files.get(explorer.selected) else {
@@ -547,6 +547,9 @@ fn controls(
     }
 
     if let Some(reader) = &mut library.reader {
+        if escape && was_captured {
+            return;
+        }
         let takeoff = library.input.is_none() && keys.just_pressed(KeyCode::Space);
         let moving = library.input.is_none()
             && !keys.any_pressed([

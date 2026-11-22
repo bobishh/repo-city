@@ -307,6 +307,7 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
           } else {
             canvas.removeAttribute("data-library-map");
             canvas.removeAttribute("data-library-map-files");
+            canvas.removeAttribute("data-library-note-pins");
           }
         },
         libraryTravel(folder) {
@@ -319,6 +320,9 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
         libraryMapHover(folder) {
           if (folder) canvas.dataset.libraryMapHover = folder;
           else canvas.removeAttribute("data-library-map-hover");
+        },
+        libraryNotePins(count) {
+          canvas.dataset.libraryNotePins = String(count);
         },
         libraryInput(prompt) {
           canvas.toggleAttribute("data-library-input", Boolean(prompt));

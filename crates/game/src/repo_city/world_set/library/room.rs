@@ -1087,6 +1087,13 @@ pub(super) fn draw(
                 let row = content.row(index)?;
                 let guided = paper::guided(reader, row.line.number, time.elapsed_secs_f64());
                 let paint = repo.0.files.get(explorer.selected).and_then(|file| {
+                    if let Some((_, range)) = &review.drag
+                        && range.path == file.path
+                        && range.before == row.before
+                        && (range.start..=range.end).contains(&row.line.number)
+                    {
+                        return review.paint().map(|paint| paint.color);
+                    }
                     review
                         .notes
                         .iter()

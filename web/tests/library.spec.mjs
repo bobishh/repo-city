@@ -274,3 +274,66 @@ test("opens a repository in Repo Polis and unrolls a file at the requested line"
   await expectClosed(page);
   await expect(canvas).toHaveAccessibleName("Repo Polis, src/scroll.rs, lines 1–22");
 });
+
+test("paints a private scroll range by dragging and marks its file on the map", async ({ page }, testInfo) => {
+  const base = "a".repeat(40);
+  const head = "b".repeat(40);
+  const path = "src/paint.rs";
+  const source = Array.from({ length: 36 }, (_, index) => `pub const ROW_${index + 1}: u32 = ${index + 1};\n`).join("");
+  await page.addInitScript(() => localStorage.setItem("repo-city-reading-v1", JSON.stringify({
+    enabled: false,
+    show_all_source: true,
+  })));
+  await page.route("**/github/session", route => route.fulfill({ json: { enabled: true, login: "reviewer" } }));
+  await page.route(/\/github\/api\/|https:\/\/api.github.com\//, route => {
+    const request = new URL(route.request().url()).pathname.replace("/github/api", "");
+    if (request.endsWith("/pulls/8")) return route.fulfill({ json: { state: "open", base: { sha: base }, head: { sha: head } } });
+    if (request.includes("/compare/")) return route.fulfill({ json: { merge_base_commit: { sha: base } } });
+    if (request.includes("/git/trees/")) return route.fulfill({ json: { tree: [{
+      path, type: "blob", mode: "100644", sha: request.endsWith(head) ? head : base, size: source.length,
+    }] } });
+    if (request.includes("/git/blobs/")) {
+      const text = request.endsWith(head) ? source : source.replace("= 4;", "= 40;");
+      return route.fulfill({ json: { size: text.length, encoding: "base64", content: Buffer.from(text).toString("base64") } });
+    }
+    return route.fulfill({ json: [] });
+  });
+  let publications = 0;
+  await page.route("**/github/review/owner/library/8", route => {
+    if (route.request().method() === "POST") publications++;
+    return route.fulfill({ json: { headRefOid: head, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } });
+  });
+  await page.goto("/?world=repo-polis&pr=https%3A%2F%2Fgithub.com%2Fowner%2Flibrary%2Fpull%2F8");
+  const canvas = page.locator("#repo-city");
+  await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+  await expect.poll(() => page.evaluate(() => globalThis.repoCity.reviewCanPaint())).toBe(true);
+  await canvas.focus();
+  await page.keyboard.press("Enter", { delay: 135 });
+  await expect(canvas).toHaveAccessibleName(/src\/paint\.rs, lines 1–22/);
+  await page.waitForTimeout(3500);
+  const frame = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const aim = async y => {
+    await page.mouse.move(540, y);
+    await frame();
+    await expect(canvas).toHaveAttribute("data-library-target", /^Line \d+$/);
+    return Number((await canvas.getAttribute("data-library-target")).slice(5));
+  };
+  const first = await aim(350);
+  await page.keyboard.press("Digit2", { delay: 135 });
+  await page.mouse.down();
+  await frame();
+  await page.mouse.move(540, 490, { steps: 12 });
+  await expect.poll(() => canvas.getAttribute("data-library-target")).not.toBe(`Line ${first}`);
+  const last = await aim(490);
+  await page.mouse.up();
+  await expect(canvas).not.toHaveAttribute("data-pointer-locked");
+  const notes = () => page.evaluate(() => JSON.parse(globalThis.repoCity.reviewRead()).notes
+    .filter(note => !note.remote).map(note => note.anchor));
+  await expect.poll(notes).toEqual([{ path, before: false, start: Math.min(first, last), end: Math.max(first, last) }]);
+  expect(publications).toBe(0);
+  await page.screenshot({ path: testInfo.outputPath("painted-scroll.png") });
+  await page.keyboard.press("KeyM", { delay: 135 });
+  await expect(canvas).toHaveAttribute("data-library-map", "Folder · src");
+  await expect(canvas).toHaveAttribute("data-library-note-pins", "1");
+  await page.screenshot({ path: testInfo.outputPath("painted-map.png") });
+});

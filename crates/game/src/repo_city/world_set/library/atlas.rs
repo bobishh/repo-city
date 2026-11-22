@@ -419,6 +419,29 @@ impl Atlas {
         }
         mesh.finish()
     }
+
+    pub(super) fn note_pins(&self, colors: &BTreeMap<usize, [u8; 3]>) -> Option<(Mesh, usize)> {
+        let mut mesh = Blocks::default();
+        let mut count = 0;
+        for lot in &self.lots {
+            let Some(&ink) = colors.get(&lot.index) else {
+                continue;
+            };
+            let radius = (lot.size.x * 0.49).clamp(2.6, 6.);
+            let center = lot.center + Vec3::Y * (lot.size.y / 2. + 3.6);
+            let diamond = |r: f32, rise: f32| {
+                [Vec3::X, Vec3::Z, Vec3::NEG_X, Vec3::NEG_Z]
+                    .map(|edge| (center + edge * r + Vec3::Y * rise).to_array())
+            };
+            mesh.face(&diamond(radius, 0.), [0.17, 0.12, 0.08]);
+            mesh.face(
+                &diamond(radius * 0.74, 0.06),
+                ink.map(|channel| f32::from(channel) / 255.),
+            );
+            count += 1;
+        }
+        (count > 0).then(|| (mesh.finish(), count))
+    }
 }
 
 fn ground_height(point: Vec2) -> f32 {
