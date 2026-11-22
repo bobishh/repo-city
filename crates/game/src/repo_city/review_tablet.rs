@@ -120,14 +120,21 @@ struct ImageView {
 #[derive(Default)]
 struct Document {
     path: String,
-    pending: Option<native_github::Job<(String, markdown_preview::ReadDocument, String)>>,
-    result: Option<Result<(String, markdown_preview::ReadDocument, String), String>>,
+    pending: Option<native_github::Job<LoadedDocument>>,
+    result: Option<Result<LoadedDocument, String>>,
     content: Option<Entity>,
-    finished: bool,
+    page: usize,
+    read_pages: HashSet<usize>,
     before: bool,
     range: std::ops::Range<usize>,
     editing: bool,
     edited_source: Option<String>,
+}
+
+struct LoadedDocument {
+    source: String,
+    mark: markdown_preview::ReadDocument,
+    offsets: Vec<usize>,
 }
 
 impl Document {
@@ -166,11 +173,11 @@ impl Document {
                     blob,
                     rows: source.split_inclusive('\n').count(),
                 };
-                Ok((
-                    markdown_preview::document_html(&file.path, &source),
-                    read,
+                Ok(LoadedDocument {
+                    offsets: markdown_preview::page_offsets(&source),
                     source,
-                ))
+                    mark: read,
+                })
             })),
             ..default()
         })
@@ -227,6 +234,7 @@ enum Action {
     GitCompare,
     StartTour,
     EditDocument,
+    DocumentPage(usize),
     Connection(usize),
     TraceImport,
     TraceFollow,
@@ -248,6 +256,35 @@ impl native_panel::Actions<Action> for Tablet {
 }
 
 impl Tablet {
+    pub(super) fn smoke_open_document(&mut self, repo: &Repository, index: usize, before: bool) {
+        self.document = Document::open(repo, index, before, 0..6);
+        self.open_page(Page::Document);
+    }
+
+    pub(super) fn smoke_large_document(&self) -> Result<(), String> {
+        if self.view != Page::Document {
+            return Err("VibePad did not switch to the document".into());
+        }
+        let document = self
+            .document
+            .as_ref()
+            .ok_or("VibePad did not open the document")?;
+        let loaded = document
+            .result
+            .as_ref()
+            .ok_or("The document is still loading")?
+            .as_ref()
+            .map_err(Clone::clone)?;
+        if loaded.source.len() > 1024 * 1024
+            && loaded.offsets.len() > 2
+            && document.content.is_some()
+        {
+            Ok(())
+        } else {
+            Err("The document preview does not display multiple pages".into())
+        }
+    }
+
     pub(super) fn open_help(&mut self) {
         self.open_page(Page::Help);
     }
@@ -282,6 +319,9 @@ impl Tablet {
     }
 
     fn switch(&mut self, view: Page, reading: &reading::Settings) {
+        if view != Page::Document {
+            self.document = None;
+        }
         if view != self.view && view == Page::Settings {
             let [min, max] = [reading.min_seconds, reading.max_seconds]
                 .map(|value| value.map_or_else(String::new, |value| value.to_string()));
@@ -653,18 +693,20 @@ pub(super) fn update(
             && let Some(document) = tablet
                 .document
                 .as_mut()
-                .filter(|document| !document.finished)
+                .filter(|document| !document.editing && document.edited_source.is_none())
             && let Some(content) = document.content.and_then(|entity| layout.get(entity).ok())
             && content.size().y > 0.
-            && let Some(Ok((_, mark, _))) = &document.result
+            && let Some(Ok(loaded)) = &document.result
             && let Ok((scroll, viewport)) = rows.single()
             && viewport.size().y > 0.
             && scroll.y * viewport.inverse_scale_factor().recip() + viewport.size().y + 2.
                 >= viewport.content_size().y
         {
-            document.finished = true;
-            if let Some(queue) = &mut read {
-                queue.0 = Some(mark.clone());
+            if document.read_pages.insert(document.page)
+                && document.read_pages.len() + 1 == loaded.offsets.len()
+                && let Some(queue) = &mut read
+            {
+                queue.0 = Some(loaded.mark.clone());
             }
         }
         let connection = match action {
@@ -704,12 +746,20 @@ pub(super) fn update(
             return;
         }
         match action {
+            Some(Action::DocumentPage(page)) => {
+                if let Some(document) = tablet.document.as_mut() {
+                    document.page = page;
+                    document.content = None;
+                    redraw = true;
+                }
+            }
             Some(Action::EditDocument) => {
                 if let Some(document) = tablet.document.as_mut() {
                     if document.editing {
                         if let Ok(editor) = editors.single() {
                             document.edited_source = Some(editor.full_value());
                             document.range = editor.range();
+                            document.page = 0;
                         }
                     }
                     document.editing = !document.editing;
@@ -1524,8 +1574,9 @@ fn draw_document(
     tab: &mut i32,
 ) -> Option<Entity> {
     let document = document?;
-    if let Some(Ok((_, mark, source))) = &document.result {
-        let end = document.range.end.min(source.split_inclusive('\n').count());
+    if let Some(Ok(loaded)) = &document.result {
+        let source = &loaded.source;
+        let end = document.range.end.min(loaded.mark.rows);
         let range = document.range.start..end;
         let permitted = source_editor::chunk_bytes(source, range.clone())
             .is_ok_and(|bytes| bytes.len() <= 256 * 1024);
@@ -1552,7 +1603,7 @@ fn draw_document(
                 revision: repository.revision.clone(),
                 baseline: repository.baseline.clone(),
                 path: document.path.clone(),
-                blob: mark.blob.clone(),
+                blob: loaded.mark.blob.clone(),
                 before: document.before,
                 range: range.clone(),
             };
@@ -1567,6 +1618,56 @@ fn draw_document(
             return Some(source_editor::spawn(parent, identity, source, apply));
         }
     }
+    let edited_offsets = document
+        .edited_source
+        .as_deref()
+        .map(markdown_preview::page_offsets);
+    let offsets = edited_offsets
+        .as_deref()
+        .or_else(|| match document.result.as_ref() {
+            Some(Ok(loaded)) => Some(loaded.offsets.as_slice()),
+            _ => None,
+        });
+    if let Some(offsets) = offsets.filter(|offsets| offsets.len() > 2) {
+        let pages = offsets.len() - 1;
+        let page = document.page;
+        parent
+            .spawn(Node {
+                column_gap: px(8.),
+                align_items: AlignItems::Center,
+                ..default()
+            })
+            .with_children(|bar| {
+                let previous = add_button(
+                    bar,
+                    "Previous page",
+                    Action::DocumentPage(page.saturating_sub(1)),
+                    tab,
+                );
+                if page == 0 {
+                    bar.commands()
+                        .entity(previous)
+                        .insert(bevy::ui::InteractionDisabled);
+                }
+                native_panel::text(
+                    bar,
+                    &format!("Page {} of {pages}", page + 1),
+                    native_panel::INK,
+                );
+                let next = add_button(
+                    bar,
+                    "Next page",
+                    Action::DocumentPage((page + 1).min(pages - 1)),
+                    tab,
+                );
+                if page + 1 == pages {
+                    bar.commands()
+                        .entity(next)
+                        .insert(bevy::ui::InteractionDisabled);
+                }
+            });
+    }
+    document.content = None;
     parent
         .spawn((
             FileRows,
@@ -1580,14 +1681,15 @@ fn draw_document(
             },
         ))
         .with_children(|body| match document.result.as_ref() {
-            Some(Ok((html, _, _source))) => {
-                let html = document.edited_source.as_ref().map_or_else(
-                    || html.clone(),
-                    |edited| markdown_preview::document_html(&document.path, edited),
-                );
-                if html.trim().is_empty() {
+            Some(Ok(loaded)) => {
+                let offsets = offsets.expect("a loaded document has page offsets");
+                let page = document.page;
+                let text = document.edited_source.as_ref().unwrap_or(&loaded.source);
+                let text = &text[offsets[page]..offsets[page + 1]];
+                if text.trim().is_empty() {
                     native_panel::text(body, "Empty document.", native_panel::INK);
                 } else {
+                    let html = markdown_preview::document_html(&document.path, text);
                     let source = markdown_preview::SourceFile {
                         path: document.path.clone(),
                         before: document.before,
@@ -2151,16 +2253,16 @@ mod tests {
             before: false,
             range: 1..4,
             editing: true,
-            result: Some(Ok((
-                String::new(),
-                markdown_preview::ReadDocument {
+            result: Some(Ok(LoadedDocument {
+                mark: markdown_preview::ReadDocument {
                     path: "sample.rs".into(),
                     blob: format!("test-{}", std::process::id()),
                     before: false,
                     rows: 5,
                 },
-                source.into(),
-            ))),
+                source: source.into(),
+                offsets: markdown_preview::page_offsets(source),
+            })),
             ..default()
         };
         let mut app = App::new();

@@ -88,7 +88,8 @@ type PlayerCamera = (
 );
 
 const CAMERA_FLOOR: f32 = 0.05;
-const MAX_LOOK_PITCH: f32 = 1.5;
+// Stay just inside the Euler singularity while letting the reticle aim straight down.
+const MAX_LOOK_PITCH: f32 = std::f32::consts::FRAC_PI_2 - 0.0001;
 const APP_NAME: &str = "Repo City";
 
 #[derive(Resource)]
@@ -792,6 +793,7 @@ fn install_city(app: &mut App, args: &[String]) {
                     "--smoke-settings" => Some(27),
                     "--smoke-hunk-pages" => Some(29),
                     "--smoke-review-roofs" => Some(31),
+                    "--smoke-document" => Some(33),
                     "--smoke-overview" => Some(24),
                     "--smoke-empty-diff" => Some(18),
                     "--smoke-frost" => Some(20),
@@ -1704,7 +1706,7 @@ fn flight(
     {
         pilot.walk = None;
     }
-    if pointer_ui_open || listing.turning() || !focused || navigation.is_flying() {
+    if pointer_ui_open || listing.turning() || map_open || !focused || navigation.is_flying() {
         return;
     }
     // This frame may contain movement from before the capture click.
@@ -2650,7 +2652,9 @@ fn smoke(
             explorer.reload(&repo.0);
             assert_eq!(explorer.source, expected);
         }
-        let report = if check.stop == 33 {
+        let report = if check.stop == 34 {
+            "Rendered the first page of a document larger than one MiB in VibePad."
+        } else if check.stop == 33 {
             "Rendered a comparison roof tour and moved to the next changed building without hunk floors."
         } else if check.stop == 31 {
             "Rendered both hunk button pages with reachable previous and next controls."
@@ -2991,6 +2995,9 @@ fn smoke(
     }
     let previous = check.elapsed;
     check.elapsed += time.delta_secs();
+    if check.stage == 33 && previous < 1. && check.elapsed >= 1. {
+        tablet.smoke_open_document(&repo.0, explorer.selected, explorer.before);
+    }
     if check.stage == 10 && previous < 1. && check.elapsed >= 1. {
         use bevy::input::{
             ButtonState,
@@ -3070,6 +3077,11 @@ fn smoke(
             0,
             "preview granted premature read credit"
         );
+    }
+    if check.stage == 33 {
+        tablet
+            .smoke_large_document()
+            .expect("large document preview");
     }
     if check.stage == 25 {
         commands.queue(agent_session::Session::check_smoke_banner);

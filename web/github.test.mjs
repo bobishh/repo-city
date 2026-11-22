@@ -42,6 +42,18 @@ test("a truncated recursive tree is completed through its subtrees", async () =>
   assert.equal(after["tests/file-5000.rs"].id, "blob-5000");
 });
 
+test("fetches and decodes a GitHub blob larger than one MiB", async () => {
+  const source = "# Changelog\n\n" + "A release entry.\n".repeat(75_000) + "Last entry.\n";
+  const repo = await loadGitHub("owner/project", "main", "", async url => {
+    if (url.includes("/commits/")) return Response.json({ sha: "head", parents: [] });
+    if (url.includes("/git/trees/")) return Response.json({ tree: [
+      { path: "CHANGELOG.md", sha: "blob", type: "blob", mode: "100644", size: source.length },
+    ] });
+    return Response.json({ encoding: "base64", size: source.length, content: Buffer.from(source).toString("base64") });
+  });
+  assert.equal(new TextDecoder().decode(await repo.blob("blob")), source);
+});
+
 test("an individually truncated directory cannot silently drop files", async () => {
   await assert.rejects(loadGitHub("owner/project", "main", "", async url =>
     Response.json(url.includes("/commits/") ? { sha: "head", parents: [] } : { truncated: true })), /truncated/);

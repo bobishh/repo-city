@@ -160,6 +160,19 @@ pub(super) fn bind_changes(repo: &Repository, changes: Vec<(String, bool)>) -> V
         .into_iter()
         .filter_map(|(json, checked)| {
             let mark = serde_json::from_str(&json).ok()?;
+            if let Mark::ReadDocument(document) = &mark
+                && repo.files.iter().any(|file| {
+                    document.matches(file)
+                        && blob(file, document.before)
+                            .is_some_and(|blob| blob.size > markdown_preview::PAGE_BYTES)
+                })
+            {
+                // The immutable blob identifies a fully read document. Avoid storing a copy of it.
+                return Some((
+                    serde_json::to_string(&StoredMark { mark, source: None }).ok()?,
+                    checked,
+                ));
+            }
             let stored = StoredMark::bind(mark, repo, &mut sources);
             // Queued credit cannot move to bytes that were not present when it was earned.
             if stored.mark.interval().is_some() && stored.source.is_none() {
@@ -175,6 +188,11 @@ pub(super) fn can_carry(json: &str) -> bool {
     let Ok(saved) = serde_json::from_str::<StoredMark>(json) else {
         return false;
     };
+    if let Mark::ReadDocument(document) = &saved.mark
+        && saved.source.is_none()
+    {
+        return !document.blob.is_empty() && document.rows > 0;
+    }
     let Some((_, _, range, rows)) = saved.mark.interval() else {
         return false;
     };

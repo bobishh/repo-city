@@ -331,14 +331,20 @@ pub(super) fn chunk_bytes(
     source: &str,
     lines: std::ops::Range<usize>,
 ) -> Result<std::ops::Range<usize>, String> {
-    let mut starts = vec![0];
-    for part in source.split_inclusive('\n') {
-        starts.push(starts.last().copied().unwrap_or(0) + part.len());
-    }
-    if lines.start > lines.end || lines.end >= starts.len() {
-        return Err("The selected source chunk is unavailable in this snapshot.".into());
-    }
-    Ok(starts[lines.start]..starts[lines.end])
+    let missing = || "The selected source chunk is unavailable in this snapshot.".to_owned();
+    let count = lines.end.checked_sub(lines.start).ok_or_else(missing)?;
+    let mut boundaries =
+        std::iter::once(0).chain(source.split_inclusive('\n').scan(0, |end, line| {
+            *end += line.len();
+            Some(*end)
+        }));
+    let start = boundaries.nth(lines.start).ok_or_else(missing)?;
+    let end = if count == 0 {
+        start
+    } else {
+        boundaries.nth(count - 1).ok_or_else(missing)?
+    };
+    Ok(start..end)
 }
 fn cursor_row(rows: &[std::ops::Range<usize>], cursor: usize) -> usize {
     rows.iter()

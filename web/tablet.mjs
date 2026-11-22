@@ -29,6 +29,7 @@ export function createTablet(dialog, canvas) {
     view() {
       if (!dirty) return "";
       dirty = false;
+      for (const [id, element] of elements) if (!element.isConnected) elements.delete(id);
       if (!visible()) { state = { open: false, nodes: [] }; return JSON.stringify(state); }
       for (const image of dialog.querySelectorAll("img")) {
         const source = (image.dataset.previewSource ?? image.src);
@@ -48,7 +49,6 @@ export function createTablet(dialog, canvas) {
       }
       const root = dialog.querySelector("[data-tablet-options]") ?? dialog;
       const nodes = tabletView(root, identify, images);
-      for (const [id, element] of elements) if (!element.isConnected) elements.delete(id);
       const sources = new Set([...dialog.querySelectorAll("img")].map(image => (image.dataset.previewSource ?? image.src)));
       for (const source of images.keys()) if (!sources.has(source)) images.delete(source);
       state = { open: true, title: root.querySelector("h2")?.textContent ?? "VibePad", focus: requestedFocus, nodes };

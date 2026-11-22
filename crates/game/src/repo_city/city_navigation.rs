@@ -359,11 +359,9 @@ impl Navigation {
     pub(super) fn prompt(&self, explorer: &Explorer) -> String {
         if let Some((level, _)) = self.overview {
             return match level {
-                Overview::Project => {
-                    "Click a district to approach its files · M returns to your previous view"
-                }
+                Overview::Project => "Click a district to approach its files · Esc resumes flight",
                 Overview::District if self.return_from_district => {
-                    "Click a building to read its code · M returns to your previous view"
+                    "Click a building to read its code · Esc resumes flight"
                 }
                 Overview::District => {
                     "Click a building to read its code · M shows the whole project"
@@ -554,10 +552,12 @@ fn overview_view(min: Vec2, max: Vec2, roof: f32, aspect: f32) -> Transform {
     let diameter = (width / aspect.max(0.1)).max(depth) + 28.;
     let half_fov = std::f32::consts::FRAC_PI_8;
     let height = diameter * 0.5 / half_fov.tan();
-    let offset = Vec3::new(0., height, height / MAX_LOOK_PITCH.tan());
+    let offset = Vec3::new(0., height, height / OVERVIEW_PITCH.tan());
     Transform::from_translation(center + offset)
-        .with_rotation(Quat::from_rotation_x(-MAX_LOOK_PITCH))
+        .with_rotation(Quat::from_rotation_x(-OVERVIEW_PITCH))
 }
+
+const OVERVIEW_PITCH: f32 = 1.5;
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]
@@ -763,6 +763,28 @@ pub(super) fn navigate(
         navigation
             .history
             .record(&repo.0.files[explorer.selected].path);
+    }
+
+    if navigation.overview()
+        && keys.any_just_pressed([
+            KeyCode::ArrowLeft,
+            KeyCode::ArrowRight,
+            KeyCode::ArrowUp,
+            KeyCode::ArrowDown,
+            KeyCode::KeyW,
+            KeyCode::KeyA,
+            KeyCode::KeyS,
+            KeyCode::KeyD,
+            KeyCode::Space,
+            KeyCode::Escape,
+        ])
+    {
+        navigation.overview = None;
+        navigation.hop = None;
+        navigation.return_from_district = false;
+        navigation.redraw = true;
+        listing.reset_view();
+        return;
     }
 
     let overview =
@@ -1400,6 +1422,21 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    fn free_flight_can_aim_at_the_district_directly_below_a_tower() {
+        let (mut app, camera) = district_navigation_app();
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() =
+            Transform::from_xyz(5010., 6000., 5010.);
+        app.world_mut()
+            .resource_mut::<AccumulatedMouseMotion>()
+            .delta = Vec2::new(0., 2000.);
+        app.update();
+        let nearest = app.world().resource::<Nearest>();
+        assert_eq!(nearest.district, Some(1));
+        assert!(nearest.district_point.unwrap().distance(Vec2::splat(5010.)) < 1.);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
     fn high_flight_click_approaches_district_before_opening_a_small_building() {
         let (mut app, camera) = district_navigation_app();
         app.world_mut()
@@ -1459,6 +1496,24 @@ mod tests {
             empty_district.with_translation(Vec3::new(4990., 2500., 5010.));
         release(&mut app);
         assert_eq!(app.world().resource::<Nearest>().district, None);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_arrow_leaves_the_district_overview_at_the_current_camera() {
+        let (mut app, camera) = district_navigation_app();
+        let original = Transform::from_xyz(20., 500., 35.);
+        let overlook = Transform::from_xyz(5000., 80., 5000.);
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() = overlook;
+        app.world_mut().resource_mut::<Navigation>().overview =
+            Some((Overview::District, original));
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::ArrowLeft);
+        app.update();
+        assert!(!app.world().resource::<Navigation>().overview());
+        assert!(!app.world().resource::<Navigation>().is_flying());
+        assert_eq!(*app.world().get::<Transform>(camera).unwrap(), overlook);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1587,7 +1642,7 @@ mod tests {
                 district_view(&district, &repo, aspect),
                 project_view(&repo, aspect),
             ] {
-                assert!((eye.rotation.to_euler(EulerRot::YXZ).1 + MAX_LOOK_PITCH).abs() < 0.00001);
+                assert!((eye.rotation.to_euler(EulerRot::YXZ).1 + OVERVIEW_PITCH).abs() < 0.00001);
                 let half_fov = std::f32::consts::FRAC_PI_8.tan();
                 for x in [100., 275.] {
                     for z in [100., 220.] {

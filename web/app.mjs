@@ -87,6 +87,24 @@ window.addEventListener("keydown", event => {
 });
 window.addEventListener("keyup", event => { if (event.code === "F8") { event.preventDefault(); party.talk(false); } });
 let sourceVersion = 0;
+
+function loadBlob(snapshot, sha) {
+  const { repository, blobs } = snapshot;
+  let entry = blobs.get(sha);
+  if (entry) {
+    blobs.delete(sha);
+  } else {
+    entry = { error: "Loading source from GitHub…", promise: repository.blob(sha) };
+    entry.promise.then(
+      bytes => { entry.bytes = bytes; },
+      error => { entry.error = error.message; },
+    ).finally(() => { if (snapshot === active && blobs.has(sha)) sourceVersion++; });
+  }
+  blobs.set(sha, entry);
+  // Retain both diff snapshots plus the current and previous preview.
+  if (blobs.size > 4) blobs.delete(blobs.keys().next().value);
+  return entry;
+}
 let repositoryVersion = 0;
 let progressResetVersion = 0;
 const parameters = new URLSearchParams(location.search);
@@ -367,9 +385,9 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
         audio,
         audioActivity: audio.activity,
         previewMarkdown(path, before, start = 0, end = 6, edit = false) {
-          const { repository } = active;
-          const snapshot = JSON.parse(repository.snapshot);
-          const blob = snapshot[before ? "before" : "after"][path];
+          const snapshot = active;
+          const { repository } = snapshot;
+          const blob = repository.file(path, before);
           const image = /\.(png|jpe?g|webp|gif|bmp|ico|tiff?|tga|p[bnpg]m|pam|qoi|dds|hdr|rgbe|svg)$/i.test(path);
           const video = /\.(mp4|m4v|webm|mov|ogv)$/i.test(path);
           const markdown = /\.(md|markdown|mdown|mkd)$/i.test(path);
@@ -379,14 +397,14 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
               if (blob.size > 16 * 1024 * 1024) throw new Error(`${video ? "Video" : "Image"} exceeds the 16 MiB preview limit.`);
               return { bytes: await repository.blob(blob.id), format: path.split(".").pop().toLowerCase() };
             }
-            if (blob.size > 1024 * 1024) throw new Error("Source exceeds the 1 MiB inspection limit.");
-            const bytes = await repository.blob(blob.id);
+            const bytes = await loadBlob(snapshot, blob.id).promise;
             if (bytes.includes(0)) throw new Error("Binary asset: metadata only");
             let text;
             try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
             catch { throw new Error("Non-UTF-8 asset: metadata only"); }
-            const rows = text.split("\n").length - Number(!text || text.endsWith("\n"));
-            return { text, mark: { path, blob: blob.id, before, rows }, identity: {
+            let rows = Number(Boolean(text) && !text.endsWith("\n"));
+            for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) rows++;
+            return { text, pageOffsets: engine.document_page_offsets, mark: { path, blob: blob.id, before, rows }, identity: {
               repository: repository.review.repository.toLowerCase(), revision: repository.review.revision,
               baseline: repository.review.baseline ?? null, path, blob: blob.id, before,
               range: { start: Math.max(0, Math.min(rows, start)), end: Math.max(0, Math.min(rows, end)) },
@@ -444,15 +462,7 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
           return blameFiles.get(key).data;
         },
         blob(sha) {
-          const { repository, blobs } = active;
-          if (!blobs.has(sha)) {
-            const entry = { error: "Loading source from GitHub…" };
-            blobs.set(sha, entry);
-            repository.blob(sha).then(bytes => { entry.bytes = bytes; })
-              .catch(error => { entry.error = error.message; })
-              .finally(() => { if (blobs === active.blobs) sourceVersion++; });
-          }
-          const entry = blobs.get(sha);
+          const entry = loadBlob(active, sha);
           if (entry.bytes) return entry.bytes;
           throw entry.error;
         },

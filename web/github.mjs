@@ -1,5 +1,4 @@
 const API = "https://api.github.com";
-const MAX_BLOB_SIZE = 1024 * 1024;
 
 export function parseRepository(input) {
   const match = /^(?:https:\/\/github\.com\/)?([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i.exec(input.trim());
@@ -264,6 +263,10 @@ export async function loadGitHub(input, ref, base, request = fetch, { exactBase 
   return {
     review: { repository: name, pull: pull?.number ?? null, pullState: status, revision: head.sha, baseline: baseline?.sha ?? null },
     progressScope: JSON.stringify([name.toLowerCase(), head.sha, baseline?.sha ?? null]),
+    file(path, useBase) {
+      const files = useBase ? before : after;
+      return Object.hasOwn(files, path) ? files[path] : undefined;
+    },
     loadChangeDates,
     snapshot: JSON.stringify({ name: pull ? `${name}#${pull.number}` : name, revision: head.sha, baseline: baseline?.sha ?? null, before, after }),
     blameURL(path, useBase, line) {
@@ -295,8 +298,14 @@ export async function loadGitHub(input, ref, base, request = fetch, { exactBase 
     },
     async blob(sha) {
       const blob = await readObject(`/git/blobs/${sha}`, forkBlobs?.has(sha) ? headRepository : name);
-      if (blob.encoding !== "base64" || blob.size > MAX_BLOB_SIZE) throw new Error("Source unavailable within the 1 MiB text limit.");
-      return Uint8Array.from(atob(blob.content), char => char.charCodeAt(0));
+      if (blob.encoding !== "base64" || typeof blob.content !== "string") {
+        throw new Error("GitHub did not return the file contents.");
+      }
+      if (Uint8Array.fromBase64) return Uint8Array.fromBase64(blob.content);
+      const decoded = atob(blob.content);
+      const bytes = new Uint8Array(decoded.length);
+      for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index);
+      return bytes;
     },
   };
 }

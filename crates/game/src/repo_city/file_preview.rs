@@ -1,4 +1,4 @@
-//! Shared preview selection; unrecognized names use the bounded text reader.
+//! Shared preview selection; unrecognized names are inspected as text.
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

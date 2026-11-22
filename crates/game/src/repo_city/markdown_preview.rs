@@ -8,6 +8,55 @@ pub(super) fn is_markdown(path: &str) -> bool {
     file_preview::format(path) == Some(file_preview::Format::Markdown)
 }
 
+// Limit a tablet page's layout work. Every byte of the source remains reachable.
+pub(super) const PAGE_BYTES: usize = 48 * 1024;
+const PAGE_LINES: usize = 256;
+
+pub(super) fn page_offsets(source: &str) -> Vec<usize> {
+    let mut offsets = vec![0];
+    let mut start = 0;
+    while start < source.len() {
+        let limit = source.floor_char_boundary((start + PAGE_BYTES).min(source.len()));
+        let end = source[start..limit]
+            .match_indices('\n')
+            .nth(PAGE_LINES - 1)
+            .map_or(limit, |(line, _)| start + line + 1);
+        let boundary = if end < source.len() {
+            let page = &source[start..end];
+            page.rfind("\n\n")
+                .map(|index| start + index + 2)
+                .filter(|&index| index - start >= page.len() / 2)
+                .or_else(|| {
+                    page.rfind('\n')
+                        .map(|index| start + index + 1)
+                        .filter(|&index| index - start >= page.len() / 2)
+                })
+                .unwrap_or(end)
+        } else {
+            end
+        };
+        offsets.push(boundary);
+        start = boundary;
+    }
+    if offsets.len() == 1 {
+        offsets.push(0);
+    }
+    offsets
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn document_page_offsets(source: &str) -> Vec<u32> {
+    let mut offset = 0;
+    let pages = page_offsets(source);
+    std::iter::once(0)
+        .chain(pages.windows(2).map(|page| {
+            offset += source[page[0]..page[1]].encode_utf16().count() as u32;
+            offset
+        }))
+        .collect()
+}
+
 pub(super) fn document_html(path: &str, source: &str) -> String {
     if is_markdown(path) {
         return markdown_html(source);
@@ -358,7 +407,7 @@ impl ReadDocument {
                 file_preview::format(&file.path),
                 Some(file_preview::Format::Markdown | file_preview::Format::Text)
             )
-            && (1..=1024 * 1024).contains(&self.rows)
+            && self.rows != 0
             && blob
                 .as_ref()
                 .is_some_and(|blob| blob.id == self.blob && self.rows <= blob.size as usize)
@@ -382,6 +431,22 @@ pub(super) fn take_browser_read() -> Option<ReadDocument> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_pages_cover_all_bytes_without_splitting_utf8() {
+        let text = format!("# Recent\n\n{}\n\n# Oldest\n", "😀α".repeat(PAGE_BYTES));
+        let pages = page_offsets(&text);
+        assert!(pages.len() > 2);
+        assert_eq!(pages.first(), Some(&0));
+        assert_eq!(pages.last(), Some(&text.len()));
+        assert!(pages.iter().all(|&offset| text.is_char_boundary(offset)));
+        assert!(
+            pages
+                .windows(2)
+                .all(|pair| (1..=PAGE_BYTES).contains(&(pair[1] - pair[0])))
+        );
+        assert!(text[pages[pages.len() - 2]..].ends_with("# Oldest\n"));
+    }
 
     #[test]
     fn resolves_relative_links_inside_the_current_snapshot() {

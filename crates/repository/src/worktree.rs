@@ -7,7 +7,8 @@ use sha2::{Digest, Sha256};
 
 use super::{Blob, Repository, git, resolve_revision, tree};
 
-const TEXT_LIMIT: usize = 1024 * 1024;
+// Avoid hashing large changed files as part of inventory. Opening one still reads the snapshot.
+const EAGER_HASH_BYTES: usize = 1024 * 1024;
 
 fn metadata_identity(metadata: &fs::Metadata) -> String {
     format!("worktree:{}:{:?}", metadata.len(), metadata.modified().ok())
@@ -130,14 +131,20 @@ fn disk_blob(root: &Path, path: &str, baseline: Option<&Blob>) -> Result<Option<
         };
         #[cfg(not(unix))]
         let mode = baseline.map_or("100644", |blob| blob.mode.as_str());
-        if size > TEXT_LIMIT {
+        if size > EAGER_HASH_BYTES {
             return Ok(Some(Blob {
                 id: metadata_identity(&metadata),
                 size,
                 mode: mode.into(),
             }));
         }
-        (mode, read_text_bytes(&file)?)
+        let mut bytes = Vec::with_capacity(size);
+        fs::File::open(&file)
+            .map_err(|error| error.to_string())?
+            .take((EAGER_HASH_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        (mode, bytes)
     } else {
         return Ok(None);
     };
@@ -153,33 +160,8 @@ fn disk_blob(root: &Path, path: &str, baseline: Option<&Blob>) -> Result<Option<
     }))
 }
 
-fn read_text_bytes(path: &Path) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::new();
-    fs::File::open(path)
-        .map_err(|error| error.to_string())?
-        .take((TEXT_LIMIT + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    Ok(bytes)
-}
-
-pub(super) fn source(root: &Path, path: &str, blob: &Blob) -> Result<Vec<u8>, String> {
-    let file = path_in_root(root, path)?;
-    if !fs::symlink_metadata(&file)
-        .map_err(|error| error.to_string())?
-        .is_file()
-    {
-        return Err("Worktree source changed while loading.".into());
-    }
-    let source = read_text_bytes(&file)?;
-    if format!("worktree:{:x}", Sha256::digest(&source)) != blob.id {
-        return Err("Worktree source changed while loading.".into());
-    }
-    Ok(source)
-}
-
-pub(super) fn asset(root: &Path, path: &str, blob: &Blob, limit: usize) -> Result<Vec<u8>, String> {
-    let changed = || "Worktree asset changed while loading.".to_owned();
+pub(super) fn snapshot_bytes(root: &Path, path: &str, blob: &Blob) -> Result<Vec<u8>, String> {
+    let changed = || "Worktree file changed while loading.".to_owned();
     let file = path_in_root(root, path)?;
     let before = fs::symlink_metadata(&file).map_err(|error| error.to_string())?;
     if !before.is_file() || before.len() != blob.size as u64 {
@@ -194,12 +176,15 @@ pub(super) fn asset(root: &Path, path: &str, blob: &Blob, limit: usize) -> Resul
     }
     path_in_root(root, path)?;
     let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(blob.size)
+        .map_err(|error| error.to_string())?;
     (&opened)
-        .take((limit + 1) as u64)
+        .take(blob.size as u64)
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
-    if bytes.len() > limit {
-        return Err("Asset exceeds the 16 MiB preview limit.".into());
+    if bytes.len() != blob.size {
+        return Err(changed());
     }
     let after = fs::symlink_metadata(&file).map_err(|error| error.to_string())?;
     if !same_file(&before, &after)
@@ -289,14 +274,61 @@ mod tests {
     }
 
     #[test]
-    fn large_binary_preview_uses_metadata_snapshot_without_changing_text_limits() {
+    fn reads_a_large_document_from_git_and_its_changed_worktree_snapshot() {
+        let fixture = AssetFixture::new("large-document");
+        let path = "CHANGELOG.md";
+        let previous = format!(
+            "# Changelog\n\n{}Tail from HEAD.\n",
+            "A release entry.\n".repeat(75_000)
+        );
+        fs::write(fixture.0.join(path), &previous).unwrap();
+        git(&fixture.0, &["add", path]).unwrap();
+        git(
+            &fixture.0,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-qm",
+                "Changelog",
+            ],
+        )
+        .unwrap();
+        let next = previous.replace("Tail from HEAD.", "Tail from disk.");
+        fs::write(fixture.0.join(path), &next).unwrap();
+        let snapshot = Repository::open_worktree(&fixture.0).unwrap();
+        let index = snapshot
+            .files
+            .iter()
+            .position(|file| file.path == path)
+            .unwrap();
+        assert_eq!(snapshot.source(index, true).unwrap(), previous);
+        assert_eq!(snapshot.source(index, false).unwrap(), next);
+        fs::write(fixture.0.join(path), b"# Replaced\n").unwrap();
+        assert!(
+            snapshot
+                .source(index, false)
+                .unwrap_err()
+                .contains("changed while loading")
+        );
+    }
+
+    #[test]
+    fn large_binary_preview_uses_metadata_snapshot_and_still_rejects_binary_as_text() {
         let fixture = AssetFixture::new("large");
-        let bytes = vec![42; TEXT_LIMIT + 17];
+        let bytes = vec![0; EAGER_HASH_BYTES + 17];
         fs::write(fixture.0.join("image.png"), &bytes).unwrap();
         let worktree = Repository::open_worktree(&fixture.0).unwrap();
-        assert!(worktree.source(0, false).unwrap_err().contains("1 MiB"));
+        assert!(
+            worktree
+                .source(0, false)
+                .unwrap_err()
+                .contains("Binary asset")
+        );
         assert_eq!(worktree.asset_bytes(0, false).unwrap(), bytes);
-        fs::write(fixture.0.join("image.png"), vec![43; TEXT_LIMIT + 18]).unwrap();
+        fs::write(fixture.0.join("image.png"), vec![43; EAGER_HASH_BYTES + 18]).unwrap();
         assert!(
             worktree
                 .asset_bytes(0, false)

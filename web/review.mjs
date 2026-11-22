@@ -60,6 +60,9 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     if (dialog.open) return;
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     previewUrl = undefined;
+    if (["markdown", "text", "source-editor", "image", "video"].includes(dialog.dataset.view)) {
+      dialog.replaceChildren();
+    }
     delete dialog.dataset.tablet;
     onClose();
   });
@@ -177,12 +180,12 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     if (kind === "video") delete dialog.dataset.tablet;
     else dialog.dataset.tablet = "";
     view(path);
-    const content = make("article", kind === "video" ? "Loading video…" : "Loading document…",
+    let content = make("article", kind === "video" ? "Loading video…" : "Loading document…",
       { class: "markdown-preview", "aria-live": "polite" });
     dialog.append(content);
     if (kind === "video") actions(closeButton());
     show();
-    void load().then(({ text, mark, bytes, format, identity, displayText }) => {
+    void load().then(({ text, mark, bytes, format, identity, displayText, pageOffsets }) => {
       if (!dialog.open || !content.isConnected) return;
       if (kind === "video") {
         const types = { mp4: "video/mp4", m4v: "video/mp4", mov: "video/quicktime", webm: "video/webm", ogv: "video/ogg" };
@@ -204,23 +207,50 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
         return;
       }
       if (identity) {
-        const openEditor = () => sourceEditor(path, text, identity, ({ range, displayText }) => previewMarkdown(path, async () => ({ ...(await load()), identity: { ...identity, range }, displayText }), kind));
+        const openEditor = () => sourceEditor(path, text, identity, ({ range, displayText }) =>
+          previewMarkdown(path, async () => ({ text, mark, pageOffsets, identity: { ...identity, range }, displayText }), kind));
         if (edit) { openEditor(); return; }
         const editButton = button("Edit", openEditor);
         content.before(editButton);
       }
       const visibleText = displayText ?? text;
       if (!visibleText.trim()) { content.textContent = "Empty document."; return; }
-      if (kind === "text") {
-        content.replaceChildren(make("pre", visibleText, { class: "plain-file-preview", "data-source-path": path }));
-      } else {
-        content.dataset.markdownPath = path;
-        content.dataset.markdownBefore = String(mark?.before ?? false);
-        markdown(visibleText, content);
+      const offsets = pageOffsets?.(visibleText) ?? [0, visibleText.length];
+      const pages = offsets.length - 1;
+      const read = new Set();
+      let page = 0;
+      const previous = button("Previous page", () => showPage(page - 1));
+      const next = button("Next page", () => showPage(page + 1));
+      const counter = make("span", "", { role: "status" });
+      if (pages > 1) {
+        const navigation = make("div", undefined, { class: "dialog-actions" });
+        navigation.append(previous, counter, next);
+        content.before(navigation);
       }
-      const end = make("div", undefined, { class: "markdown-end", "aria-hidden": "true" });
-      content.append(end);
-      end.addEventListener("tabletread", () => { markdownRead = mark; });
+      function showPage(index) {
+        page = index;
+        previous.disabled = page === 0;
+        next.disabled = page === pages - 1;
+        counter.textContent = `Page ${page + 1} of ${pages}`;
+        const section = make("article", undefined, { class: "markdown-preview", "aria-live": "polite" });
+        const chunk = visibleText.slice(offsets[index], offsets[index + 1]);
+        if (kind === "text") {
+          section.append(make("pre", chunk, { class: "plain-file-preview", "data-source-path": path }));
+        } else {
+          section.dataset.markdownPath = path;
+          section.dataset.markdownBefore = String(mark?.before ?? false);
+          markdown(chunk, section);
+        }
+        const end = make("div", undefined, { class: "markdown-end", "aria-hidden": "true" });
+        section.append(end);
+        end.addEventListener("tabletread", () => {
+          read.add(index);
+          if (displayText === undefined && read.size === pages) markdownRead = mark;
+        });
+        content.replaceWith(section);
+        content = section;
+      }
+      showPage(0);
     }).catch(error => {
       if (content.isConnected) content.textContent = error.message;
     });

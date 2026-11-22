@@ -86,6 +86,42 @@ test("opens under the Repo City Web name with the city artwork", async ({ page }
   await page.screenshot({ path: testInfo.outputPath("repo-city-web.png") });
 });
 
+test("VibePad pages through a changelog larger than one MiB", async ({ page }) => {
+  const path = "packages/sdk/CHANGELOG.md";
+  const release = "# Latest release\n\n" +
+    ("A note about the SDK release. ".repeat(40) + "\n\n").repeat(910) +
+    "# Oldest release\n";
+  const changelog = "6".repeat(40);
+  await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
+  await page.route("https://api.github.com/**", route => {
+    const url = new URL(route.request().url()).pathname;
+    const readme = "# SDK\n";
+    if (url === "/repos/owner/large-document") return route.fulfill({ json: { default_branch: "main" } });
+    if (url.includes("/commits/")) return route.fulfill({ json: { sha: after, parents: [] } });
+    if (url.includes("/git/trees/")) return route.fulfill({ json: { tree: [
+      { path: "README.md", type: "blob", mode: "100644", sha: after, size: readme.length },
+      { path, type: "blob", mode: "100644", sha: changelog, size: release.length },
+    ] } });
+    const source = url.endsWith(changelog) ? release : readme;
+    return route.fulfill({ json: { size: source.length, encoding: "base64", content: Buffer.from(source).toString("base64") } });
+  });
+  await page.goto("/?repo=owner%2Flarge-document");
+  await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+  await page.evaluate(path => globalThis.repoCity.previewMarkdown(path, false), path);
+  const pad = page.locator("#review-dialog");
+  await expectOpen(page, path);
+  const text = pad.locator("[data-markdown-source]");
+  await expect(text).toHaveAttribute("data-markdown-source", /^# Latest release/);
+  expect((await text.getAttribute("data-markdown-source")).length).toBeLessThan(release.length);
+  const next = pad.getByRole("button", { name: "Next page", exact: true, includeHidden: true });
+  await gpuClick(page, next);
+  await expect(pad.getByRole("status", { includeHidden: true })).toHaveText(/^Page 2 of /);
+  await expect(text).toHaveAttribute("data-markdown-source", /^A note about/);
+  await expect(page.locator("#progress-summary")).toContainText("0 lines revealed");
+  await gpuClick(page, pad.getByRole("button", { name: "Previous page", exact: true, includeHidden: true }));
+  await expect(text).toHaveAttribute("data-markdown-source", /^# Latest release/);
+});
+
 test("shows the guide once and keeps it available from the help button", async ({ page }, testInfo) => {
   const faults = []; page.on("pageerror", error => faults.push(error.message));
   let releaseTree;
@@ -1356,5 +1392,10 @@ test("clicking from high flight approaches a district before opening a file", as
     return false;
   }, { timeout: 16_000, intervals: [500] }).toBe(true);
   await selected;
+  await expect(canvas).not.toHaveAttribute("data-overview", "");
+  await canvas.focus();
+  await page.keyboard.press("KeyM", { delay: 180 });
+  await expect(canvas).toHaveAttribute("data-overview", "");
+  await page.keyboard.press("ArrowLeft", { delay: 180 });
   await expect(canvas).not.toHaveAttribute("data-overview", "");
 });

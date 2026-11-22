@@ -63,7 +63,7 @@ pub struct Repository {
     pub files: Vec<File>,
     pub districts: Vec<District>,
 }
-/// Compressed binary preview data. Text inspection keeps its separate 1 MiB limit.
+/// Compressed binary preview data.
 pub const ASSET_BYTES_LIMIT: usize = 16 * 1024 * 1024;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -408,12 +408,9 @@ impl Repository {
         if blob.mode == "120000" {
             return Err("Symbolic link: source is not followed".into());
         }
-        if blob.size > 1024 * 1024 {
-            return Err("Source exceeds the 1 MiB inspection limit".into());
-        }
         #[cfg(not(target_arch = "wasm32"))]
         let bytes = if blob.id.starts_with("worktree:") {
-            worktree::source(&self.root, &f.path, blob)?
+            worktree::snapshot_bytes(&self.root, &f.path, blob)?
         } else {
             git(&self.root, &["cat-file", "blob", &blob.id])?
         };
@@ -442,7 +439,7 @@ impl Repository {
         }
         #[cfg(not(target_arch = "wasm32"))]
         let bytes = if blob.id.starts_with("worktree:") {
-            worktree::asset(&self.root, &file.path, blob, ASSET_BYTES_LIMIT)?
+            worktree::snapshot_bytes(&self.root, &file.path, blob)?
         } else {
             asset_blob(&self.root, &blob.id)?
         };
@@ -471,8 +468,8 @@ impl Repository {
                     && [".rs", ".js", ".ts", ".rb", ".ex", ".elm"]
                         .iter()
                         .any(|ext| f.path.ends_with(ext))
-                    && f.before.as_ref().is_some_and(|b| b.size <= 1024 * 1024)
-                    && f.after.as_ref().is_some_and(|b| b.size <= 1024 * 1024)
+                    && f.before.is_some()
+                    && f.after.is_some()
             })
             .min_by_key(|(_, f)| {
                 (
