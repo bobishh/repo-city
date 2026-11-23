@@ -554,7 +554,12 @@ pub fn run() {
     .init_resource::<listing::Listing>()
     .add_plugins(bevy::input_focus::tab_navigation::TabNavigationPlugin);
     install(&mut app, &args);
+    #[cfg(target_arch = "wasm32")]
     app.run();
+    #[cfg(not(target_arch = "wasm32"))]
+    if let AppExit::Error(code) = app.run() {
+        std::process::exit(i32::from(code.get()));
+    }
 }
 
 fn install_city(app: &mut App, args: &[String]) {
@@ -3123,7 +3128,7 @@ fn smoke(
     let path = check.directory.join(format!("{:02}.png", check.stage));
     check.pending = true;
     commands.spawn(Screenshot::primary_window()).observe(
-        move |event: On<ScreenshotCaptured>, mut check: ResMut<Smoke>| {
+        move |event: On<ScreenshotCaptured>, mut check: ResMut<Smoke>, mut commands: Commands| {
             let image = event
                 .image
                 .clone()
@@ -3145,10 +3150,15 @@ fn smoke(
                         .expect("save diagnostic screenshot");
                 }
                 check.capture_attempts += 1;
-                assert!(
-                    check.capture_attempts < 8,
-                    "No rendered frame: bring the smoke window to the foreground"
-                );
+                if check.capture_attempts >= 8 {
+                    let message = "No rendered frame: bring the smoke window to the foreground";
+                    if let Err(error) = std::fs::write(check.directory.join("failure.txt"), message)
+                    {
+                        error!("Could not save smoke failure: {error}");
+                    }
+                    error!("{message}");
+                    commands.write_message(AppExit::error());
+                }
                 return;
             }
             image.save(&path).expect("save screenshot");

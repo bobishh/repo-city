@@ -1624,6 +1624,12 @@ fn draw(
                     }
                 }
             });
+        draw_file_pagination(
+            parent,
+            tablet.page,
+            files.len().div_ceil(FILES_PER_PAGE),
+            &mut tab,
+        );
         parent
             .spawn((
                 FileRows,
@@ -1673,30 +1679,56 @@ fn draw(
                     }
                 }
             });
-        parent
-            .spawn(Node {
-                align_items: AlignItems::Center,
-                column_gap: px(8.),
-                ..default()
-            })
-            .with_children(|bar| {
-                if files.len() > FILES_PER_PAGE {
-                    let pages = files.len().div_ceil(FILES_PER_PAGE);
-                    if tablet.page > 0 {
-                        add_button(bar, "Previous", Action::Page(tablet.page - 1), &mut tab);
-                    }
-                    native_panel::text(
-                        bar,
-                        &format!("{} / {pages}", tablet.page + 1),
-                        native_panel::INK,
-                    );
-                    if tablet.page + 1 < pages {
-                        add_button(bar, "Next", Action::Page(tablet.page + 1), &mut tab);
-                    }
-                }
-            });
     });
     (panel, first.expect("the tablet always has navigation"))
+}
+
+fn draw_file_pagination(
+    parent: &mut ChildSpawnerCommands,
+    page: usize,
+    pages: usize,
+    tab: &mut i32,
+) {
+    if pages <= 1 {
+        return;
+    }
+    parent
+        .spawn(Node {
+            display: Display::Grid,
+            grid_template_columns: vec![GridTrack::flex(1.); 3],
+            align_items: AlignItems::Center,
+            flex_shrink: 0.,
+            ..default()
+        })
+        .with_children(|bar| {
+            bar.spawn(Node {
+                grid_column: GridPlacement::start(1),
+                ..default()
+            })
+            .with_children(|slot| {
+                if page > 0 {
+                    add_button(slot, "Previous", Action::Page(page - 1), tab);
+                }
+            });
+            bar.spawn(Node {
+                grid_column: GridPlacement::start(2),
+                justify_content: JustifyContent::Center,
+                ..default()
+            })
+            .with_children(|slot| {
+                native_panel::text(slot, &format!("{} / {pages}", page + 1), native_panel::INK);
+            });
+            bar.spawn(Node {
+                grid_column: GridPlacement::start(3),
+                justify_content: JustifyContent::FlexEnd,
+                ..default()
+            })
+            .with_children(|slot| {
+                if page + 1 < pages {
+                    add_button(slot, "Next", Action::Page(page + 1), tab);
+                }
+            });
+        });
 }
 
 fn draw_document(
@@ -2291,6 +2323,78 @@ mod tests {
             .single(world)
             .unwrap();
         assert_eq!(heading.0, "Live worktree");
+    }
+
+    #[test]
+    fn file_pager_stays_above_the_list_on_first_middle_and_last_pages() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        for page in [0, 1, 3] {
+            let mut app = App::new();
+            let world = app.world_mut();
+            let panel = world
+                .run_system_once(move |mut commands: Commands| {
+                    let mut repo = repository_picker::empty();
+                    let mut tablet = Tablet { page, ..default() };
+                    repo.files = (0..32)
+                        .map(|index| repo_world::File {
+                            path: format!("file_{index}.rs"),
+                            before: None,
+                            after: None,
+                            change: Change::Added,
+                            position: [0., 0.],
+                        })
+                        .collect();
+                    let files = repo
+                        .files
+                        .iter()
+                        .enumerate()
+                        .map(|(index, file)| FileRow {
+                            index,
+                            file,
+                            freshness: Freshness::Unknown,
+                            activity: None,
+                        })
+                        .collect::<Vec<_>>();
+                    draw(
+                        &mut commands,
+                        &mut tablet,
+                        &files,
+                        0.,
+                        None,
+                        None,
+                        None,
+                        &repo,
+                        None,
+                        None,
+                        false,
+                        false,
+                    )
+                    .0
+                })
+                .unwrap();
+            let list = world
+                .query_filtered::<Entity, With<FileRows>>()
+                .single(world)
+                .unwrap();
+            let children = world.get::<Children>(panel).unwrap();
+            assert_eq!(children.last(), Some(&list));
+            let pager = children[children.len() - 2];
+            assert_eq!(
+                world.get::<Node>(pager).unwrap().grid_template_columns,
+                vec![GridTrack::flex(1.); 3]
+            );
+            let slots = world.get::<Children>(pager).unwrap();
+            assert_eq!(slots.len(), 3);
+            let previous = world
+                .get::<Children>(slots[0])
+                .is_some_and(|children| !children.is_empty());
+            let next = world
+                .get::<Children>(slots[2])
+                .is_some_and(|children| !children.is_empty());
+            assert_eq!(previous, page > 0);
+            assert_eq!(next, page < 3);
+        }
     }
 
     #[test]
