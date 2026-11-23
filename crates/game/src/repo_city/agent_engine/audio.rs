@@ -53,13 +53,21 @@ pub(crate) struct Opening {
 }
 impl Opening {
     pub fn start(speaking: Arc<AtomicBool>) -> Self {
+        Self::start_with_capture_gate(speaking.clone(), speaking)
+    }
+
+    pub fn start_duplex(speaking: Arc<AtomicBool>) -> Self {
+        Self::start_with_capture_gate(speaking, Arc::new(AtomicBool::new(false)))
+    }
+
+    fn start_with_capture_gate(speaking: Arc<AtomicBool>, gate: Arc<AtomicBool>) -> Self {
         let (send, result) = mpsc::sync_channel(1);
         let active = Arc::new(AtomicBool::new(true));
         let alive = active.clone();
         if let Some(permit) = OpeningPermit::acquire() {
             std::thread::spawn(move || {
                 let _permit = permit;
-                let _ = send.send(Devices::open(speaking, alive));
+                let _ = send.send(Devices::open(speaking, gate, alive));
             });
         } else {
             let _ = send.try_send(Err("Audio devices are still opening. Finish the macOS permission prompt before starting voice again.".into()));
@@ -101,6 +109,7 @@ struct Ring {
     read: AtomicUsize,
     write: AtomicUsize,
     overflow: AtomicBool,
+    discard_before: AtomicUsize,
 }
 
 impl Ring {
@@ -113,6 +122,7 @@ impl Ring {
             read: AtomicUsize::new(0),
             write: AtomicUsize::new(0),
             overflow: AtomicBool::new(false),
+            discard_before: AtomicUsize::new(usize::MAX),
         })
     }
     fn push(&self, sample: f32) {
@@ -140,6 +150,20 @@ impl Ring {
             .store((read + 1) % self.values.len(), Ordering::Release);
         Some(sample)
     }
+
+    fn request_discard(&self) {
+        self.discard_before
+            .store(self.write.load(Ordering::Relaxed), Ordering::Release);
+    }
+
+    fn apply_discard(&self) -> bool {
+        if self.discard_before.load(Ordering::Acquire) == usize::MAX {
+            return false;
+        }
+        let discard = self.discard_before.swap(usize::MAX, Ordering::AcqRel);
+        self.read.store(discard, Ordering::Release);
+        true
+    }
 }
 
 pub(crate) struct Devices {
@@ -156,7 +180,11 @@ pub(crate) struct Devices {
 
 impl Devices {
     /// Called only after an explicit microphone action and provider negotiation.
-    fn open(speaking: Arc<AtomicBool>, active: Arc<AtomicBool>) -> Result<Self, String> {
+    fn open(
+        speaking: Arc<AtomicBool>,
+        gate: Arc<AtomicBool>,
+        active: Arc<AtomicBool>,
+    ) -> Result<Self, String> {
         let host = cpal::default_host();
         let input = host
             .default_input_device()
@@ -182,7 +210,7 @@ impl Devices {
                 &input_config_value,
                 capture.clone(),
                 failed.clone(),
-                speaking.clone(),
+                gate.clone(),
                 active.clone(),
                 metrics.clone(),
             ),
@@ -191,7 +219,7 @@ impl Devices {
                 &input_config_value,
                 capture.clone(),
                 failed.clone(),
-                speaking.clone(),
+                gate.clone(),
                 active.clone(),
                 metrics.clone(),
             ),
@@ -200,7 +228,7 @@ impl Devices {
                 &input_config_value,
                 capture.clone(),
                 failed.clone(),
-                speaking.clone(),
+                gate,
                 active.clone(),
                 metrics.clone(),
             ),
@@ -276,11 +304,15 @@ impl Devices {
         ))
     }
 
-    /// Opus supplies 48 kHz mono, matching the bounded playback queue.
+    /// Appends 48 kHz mono samples to the bounded playback queue.
     pub fn append(&mut self, samples: &[i16]) {
         for sample in samples {
             self.playback.push(f32::from(*sample) / 32768.);
         }
+    }
+
+    pub fn stop_playback(&mut self) {
+        self.playback.request_discard();
     }
 
     pub fn diagnostics(&self) -> Value {
@@ -391,7 +423,7 @@ where
     let mut phase = 0_u32;
     let mut previous = 0_f32;
     metrics.input_rate.store(rate, Ordering::Relaxed);
-    // Half duplex prevents speaker echo without inventing an untested native AEC.
+    // Providers can gate microphone samples during playback when echo cancellation is unavailable.
     device.build_input_stream(
         config,
         move |samples: &[T], _| {
@@ -467,6 +499,9 @@ where
             let mut peak = 0_f32;
             let muted = super::super::city_audio::output_muted();
             for frame in samples.chunks_exact_mut(channels) {
+                if ring.apply_discard() {
+                    playback = Playback::new(rate);
+                }
                 let sample = playback.frame(&ring, rate);
                 let sample = if muted { 0. } else { sample };
                 peak = peak.max(sample.abs());
@@ -493,6 +528,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_interruption_discards_old_queued_pcm_and_keeps_new_sound() {
+        let ring = Ring::with_capacity(8);
+        ring.push(0.1);
+        ring.push(0.2);
+        ring.request_discard();
+        ring.push(0.3);
+        assert!(ring.apply_discard());
+        assert_eq!(ring.pop(), Some(0.3));
+        assert_eq!(ring.pop(), None);
+        assert!(!ring.apply_discard());
+    }
     #[test]
     fn short_network_bursts_are_buffered_and_short_tails_eventually_play() {
         let queue = Ring::new();

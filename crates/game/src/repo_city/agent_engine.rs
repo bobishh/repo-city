@@ -7,6 +7,7 @@ mod codex;
 mod codex_projection;
 mod codex_protocol;
 mod codex_transport;
+mod gemini_live;
 pub(super) mod models;
 pub(super) mod opus_codec;
 mod provider_executable;
@@ -57,7 +58,10 @@ const TEXT_ONLY: Capabilities = Capabilities {
 pub(super) const AGY: Provider = Provider {
     id: "agy",
     label: "Agy",
-    capabilities: TEXT_ONLY,
+    capabilities: Capabilities {
+        steer: true,
+        voice: true,
+    },
 };
 pub(super) const GROK: Provider = Provider {
     id: "grok",
@@ -129,6 +133,11 @@ pub(super) enum Event {
         id: String,
         result: Result<(), String>,
     },
+    WorkFinished {
+        id: String,
+        result: Result<(), String>,
+        stopped: bool,
+    },
     Changed {
         status: Option<String>,
     },
@@ -160,7 +169,25 @@ pub(super) trait Engine: Send + Sync {
 pub(super) fn connect(provider: Provider, start: Start) -> Result<Box<dyn Engine>, String> {
     match provider.id {
         "codex" => Ok(Box::new(codex::Adapter::start(start))),
-        "agy" | "grok" | "muse" => Ok(Box::new(acp::Adapter::start(provider, start)?)),
+        "agy" => {
+            let speaking = start.speaking.clone();
+            let inner = Box::new(acp::Adapter::start(provider, start)?);
+            Ok(Box::new(gemini_live::Adapter::new(inner, speaking)))
+        }
+        "grok" | "muse" => Ok(Box::new(acp::Adapter::start(provider, start)?)),
         _ => Err(format!("Unknown agent provider {}.", provider.label)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn antigravity_offers_live_voice_and_steering() {
+        assert!(AGY.capabilities.voice);
+        assert!(AGY.capabilities.steer);
+        assert!(!GROK.capabilities.voice);
+        assert!(!MUSE.capabilities.voice);
     }
 }

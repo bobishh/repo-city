@@ -184,6 +184,7 @@ impl Wire {
         let mut child = Process::new(binary)
             .args(args)
             .current_dir(root)
+            .env_remove("REPO_CITY_GEMINI_API_KEY")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -419,6 +420,7 @@ fn run(
     send(updates, Update::Event(Event::Connected(session.clone())))?;
     let mut turn: Option<Turn> = None;
     let mut permissions = HashMap::new();
+    let mut steering = HashMap::new();
     while !stopped.load(Ordering::Acquire) {
         match commands.try_recv() {
             Ok(Command::RefreshModels) if turn.is_none() => {
@@ -480,6 +482,16 @@ fn run(
                     stopping: None,
                 });
             }
+            Ok(Command::Steer(prompt))
+                if provider == super::AGY && turn.is_some() && steering.len() < 8 =>
+            {
+                let text = format!("{}\n\n{}", prompt.context, prompt.text);
+                let request = wire.request(
+                    "session/prompt",
+                    json!({"sessionId":session,"prompt":[{"type":"text","text":text}]}),
+                )?;
+                steering.insert(request, prompt.id);
+            }
             Ok(Command::Send(prompt) | Command::Steer(prompt)) => {
                 send(
                     updates,
@@ -520,6 +532,19 @@ fn run(
         let method = frame["method"].as_str();
         let params = &frame["params"];
         let in_session = params["sessionId"].as_str() == Some(session.as_str());
+        if method.is_none()
+            && let Some(id) = frame["id"].as_u64()
+            && let Some(prompt) = steering.remove(&id)
+        {
+            send(
+                updates,
+                Update::Event(Event::Delivery {
+                    id: prompt,
+                    result: response(frame).map(|_| ()),
+                }),
+            )?;
+            continue;
+        }
         if method == Some("session/update") && in_session {
             match super::models::acp(&params["update"]) {
                 Ok(Some(refreshed)) => {
@@ -596,6 +621,16 @@ fn run(
                     && let Err(error) = &result
                 {
                     send(updates, Update::Event(Event::Error(error.clone())))?;
+                }
+                if provider == super::AGY {
+                    send(
+                        updates,
+                        Update::Event(Event::WorkFinished {
+                            id: active.prompt.id.clone(),
+                            result: result.clone(),
+                            stopped: canceled,
+                        }),
+                    )?;
                 }
                 active.delivered(updates, result)?;
                 turn = None;
@@ -870,6 +905,11 @@ denied = text.endswith("Stop after denied tool")
 emit(method="session/request_permission", id=99, params={"sessionId":session, "toolCall":{"title":"Read the file"}, "options":[{"optionId":"one","kind":"allow_once"},{"optionId":"all","kind":"allow_always"},{"optionId":"no","kind":"reject_once"}]})
 decision = json.loads(input())
 assert decision["id"] == 99 and decision["result"]["outcome"] == {"outcome":"selected","optionId":"no" if denied else "one"}
+if provider == "agy":
+    steer = json.loads(input())
+    assert steer["method"] == "session/prompt" and steer["params"]["sessionId"] == session
+    assert steer["params"]["prompt"][0]["text"] == "camera\n\nOnly report the finding"
+    emit(id=steer["id"], result={"stopReason":"end_turn"})
 if denied:
     emit(method="session/update", params={"sessionId":session,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Permission denied"}}})
     cancel = json.loads(input())
@@ -930,6 +970,8 @@ sys.stdin.read()
                 .unwrap();
             let (mut connected, mut delivered, mut file, mut answer, mut model) =
                 (false, false, false, false, false);
+            let mut steered = provider != super::super::AGY;
+            let mut completed = false;
             while let Ok(event) = events.recv_timeout(Duration::from_secs(5)) {
                 match event {
                     Update::Models(Ok(catalog)) => {
@@ -940,7 +982,8 @@ sys.stdin.read()
                         connected = id == if restore { "saved" } else { "created" }
                     }
                     Update::Event(Event::Delivery { id, result }) => {
-                        delivered = id == "prompt" && result.is_ok()
+                        delivered |= id == "prompt" && result.is_ok();
+                        steered |= id == "steer" && result.is_ok();
                     }
                     Update::Event(Event::Approval(approval)) => {
                         assert_eq!(approval.summary, "Read the file");
@@ -950,6 +993,15 @@ sys.stdin.read()
                                 accept: !deny,
                             })
                             .unwrap();
+                        if provider == super::super::AGY {
+                            commands
+                                .send(Command::Steer(Prompt {
+                                    id: "steer".into(),
+                                    context: "camera".into(),
+                                    text: "Only report the finding".into(),
+                                }))
+                                .unwrap();
+                        }
                     }
                     Update::File { path, line } => file = path == "src/main.rs" && line == 7,
                     Update::Delta { text, .. } => {
@@ -960,6 +1012,17 @@ sys.stdin.read()
                     }
                     Update::Turn(None, status) => {
                         assert_eq!(status, if deny { "Work stopped" } else { "Connected" });
+                        if provider != super::super::AGY {
+                            completed = true;
+                            break;
+                        }
+                    }
+                    Update::Event(Event::WorkFinished {
+                        id,
+                        result,
+                        stopped,
+                    }) => {
+                        completed = id == "prompt" && result.is_ok() && !stopped;
                         break;
                     }
                     _ => {}
@@ -969,7 +1032,7 @@ sys.stdin.read()
             let outcome = worker.join().unwrap();
             assert!(outcome.is_ok(), "{}: {outcome:?}", provider.label);
             assert!(
-                connected && delivered && (file || deny) && answer && model,
+                connected && delivered && (file || deny) && answer && model && steered && completed,
                 "{}",
                 provider.label
             );

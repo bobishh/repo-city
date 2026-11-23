@@ -407,11 +407,11 @@ conversation for each checkout and provider. Agy requires a CLI with `agy acp`; 
 before connecting. Agy, Grok and Muse stream text and ask before tool calls that
 require permission. Muse receives the current checkout's Repo City MCP server
 when a session is created or loaded; no global Muse configuration is changed.
-Voice and steering are available with Codex.
+Voice and steering are available with Codex and Antigravity.
 **Settings → Agent provider → Model → Refresh models** connects the selected CLI and
 loads its available models. Codex uses its paginated `model/list`; Agy, Grok and
-Muse use the model choices advertised by their ACP session. No model names are
-hardcoded. Open **Model** and pick a choice for the next turn. Selection
+Muse use the model choices advertised by their ACP session. Open **Model** and
+pick a choice for the next turn. Selection
 is disabled while work or voice is active. Explicit choices are saved per
 provider in `agent-models.json` beside desktop preferences. **Use provider
 settings** removes that override and reconnects. A missing saved model blocks
@@ -419,8 +419,8 @@ new turns until you choose an available model or remove the override; catalog
 and login errors remain visible in the model panel.
 Enter a message and choose **Send**, or press **Enter**. **Shift+Enter** inserts a
 new line. Settings can restore **Cmd/Ctrl+Enter** for sending. During an active
-Codex turn, **Steer** sends new instructions into that same work.
-City saves the message locally and shows **Sending** until Codex confirms delivery.
+Codex or Antigravity turn, **Steer** sends new instructions into that same work.
+City saves the message locally and shows **Sending** until the agent confirms delivery.
 If another client owns the saved conversation, City forks its history and delivers
 the queued message in the independent conversation. **Restore message** copies the
 most recent rejected or unconfirmed message into an empty composer for manual review.
@@ -449,19 +449,28 @@ assign **F8** instead; native party push-to-talk then uses **F7**.
 
 Choose **Start voice** in VibePad or press **F5** while flying (some Macs use
 **Fn+F5**). **Connect chat** starts the text connection separately. The app
-requests microphone access only after that action. If a turn is running, voice
-waits for it to finish; **F5** cancels that pending start. The HUD shows a drawn
-microphone, connection animation and speaking bars while VibePad is put away.
-Voice requires Codex
-app-server realtime support and uses native audio devices. The microphone pauses
-while the agent speaks; use headphones. **F5** stops voice, and **Disconnect**
-closes the agent connection. Putting away VibePad keeps the conversation active.
-**H** lists the voice and terminal controls. City audio pauses for the voice conversation.
-The native transport uses Opus at 48 kHz with 20 ms microphone frames. A short
-playout buffer and packet-loss recovery smooth network bursts. The session retries
-transient connection loss after 1, 2 and 4 seconds, then stops after three early
-failures. F5 cancels pending reconnects. It does not support interrupting the agent
-by speaking over it.
+requests microphone access only when you start voice. The HUD shows the voice status
+while VibePad is put away. **F5** stops voice, and **Disconnect** closes the agent
+connection. City audio pauses for the voice conversation.
+
+**Antigravity voice** uses native Gemini Live audio. The microphone stays active
+while Gemini speaks, so use headphones to prevent echo. You can interrupt speech,
+start a task, steer work, ask for progress, or explicitly stop work. The current
+Antigravity conversation handles the work and Repo City presents its permission
+requests. If voice disconnects, the Antigravity chat and running task remain available.
+
+Antigravity voice requires a [Gemini API key](https://aistudio.google.com/apikey)
+with access to Gemini Live. Set `REPO_CITY_GEMINI_API_KEY` or `GEMINI_API_KEY` in
+Repo City's launch environment. On macOS, you can also add a password item to your
+login keychain with the name `Repo City Gemini Live` and account `gemini-api-key`.
+Use the API key as that item's password. Repo City sends microphone audio to Google
+while voice is active, and provides Gemini with bounded updates from the active
+Antigravity conversation when needed for spoken progress and results.
+
+**Codex voice** requires app-server realtime support. If work is running, Codex waits
+for it to finish before opening voice. The microphone pauses while Codex speaks.
+Codex uses Opus and a short playback buffer. It retries transient connection loss up
+to three times, and **F5** cancels a pending start or reconnect.
 
 The agent receives the selected repository context and can read camera focus and
 local notes through Repo City’s MCP tools. Focus reports whether the window is

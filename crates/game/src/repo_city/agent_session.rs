@@ -1,4 +1,4 @@
-//! Native Codex dialogue and opt-in voice, scoped to the currently inspected checkout.
+//! Native agent dialogue and opt-in voice, scoped to the currently inspected checkout.
 //! Lifecycle/transcript conventions adapted from bobishh/ecky at
 //! c48e376f676663272ee3a06622cd81bacb3f24d7; Tauri/CAD services are not copied.
 
@@ -236,7 +236,7 @@ impl Session {
                 "",
                 Phase::Ended,
             ),
-            Event::Changed { .. } | Event::Models(_) => return,
+            Event::Changed { .. } | Event::Models(_) | Event::WorkFinished { .. } => return,
         };
         let mut details = Details::new(Kind::Session, title);
         details.body = detail.into();
@@ -1060,6 +1060,7 @@ fn update(
                     }
                 }
             }
+            Event::WorkFinished { .. } => {}
             Event::Approval(approval) => {
                 if let Err(error) = session.request_approval(approval) {
                     session.notice(&error);
@@ -1411,7 +1412,7 @@ fn context(root: &Path, repo: &Repository) -> String {
         focus_context::read(&root.to_string_lossy())
     )
 }
-/// Voice gets bounded, explicit context instead of scanning unrelated Codex workspaces.
+/// Voice gets bounded context from the current checkout and conversation.
 fn voice_context(root: &Path, repo: &Repository, dialogue: &Dialogue) -> String {
     let camera = context(root, repo);
     let mut remaining = 4000;
