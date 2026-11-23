@@ -194,7 +194,7 @@ const READING: &[(&str, &str)] = &[
     ("N / Shift+N", "Next or previous match"),
     (
         "N / Shift+N",
-        "Visit unseen changes when wall search is closed",
+        "Cycle changed files when wall search is closed",
     ),
     ("G / B", "Open diff or blame"),
     ("Left / Right", "Cycle source, diff, and blame up close"),

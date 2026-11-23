@@ -243,7 +243,7 @@ test.beforeEach(async ({ page }, testInfo) => {
   }
 });
 
-test("steps through pending changes in folder order and restores its progress", async ({ page }, info) => {
+test("reviews pending changes, restores progress, and cycles completed changes", async ({ page }, info) => {
   const paths = ["app/a.rs", "app/nested/a.rs", "app/z.rs", "lib/a.rs"];
   const trees = new Map();
   const blobs = new Map();
@@ -272,10 +272,16 @@ test("steps through pending changes in folder order and restores its progress", 
   const filename = page.locator("#city-file");
   const route = page.getByRole("status", { name: "Change review route" });
   const files = page.getByRole("group", { name: "Files visited" });
+  const scope = JSON.stringify(["owner/route", after, before]);
   const diffVisits = () => page.evaluate(async scope => {
     const { readProgress } = await import("/progress.mjs");
     return (await readProgress(scope)).filter(mark => JSON.parse(mark).visited?.diff).length;
-  }, JSON.stringify(["owner/route", after, before]));
+  }, scope);
+  const changeStop = async (key, path, position) => {
+    await page.keyboard.press(key, { delay: 130 });
+    await expect(route).toContainText(`${position} / 4 · ${path}`);
+    await expect.poll(() => page.evaluate(scope => JSON.parse(localStorage.getItem(`repo-city-last-view-v1:${scope}|city-change-route`)), scope), { timeout: 10_000 }).toBe(path);
+  };
   await page.goto("/?repo=owner%2Froute");
   await open();
   await expect(page.locator("#city-progress").getByRole("progressbar")).toHaveCount(1);
@@ -309,6 +315,14 @@ test("steps through pending changes in folder order and restores its progress", 
   await expect(files).toContainText("3/4");
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await page.screenshot({ path: info.outputPath("change-review.png") });
+  await changeStop("KeyN", "app/z.rs", 2);
+  await changeStop("KeyN", "app/nested/a.rs", 3);
+  await expect.poll(diffVisits, { timeout: 10_000 }).toBe(4);
+  await changeStop("KeyN", "lib/a.rs", 4);
+  await changeStop("KeyN", "app/a.rs", 1);
+  await changeStop("Shift+KeyN", "lib/a.rs", 4);
+  await expect(route.locator('[data-stop="visited"]')).toHaveCount(3);
+  await expect(files).toContainText("4/4");
 });
 
 test("opens a public repository and fetches source after the WASM city starts", async ({ page }, testInfo) => {

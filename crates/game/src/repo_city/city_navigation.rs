@@ -1573,7 +1573,7 @@ mod tests {
             app.update();
             assert_eq!(app.world().resource::<Explorer>().selected, expected);
             let mut navigation = app.world_mut().resource_mut::<Navigation>();
-            let hop = navigation.hop.as_mut().expect("unviewed diff flight");
+            let hop = navigation.hop.as_mut().expect("diff flight");
             assert!(hop.end.forward().dot(Vec3::NEG_X) > 0.9);
             hop.elapsed = hop.duration;
             app.world_mut()
@@ -1609,11 +1609,10 @@ mod tests {
                 .1,
             4
         );
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::KeyN);
-        app.update();
-        assert!(app.world().resource::<Navigation>().hop.is_none());
+        fly(&mut app, 0);
+        let progress = app.world().resource::<progress::Progress>();
+        assert_eq!(progress.file_cursor(), Some("app/a.rs"));
+        assert_eq!(progress.visited_counts().1, 4);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

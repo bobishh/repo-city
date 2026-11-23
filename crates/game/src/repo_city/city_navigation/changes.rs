@@ -95,7 +95,6 @@ pub(super) struct ReviewRoute {
     order: Vec<usize>,
     position: Option<usize>,
     diff: bool,
-    finished: bool,
     expires_at: f32,
 }
 
@@ -140,17 +139,18 @@ impl ReviewRoute {
             },
             |position| position + usize::from(!backwards),
         );
-        let next = (0..len)
-            .map(|offset| {
-                if backwards {
-                    (start + len - 1 - offset) % len
-                } else {
-                    (start + offset) % len
-                }
-            })
-            .find(|&position| !progress.has_visited_view(self.order[position], diff));
-        self.finished = next.is_none();
-        self.position = next.or(cursor);
+        let mut positions = (0..len).map(|offset| {
+            if backwards {
+                (start + len - 1 - offset) % len
+            } else {
+                (start + offset) % len
+            }
+        });
+        let next = positions
+            .clone()
+            .find(|&position| !progress.has_visited_view(self.order[position], diff))
+            .or_else(|| positions.next());
+        self.position = next;
         next.map(|position| self.order[position])
     }
 
@@ -173,18 +173,11 @@ impl ReviewRoute {
             return None;
         }
         let total = self.order.len();
-        let caption = if total == 0 {
-            "No changed files in this comparison".into()
-        } else if self.finished {
-            if self.diff {
-                "All diffs opened".into()
-            } else {
-                "All changed files visited".into()
-            }
-        } else {
-            let position = self.position.unwrap_or_default();
+        let caption = if let Some(position) = self.position {
             let path = &repo.files[self.order[position]].path;
             format!("{} / {total} · {path}", position + 1)
+        } else {
+            "No changed files in this comparison".into()
         };
         let capacity = ((viewport_width * 0.94 / 10.) as usize).clamp(1, MAX_VISIBLE_STOPS);
         let count = total.min(capacity);
@@ -226,3 +219,56 @@ pub(crate) enum StopState {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod native;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completed_review_wraps_in_both_directions_and_keeps_visited_marks() {
+        let mut repo = repository_picker::empty();
+        for (path, change) in [
+            ("lib/main.rs", Change::Modified),
+            ("app/a.rs", Change::Modified),
+            ("app/stable.rs", Change::Unchanged),
+            ("app/z.rs", Change::Modified),
+        ] {
+            repo.files.push(repo_world::File {
+                path: path.into(),
+                before: None,
+                after: None,
+                change,
+                position: [0., 0.],
+            });
+        }
+        for diff in [false, true] {
+            let mut progress = progress::Progress::default();
+            for index in [0, 1, 3] {
+                progress.visit(index, &repo.files[index], diff);
+            }
+            progress.set_file_cursor(Some("lib/main.rs"));
+            let mut route = ReviewRoute::default();
+            let mut selected = 0;
+            for (backwards, expected, position) in
+                [(false, 1, 1), (false, 3, 2), (true, 1, 1), (true, 0, 3)]
+            {
+                assert_eq!(
+                    route.step(&repo, &progress, selected, backwards, diff, 1.),
+                    Some(expected)
+                );
+                let hud = route.hud(&repo, &progress, 1., 800.).unwrap();
+                let path = &repo.files[expected].path;
+                assert_eq!(hud.caption, format!("{position} / 3 · {path}"));
+                assert_eq!(
+                    hud.stops
+                        .iter()
+                        .filter(|&&state| state == StopState::Visited)
+                        .count(),
+                    2
+                );
+                progress.set_file_cursor(Some(path));
+                selected = expected;
+            }
+        }
+    }
+}
