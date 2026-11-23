@@ -174,8 +174,7 @@ WebGPU. Paste an `owner/repository` name, a GitHub repository URL, or a GitHub
 pull request URL. For a repository, choose a branch, tag, or commit from the
 suggestions. Pick a comparison base to review a branch from its merge base.
 With no base specified, Repo City compares the revision with its first parent.
-The **Diffs opened** counter tracks changes whose diff you opened. **F** filters
-this comparison in flight and in map views, including
+**F** filters this comparison in flight and in map views, including
 ordinary repository URLs.
 A pull request opens its head tree and highlights changed lines in place. The
 diff wall also shows deleted lines. Paste a pull request URL or choose **Pull
@@ -291,8 +290,8 @@ choose **Reset progress** in the browser’s repository dialog or the Mac
 Reopening the same comparison returns to the last file you viewed, with the camera near
 the same place and facing the same wall.
 
-**Files visited** counts files you visited. **Diffs opened** counts changed files
-whose diff you opened. In the browser, a pull request or branch update keeps visits to
+**Files visited** counts files you visited. The diff route remembers which
+changes you opened. In the browser, a pull request or branch update keeps visits to
 unchanged file contents and diffs.
 
 ## Follow file connections
@@ -409,10 +408,10 @@ before connecting. Agy, Grok and Muse stream text and ask before tool calls that
 require permission. Muse receives the current checkout's Repo City MCP server
 when a session is created or loaded; no global Muse configuration is changed.
 Voice and steering are available with Codex.
-**Settings → Agent provider → Refresh models** connects the selected CLI and
+**Settings → Agent provider → Model → Refresh models** connects the selected CLI and
 loads its available models. Codex uses its paginated `model/list`; Agy, Grok and
 Muse use the model choices advertised by their ACP session. No model names are
-hardcoded. Choose a model in the scrollable list for the next turn. Selection
+hardcoded. Open **Model** and pick a choice for the next turn. Selection
 is disabled while work or voice is active. Explicit choices are saved per
 provider in `agent-models.json` beside desktop preferences. **Use provider
 settings** removes that override and reconnects. A missing saved model blocks
@@ -435,6 +434,9 @@ requests a provider sends to the user. **No confirmations** answers tool request
 without a Y/N prompt for Codex, Agy, Grok and Muse. Codex uses a workspace
 sandbox. With **No confirmations**, it cannot request broader access. Select
 **Ask me**, then disconnect and reconnect Codex to approve individual requests.
+**Enable full access** is available for Codex and removes its command sandbox
+after reconnecting. **Use workspace access** returns Codex to **Ask me** on the
+next connection.
 These preferences are stored
 in `agent-interaction.json` beside desktop preferences. **Stop work** shows
 **Stopping…** until the provider reports the outcome. If only voice is active,
@@ -473,7 +475,8 @@ reported line to fly there. Switch to **Live worktree** for files created or
 edited in the current checkout.
 The action history stays in the local session, including when Chat is in a room.
 Paths such as `crates/explorer/build.rs:12` are highlighted inside chat; click
-to fly to that file and source line. The MCP tool `propose_navigation` shows a
+to fly to that file and source line. Drag across message text and press
+**Cmd/Ctrl+C** to copy the selection. The MCP tool `propose_navigation` shows a
 notification with **Y · Fly** and **N · Dismiss**. Proposals expire after a minute
 and never move the camera without acceptance. Y/N remain text while an editor,
 message field or terminal has focus.

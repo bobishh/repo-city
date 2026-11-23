@@ -2,7 +2,7 @@
 use super::*;
 
 const HUD_SECONDS: f32 = 4.;
-const VISIBLE_STOPS: usize = 36;
+const MAX_VISIBLE_STOPS: usize = 192;
 
 #[derive(Clone, Copy)]
 pub(super) enum FileView {
@@ -167,17 +167,13 @@ impl ReviewRoute {
         repo: &Repository,
         progress: &progress::Progress,
         now: f32,
+        viewport_width: f32,
     ) -> Option<RouteHud> {
         if now >= self.expires_at {
             return None;
         }
         let total = self.order.len();
-        let label = if self.diff {
-            "Diff review"
-        } else {
-            "Changed files"
-        };
-        let title = if total == 0 {
+        let caption = if total == 0 {
             "No changed files in this comparison".into()
         } else if self.finished {
             if self.diff {
@@ -186,44 +182,37 @@ impl ReviewRoute {
                 "All changed files visited".into()
             }
         } else {
-            format!(
-                "{label} · {} / {total}",
-                self.position.unwrap_or_default() + 1
-            )
+            let position = self.position.unwrap_or_default();
+            let path = &repo.files[self.order[position]].path;
+            format!("{} / {total} · {path}", position + 1)
         };
-        let start = self
-            .position
-            .unwrap_or_default()
-            .saturating_sub(VISIBLE_STOPS / 2)
-            .min(total.saturating_sub(VISIBLE_STOPS));
-        let stops = self
-            .order
-            .iter()
-            .enumerate()
-            .skip(start)
-            .take(VISIBLE_STOPS)
-            .map(|(position, &index)| {
-                if self.position == Some(position) {
+        let capacity = ((viewport_width * 0.94 / 10.) as usize).clamp(1, MAX_VISIBLE_STOPS);
+        let count = total.min(capacity);
+        let stops = (0..count)
+            .map(|slot| {
+                let positions = slot * total / count..(slot + 1) * total / count;
+                if self
+                    .position
+                    .is_some_and(|position| positions.contains(&position))
+                {
                     StopState::Current
-                } else if progress.has_visited_view(index, self.diff) {
+                } else if self.order[positions]
+                    .iter()
+                    .all(|&index| progress.has_visited_view(index, self.diff))
+                {
                     StopState::Visited
                 } else {
                     StopState::Pending
                 }
             })
             .collect();
-        let path = self
-            .position
-            .map(|position| repo.files[self.order[position]].path.clone())
-            .unwrap_or_default();
-        Some(RouteHud { title, path, stops })
+        Some(RouteHud { caption, stops })
     }
 }
 
 #[derive(Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct RouteHud {
-    pub title: String,
-    pub path: String,
+    pub caption: String,
     pub stops: Vec<StopState>,
 }
 

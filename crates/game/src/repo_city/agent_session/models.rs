@@ -8,6 +8,7 @@ pub(super) struct Picker {
     error: Option<String>,
     pending: Option<String>,
     loading: bool,
+    expanded: bool,
     revision: u64,
     action: Option<ModelAction>,
 }
@@ -23,6 +24,7 @@ impl Picker {
         self.error = None;
         self.pending = None;
         self.loading = false;
+        self.expanded = false;
         self.action = None;
         self.revision = self.revision.wrapping_add(1);
     }
@@ -43,6 +45,7 @@ impl Picker {
                 self.error = None;
                 if let Some(requested) = self.pending.take() {
                     self.error = if catalog.current.as_deref() == Some(requested.as_str()) {
+                        self.expanded = false;
                         save_choice(provider, Some(requested.as_str())).err()
                     } else {
                         Some("Provider did not confirm the selected model.".into())
@@ -96,6 +99,7 @@ fn save_at(
 
 #[derive(Component, Clone, Copy)]
 enum ModelAction {
+    Toggle,
     Refresh,
     ProviderSettings,
     Choose {
@@ -111,7 +115,7 @@ impl native_panel::Actions<ModelAction> for Session {
 }
 #[derive(Component, Default)]
 pub(super) struct ModelPanel {
-    rendered: Option<(u64, bool)>,
+    rendered: Option<(u64, bool, bool)>,
     list: Option<Entity>,
 }
 
@@ -120,8 +124,6 @@ pub(super) fn settings(parent: &mut ChildSpawnerCommands) {
         ModelPanel::default(),
         Node {
             width: percent(100.),
-            height: px(300.),
-            min_height: px(300.),
             flex_direction: FlexDirection::Column,
             row_gap: px(6.),
             ..default()
@@ -137,6 +139,10 @@ fn busy(session: &Session) -> bool {
         || session.stopping
 }
 fn act(session: &mut Session, action: ModelAction) -> Result<(), String> {
+    if matches!(action, ModelAction::Toggle) {
+        session.models.expanded = !session.models.expanded;
+        return Ok(());
+    }
     if busy(session) {
         return Err("Stop agent work and voice before changing models.".into());
     }
@@ -144,6 +150,7 @@ fn act(session: &mut Session, action: ModelAction) -> Result<(), String> {
         return Err("Wait for the provider's model response.".into());
     }
     match action {
+        ModelAction::Toggle => unreachable!(),
         ModelAction::Refresh => {
             let connected = session.client.is_some();
             session.connect()?;
@@ -194,7 +201,8 @@ pub(super) fn update(
     }
     let busy = busy(&session);
     for (entity, mut panel) in &mut panels {
-        let stamp = (session.models.revision, busy);
+        let expanded = session.models.expanded;
+        let stamp = (session.models.revision, busy, expanded);
         if panel.rendered == Some(stamp) {
             continue;
         }
@@ -204,6 +212,7 @@ pub(super) fn update(
             .and_then(|entity| positions.get(entity).ok())
             .cloned()
             .unwrap_or_default();
+        panel.list = None;
         commands
             .entity(entity)
             .despawn_children()
@@ -212,21 +221,34 @@ pub(super) fn update(
                     .models
                     .catalog
                     .as_ref()
-                    .and_then(|c| c.current.as_deref())
+                    .and_then(|catalog| {
+                        let id = catalog.current.as_deref()?;
+                        Some(
+                            catalog
+                                .choices
+                                .iter()
+                                .find(|choice| choice.id == id)
+                                .map_or(id, |choice| choice.name.as_str()),
+                        )
+                    })
                     .unwrap_or("provider settings");
-                body.spawn(Node {
-                    height: px(36.),
-                    min_height: px(36.),
-                    overflow: Overflow::clip(),
-                    ..default()
-                })
-                .with_children(|header| {
-                    native_panel::text(
-                        header,
-                        &format!("Model for next turn: {current}"),
-                        native_panel::INK,
-                    );
-                });
+                let button = native_panel::button::<_, Session>(
+                    body,
+                    &format!("Model: {current} {}", if expanded { "▴" } else { "▾" }),
+                    native_panel::INK,
+                    ModelAction::Toggle,
+                );
+                body.commands()
+                    .entity(button)
+                    .insert(bevy::input_focus::tab_navigation::TabIndex(320));
+                if !expanded {
+                    if session.models.loading {
+                        native_panel::text(body, "Loading models…", native_panel::INK);
+                    } else if let Some(error) = &session.models.error {
+                        native_panel::text(body, error, native_panel::INK);
+                    }
+                    return;
+                }
                 body.spawn(Node {
                     height: px(64.),
                     min_height: px(64.),
@@ -237,15 +259,21 @@ pub(super) fn update(
                     ..default()
                 })
                 .with_children(|row| {
-                    for (label, action) in [
+                    for (offset, (label, action)) in [
                         ("Refresh models", ModelAction::Refresh),
                         ("Use provider settings", ModelAction::ProviderSettings),
-                    ] {
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
                         let button = native_panel::button::<_, Session>(
                             row,
                             label,
                             native_panel::INK,
                             action,
+                        );
+                        row.commands().entity(button).insert(
+                            bevy::input_focus::tab_navigation::TabIndex(321 + offset as i32),
                         );
                         if busy || session.models.loading {
                             row.commands()
@@ -270,7 +298,7 @@ pub(super) fn update(
                 } else if session.models.catalog.is_none() {
                     "Connect or refresh to load the provider's model list."
                 } else {
-                    "Choose a model for the next turn."
+                    ""
                 };
                 body.spawn((
                     ScrollPosition::default(),
@@ -300,24 +328,18 @@ pub(super) fn update(
                     .with_children(|list| {
                         if let Some(catalog) = &session.models.catalog {
                             for (index, choice) in catalog.choices.iter().enumerate() {
-                                let label = format!(
-                                    "{} {}",
-                                    if catalog.current.as_deref() == Some(choice.id.as_str()) {
-                                        "[x]"
-                                    } else {
-                                        "[ ]"
-                                    },
-                                    choice.name
-                                );
                                 let button = native_panel::button::<_, Session>(
                                     list,
-                                    &label,
+                                    &choice.name,
                                     native_panel::INK,
                                     ModelAction::Choose {
                                         index,
                                         revision: session.models.revision,
                                         provider: session.provider(),
                                     },
+                                );
+                                list.commands().entity(button).insert(
+                                    bevy::input_focus::tab_navigation::TabIndex(323 + index as i32),
                                 );
                                 if catalog.current.as_deref() == Some(choice.id.as_str()) {
                                     list.commands()
@@ -406,10 +428,20 @@ mod tests {
         app.update();
         assert!(
             app.world_mut()
+                .query::<&ModelPanel>()
+                .single(app.world())
+                .unwrap()
+                .list
+                .is_none()
+        );
+        assert!(
+            app.world_mut()
                 .query::<&Text>()
                 .iter(app.world())
-                .any(|t| t.0 == "[x] Preview default model")
+                .any(|t| t.0 == "Model: Preview default model ▾")
         );
+        app.world_mut().resource_mut::<Session>().models.action = Some(ModelAction::Toggle);
+        app.update();
         let list = app
             .world_mut()
             .query::<&ModelPanel>()
@@ -446,11 +478,16 @@ mod tests {
             app.world_mut()
                 .query::<&Text>()
                 .iter(app.world())
-                .any(|t| t.0 == "[ ] Preview fast model")
+                .any(|t| t.0 == "Preview fast model")
         );
         app.world_mut().resource_mut::<Session>().projection.turn = Some("turn".into());
         app.update();
-        assert_eq!(app.world_mut().query_filtered::<Entity, (With<ModelAction>, Without<bevy::ui::InteractionDisabled>)>().iter(app.world()).count(), 0);
+        assert!(matches!(
+            app.world_mut()
+                .query_filtered::<&ModelAction, Without<bevy::ui::InteractionDisabled>>()
+                .single(app.world()),
+            Ok(ModelAction::Toggle)
+        ));
     }
     #[test]
     fn model_preferences_are_isolated_by_provider_and_bad_data_is_preserved() {

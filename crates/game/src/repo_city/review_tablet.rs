@@ -2200,7 +2200,7 @@ fn draw_settings(
                             }
                         });
                         native_panel::text(form, "Voice is available with Codex.", native_panel::INK);
-                        agent_session::settings(form);
+                        agent_session::settings(form, selected);
                     });
                 }
                 if let Some(audio) = audio {

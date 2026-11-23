@@ -38,6 +38,7 @@ pub(super) enum ApprovalMode {
     #[default]
     Automatic,
     Never,
+    FullAccess,
 }
 
 pub(super) const CODEX: Provider = Provider {

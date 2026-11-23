@@ -2,9 +2,12 @@
 use super::*;
 use bevy::{
     input_focus::InputFocus,
-    picking::events::PointerPress,
-    text::{ComputedTextBlock, EditableText, TextBackgroundColor, TextLayoutInfo, Underline},
-    ui_widgets::{Activate, observe},
+    picking::{Pickable, events::PointerClick},
+    text::{
+        ComputedTextBlock, EditableText, TextBackgroundColor, TextCursorStyle, TextEdit,
+        TextLayoutInfo, TextReadWriteMode, Underline,
+    },
+    ui_widgets::{Activate, TextInput, observe},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -806,8 +809,18 @@ pub(super) fn measured_link(
 }
 
 fn draw_references(parent: &mut ChildSpawnerCommands, text: &str, references: Vec<Link>) -> Entity {
-    let entity = parent
+    let mut selectable = String::with_capacity(text.len());
+    let container = parent
+        .spawn(Node {
+            width: percent(100.),
+            min_width: px(0.),
+            ..default()
+        })
+        .id();
+    let body = parent
+        .commands()
         .spawn((
+            ChildOf(container),
             Text::new(""),
             native_panel::panel_font(),
             TextColor(Color::srgb_u8(218, 234, 236)),
@@ -815,17 +828,21 @@ fn draw_references(parent: &mut ChildSpawnerCommands, text: &str, references: Ve
                 width: percent(100.),
                 ..default()
             },
+            Pickable::IGNORE,
         ))
         .with_children(|spans| {
             let mut cursor = 0;
             for link in references {
                 if cursor < link.bytes.start {
+                    selectable.push_str(&text[cursor..link.bytes.start]);
                     spans.spawn((
                         TextSpan::new(&text[cursor..link.bytes.start]),
                         native_panel::panel_font(),
                         TextColor(Color::srgb_u8(218, 234, 236)),
+                        Pickable::IGNORE,
                     ));
                 }
+                selectable.push_str(&link.text);
                 spans.spawn((
                     TextSpan::new(link.text),
                     native_panel::panel_font(),
@@ -833,64 +850,146 @@ fn draw_references(parent: &mut ChildSpawnerCommands, text: &str, references: Ve
                     TextBackgroundColor(Color::srgb_u8(19, 51, 60)),
                     Underline,
                     Reference(link.target),
+                    Pickable::IGNORE,
                 ));
                 cursor = link.bytes.end;
             }
             if cursor < text.len() {
+                selectable.push_str(&text[cursor..]);
                 spans.spawn((
                     TextSpan::new(&text[cursor..]),
                     native_panel::panel_font(),
                     TextColor(Color::srgb_u8(218, 234, 236)),
+                    Pickable::IGNORE,
                 ));
             }
         })
         .id();
-    parent.commands().entity(entity).observe(
-        |event: On<PointerPress>,
-         blocks: Query<(
-            &ComputedTextBlock,
-            &TextLayoutInfo,
-            &UiGlobalTransform,
-            &ComputedNode,
-        )>,
-         references: Query<&Reference>,
-         repo: Res<Repo>,
-         mut navigation: ResMut<Navigation>,
-         mut tablet: ResMut<review_tablet::Tablet>| {
-            if event.button != bevy::picking::pointer::PointerButton::Primary {
-                return;
-            }
-            // Bevy's UI picker targets the inline span when its glyphs are hit.
-            if let Ok(reference) = references.get(event.entity) {
-                if navigation.follow(&reference.0, &repo.0) {
-                    tablet.request_close();
-                }
-                return;
-            }
-            let Ok((block, layout, transform, node)) = blocks.get(event.entity) else {
-                return;
-            };
-            let transform: bevy::math::Affine2 = transform.into();
-            let local = transform.inverse().transform_point2(event.pointer.position)
-                - node.content_box().min;
-            for run in &layout.run_geometry {
-                if run.bounds.contains(local)
-                    && let Some(span) = block.entities().get(run.section_index as usize)
-                    && let Ok(reference) = references.get(span.entity)
-                    && navigation.follow(&reference.0, &repo.0)
+    let mut editable = EditableText {
+        visible_lines: None,
+        allow_newlines: true,
+        ..default()
+    };
+    editable.editor_mut().set_text(&selectable);
+    parent
+        .commands()
+        .spawn((
+            ChildOf(container),
+            Name::new("Chat message text"),
+            TextInput,
+            bevy::input_focus::tab_navigation::TabIndex(-1),
+            editable,
+            TextReadWriteMode::ReadOnly,
+            native_panel::panel_font(),
+            TextColor(Color::NONE),
+            TextCursorStyle {
+                color: Color::srgb_u8(124, 217, 223),
+                selection_color: Color::srgba(0.22, 0.61, 0.72, 0.48),
+                unfocused_selection_color: Color::srgba(0.22, 0.61, 0.72, 0.48),
+                selection_radius: 0.,
+                ..default()
+            },
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::ZERO,
+                left: Val::ZERO,
+                width: percent(100.),
+                height: percent(100.),
+                ..default()
+            },
+        ))
+        .observe(
+            move |event: On<PointerClick>,
+                  blocks: Query<(
+                &ComputedTextBlock,
+                &TextLayoutInfo,
+                &UiGlobalTransform,
+                &ComputedNode,
+                &ComputedUiRenderTargetInfo,
+            )>,
+                  text: Query<&EditableText>,
+                  ui_scale: Res<UiScale>,
+                  references: Query<&Reference>,
+                  repo: Res<Repo>,
+                  mut navigation: ResMut<Navigation>,
+                  mut tablet: ResMut<review_tablet::Tablet>| {
+                if event.button != bevy::picking::pointer::PointerButton::Primary
+                    || event.count != 1
+                    || text.get(event.entity).is_ok_and(|input| {
+                        input.editor().selected_text().is_some()
+                            || input.pending_edits.iter().any(|edit| {
+                                matches!(
+                                    edit,
+                                    TextEdit::ExtendSelectionToPoint(_)
+                                        | TextEdit::ShiftClickExtension(_)
+                                )
+                            })
+                    })
                 {
-                    tablet.request_close();
-                    break;
+                    return;
                 }
-            }
-        },
-    );
-    entity
+                let Ok((block, layout, transform, node, target)) = blocks.get(body) else {
+                    return;
+                };
+                let Some(inverse) = transform.try_inverse() else {
+                    return;
+                };
+                let local = inverse
+                    .transform_point2(event.pointer.position * target.scale_factor() / ui_scale.0)
+                    - node.content_box().min;
+                for run in &layout.run_geometry {
+                    if run.bounds.contains(local)
+                        && let Some(span) = block.entities().get(run.section_index as usize)
+                        && let Ok(reference) = references.get(span.entity)
+                        && navigation.follow(&reference.0, &repo.0)
+                    {
+                        tablet.request_close();
+                        break;
+                    }
+                }
+            },
+        );
+    container
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_message_text_can_be_selected_without_being_editable() {
+        use bevy::ecs::system::RunSystemOnce;
+        use bevy::{
+            input_focus::{AcquireFocus, tab_navigation::TabNavigationPlugin},
+            text::TextReadWriteMode,
+        };
+
+        let mut app = App::new();
+        app.add_plugins(TabNavigationPlugin)
+            .init_resource::<InputFocus>();
+        let repo = repository();
+        app.world_mut()
+            .run_system_once(move |mut commands: Commands| {
+                commands.spawn_empty().with_children(|parent| {
+                    draw_links(parent, "See `src/main.rs:7`\nfor the change.", &repo);
+                });
+            })
+            .unwrap();
+        let world = app.world_mut();
+        let mut text = world.query::<(Entity, &EditableText, &TextReadWriteMode)>();
+        let (entity, text, mode) = text.single(world).expect("selectable transcript text");
+        assert_eq!(*mode, TextReadWriteMode::ReadOnly);
+        assert_eq!(
+            text.value().to_string(),
+            "See src/main.rs:7\nfor the change."
+        );
+        let window = world.spawn(Window::default()).id();
+        world.trigger(AcquireFocus {
+            focused_entity: entity,
+            window,
+        });
+        assert_eq!(world.resource::<InputFocus>().get(), Some(entity));
+    }
     fn repository() -> Repository {
         let mut repo = Repository {
             root: PathBuf::from("/checkout"),

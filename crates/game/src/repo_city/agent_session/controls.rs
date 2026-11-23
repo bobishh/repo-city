@@ -125,7 +125,7 @@ pub(super) fn shortcuts(
     }
 }
 
-pub(crate) fn settings(parent: &mut ChildSpawnerCommands) {
+pub(crate) fn settings(parent: &mut ChildSpawnerCommands, provider: agent_engine::Provider) {
     models::settings(parent);
     for (label, action) in [
         ("Send: Enter", Action::SendKey),
@@ -134,6 +134,19 @@ pub(crate) fn settings(parent: &mut ChildSpawnerCommands) {
     ] {
         let button =
             native_panel::button::<Action, Session>(parent, label, native_panel::INK, action);
+        parent.commands().entity(button).insert(Node {
+            width: percent(100.),
+            min_height: px(34.),
+            ..default()
+        });
+    }
+    if provider == agent_engine::CODEX {
+        let button = native_panel::button::<Action, Session>(
+            parent,
+            "Enable full access",
+            native_panel::INK,
+            Action::FullAccess,
+        );
         parent.commands().entity(button).insert(Node {
             width: percent(100.),
             min_height: px(34.),
@@ -293,7 +306,17 @@ impl Session {
         self.interaction.follow_key.code()
     }
     pub(crate) fn approval_pending(&self) -> bool {
-        self.interaction.approvals != ApprovalMode::Never && !self.approvals.is_empty()
+        self.approval_mode() != ApprovalMode::Never && !self.approvals.is_empty()
+    }
+
+    pub(super) fn approval_mode(&self) -> ApprovalMode {
+        if self.selected != agent_engine::CODEX
+            && self.interaction.approvals == ApprovalMode::FullAccess
+        {
+            ApprovalMode::Ask
+        } else {
+            self.interaction.approvals
+        }
     }
     pub(super) fn notice(&mut self, text: &str) {
         if self
@@ -360,11 +383,18 @@ impl Session {
         match action {
             Action::SendKey => next.send_with_enter = !next.send_with_enter,
             Action::ApprovalMode => {
-                next.approvals = match next.approvals {
+                next.approvals = match self.approval_mode() {
                     ApprovalMode::Ask => ApprovalMode::Automatic,
                     ApprovalMode::Automatic => ApprovalMode::Never,
-                    ApprovalMode::Never => ApprovalMode::Ask,
+                    ApprovalMode::Never | ApprovalMode::FullAccess => ApprovalMode::Ask,
                 }
+            }
+            Action::FullAccess if self.selected == agent_engine::CODEX => {
+                next.approvals = if next.approvals == ApprovalMode::FullAccess {
+                    ApprovalMode::Ask
+                } else {
+                    ApprovalMode::FullAccess
+                };
             }
             Action::FollowKey => {
                 next.follow_key = if next.follow_key == FollowKey::F7 {
@@ -638,7 +668,7 @@ impl Session {
     }
 
     pub(super) fn approve_pending(&mut self) -> Result<(), String> {
-        if self.interaction.approvals == ApprovalMode::Never {
+        if self.approval_mode() == ApprovalMode::Never {
             while !self.approvals.is_empty() {
                 self.answer_approval(true)?;
             }

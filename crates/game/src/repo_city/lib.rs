@@ -329,10 +329,10 @@ struct BottomHud;
 struct StatusHud;
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Component)]
-struct ProgressLabel(bool);
+struct ProgressLabel;
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Component)]
-struct ProgressGauge(bool);
+struct ProgressGauge;
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Component)]
 struct ReviewToast;
@@ -1139,35 +1139,29 @@ fn setup(
                 ui_font(13.),
                 TextColor(color(set.ink)),
             ));
-            for diff in [false, true] {
-                hud.spawn((
-                    ProgressLabel(diff),
-                    Text::new(""),
-                    ui_font(15.),
-                    TextColor(color(set.ink)),
-                ));
-                hud.spawn((
-                    Node {
-                        width: percent(100.),
-                        height: px(4.),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgb_u8(31, 49, 60)),
-                ))
-                .with_child((
-                    ProgressGauge(diff),
-                    Node {
-                        height: percent(100.),
-                        width: percent(0.),
-                        ..default()
-                    },
-                    BackgroundColor(if diff {
-                        Color::srgb_u8(250, 190, 104)
-                    } else {
-                        Color::srgb_u8(100, 230, 196)
-                    }),
-                ));
-            }
+            hud.spawn((
+                ProgressLabel,
+                Text::new(""),
+                ui_font(15.),
+                TextColor(color(set.ink)),
+            ));
+            hud.spawn((
+                Node {
+                    width: percent(100.),
+                    height: px(4.),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb_u8(31, 49, 60)),
+            ))
+            .with_child((
+                ProgressGauge,
+                Node {
+                    height: percent(100.),
+                    width: percent(0.),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb_u8(100, 230, 196)),
+            ));
         });
     #[cfg(not(target_arch = "wasm32"))]
     city_navigation::changes_hud::spawn(&mut commands, ui_font(14.), color(set.ink));
@@ -2449,6 +2443,7 @@ fn hud(
     navigation: Res<city_navigation::Navigation>,
     progress: Res<progress::Progress>,
     time: Res<Time>,
+    #[cfg(target_arch = "wasm32")] windows: Query<&Window, With<PrimaryWindow>>,
     pilot: Query<&Pilot, PlayerCamera>,
     #[cfg(target_arch = "wasm32")] mut browser_hud: Local<browser_touch::Hud>,
     picker: Res<file_picker::FilePicker>,
@@ -2459,8 +2454,8 @@ fn hud(
     ),
     mut label: Query<(&mut Text, &mut TextColor, &mut Node), With<TargetLabel>>,
     #[cfg(not(target_arch = "wasm32"))] mut gauges: Query<
-        (&ProgressGauge, &mut Node),
-        (Without<Text>, Without<TargetLabel>),
+        &mut Node,
+        (With<ProgressGauge>, Without<Text>, Without<TargetLabel>),
     >,
     #[cfg(not(target_arch = "wasm32"))] mut texts: Query<
         (
@@ -2470,7 +2465,7 @@ fn hud(
             Has<BottomHud>,
             Has<StatusHud>,
             Has<ReviewToast>,
-            Option<&ProgressLabel>,
+            Has<ProgressLabel>,
         ),
         Without<TargetLabel>,
     >,
@@ -2531,7 +2526,7 @@ fn hud(
             node.display = Display::None;
         }
     }
-    let (city, diffs, total_diffs) = progress.visited_counts();
+    let city = progress.visited_counts().0;
     let total = repo.0.files.len();
     let filename = file.path.rsplit('/').next().unwrap_or(&file.path);
     let walk_hint = pilot.single().ok().and_then(|pilot| {
@@ -2549,20 +2544,16 @@ fn hud(
         } else {
             walk_hint.unwrap_or_default().into()
         };
-        let route = navigation.change_route_hud(&repo.0, &progress, time.elapsed_secs());
-        browser_hud.publish(filename, [city, total, diffs, total_diffs], hint, route);
+        let width = windows.single().map_or(1280., Window::width);
+        let route = navigation.change_route_hud(&repo.0, &progress, time.elapsed_secs(), width);
+        browser_hud.publish(filename, [city, total], hint, route);
     }
     #[cfg(not(target_arch = "wasm32"))]
-    for (gauge, mut node) in &mut gauges {
-        let (done, total) = if gauge.0 {
-            (diffs, total_diffs)
-        } else {
-            (city, total)
-        };
+    for mut node in &mut gauges {
         let width = percent(if total == 0 {
             0.
         } else {
-            100. * done as f32 / total as f32
+            100. * city as f32 / total as f32
         });
         if node.width != width {
             node.width = width;
@@ -2570,17 +2561,8 @@ fn hud(
     }
     #[cfg(not(target_arch = "wasm32"))]
     for (mut text, mut node, top, bottom, status, toast, counter) in &mut texts {
-        if let Some(counter) = counter {
-            let value = if counter.0 {
-                if total_diffs == 0 {
-                    "Diffs opened —".into()
-                } else {
-                    format!("Diffs opened {diffs}/{total_diffs}")
-                }
-            } else {
-                format!("Files visited {city}/{total}")
-            };
-            text.set_if_neq(Text::new(value));
+        if counter {
+            text.set_if_neq(Text::new(format!("Files visited {city}/{total}")));
             continue;
         }
         let (review, live) = &native;

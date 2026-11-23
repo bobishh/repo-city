@@ -373,8 +373,9 @@ impl Navigation {
         repo: &Repository,
         progress: &progress::Progress,
         now: f32,
+        viewport_width: f32,
     ) -> Option<RouteHud> {
-        self.changes.hud(repo, progress, now)
+        self.changes.hud(repo, progress, now, viewport_width)
     }
 
     pub(super) fn route_status(&self) -> Option<String> {

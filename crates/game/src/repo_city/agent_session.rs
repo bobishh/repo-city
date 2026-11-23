@@ -50,6 +50,7 @@ enum Action {
     Reject,
     SendKey,
     ApprovalMode,
+    FullAccess,
     FollowKey,
 }
 #[derive(Component, Default)]
@@ -61,8 +62,19 @@ struct HistoryArea {
     follow: bool,
     previous_y: f32,
 }
-#[derive(Component)]
-struct Transcript;
+#[derive(Component, Default)]
+struct Transcript {
+    version: Option<u64>,
+    rows: Vec<MessageRow>,
+    empty: Option<Entity>,
+}
+
+struct MessageRow {
+    entity: Entity,
+    id: String,
+    name: String,
+    text: String,
+}
 #[derive(Component)]
 struct Status;
 #[derive(Component)]
@@ -308,13 +320,14 @@ impl Session {
     fn connect(&mut self) -> Result<(), String> {
         if self.client.is_none() {
             let root = self.root.clone().ok_or("Open a local checkout first.")?;
+            self.interaction = controls::Settings::load()?;
             self.client = Some(agent_engine::connect(
                 self.selected,
                 agent_engine::Start {
                     model: models::preferred(self.selected)?,
                     root,
                     conversation: self.projection.dialogue.thread.clone(),
-                    approval_mode: self.interaction.approvals,
+                    approval_mode: self.approval_mode(),
                     speaking: self.speaking.clone(),
                     diagnostics: repository_picker::settings_file()
                         .map(|path| path.with_file_name("voice-status.json")),
@@ -628,7 +641,7 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands) -> Entity {
             ))
             .with_children(|history| {
                 history.spawn((
-                    Transcript,
+                    Transcript::default(),
                     Node {
                         width: percent(100.),
                         flex_direction: FlexDirection::Column,
@@ -759,33 +772,56 @@ fn draw_dialogue(
     repo: &Repository,
     agent: &str,
     pending_send: Option<&str>,
+    transcript: &mut Transcript,
 ) {
-    if dialogue.messages.is_empty() {
-        parent.spawn((
-            Text::new("Ask about the code in front of you."),
-            native_panel::panel_font(),
-            TextColor(Color::srgb_u8(144, 180, 185)),
-        ));
-        return;
-    }
-    for message in dialogue
+    let mut messages: Vec<_> = dialogue
         .messages
         .iter()
         .rev()
         .take(60)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-    {
-        let (name, accent) = match message.role.as_str() {
-            "user" => (
-                message_label(&message.id, pending_send),
-                Color::srgb_u8(213, 183, 130),
-            ),
-            "system" => ("Session", Color::srgb_u8(151, 171, 177)),
-            _ => (agent, native_panel::INK),
-        };
-        parent
+        .map(|message| {
+            let (name, accent) = match message.role.as_str() {
+                "user" => (
+                    message_label(&message.id, pending_send),
+                    Color::srgb_u8(213, 183, 130),
+                ),
+                "system" => ("Session", Color::srgb_u8(151, 171, 177)),
+                _ => (agent, native_panel::INK),
+            };
+            (message, name, accent)
+        })
+        .collect();
+    messages.reverse();
+    let unchanged = transcript
+        .rows
+        .iter()
+        .zip(&messages)
+        .take_while(|(row, (message, name, _))| {
+            row.id == message.id && row.text == message.text && row.name == *name
+        })
+        .count();
+    for row in transcript.rows.drain(unchanged..) {
+        parent.commands().entity(row.entity).despawn();
+    }
+    if dialogue.messages.is_empty() {
+        if transcript.empty.is_none() {
+            transcript.empty = Some(
+                parent
+                    .spawn((
+                        Text::new("Ask about the code in front of you."),
+                        native_panel::panel_font(),
+                        TextColor(Color::srgb_u8(144, 180, 185)),
+                    ))
+                    .id(),
+            );
+        }
+        return;
+    }
+    if let Some(empty) = transcript.empty.take() {
+        parent.commands().entity(empty).despawn();
+    }
+    for (message, name, accent) in messages.into_iter().skip(unchanged) {
+        let entity = parent
             .spawn((
                 Node {
                     width: percent(100.),
@@ -806,7 +842,14 @@ fn draw_dialogue(
                     TextColor(accent),
                 ));
                 agent_navigation::draw_links(card, &message.text, repo);
-            });
+            })
+            .id();
+        transcript.rows.push(MessageRow {
+            entity,
+            id: message.id.clone(),
+            name: name.into(),
+            text: message.text.clone(),
+        });
     }
 }
 
@@ -847,9 +890,7 @@ fn update(
         &Children,
         Option<&bevy::ui::InteractionDisabled>,
     )>,
-    transcripts: Query<Entity, With<Transcript>>,
-    mut rendered: Local<Option<u64>>,
-    mut rendered_entities: Local<HashSet<Entity>>,
+    mut transcripts: Query<(Entity, &mut Transcript)>,
     editing: Query<(), Or<(With<EditableText>, With<source_editor::View>)>>,
     blockers: (
         Res<terminal::Terminal>,
@@ -1060,7 +1101,9 @@ fn update(
                 session.follow_agent = !session.follow_agent;
                 Ok(())
             }
-            Action::SendKey | Action::ApprovalMode | Action::FollowKey => session.configure(action),
+            Action::SendKey | Action::ApprovalMode | Action::FullAccess | Action::FollowKey => {
+                session.configure(action)
+            }
             Action::Connect => session.connect(),
             Action::Disconnect => {
                 session.disconnect();
@@ -1121,28 +1164,21 @@ fn update(
             session.status = format!("Conversation remains in memory: {error}");
         }
     }
-    if *rendered != Some(session.version)
-        || transcripts
-            .iter()
-            .any(|entity| !rendered_entities.contains(&entity))
-    {
-        *rendered = Some(session.version);
-        rendered_entities.clear();
-        for entity in &transcripts {
-            rendered_entities.insert(entity);
-            commands
-                .entity(entity)
-                .despawn_children()
-                .with_children(|parent| {
-                    draw_dialogue(
-                        parent,
-                        &session.projection.dialogue,
-                        &repo.0,
-                        session.provider().label,
-                        session.pending_send.as_deref(),
-                    )
-                });
+    for (entity, mut transcript) in &mut transcripts {
+        if transcript.version == Some(session.version) {
+            continue;
         }
+        transcript.version = Some(session.version);
+        commands.entity(entity).with_children(|parent| {
+            draw_dialogue(
+                parent,
+                &session.projection.dialogue,
+                &repo.0,
+                session.provider().label,
+                session.pending_send.as_deref(),
+                &mut transcript,
+            );
+        });
     }
     let connection = format!(
         "{} · {}",
@@ -1217,7 +1253,11 @@ fn update(
             Action::Send => session.can_send(),
             Action::RestoreMessage => session.restorable_message().is_some(),
             Action::Voice => session.provider().capabilities.voice,
-            Action::Follow | Action::SendKey | Action::ApprovalMode | Action::FollowKey => true,
+            Action::Follow
+            | Action::SendKey
+            | Action::ApprovalMode
+            | Action::FullAccess
+            | Action::FollowKey => true,
             Action::Approve | Action::Reject => session.approval_pending(),
         };
         if enabled && disabled.is_some() {
@@ -1251,11 +1291,19 @@ fn action_label(action: &Action, session: &Session) -> Option<&'static str> {
         } else {
             "Send: Cmd/Ctrl+Enter"
         }),
-        Action::ApprovalMode => Some(match session.interaction.approvals {
+        Action::ApprovalMode => Some(match session.approval_mode() {
             controls::ApprovalMode::Ask => "Permissions: ask me",
             controls::ApprovalMode::Automatic => "Permissions: automatic review",
             controls::ApprovalMode::Never => "Permissions: no confirmations",
+            controls::ApprovalMode::FullAccess => "Permissions: full access",
         }),
+        Action::FullAccess => Some(
+            if session.approval_mode() == controls::ApprovalMode::FullAccess {
+                "Use workspace access"
+            } else {
+                "Enable full access"
+            },
+        ),
         Action::FollowKey => Some(if session.follow_key() == KeyCode::F7 {
             "Follow shortcut: F7"
         } else {

@@ -50,24 +50,26 @@ canvas[data-pointer-locked] { cursor: none !important; }
   appearance: none; display: block; width: 100%; height: 3px; border: 0;
   color: #70e5c6; background: #1f313c;
 }
-.city-count:last-child progress { color: #fabe68; }
 .city-count progress::-webkit-progress-bar { background: #1f313c; }
 .city-count progress::-webkit-progress-value { background: currentColor; }
 .city-count progress::-moz-progress-bar { background: currentColor; }
 #change-review-route {
   z-index: 2; position: absolute; bottom: 64px; left: 50%; translate: -50%;
-  display: grid; gap: 5px; width: min(416px, 92%); padding: 12px;
-  pointer-events: none; background: #081418f2; color: #9beed9; font-size: .84rem;
+  display: grid; gap: 9px; width: 94%; min-width: 0;
+  pointer-events: none; color: #e5f5f2; font-size: .84rem;
 }
 main:has(dialog[open]) #change-review-route { visibility: hidden; }
-[data-route-path] { min-height: 1em; font-size: .78em; }
+[data-route-caption] { text-align: center; text-shadow: 1px 1px 3px #050b10; }
 [data-route-stops] {
-  display: flex; justify-content: space-between; gap: 3px;
-  background: linear-gradient(#31464e, #31464e) center / 100% 1px no-repeat;
+  display: flex; justify-content: space-between; align-items: center; gap: 3px;
+  background: linear-gradient(#758695, #758695) center / 100% 1px no-repeat;
 }
-[data-stop] { flex: 0 1 8px; height: 5px; background: #31464e; }
-[data-stop="visited"] { background: #5bc0aa; }
-[data-stop="current"] { background: #fabe68; }
+[data-stop] {
+  flex: 0 1 6px; height: 6px; transform: rotate(45deg); background: #8999b0;
+  box-shadow: 0 0 0 1px #14202a;
+}
+[data-stop="visited"] { background: #5be1bb; }
+[data-stop="current"] { background: #ffbf68; transform: rotate(45deg) scale(1.45); }
 #city-hint {
   position: absolute; top: calc(100% + 8px); left: 0; max-width: min(46ch, 100%);
   margin: 0; padding: 6px 8px; background: #081418e8; color: #c8dedb; font-size: .75rem;
@@ -292,7 +294,7 @@ form button:focus-visible, form summary:focus-visible, form a:focus-visible { ou
   [data-playing] .wordmark { font-size: clamp(1.7rem, 6vw, 2rem); }
   #city-repository { padding-left: 0; font-size: .7rem; }
   #city-progress {
-    grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px 10px;
+    gap: 3px;
     padding: 0; background: none; font-size: .7rem;
   }
   #city-file { grid-column: 1 / -1; }

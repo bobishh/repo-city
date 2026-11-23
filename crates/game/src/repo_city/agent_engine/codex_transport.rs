@@ -1474,7 +1474,20 @@ pub(super) fn thread_params(
     } else {
         "user"
     };
-    let mut params = json!({"cwd":root,"approvalPolicy":if approval_mode == ApprovalMode::Never { "never" } else { "on-request" },"approvalsReviewer":reviewer,"sandbox":"workspace-write","developerInstructions":instructions(),"config":{
+    let sandbox = if approval_mode == ApprovalMode::FullAccess {
+        "danger-full-access"
+    } else {
+        "workspace-write"
+    };
+    let policy = if matches!(
+        approval_mode,
+        ApprovalMode::Never | ApprovalMode::FullAccess
+    ) {
+        "never"
+    } else {
+        "on-request"
+    };
+    let mut params = json!({"cwd":root,"approvalPolicy":policy,"approvalsReviewer":reviewer,"sandbox":sandbox,"developerInstructions":instructions(),"config":{
         "mcp_servers.repo_city.command":executable,
         "mcp_servers.repo_city.args":["--notes-mcp","--repo",root],
         "mcp_servers.repo_city.required":true,
@@ -1934,6 +1947,28 @@ for line in sys.stdin:
         assert!(std::fs::read_dir(&directory).unwrap().count() == 1);
         std::fs::remove_dir_all(directory).unwrap();
     }
+    #[test]
+    fn codex_receives_the_explicit_access_mode_for_new_and_resumed_threads() {
+        for thread in [None, Some("saved")] {
+            let full = thread_params(
+                Path::new("/repo"),
+                Path::new("/app"),
+                thread,
+                ApprovalMode::FullAccess,
+            );
+            assert_eq!(full["sandbox"], "danger-full-access");
+            assert_eq!(full["approvalPolicy"], "never");
+            let ask = thread_params(
+                Path::new("/repo"),
+                Path::new("/app"),
+                thread,
+                ApprovalMode::Ask,
+            );
+            assert_eq!(ask["sandbox"], "workspace-write");
+            assert_eq!(ask["approvalPolicy"], "on-request");
+        }
+    }
+
     #[test]
     fn no_confirmation_mode_sets_never_for_fresh_and_resumed_codex_threads() {
         for previous in [None, Some("saved")] {
