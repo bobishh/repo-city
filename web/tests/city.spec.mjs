@@ -1290,6 +1290,8 @@ test("keyboard-only navigation can find a building and wash source without point
   });
   await page.goto("/?repo=owner%2Fkeyboard");
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+  await page.keyboard.press("KeyM", { delay: 120 });
+  await expect(page.locator("canvas")).toHaveAttribute("data-overview", "");
   await page.keyboard.press("Slash", { delay: 120 });
   const find = page.locator("#review-dialog"); await expectOpen(page, "Find a file");
   await page.keyboard.type("main", { delay: 40 });

@@ -113,7 +113,10 @@ pub(crate) fn update(
     mut hud: Query<(&mut Node, &mut Text), With<SearchHud>>,
     time: Res<Time>,
     settings: Res<reading::Settings>,
-    #[cfg(not(target_arch = "wasm32"))] mut preview: Option<ResMut<markdown_preview::Request>>,
+    #[cfg(not(target_arch = "wasm32"))] (mut preview, repository): (
+        Option<ResMut<markdown_preview::Request>>,
+        Option<Res<repository_picker::RepositoryPicker>>,
+    ),
 ) {
     if repo.is_changed() {
         *search = Search::default();
@@ -127,21 +130,26 @@ pub(crate) fn update(
     };
     let file = &repo.0.files[explorer.selected];
     let size = super::block_size(file);
-    let side = if Listing::visible(&explorer, &navigation) && !listing.turning() {
-        Face::at_camera(file, size, &eye, (size.x * 1.85).max(5.)).and_then(|face| {
-            let count = if face == Face::Diff {
-                explorer.diff_layout.rows.len()
-            } else if face == Face::Source {
-                explorer.source_layout.len()
-            } else {
-                explorer.blame_layout.len()
-            };
-            let side = WallSide::new(file, count, face, size);
-            (count > 0 && side.look_height(&eye) <= side.wall.top).then_some((side, count))
-        })
-    } else {
-        None
-    };
+    let side =
+        if Listing::visible(&explorer, &navigation) && !navigation.overview() && !listing.turning()
+        {
+            let reach = (size.x * 1.85)
+                .max(5.)
+                .max(listing.frame.detail_reach(size.x));
+            Face::at_camera(file, size, &eye, reach).and_then(|face| {
+                let count = if face == Face::Diff {
+                    explorer.diff_layout.rows.len()
+                } else if face == Face::Source {
+                    explorer.source_layout.len()
+                } else {
+                    explorer.blame_layout.len()
+                };
+                let side = WallSide::new(file, count, face, size);
+                (count > 0 && side.look_height(&eye) <= side.wall.top).then_some((side, count))
+            })
+        } else {
+            None
+        };
     search.available = side.is_some();
     let wall_key = |face| WallKey {
         file: explorer.selected,
@@ -160,10 +168,12 @@ pub(crate) fn update(
     ]);
     let focused = window.single().is_ok_and(|window| window.focused);
     let blocked = review.blocked || picker.is_open() || menu.is_open() || !focused;
+    #[cfg(not(target_arch = "wasm32"))]
+    let blocked = blocked || repository.is_some_and(|picker| picker.blocks_controls());
     if !blocked
         && !search.editing
-        && requested
         && let Some((side, _)) = &side
+        && (requested || !menu.blocks_controls() && file_picker::search_pressed(&keys, &mut input))
     {
         let key = wall_key(side.face);
         if search.key != Some(key) {
@@ -386,6 +396,74 @@ pub(crate) fn mark(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slash_starts_wall_search_and_the_next_character_goes_into_its_query() {
+        let file = crate::listing::tests::fixture_file();
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(crate::syntax::highlight(
+            &file.path,
+            "// answer\n// other\n",
+        ));
+        let side = WallSide::new(
+            &file,
+            explorer.source_layout.len(),
+            Face::Source,
+            block_size(&file),
+        );
+        let eye = side.view(side.wall.y(0.5), ReadingFrame::default());
+        let mut repo = repository_picker::empty();
+        repo.files.push(file);
+        let mut app = App::new();
+        app.add_message::<KeyboardInput>()
+            .insert_resource(Repo(repo))
+            .insert_resource(explorer)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<city_navigation::Navigation>()
+            .init_resource::<Listing>()
+            .init_resource::<Search>()
+            .init_resource::<file_picker::FilePicker>()
+            .init_resource::<review_notes::Review>()
+            .init_resource::<city_menu::Menu>()
+            .init_resource::<reading::Settings>()
+            .init_resource::<Time>()
+            .add_systems(Update, update);
+        app.world_mut().spawn((Camera3d::default(), eye));
+        app.world_mut()
+            .spawn((SearchHud, Node::default(), Text::default()));
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    focused: true,
+                    ..default()
+                },
+                PrimaryWindow,
+            ))
+            .id();
+        let send = |app: &mut App, code, value: &'static str| {
+            app.world_mut().write_message(KeyboardInput {
+                key_code: code,
+                logical_key: bevy::input::keyboard::Key::Character(value.into()),
+                state: bevy::input::ButtonState::Pressed,
+                text: Some(value.into()),
+                repeat: false,
+                window,
+            });
+            app.update();
+        };
+        // A keyboard with slash on Shift+7 must behave like one with a dedicated slash key.
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::ShiftLeft);
+        send(&mut app, KeyCode::Digit7, "/");
+        let search = app.world().resource::<Search>();
+        assert!(search.available);
+        assert!(search.editing);
+        assert!(search.query.is_empty());
+        send(&mut app, KeyCode::KeyA, "a");
+        assert_eq!(app.world().resource::<Search>().query, "a");
+    }
 
     #[test]
     fn finds_case_insensitive_lines_and_cycles_in_both_directions() {

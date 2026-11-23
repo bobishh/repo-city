@@ -123,6 +123,8 @@ test("wall search opens the matching chunk directly for editing", async ({ page 
   await page.locator("canvas").focus();
   await page.locator("canvas").evaluate(canvas => canvas.requestPointerLock());
   await page.keyboard.press("Slash", { delay: 120 });
+  await expect(page.locator("canvas")).toHaveAttribute("data-pointer-ui", "");
+  await expectClosed(page);
   await page.keyboard.type("unseen_tail", { delay: 40 });
   await page.keyboard.press("Enter", { delay: 160 });
   await expectOpen(page, path);
