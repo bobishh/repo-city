@@ -112,7 +112,7 @@ fn escape_source(html: &mut String, text: &str) {
     }
 }
 
-pub(super) fn events(source: &str) -> impl Iterator<Item = Event<'_>> {
+pub(super) fn events(source: &str) -> Parser<'_> {
     Parser::new_ext(
         source,
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS,

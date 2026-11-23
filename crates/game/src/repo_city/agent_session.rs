@@ -74,6 +74,7 @@ struct MessageRow {
     id: String,
     name: String,
     text: String,
+    markdown: bool,
 }
 #[derive(Component)]
 struct Status;
@@ -286,6 +287,10 @@ impl Session {
     pub(super) fn pause_following(&mut self) {
         self.follow_agent = false;
     }
+
+    pub(super) fn report_ui_error(&mut self, error: String) {
+        self.status = error;
+    }
     pub(super) fn file_activity(&self) -> Option<&agent_engine::state::FileActivity> {
         self.projection.activity.as_ref()
     }
@@ -493,6 +498,7 @@ impl Session {
         self.voice_error = None;
         self.projection.voice = None;
         self.projection.turn = None;
+        self.projection.streaming_messages.clear();
         self.projection.presence.clear();
         self.approvals.clear();
         self.speaking.store(false, Ordering::Relaxed);
@@ -791,12 +797,13 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands) -> Entity {
 
 fn draw_dialogue(
     parent: &mut ChildSpawnerCommands,
-    dialogue: &Dialogue,
+    projection: &Projection,
     repo: &Repository,
     agent: &str,
     pending_send: Option<&str>,
     transcript: &mut Transcript,
 ) {
+    let dialogue = &projection.dialogue;
     let mut messages: Vec<_> = dialogue
         .messages
         .iter()
@@ -811,7 +818,9 @@ fn draw_dialogue(
                 "system" => ("Session", Color::srgb_u8(151, 171, 177)),
                 _ => (agent, native_panel::INK),
             };
-            (message, name, accent)
+            let markdown =
+                message.role == "assistant" && !projection.streaming_messages.contains(&message.id);
+            (message, name, accent, markdown)
         })
         .collect();
     messages.reverse();
@@ -819,8 +828,11 @@ fn draw_dialogue(
         .rows
         .iter()
         .zip(&messages)
-        .take_while(|(row, (message, name, _))| {
-            row.id == message.id && row.text == message.text && row.name == *name
+        .take_while(|(row, (message, name, _, markdown))| {
+            row.id == message.id
+                && row.text == message.text
+                && row.name == *name
+                && row.markdown == *markdown
         })
         .count();
     for row in transcript.rows.drain(unchanged..) {
@@ -843,7 +855,7 @@ fn draw_dialogue(
     if let Some(empty) = transcript.empty.take() {
         parent.commands().entity(empty).despawn();
     }
-    for (message, name, accent) in messages.into_iter().skip(unchanged) {
+    for (message, name, accent, markdown) in messages.into_iter().skip(unchanged) {
         let entity = parent
             .spawn((
                 Node {
@@ -864,7 +876,12 @@ fn draw_dialogue(
                     TextFont::from_font_size(12.),
                     TextColor(accent),
                 ));
-                agent_navigation::draw_links(card, &message.text, repo);
+                if markdown {
+                    agent_navigation::draw_links(card, &message.text, repo);
+                } else {
+                    let references = (message.role != "assistant").then_some(repo);
+                    agent_navigation::draw_plain_message(card, &message.text, references);
+                }
             })
             .id();
         transcript.rows.push(MessageRow {
@@ -872,6 +889,7 @@ fn draw_dialogue(
             id: message.id.clone(),
             name: name.into(),
             text: message.text.clone(),
+            markdown,
         });
     }
 }
@@ -1195,7 +1213,7 @@ fn update(
         commands.entity(entity).with_children(|parent| {
             draw_dialogue(
                 parent,
-                &session.projection.dialogue,
+                &session.projection,
                 &repo.0,
                 session.provider().label,
                 session.pending_send.as_deref(),
@@ -1539,6 +1557,73 @@ fn encode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_streaming_reply_changes_from_literal_text_to_markdown() {
+        #[derive(Component)]
+        struct Panel;
+
+        let mut app = App::new();
+        let mut session = Session::default();
+        let dialogue = &mut session.projection.dialogue;
+        dialogue.message("earlier", "assistant", "**Earlier**", false);
+        dialogue.message("current", "assistant", "**Current**", true);
+        session
+            .projection
+            .streaming_messages
+            .insert("current".into());
+        app.insert_resource(session)
+            .insert_resource(Repo(repository_picker::empty()))
+            .add_systems(
+                Update,
+                |mut commands: Commands,
+                 session: Res<Session>,
+                 repo: Res<Repo>,
+                 panel: Query<Entity, With<Panel>>,
+                 mut transcript: Local<Transcript>| {
+                    commands
+                        .entity(panel.single().unwrap())
+                        .with_children(|parent| {
+                            draw_dialogue(
+                                parent,
+                                &session.projection,
+                                &repo.0,
+                                "Agent",
+                                None,
+                                &mut transcript,
+                            );
+                        });
+                },
+            );
+        app.world_mut().spawn(Panel);
+        app.update();
+        let texts = |app: &mut App| -> Vec<_> {
+            let world = app.world_mut();
+            world
+                .query::<(Entity, &EditableText)>()
+                .iter(world)
+                .map(|(entity, text)| (entity, text.value().to_string()))
+                .collect()
+        };
+        let before = texts(&mut app);
+        assert_eq!(
+            before
+                .iter()
+                .map(|(_, text)| text.as_str())
+                .collect::<Vec<_>>(),
+            ["Earlier", "**Current**"]
+        );
+        app.world_mut()
+            .resource_mut::<Session>()
+            .projection
+            .streaming_messages
+            .clear();
+        app.update();
+        let after = texts(&mut app);
+        assert!(after.contains(&before[0]));
+        assert!(after.iter().any(|(_, text)| text == "Current"));
+        assert!(!after.iter().any(|(_, text)| text == "**Current**"));
+    }
 
     #[test]
     fn board_keeps_conversation_order_and_shows_one_copy_of_the_spoken_reply() {

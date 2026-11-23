@@ -636,6 +636,35 @@ pub(super) fn open_associated_path(path: &std::path::Path) -> Result<(), String>
         .ok_or_else(|| "Could not open the system player.".into())
 }
 
+pub(super) fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), String> {
+    std::fs::metadata(path)
+        .map_err(|error| format!("Could not find {}: {error}", path.display()))?;
+    let mut command = match std::env::consts::OS {
+        "macos" => {
+            let mut command = Command::new("open");
+            command.arg("-R").arg(path);
+            command
+        }
+        "linux" => {
+            let mut command = Command::new("xdg-open");
+            command.arg(path.parent().unwrap_or(path));
+            command
+        }
+        "windows" => {
+            let mut command = Command::new("explorer.exe");
+            let mut selection = std::ffi::OsString::from("/select,");
+            selection.push(path);
+            command.arg(selection);
+            command
+        }
+        _ => return Err(format!("Show {} in your file manager.", path.display())),
+    };
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Could not open the file manager: {error}"))
+}
+
 fn browser_command(platform: &str, url: &str) -> Result<Command, String> {
     let mut command = match platform {
         "macos" => Command::new("open"),

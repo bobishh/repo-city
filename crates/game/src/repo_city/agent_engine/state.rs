@@ -1,6 +1,6 @@
 //! Public provider events projected into local dialogue and measured file activity.
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Dialogue {
@@ -32,6 +32,7 @@ pub(crate) struct FileActivity {
 #[derive(Default)]
 pub(crate) struct Projection {
     pub dialogue: Dialogue,
+    pub streaming_messages: HashSet<String>,
     pub turn: Option<String>,
     pub presence: Vec<Presence>,
     pub activity: Option<FileActivity>,

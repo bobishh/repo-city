@@ -476,10 +476,12 @@ agent touched, including files it read without editing. Select a row with a
 reported line to fly there. Switch to **Live worktree** for files created or
 edited in the current checkout.
 The action history stays in the local session, including when Chat is in a room.
+Agent replies display Markdown when the message finishes streaming.
 Paths such as `crates/explorer/build.rs:12` are highlighted inside chat; click
-to fly to that file and source line. Drag across message text and press
-**Cmd/Ctrl+C** to copy the selection. The MCP tool `propose_navigation` shows a
-notification with **Y · Fly** and **N · Dismiss**. Proposals expire after a minute
+to fly to that file and source line. Click a local file link to reveal the file
+in your file manager. Select **Copy code** to copy a whole block, or drag across
+text and press **Cmd/Ctrl+C** to copy a selection. The MCP tool `propose_navigation`
+shows a notification with **Y · Fly** and **N · Dismiss**. Proposals expire after a minute
 and never move the camera without acceptance. Y/N remain text while an editor,
 message field or terminal has focus.
 

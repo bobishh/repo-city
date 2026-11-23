@@ -50,6 +50,7 @@ impl Projection {
                     .record(&thread, &format!("turn:{id}"), details, phase);
                 if primary {
                     self.turn = None;
+                    self.streaming_messages.clear();
                     self.status = if interrupted {
                         "Work stopped".into()
                     } else {
@@ -82,13 +83,9 @@ impl Projection {
                 );
             }
             Update::MessageDelta { id, text } => {
-                dialogue_message(
-                    &mut self.dialogue,
-                    &format!("{thread}:{id}"),
-                    Role::Assistant,
-                    &text,
-                    true,
-                );
+                let id = format!("{thread}:{id}");
+                dialogue_message(&mut self.dialogue, &id, Role::Assistant, &text, true);
+                self.streaming_messages.insert(id);
             }
             Update::Transcript {
                 session,
@@ -123,13 +120,9 @@ impl Projection {
             Item::Message { role, text }
                 if completed && (primary || matches!(role, Role::Assistant)) =>
             {
-                dialogue_message(
-                    &mut self.dialogue,
-                    &format!("{thread}:{id}"),
-                    role,
-                    &text,
-                    false,
-                );
+                let id = format!("{thread}:{id}");
+                self.streaming_messages.remove(&id);
+                dialogue_message(&mut self.dialogue, &id, role, &text, false);
             }
             Item::Edit {
                 files,
@@ -446,7 +439,9 @@ mod tests {
                 &json!({"threadId":"main","itemId":"a","delta":delta}),
             );
         }
+        assert!(view.streaming_messages.contains("main:a"));
         view.apply_wire(Path::new("/repo"), "item/completed", &json!({"threadId":"main","item":{"id":"a","type":"agentMessage","text":"Hello there"}}));
+        assert!(view.streaming_messages.is_empty());
         assert_eq!(view.dialogue.messages.len(), 1);
         assert_eq!(view.dialogue.messages[0].text, "Hello there");
         view.apply_wire(Path::new("/repo"), "item/completed", &json!({"threadId":"main","item":{"id":"internal","type":"userMessage","content":[{"type":"text","text":"<realtime_delegation><input>hidden</input></realtime_delegation>"}]}}));

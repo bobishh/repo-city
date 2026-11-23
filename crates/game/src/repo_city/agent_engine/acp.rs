@@ -99,10 +99,11 @@ impl Engine for Adapter {
                 Update::Models(models) => events.push(Event::Models(models)),
                 Update::Event(event) => events.push(event),
                 Update::Turn(turn, status) => {
-                    if turn.is_none()
-                        && let Some(thread) = &projection.dialogue.thread
-                    {
-                        projection.timeline.end_turn(thread);
+                    if turn.is_none() {
+                        projection.streaming_messages.clear();
+                        if let Some(thread) = &projection.dialogue.thread {
+                            projection.timeline.end_turn(thread);
+                        }
                     }
                     projection.turn = turn;
                     events.push(Event::Changed {
@@ -111,6 +112,7 @@ impl Engine for Adapter {
                 }
                 Update::Delta { id, text } => {
                     projection.dialogue.message(&id, "assistant", &text, true);
+                    projection.streaming_messages.insert(id);
                     events.push(Event::Changed { status: None });
                 }
                 Update::File { path, line } => {

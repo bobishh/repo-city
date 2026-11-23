@@ -1,14 +1,16 @@
 //! User-controlled navigation from chat references and MCP proposals.
 use super::*;
 use bevy::{
+    clipboard::Clipboard,
     input_focus::InputFocus,
     picking::{Pickable, events::PointerClick},
     text::{
-        ComputedTextBlock, EditableText, TextBackgroundColor, TextCursorStyle, TextEdit,
-        TextLayoutInfo, TextReadWriteMode, Underline,
+        ComputedTextBlock, EditableText, FontStyle, FontWeight, Strikethrough, TextBackgroundColor,
+        TextCursorStyle, TextEdit, TextLayoutInfo, TextReadWriteMode, Underline,
     },
     ui_widgets::{Activate, TextInput, observe},
 };
+use pulldown_cmark::{Event, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -18,6 +20,9 @@ use std::{
     path::{Component, Path},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+mod chat_markdown;
+pub(super) use chat_markdown::draw as draw_links;
 
 const TTL: u64 = 60_000;
 const MAX_PACKET: u64 = 8192;
@@ -628,11 +633,46 @@ fn update(
 
 #[derive(Component, Clone)]
 struct Reference(Target);
+
+#[derive(Component, Clone, Debug)]
+enum MessageLink {
+    Source(Target),
+    LocalFile(PathBuf),
+    Web(String),
+}
+
+#[derive(Component)]
+struct CopyCode(String);
+
+#[derive(Clone, Copy, Default)]
+struct RunStyle {
+    bold: bool,
+    italic: bool,
+    strike: bool,
+    code: bool,
+}
+
+struct TextRun {
+    text: String,
+    style: RunStyle,
+    link: Option<MessageLink>,
+}
+
+impl TextRun {
+    fn plain(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            style: RunStyle::default(),
+            link: None,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Link {
     bytes: Range<usize>,
     text: String,
-    target: Target,
+    target: MessageLink,
 }
 
 fn resolve(repo: &Repository, raw: &str) -> Option<Target> {
@@ -678,31 +718,59 @@ fn resolve(repo: &Repository, raw: &str) -> Option<Target> {
     Target::checked(repo, &first.path, line, false).ok()
 }
 
+fn message_link(repo: &Repository, href: &str) -> Option<MessageLink> {
+    if let Some(path) = href.strip_prefix("file://") {
+        let path = path.split('#').next()?;
+        if !path.starts_with('/') || path.contains('?') {
+            return None;
+        }
+        let decoded = percent_encoding::percent_decode_str(path)
+            .decode_utf8()
+            .ok()?;
+        if decoded.starts_with("//") || decoded.chars().any(|ch| ch.is_control() || ch == '\\') {
+            return None;
+        }
+        let decoded: &str = &decoded;
+        #[cfg(windows)]
+        let decoded = decoded.trim_start_matches('/');
+        let path = PathBuf::from(decoded);
+        if !path.is_absolute() {
+            return None;
+        }
+        return Some(
+            resolve(repo, href)
+                .or_else(|| resolve(repo, path.to_str()?))
+                .map_or(MessageLink::LocalFile(path), MessageLink::Source),
+        );
+    }
+    if href.starts_with("https://") || href.starts_with("http://") {
+        return (!href.chars().any(|ch| ch.is_control() || ch == '\\'))
+            .then(|| MessageLink::Web(href.into()));
+    }
+    resolve(repo, href).map(MessageLink::Source)
+}
+
 fn links(text: &str, repo: &Repository) -> Vec<Link> {
     let mut links = Vec::new();
-    let mut cursor = 0;
-    while let Some(relative) = text[cursor..].find('[') {
-        let start = cursor + relative;
-        let Some(middle) = text[start + 1..]
-            .find("](")
-            .map(|offset| start + 1 + offset)
-        else {
-            break;
-        };
-        let Some(end) = text[middle + 2..]
-            .find(')')
-            .map(|offset| middle + 2 + offset)
-        else {
-            break;
-        };
-        if let Some(target) = resolve(repo, &text[middle + 2..end]) {
-            links.push(Link {
-                bytes: start..end + 1,
-                text: text[start + 1..middle].trim_matches('`').into(),
-                target,
-            });
+    let mut explicit = None::<Link>;
+    for (event, bytes) in markdown_preview::events(text).into_offset_iter() {
+        match event {
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                explicit = message_link(repo, &dest_url).map(|target| Link {
+                    bytes,
+                    text: String::new(),
+                    target,
+                });
+            }
+            Event::Text(value) | Event::Code(value) if explicit.is_some() => {
+                explicit.as_mut().unwrap().text.push_str(&value);
+            }
+            Event::SoftBreak | Event::HardBreak if explicit.is_some() => {
+                explicit.as_mut().unwrap().text.push(' ');
+            }
+            Event::End(TagEnd::Link) => links.extend(explicit.take()),
+            _ => {}
         }
-        cursor = end + 1;
     }
     let mut cursor = 0;
     while let Some(relative) = text[cursor..].find('`') {
@@ -714,7 +782,7 @@ fn links(text: &str, repo: &Repository) -> Vec<Link> {
             links.push(Link {
                 bytes: start..end + 1,
                 text: text[start + 1..end].into(),
-                target,
+                target: MessageLink::Source(target),
             });
         }
         cursor = end + 1;
@@ -735,7 +803,7 @@ fn links(text: &str, repo: &Repository) -> Vec<Link> {
                     links.push(Link {
                         bytes: start..end,
                         text: token.into(),
-                        target,
+                        target: MessageLink::Source(target),
                     });
                 }
             }
@@ -756,13 +824,106 @@ fn links(text: &str, repo: &Repository) -> Vec<Link> {
     links
 }
 
-/// Real inline text spans retain wrapping; the text layout maps clicked runs to files.
-pub(super) fn draw_links(
+pub(super) fn draw_plain_message(
     parent: &mut ChildSpawnerCommands,
     text: &str,
-    repo: &Repository,
-) -> Entity {
-    draw_references(parent, text, links(text, repo))
+    repo: Option<&Repository>,
+) {
+    let runs = match repo {
+        Some(repo) => referenced_runs(text, repo, RunStyle::default()),
+        None => vec![TextRun::plain(text)],
+    };
+    draw_runs(parent, runs, &native_panel::panel_font());
+}
+
+fn referenced_runs(text: &str, repo: &Repository, style: RunStyle) -> Vec<TextRun> {
+    let mut runs = Vec::new();
+    let mut cursor = 0;
+    for link in links(text, repo) {
+        if cursor < link.bytes.start {
+            runs.push(TextRun {
+                text: text[cursor..link.bytes.start].into(),
+                style,
+                link: None,
+            });
+        }
+        runs.push(TextRun {
+            text: link.text,
+            style,
+            link: Some(link.target),
+        });
+        cursor = link.bytes.end;
+    }
+    if cursor < text.len() {
+        runs.push(TextRun {
+            text: text[cursor..].into(),
+            style,
+            link: None,
+        });
+    }
+    runs
+}
+
+fn draw_code(parent: &mut ChildSpawnerCommands, code: String) {
+    parent
+        .spawn((
+            Node {
+                width: percent(100.),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(6.),
+                padding: UiRect::all(px(9.)),
+                ..default()
+            },
+            BackgroundColor(Color::srgb_u8(7, 19, 26)),
+        ))
+        .with_children(|block| {
+            draw_runs(
+                block,
+                vec![TextRun::plain(&code)],
+                &native_panel::panel_font(),
+            );
+            let copy = block
+                .spawn((
+                    file_picker::button(
+                        "Copy code",
+                        &native_panel::panel_font(),
+                        native_panel::INK,
+                        AlignSelf::End,
+                    ),
+                    CopyCode(code),
+                    bevy::input_focus::tab_navigation::TabIndex(80),
+                ))
+                .observe(copy_code)
+                .id();
+            block
+                .commands()
+                .entity(copy)
+                .entry::<Node>()
+                .and_modify(|mut node| {
+                    node.min_width = px(122.);
+                    node.justify_content = JustifyContent::Center;
+                });
+        });
+}
+
+fn copy_code(
+    event: On<Activate>,
+    blocks: Query<(&CopyCode, &Children)>,
+    mut labels: Query<&mut Text>,
+    mut clipboard: ResMut<Clipboard>,
+) {
+    if let Ok((code, children)) = blocks.get(event.entity) {
+        let label = if clipboard.set_text(code.0.as_str()).is_ok() {
+            "Copied"
+        } else {
+            "Copy failed"
+        };
+        for child in children.iter() {
+            if let Ok(mut text) = labels.get_mut(child) {
+                text.set_if_neq(Text::new(label));
+            }
+        }
+    }
 }
 
 pub(super) fn draw_measured_link(
@@ -808,8 +969,8 @@ pub(super) fn measured_link(
         .id())
 }
 
-fn draw_references(parent: &mut ChildSpawnerCommands, text: &str, references: Vec<Link>) -> Entity {
-    let mut selectable = String::with_capacity(text.len());
+fn draw_runs(parent: &mut ChildSpawnerCommands, runs: Vec<TextRun>, font: &TextFont) {
+    let mut selectable = String::new();
     let container = parent
         .spawn(Node {
             width: percent(100.),
@@ -822,7 +983,7 @@ fn draw_references(parent: &mut ChildSpawnerCommands, text: &str, references: Ve
         .spawn((
             ChildOf(container),
             Text::new(""),
-            native_panel::panel_font(),
+            font.clone(),
             TextColor(Color::srgb_u8(218, 234, 236)),
             Node {
                 width: percent(100.),
@@ -831,37 +992,39 @@ fn draw_references(parent: &mut ChildSpawnerCommands, text: &str, references: Ve
             Pickable::IGNORE,
         ))
         .with_children(|spans| {
-            let mut cursor = 0;
-            for link in references {
-                if cursor < link.bytes.start {
-                    selectable.push_str(&text[cursor..link.bytes.start]);
-                    spans.spawn((
-                        TextSpan::new(&text[cursor..link.bytes.start]),
-                        native_panel::panel_font(),
-                        TextColor(Color::srgb_u8(218, 234, 236)),
-                        Pickable::IGNORE,
-                    ));
+            for run in runs {
+                selectable.push_str(&run.text);
+                let mut font = font.clone();
+                if run.style.bold {
+                    font.weight = FontWeight::BOLD;
                 }
-                selectable.push_str(&link.text);
-                spans.spawn((
-                    TextSpan::new(link.text),
-                    native_panel::panel_font(),
-                    TextColor(Color::srgb_u8(124, 217, 223)),
-                    TextBackgroundColor(Color::srgb_u8(19, 51, 60)),
-                    Underline,
-                    Reference(link.target),
+                if run.style.italic {
+                    font.style = FontStyle::Italic;
+                }
+                let color = if run.link.is_some() {
+                    Color::srgb_u8(124, 217, 223)
+                } else if run.style.code {
+                    Color::srgb_u8(239, 214, 175)
+                } else if run.style.bold || font.weight == FontWeight::BOLD {
+                    Color::srgb_u8(244, 250, 251)
+                } else {
+                    Color::srgb_u8(218, 234, 236)
+                };
+                let mut span = spans.spawn((
+                    TextSpan::new(run.text),
+                    font,
+                    TextColor(color),
                     Pickable::IGNORE,
                 ));
-                cursor = link.bytes.end;
-            }
-            if cursor < text.len() {
-                selectable.push_str(&text[cursor..]);
-                spans.spawn((
-                    TextSpan::new(&text[cursor..]),
-                    native_panel::panel_font(),
-                    TextColor(Color::srgb_u8(218, 234, 236)),
-                    Pickable::IGNORE,
-                ));
+                if run.style.code || run.link.is_some() {
+                    span.insert(TextBackgroundColor(Color::srgb_u8(19, 51, 60)));
+                }
+                if run.style.strike {
+                    span.insert(Strikethrough);
+                }
+                if let Some(link) = run.link {
+                    span.insert((Underline, link));
+                }
             }
         })
         .id();
@@ -880,7 +1043,7 @@ fn draw_references(parent: &mut ChildSpawnerCommands, text: &str, references: Ve
             bevy::input_focus::tab_navigation::TabIndex(-1),
             editable,
             TextReadWriteMode::ReadOnly,
-            native_panel::panel_font(),
+            font.clone(),
             TextColor(Color::NONE),
             TextCursorStyle {
                 color: Color::srgb_u8(124, 217, 223),
@@ -909,10 +1072,11 @@ fn draw_references(parent: &mut ChildSpawnerCommands, text: &str, references: Ve
             )>,
                   text: Query<&EditableText>,
                   ui_scale: Res<UiScale>,
-                  references: Query<&Reference>,
+                  references: Query<&MessageLink>,
                   repo: Res<Repo>,
                   mut navigation: ResMut<Navigation>,
-                  mut tablet: ResMut<review_tablet::Tablet>| {
+                  mut tablet: ResMut<review_tablet::Tablet>,
+                  mut session: ResMut<agent_session::Session>| {
                 if event.button != bevy::picking::pointer::PointerButton::Primary
                     || event.count != 1
                     || text.get(event.entity).is_ok_and(|input| {
@@ -941,20 +1105,104 @@ fn draw_references(parent: &mut ChildSpawnerCommands, text: &str, references: Ve
                     if run.bounds.contains(local)
                         && let Some(span) = block.entities().get(run.section_index as usize)
                         && let Ok(reference) = references.get(span.entity)
-                        && navigation.follow(&reference.0, &repo.0)
                     {
-                        tablet.request_close();
+                        let result = match reference {
+                            MessageLink::Source(target) => {
+                                if navigation.follow(target, &repo.0) {
+                                    tablet.request_close();
+                                }
+                                Ok(())
+                            }
+                            MessageLink::LocalFile(path) => {
+                                native_github::reveal_in_file_manager(path)
+                            }
+                            MessageLink::Web(url) => native_github::open_browser_url(url),
+                        };
+                        if let Err(error) = result {
+                            session.report_ui_error(error);
+                        }
                         break;
                     }
                 }
             },
         );
-    container
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_formats_headings_emphasis_inline_code_and_nested_lists() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = App::new();
+        let markdown = "### Flow\n\n**Read** `SELECT`\n\n1. Pick\n   - Seal\n\n---\n";
+        app.world_mut()
+            .run_system_once(move |mut commands: Commands| {
+                commands
+                    .spawn_empty()
+                    .with_children(|parent| draw_links(parent, markdown, &repository()));
+            })
+            .unwrap();
+        let world = app.world_mut();
+        let mut text = world.query::<&EditableText>();
+        let bodies: Vec<_> = text
+            .iter(world)
+            .map(|text| text.value().to_string())
+            .collect();
+        assert_eq!(bodies, ["Flow", "Read SELECT", "1. Pick", "• Seal"]);
+        let mut spans = world.query::<(&TextSpan, &TextFont, Option<&TextBackgroundColor>)>();
+        assert!(
+            spans
+                .iter(world)
+                .any(|(span, font, _)| span.as_str() == "Read"
+                    && font.weight == bevy::text::FontWeight::BOLD)
+        );
+        assert!(
+            spans
+                .iter(world)
+                .any(|(span, _, background)| span.as_str() == "SELECT" && background.is_some())
+        );
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn chat_displays_a_file_link_and_an_independently_copyable_command() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        let mut app = App::new();
+        let repo = repository();
+        let command = "  open -R '/tmp/Build Output.bundle'\nprintf '%s' done\n";
+        let message =
+            format!("[Build output](file:///tmp/Build%20Output.bundle)\n\n```sh\n{command}```\n");
+        app.world_mut()
+            .run_system_once(move |mut commands: Commands| {
+                commands.spawn_empty().with_children(|parent| {
+                    draw_links(parent, &message, &repo);
+                });
+            })
+            .unwrap();
+        let world = app.world_mut();
+        let mut text = world.query::<&EditableText>();
+        let bodies: Vec<_> = text
+            .iter(world)
+            .map(|text| text.value().to_string())
+            .collect();
+        assert!(bodies.iter().any(|text| text == "Build output"));
+        assert!(bodies.iter().any(|text| text == command));
+        assert!(
+            world
+                .query::<&Text>()
+                .iter(world)
+                .any(|text| text.as_str() == "Copy code")
+        );
+        let mut links = world.query::<&MessageLink>();
+        assert!(
+            matches!(links.single(world).unwrap(), MessageLink::LocalFile(path) if path == Path::new("/tmp/Build Output.bundle"))
+        );
+        let mut copy = world.query::<&CopyCode>();
+        assert_eq!(copy.single(world).unwrap().0, command);
+    }
 
     #[test]
     fn chat_message_text_can_be_selected_without_being_editable() {
@@ -981,7 +1229,7 @@ mod tests {
         assert_eq!(*mode, TextReadWriteMode::ReadOnly);
         assert_eq!(
             text.value().to_string(),
-            "See src/main.rs:7\nfor the change."
+            "See src/main.rs:7 for the change."
         );
         let window = world.spawn(Window::default()).id();
         world.trigger(AcquireFocus {
@@ -1310,9 +1558,17 @@ mod tests {
         let found = links(text, &repo);
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].text, "crates/explorer/build.rs:12");
-        assert_eq!(found[0].target.line, 12);
+        assert!(matches!(&found[0].target, MessageLink::Source(target) if target.line == 12));
         assert_eq!(found[1].text, "main");
-        assert_eq!(found[1].target.line, 7);
+        assert!(matches!(&found[1].target, MessageLink::Source(target) if target.line == 7));
+        assert!(message_link(&repo, "file://host/checkout/src/main.rs").is_none());
+        assert!(message_link(&repo, "file:///%2fserver/share/main.rs").is_none());
+        assert!(message_link(&repo, "javascript:alert(1)").is_none());
+        assert!(message_link(&repo, "file:///tmp/bad%00name").is_none());
+        assert!(matches!(
+            message_link(&repo, "https://example.test/"),
+            Some(MessageLink::Web(_))
+        ));
         for path in [
             "../src/main.rs",
             "/src/main.rs",
