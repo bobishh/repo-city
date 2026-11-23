@@ -534,6 +534,8 @@ pub fn run() {
         primary_window: Some(Window {
             title: repository_picker::window_title(&set, &repo),
             resolution: (1440, 900).into(),
+            #[cfg(not(target_arch = "wasm32"))]
+            focused: !args.iter().any(|arg| arg == "--smoke-background"),
             #[cfg(target_arch = "wasm32")]
             canvas: Some("#repo-city".into()),
             #[cfg(target_arch = "wasm32")]

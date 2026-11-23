@@ -35,6 +35,7 @@ fn language(path: &str) -> Option<Language> {
         "rb" | "rake" => tree_sitter_ruby::LANGUAGE.into(),
         "ex" | "exs" => tree_sitter_elixir::LANGUAGE.into(),
         "elm" => tree_sitter_elm::LANGUAGE.into(),
+        extension if extension.eq_ignore_ascii_case("tla") => tree_sitter_tlaplus::LANGUAGE.into(),
         _ => return None,
     })
 }
@@ -42,11 +43,18 @@ fn language(path: &str) -> Option<Language> {
 // Whole-node colors stop traversal so comment/string contents keep their color.
 fn whole_kind(name: &str) -> Option<Kind> {
     match name {
-        name if name.contains("comment") => Some(Kind::Comment),
+        name if name.contains("comment") || name == "single_line" => Some(Kind::Comment),
         "predefined_type" => Some(Kind::Type),
         "string" | "string_literal" | "raw_string_literal" | "template_string" | "char_literal"
         | "heredoc_body" | "string_content" | "char_constant_expr" => Some(Kind::String),
-        "number" | "number_constant_expr" => Some(Kind::Number),
+        "number"
+        | "number_constant_expr"
+        | "nat_number"
+        | "real_number"
+        | "binary_number"
+        | "hex_number"
+        | "octal_number" => Some(Kind::Number),
+        "boolean" => Some(Kind::Keyword),
         name if name.contains("integer") || name.contains("float") => Some(Kind::Number),
         "type_identifier" | "primitive_type" | "constant" | "upper_case_identifier" => {
             Some(Kind::Type)
@@ -62,7 +70,8 @@ fn is_function_name(node: Node) -> bool {
     };
     let callable = parent.kind().contains("function")
         || parent.kind().contains("call")
-        || parent.kind().contains("method");
+        || parent.kind().contains("method")
+        || parent.kind() == "operator_definition";
     callable
         && ["name", "function", "method"]
             .into_iter()
@@ -221,6 +230,40 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn tla_spec_uses_syntax_colors_without_changing_source_text() {
+        let source = r#"---- MODULE Capacity ----
+CONSTANT Limit
+Capacity(n) == IF n = 2 THEN "λ" ELSE "full" \* keep the specification
+(* state
+   invariant *)
+====
+"#;
+        let lines = highlight("tla/Capacity.tla", source);
+        for (row, word, kind) in [
+            (1, "CONSTANT", Kind::Keyword),
+            (2, "Capacity", Kind::Function),
+            (2, "IF", Kind::Keyword),
+            (2, "2", Kind::Number),
+            (2, "\"λ\"", Kind::String),
+            (2, "\\* keep the specification", Kind::Comment),
+            (4, "   invariant *)", Kind::Comment),
+        ] {
+            assert!(
+                lines[row].spans.iter().any(|s| {
+                    s.kind == kind && lines[row].text.get(s.bytes.clone()) == Some(word)
+                }),
+                "{word} should be {kind:?}"
+            );
+        }
+        assert!(
+            lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .eq(source.lines())
+        );
+    }
+
     #[test]
     fn unsupported_text_is_preserved_without_fake_tokens() {
         let lines = highlight("readme.md", "# fn fake()\nλ");

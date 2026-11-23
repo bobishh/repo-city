@@ -38,7 +38,7 @@ comparison in the current browser profile or desktop installation.
 
 The city uses directory paths and file metadata to position buildings.
 Source loads on demand. The native app uses Tree-sitter to highlight Rust,
-JavaScript, TypeScript, Ruby, Elixir, and Elm. The browser loads the complete
+JavaScript, TypeScript, Ruby, Elixir, Elm, and TLA⁺. The browser loads the complete
 pinned Starry Night TextMate catalog in a Web Worker, including Lean 4. Grammars
 and their dependencies load separately when needed. Unknown formats show plain
 text. Native function extraction and its structural measurements

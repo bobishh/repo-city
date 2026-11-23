@@ -120,6 +120,7 @@ pub(super) fn has_text_size_hint(path: &str) -> bool {
             | "mli"
             | "fs"
             | "lean"
+            | "tla"
             | "zig"
             | "dart"
             | "sh"

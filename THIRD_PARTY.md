@@ -25,6 +25,9 @@ comes from GitHub Linguist revision `14ac04abe3e3722e42c52489b377d9d4118fc8b6`.
 The local projection keeps only names, scopes, extensions, filenames and interpreters;
 see `licenses/linguist-MIT.txt`.
 
+Native TLA⁺ syntax colors use [tree-sitter-tlaplus 1.5.0](https://github.com/tlaplus-community/tree-sitter-tlaplus/tree/8a8413f1d08e7ee40b347206d26eac4324db9fd9)
+under the MIT license. See `licenses/tree-sitter-tlaplus-MIT.txt`.
+
 Caveat is licensed under the SIL Open Font License 1.1. Copyright 2014 The
 Caveat Project Authors. The desktop font (`assets/fonts/Caveat-Latin.ttf`) is
 the TrueType form of the web font (`web/assets/caveat-latin-wght.woff2`). See

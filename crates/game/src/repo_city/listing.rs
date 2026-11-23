@@ -3197,6 +3197,25 @@ mod tests {
     }
 
     #[test]
+    fn tall_tla_source_uses_the_text_wall_and_keeps_code_at_reading_scale() {
+        let mut file = fixture_with_rows(280);
+        file.path = "tla/BookingCapacity.tla".into();
+        let count = 270;
+        let frame = ReadingFrame::default();
+        let size = block_size(&file);
+        let source = WallSide::new(&file, count, Face::Source, size);
+        let camera = view(&file, count, frame);
+
+        assert!(size.y > size.x);
+        assert_eq!(source.glyph_scale().x, 1.);
+        assert!(
+            source
+                .detail_distance(&camera, 16. / 9., false, frame)
+                .is_some()
+        );
+    }
+
+    #[test]
     fn glyphs_keep_equal_world_scale_with_mismatched_row_counts() {
         let file = fixture_with_rows(80);
         let size = block_size(&file);
