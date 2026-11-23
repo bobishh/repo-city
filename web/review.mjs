@@ -38,7 +38,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
   const dialog = document.querySelector("#review-dialog");
   const tablet = createTablet(dialog, canvas);
   const settingsKey = "repo-city-reading-v1";
-  let reading = { mode: "delayed", block_lines: 6, block_kind: "function", auto_advance: true, min_seconds: 3, max_seconds: 6 };
+  let reading = { mode: "delayed", block_lines: 6, block_kind: "function", auto_advance: true, min_seconds: 3, max_seconds: 6, fly_to_font_px: 14 };
   try {
     if (localStorage.getItem("repo-city-wash-mode") === "immediate") reading.mode = "immediate";
     const previous = JSON.parse(localStorage.getItem(settingsKey));
@@ -312,6 +312,9 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     if (!Number.isInteger(values.block_lines) || values.block_lines < 1 || values.block_lines > 4294967295) {
       return "Lines per reading block must be a positive whole number.";
     }
+    if (!Number.isInteger(values.fly_to_font_px) || values.fly_to_font_px < 8 || values.fly_to_font_px > 32) {
+      return "Enter a fly-to font size from 8 to 32 px.";
+    }
     if (!["delayed", "immediate"].includes(values.mode) ||
         [values.min_seconds, values.max_seconds].some(value => value !== null &&
           (!Number.isFinite(value) || value < 0 || value > 3.4028234e38))) {
@@ -390,6 +393,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     const block = make("input", undefined, { type: "number", min: "1", step: "1", value: reading.block_lines });
     const bound = value => make("input", undefined, { type: "text", inputmode: "decimal", value: value ?? "", placeholder: "No limit" });
     const min = bound(reading.min_seconds), max = bound(reading.max_seconds);
+    const fontSize = make("input", undefined, { type: "number", min: "8", max: "32", step: "1", value: reading.fly_to_font_px });
     const status = make("p", "", { class: "review-status", role: "status" });
     form.noValidate = true;
     const limits = make("div", undefined, { class: "reading-limits" });
@@ -397,7 +401,8 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     form.append(make("h3", "Reading"), field("Source always visible", showSource), field("Read credit", mode), field("Reading block", kind), field("Lines per reading block", block),
       make("p", "Used for fixed blocks and when function boundaries are unavailable."),
       field("Auto-advance downward", auto), limits,
-      make("p", "Block size and time limits are independent. Leave either limit blank to use the calculated time."), status);
+      make("p", "Block size and time limits are independent. Leave either limit blank to use the calculated time."),
+      field("City fly-to font size (px)", fontSize), status);
     status.textContent = "Changes save automatically.";
     const estimate = make("section", undefined, { class: "reading-estimate" });
     estimate.append(make("h3", "Reading estimate"), make("code", "seconds = characters × 60 / (238 × 4.6)"),
@@ -406,7 +411,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     const side = make("div", undefined, { class: "settings-side" }); side.append(soundSettings(), estimate);
     const applyReading = () => {
       const seconds = input => input.value.trim() === "" ? null : Number(input.value);
-      const next = { mode: mode.value, block_kind: kind.value, auto_advance: auto.checked, show_all_source: showSource.checked, block_lines: Number(block.value), min_seconds: seconds(min), max_seconds: seconds(max) };
+      const next = { mode: mode.value, block_kind: kind.value, auto_advance: auto.checked, show_all_source: showSource.checked, block_lines: Number(block.value), min_seconds: seconds(min), max_seconds: seconds(max), fly_to_font_px: Number(fontSize.value) };
       const error = readingError(next);
       if (error) { status.textContent = error; return; }
       reading = next;

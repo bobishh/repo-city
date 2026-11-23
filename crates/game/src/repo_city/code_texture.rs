@@ -465,6 +465,7 @@ pub(super) fn wall_notice(lines: [&str; 3], aspect: f32) -> Image {
 
 pub(super) const LISTING_WIDTH: u32 = 1536;
 pub(super) const LISTING_ROW_PIXELS: u32 = 27;
+pub(super) const LISTING_FONT_SIZE: f32 = 20.;
 pub(super) const HEADING_LEFT: f32 = 32.;
 
 pub(super) fn text_start(face: Face) -> f32 {
@@ -998,13 +999,20 @@ pub(super) fn listing_with_notes(
                 );
             }
         }
-        canvas.scaled_text(&line.text, start, baseline, 20., glyph_scale, |byte| {
-            ink(line
-                .spans
-                .iter()
-                .find(|span| span.bytes.contains(&byte))
-                .map_or(Kind::Plain, |span| span.kind))
-        });
+        canvas.scaled_text(
+            &line.text,
+            start,
+            baseline,
+            LISTING_FONT_SIZE,
+            glyph_scale,
+            |byte| {
+                ink(line
+                    .spans
+                    .iter()
+                    .find(|span| span.bytes.contains(&byte))
+                    .map_or(Kind::Plain, |span| span.kind))
+            },
+        );
     }
     Image::new(
         Extent3d {

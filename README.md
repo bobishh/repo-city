@@ -231,6 +231,10 @@ or fixed-line blocks. **Lines per reading block** sets the fallback/fixed block 
 scrolls downward to the next unread block while the heat tool stays on. This setting is independent of the
 delay bounds. Wrapped continuations count as displayed rows; the original
 source line is saved as read only after all its continuations are cleared.
+**City fly-to font size (px)** sets the approximate on-screen size of code at
+the end of an automatic flight. It defaults to 14 logical pixels and accepts
+8–32. The city adjusts the approach distance with the viewport height and
+switches from the distant facade texture to detailed code as you approach.
 Reading a close diff or blame wall uses the same timer and reveals only its visible source lines on the correct comparison side. Flying past or looking away does not complete a block.
 Function blocks do not nest: an outer function owns its entire source interval,
 including callbacks inside it. Moving between those lines keeps the same block

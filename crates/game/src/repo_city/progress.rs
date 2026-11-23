@@ -292,7 +292,7 @@ pub(super) fn sync(
     {
         let size = listing::block_size(file);
         if let Some(face) =
-            listing::Face::at_camera(file, size, eye, listing::tool_range(size.x) * 1.4)
+            listing::Face::at_camera(file, size, eye, listing.frame.tool_range(size.x) * 1.4)
         {
             progress.visit(explorer.selected, file, face == listing::Face::Diff);
             progress.record_view(file, eye, time.elapsed_secs_f64());

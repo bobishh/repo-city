@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 mod timers;
 pub(super) use timers::Timers;
 
+pub(super) const DEFAULT_FLY_TO_FONT_PX: u8 = 14;
+const FLY_TO_FONT_ERROR: &str = "Enter a fly-to font size from 8 to 32 px.";
+
 #[derive(Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum Mode {
@@ -31,6 +34,7 @@ pub(super) struct Settings {
     pub show_all_source: bool,
     pub min_seconds: Option<f32>,
     pub max_seconds: Option<f32>,
+    pub fly_to_font_px: u8,
 }
 
 impl Default for Settings {
@@ -44,6 +48,7 @@ impl Default for Settings {
             show_all_source: false,
             min_seconds: Some(3.),
             max_seconds: Some(6.),
+            fly_to_font_px: DEFAULT_FLY_TO_FONT_PX,
         }
     }
 }
@@ -62,6 +67,9 @@ impl Settings {
     fn validated(self) -> Result<Self, String> {
         if self.block_lines == 0 {
             return Err("Lines per wash block must be a positive whole number.".into());
+        }
+        if !(8..=32).contains(&self.fly_to_font_px) {
+            return Err(FLY_TO_FONT_ERROR.into());
         }
         if [self.min_seconds, self.max_seconds]
             .into_iter()
@@ -84,6 +92,7 @@ impl Settings {
         block: &str,
         min: &str,
         max: &str,
+        fly_to_font: &str,
     ) -> Result<Self, String> {
         let bound = |text: &str| match text.trim() {
             "" => Ok(None),
@@ -100,6 +109,10 @@ impl Settings {
                 .map_err(|_| "Lines per wash block must be a positive whole number.".to_owned())?,
             min_seconds: bound(min)?,
             max_seconds: bound(max)?,
+            fly_to_font_px: fly_to_font
+                .trim()
+                .parse()
+                .map_err(|_| FLY_TO_FONT_ERROR.to_owned())?,
             ..Self::default()
         }
         .validated()
@@ -298,6 +311,7 @@ mod tests {
     #[test]
     fn disabling_reading_preserves_visibility_preference_and_round_trips() {
         let original = Settings::parse(r#"{"show_all_source":false}"#).unwrap();
+        assert_eq!(original.fly_to_font_px, DEFAULT_FLY_TO_FONT_PX);
         assert!(original.enabled);
         assert!(!original.source_is_visible());
         let disabled = Settings {
@@ -376,10 +390,12 @@ mod tests {
         );
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let one = Settings::with_inputs(Mode::Delayed, "1", "", "").unwrap();
+            let one = Settings::with_inputs(Mode::Delayed, "1", "", "", "20").unwrap();
+            assert_eq!(one.fly_to_font_px, 20);
             assert_eq!(one.block_lines, 1);
             assert!(one.min_seconds.is_none() && one.max_seconds.is_none());
-            assert!(Settings::with_inputs(Mode::Delayed, "0", "", "").is_err());
+            assert!(Settings::with_inputs(Mode::Delayed, "0", "", "", "14").is_err());
+            assert!(Settings::with_inputs(Mode::Delayed, "1", "", "", "33").is_err());
         }
     }
 

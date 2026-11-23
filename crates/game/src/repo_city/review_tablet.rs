@@ -30,8 +30,8 @@ pub(super) struct Tablet {
     page: usize,
     view: Page,
     dates_requested: bool,
-    bounds: [String; 3],
-    inputs: Option<[Entity; 3]>,
+    bounds: [String; 4],
+    inputs: Option<[Entity; 4]>,
     settings_status: Option<Entity>,
     mode: reading::Mode,
     block_kind: reading::BlockKind,
@@ -330,7 +330,12 @@ impl Tablet {
         if view != self.view && view == Page::Settings {
             let [min, max] = [reading.min_seconds, reading.max_seconds]
                 .map(|value| value.map_or_else(String::new, |value| value.to_string()));
-            self.bounds = [reading.block_lines.to_string(), min, max];
+            self.bounds = [
+                reading.block_lines.to_string(),
+                min,
+                max,
+                reading.fly_to_font_px.to_string(),
+            ];
             self.mode = reading.mode;
             self.block_kind = reading.block_kind;
             self.auto_advance = reading.auto_advance;
@@ -1257,6 +1262,7 @@ impl Tablet {
             &self.bounds[0],
             &self.bounds[1],
             &self.bounds[2],
+            &self.bounds[3],
         )
         .and_then(|mut next| {
             next.block_kind = self.block_kind;
@@ -2063,6 +2069,7 @@ fn draw_settings(
                         }
                     });
                     native_panel::text(form, "Leave a limit blank to use the calculated time. Limits and block size are independent.", native_panel::INK);
+                    let input = native_panel::input(form, "City fly-to font size (px)", &tablet.bounds[3], *tab, false); *tab += 1; inputs.push(input);
                     let status = form.spawn((Text::new(if tablet.status.is_empty() { "Changes save automatically." } else { &tablet.status }), native_panel::panel_font(), TextColor(native_panel::INK), Node { min_height: px(24.), ..default() })).id();
                     tablet.settings_status = Some(status);
                 });
@@ -2114,7 +2121,7 @@ fn draw_settings(
             });
         });
     });
-    tablet.inputs = Some(inputs.try_into().expect("three reading inputs"));
+    tablet.inputs = Some(inputs.try_into().expect("four reading inputs"));
     first.expect("a reading mode is selected")
 }
 

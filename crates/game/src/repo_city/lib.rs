@@ -669,6 +669,7 @@ fn install_city(app: &mut App, args: &[String]) {
             repository_picker::open_repository,
             #[cfg(not(target_arch = "wasm32"))]
             live_worktree::update,
+            listing::update_framing,
             spawn_city,
             progress::restore,
         )
@@ -736,7 +737,7 @@ fn install_city(app: &mut App, args: &[String]) {
                 .before(file_facade::lower_unchanged)
                 .before(tablet_display::resize),
         )
-        .add_systems(Update, reading::apply.before(listing::wash_stream))
+        .add_systems(Update, reading::apply.before(listing::update_framing))
         .add_systems(Update, browser_audio::update.after(listing::draw));
     app.add_systems(Startup, district::setup);
     app.add_systems(
@@ -1350,12 +1351,16 @@ fn spawn_city(
         && !keep_camera
         && let Ok((mut pose, mut pilot)) = camera.single_mut()
     {
+        let frame = listing
+            .as_ref()
+            .map_or_else(Default::default, |listing| listing.frame);
         *pose = progress
-            .resume_camera(&repo.0, &mut explorer)
+            .resume_camera(&repo.0, &mut explorer, frame)
             .unwrap_or_else(|| {
                 listing::view(
                     &repo.0.files[explorer.selected],
                     explorer.source_layout.len(),
+                    frame,
                 )
             });
         pilot.captured = false;
@@ -1885,6 +1890,7 @@ fn targeting(
     district_beams: Query<(&district::Beacon, &Transform)>,
     mut nearest: ResMut<Nearest>,
     navigation: Res<city_navigation::Navigation>,
+    listing: Res<listing::Listing>,
     mut map_hover: Local<Option<(Vec3, Vec3, Option<usize>)>>,
 ) {
     let Ok((projection, camera, pilot)) = camera.single() else {
@@ -1955,7 +1961,7 @@ fn targeting(
     } else {
         FILE_REACH
     };
-    let reading = file_facade::reading_plane(&repo.0, &explorer, camera);
+    let reading = file_facade::reading_plane(&repo.0, &explorer, camera, listing.frame);
     let mut near_distance = f32::INFINITY;
     // The aim ray may use the free cursor. Proximity follows the camera.
     for f in facades
@@ -2868,7 +2874,7 @@ fn smoke(
                             count,
                         );
                     }
-                    *camera = listing::view(file, count);
+                    *camera = listing::view(file, count, listing.frame);
                 }
                 15 | 16 => {
                     explorer.anchored = false;
@@ -2881,13 +2887,14 @@ fn smoke(
                     if check.stage == 15 {
                         listing.present_source(&explorer);
                     }
-                    *camera = listing::Listing::line_view(
-                        &explorer,
-                        &repo.0.files[explorer.selected],
-                        listing::Face::Source,
-                        1,
-                    )
-                    .expect("guidance source position");
+                    *camera = listing
+                        .line_view(
+                            &explorer,
+                            &repo.0.files[explorer.selected],
+                            listing::Face::Source,
+                            1,
+                        )
+                        .expect("guidance source position");
                 }
                 17 | 23 => tablet.open_page(review_tablet::Page::Agent),
                 25 => {
@@ -2947,13 +2954,14 @@ fn smoke(
                     if check.stage > 20 {
                         listing.present_range(&explorer, 24, 26);
                     }
-                    *camera = listing::Listing::line_view(
-                        &explorer,
-                        &repo.0.files[explorer.selected],
-                        listing::Face::Source,
-                        25,
-                    )
-                    .expect("frost source wall");
+                    *camera = listing
+                        .line_view(
+                            &explorer,
+                            &repo.0.files[explorer.selected],
+                            listing::Face::Source,
+                            25,
+                        )
+                        .expect("frost source wall");
                 }
                 18 | 19 => {
                     explorer.anchored = false;
@@ -2972,14 +2980,19 @@ fn smoke(
                     };
                     explorer.refresh_diff_layout();
                     listing.reset_view();
-                    *camera =
-                        listing::smoke_side(&explorer, &repo.0.files[explorer.selected], false);
+                    *camera = listing::smoke_side(
+                        &explorer,
+                        &repo.0.files[explorer.selected],
+                        false,
+                        listing.frame,
+                    );
                 }
                 7 | 8 => {
                     *camera = listing::smoke_side(
                         &explorer,
                         &repo.0.files[explorer.selected],
                         check.stage == 8,
+                        listing.frame,
                     );
                 }
                 _ => {}
@@ -2993,13 +3006,14 @@ fn smoke(
     if matches!(check.stage, 20..=22)
         && let Ok(mut camera) = camera.single_mut()
     {
-        *camera = listing::Listing::line_view(
-            &explorer,
-            &repo.0.files[explorer.selected],
-            listing::Face::Source,
-            25,
-        )
-        .expect("stable frost view");
+        *camera = listing
+            .line_view(
+                &explorer,
+                &repo.0.files[explorer.selected],
+                listing::Face::Source,
+                25,
+            )
+            .expect("stable frost view");
     }
     let previous = check.elapsed;
     check.elapsed += time.delta_secs();

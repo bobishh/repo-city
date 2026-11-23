@@ -27,7 +27,7 @@ impl View {
         Self::origin(file) + Vec3::from_array(self.offset)
     }
 
-    fn pose(&self, file: &repo_world::File) -> Option<Transform> {
+    fn pose(&self, file: &repo_world::File, frame: listing::ReadingFrame) -> Option<Transform> {
         let translation = self.position(file);
         let rotation = Quat::from_array(self.rotation);
         if !translation.is_finite()
@@ -38,7 +38,7 @@ impl View {
         }
         let pose = Transform::from_translation(translation).with_rotation(rotation);
         let size = listing::block_size(file);
-        listing::Face::at_camera(file, size, &pose, listing::tool_range(size.x) * 1.4)?;
+        listing::Face::at_camera(file, size, &pose, frame.tool_range(size.x) * 1.4)?;
         Some(pose)
     }
 }
@@ -54,6 +54,7 @@ impl Progress {
         &mut self,
         repo: &Repository,
         explorer: &mut Explorer,
+        frame: listing::ReadingFrame,
     ) -> Option<Transform> {
         if !explorer.resume_on_open {
             return None;
@@ -65,7 +66,7 @@ impl Progress {
         if index != explorer.selected {
             explorer.open(repo, index);
         }
-        saved.pose(&repo.files[index])
+        saved.pose(&repo.files[index], frame)
     }
 
     pub(super) fn record_view(&mut self, file: &repo_world::File, camera: &Transform, now: f64) {
@@ -185,22 +186,36 @@ mod tests {
         progress.record_view(&repo.files[1], &camera(32., 8.), 0.1);
         let mut explorer = Explorer::new(0);
         explorer.resume_on_open = false;
-        assert!(progress.resume_camera(&repo, &mut explorer).is_none());
+        assert!(
+            progress
+                .resume_camera(&repo, &mut explorer, listing::ReadingFrame::default())
+                .is_none()
+        );
         assert_eq!(explorer.selected, 0);
 
         explorer.resume_on_open = true;
         repo.baseline = Some("different".into());
-        assert!(progress.resume_camera(&repo, &mut explorer).is_none());
+        assert!(
+            progress
+                .resume_camera(&repo, &mut explorer, listing::ReadingFrame::default())
+                .is_none()
+        );
         repo.baseline = None;
         repo.files[1].position = [44., 12.];
-        let restored = progress.resume_camera(&repo, &mut explorer).unwrap();
+        let restored = progress
+            .resume_camera(&repo, &mut explorer, listing::ReadingFrame::default())
+            .unwrap();
         assert_eq!(explorer.selected, 1);
         assert_eq!(restored.translation, camera(44., 12.).translation);
         assert_eq!(restored.rotation, camera(32., 8.).rotation);
 
         repo.files.pop();
         explorer.selected = 0;
-        assert!(progress.resume_camera(&repo, &mut explorer).is_none());
+        assert!(
+            progress
+                .resume_camera(&repo, &mut explorer, listing::ReadingFrame::default())
+                .is_none()
+        );
         assert_eq!(explorer.selected, 0);
     }
 }

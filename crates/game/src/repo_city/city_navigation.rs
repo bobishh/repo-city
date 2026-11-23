@@ -342,6 +342,16 @@ impl Navigation {
         self.hop.is_some() || self.review_line.is_some()
     }
 
+    pub(super) fn approaching_listing(&self) -> bool {
+        self.route.is_none()
+            && self.hop.as_ref().is_some_and(|hop| {
+                matches!(
+                    hop.arrival,
+                    Arrival::Facade | Arrival::ReviewLine | Arrival::ReviewWall
+                ) && hop.elapsed >= hop.duration * 0.8
+            })
+    }
+
     pub(super) fn route_status(&self) -> Option<String> {
         self.route.as_ref().map(|route| {
             let title = match route.stops[route.current] {
@@ -702,9 +712,9 @@ pub(super) fn navigate(
             .unfold(&highlighted, line.saturating_sub(1));
         let file = &repo.0.files[explorer.selected];
         let end = if let Some(face) = navigation.review_face {
-            listing::Listing::line_view(&explorer, file, face, line)
+            listing.line_view(&explorer, file, face, line)
         } else {
-            listing::Listing::review_line_view(&explorer, file, line)
+            listing.review_line_view(&explorer, file, line)
         };
         if let Some(end) = end {
             navigation.review_line = None;
@@ -895,7 +905,7 @@ pub(super) fn navigate(
             unreachable!()
         };
         let file = &repo.0.files[explorer.selected];
-        let end = listing::Listing::diff_view(&explorer, file, row);
+        let end = listing.diff_view(&explorer, file, row);
         navigation.hop = Some(Hop::new(*camera, end, Arrival::ReviewWall));
         navigation.redraw = true;
         return;
@@ -1099,7 +1109,13 @@ pub(super) fn navigate(
             let file = &repo.0.files[aim.index];
             let size = listing::block_size(file);
             nearest.near_source != Some(aim.index)
-                && !aim.within_tool_reach(file, size, camera.translation, nearest.file_distance)
+                && !aim.within_tool_reach(
+                    file,
+                    size,
+                    camera.translation,
+                    nearest.file_distance,
+                    (aim.index == explorer.selected).then_some(listing.frame),
+                )
         });
     let target = if let Some(aim) = menu.destination.take() {
         Some((aim.index, Some(aim)))
@@ -1401,7 +1417,10 @@ mod tests {
             .init_resource::<listing::find::Search>()
             .init_resource::<progress::Progress>()
             .init_resource::<review_notes::Review>()
-            .add_systems(Update, (flight, targeting, navigate).chain());
+            .add_systems(
+                Update,
+                (listing::update_framing, flight, targeting, navigate).chain(),
+            );
         let mut window = Window::default();
         window.set_cursor_position(Some(Vec2::new(640., 360.)));
         app.world_mut()
@@ -1418,6 +1437,37 @@ mod tests {
             ))
             .id();
         (app, camera)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn flying_to_a_file_keeps_the_font_scale_on_different_window_heights() {
+        let arrival_depth = |height| {
+            let (mut app, camera) = district_navigation_app();
+            let world = app.world_mut();
+            world
+                .query_filtered::<&mut Window, With<PrimaryWindow>>()
+                .single_mut(world)
+                .unwrap()
+                .resolution
+                .set(1280., height);
+            *world.get_mut::<Transform>(camera).unwrap() = Transform::from_xyz(0., 4., 35.);
+            world.resource_mut::<file_picker::FilePicker>().destination = Some(0);
+            app.update();
+            let hop = app
+                .world()
+                .resource::<Navigation>()
+                .hop
+                .as_ref()
+                .expect("file flight started");
+            hop.end.translation.z - listing::WIDTH / 2. - listing::PANEL_OFFSET
+        };
+        let small = arrival_depth(540.);
+        let large = arrival_depth(1080.);
+        assert!(
+            (large - small * 2.).abs() < 0.01,
+            "small={small}, large={large}"
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]

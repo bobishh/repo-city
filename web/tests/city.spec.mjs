@@ -176,19 +176,19 @@ test("shows the guide once and keeps it available from the help button", async (
   await gpuClick(page, guide.getByRole("button", { includeHidden: true, name: "Settings" }));
   const settings = page.locator("#review-dialog");
   await expect(settings).toContainText("Brysbaert");
-  await expect(settings.getByLabel("Lines per wash block")).toHaveValue("6");
-  await gpuFill(page, settings.getByLabel("Lines per wash block"), "0");
+  await expect(settings.getByLabel("Lines per reading block")).toHaveValue("6");
+  await gpuFill(page, settings.getByLabel("Lines per reading block"), "0");
   await expect(settings.locator(".review-reading [role=status]")).toContainText("positive whole number");
-  await gpuFill(page, settings.getByLabel("Lines per wash block"), "1");
+  await gpuFill(page, settings.getByLabel("Lines per reading block"), "1");
   await expect(settings.getByLabel("Minimum delay (seconds)")).toHaveValue("3");
   await gpuFill(page, settings.getByLabel("Minimum delay (seconds)"), "7");
   await expect(settings.locator(".review-reading [role=status]")).toContainText("Minimum delay must not exceed");
   await gpuFill(page, settings.getByLabel("Minimum delay (seconds)"), "");
   await gpuFill(page, settings.getByLabel("Maximum delay (seconds)"), "5.5");
   await expect(settings.locator(".review-reading [role=status]")).toContainText("Saved");
-  await gpuSelect(page, settings.getByLabel("Reveal"), "immediate");
+  await gpuSelect(page, settings.getByLabel("Read credit"), "immediate");
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("repo-city-reading-v1"))))
-    .toEqual({mode: "immediate", block_kind: "function", auto_advance: true, block_lines: 1, min_seconds: null, max_seconds: 5.5});
+    .toEqual({mode: "immediate", block_kind: "function", auto_advance: true, show_all_source: false, block_lines: 1, min_seconds: null, max_seconds: 5.5, fly_to_font_px: 14});
   await page.keyboard.press("Escape", { delay: 120 });
   await expectClosed(page);
   await page.evaluate(() => localStorage.removeItem("repo-city-guide-v1"));
@@ -198,6 +198,43 @@ test("shows the guide once and keeps it available from the help button", async (
   await expectClosed(page);
   expect(await page.evaluate(() => globalThis.repoCity.tourCommand() & 1)).toBe(1);
   expect(faults).toEqual([]);
+});
+
+test("saves the city fly-to font size and rejects values outside its range", async ({ page }) => {
+  await page.addInitScript(() => {
+    const key = "repo-city-reading-v1";
+    if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify({ block_lines: 10 }));
+  });
+  await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
+  await page.route("https://api.github.com/**", route => {
+    const path = new URL(route.request().url()).pathname;
+    const source = "fn demo() {}\n";
+    if (path === "/repos/owner/demo") return route.fulfill({ json: { default_branch: "main" } });
+    if (path.includes("/commits/")) return route.fulfill({ json: { sha: after, parents: [] } });
+    if (path.includes("/git/trees/")) return route.fulfill({ json: {
+      tree: [{ path: "src/demo.rs", type: "blob", mode: "100644", sha: after, size: source.length }],
+    } });
+    return route.fulfill({ json: { size: source.length, encoding: "base64", content: Buffer.from(source).toString("base64") } });
+  });
+  const openSettings = async () => {
+    await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+    await page.getByRole("button", { name: "How to use Repo City" }).click();
+    const tablet = page.locator("#review-dialog");
+    await gpuClick(page, tablet.getByRole("button", { name: "Settings", exact: true, includeHidden: true }));
+    return tablet;
+  };
+  await page.goto("/?repo=owner%2Fdemo");
+  const tablet = await openSettings();
+  const fontSize = tablet.getByLabel("City fly-to font size (px)");
+  await expect(fontSize).toHaveValue("14");
+  await gpuFill(page, fontSize, "20");
+  await expect(tablet.locator(".review-reading [role=status]")).toHaveText("Saved automatically.");
+  await gpuFill(page, fontSize, "33");
+  await expect(tablet.locator(".review-reading [role=status]")).toHaveText("Enter a fly-to font size from 8 to 32 px.");
+  await page.reload();
+  await openSettings();
+  await expect(fontSize).toHaveValue("20");
+  await expect(tablet.getByLabel("Lines per reading block")).toHaveValue("10");
 });
 
 test.beforeEach(async ({ page }, testInfo) => {

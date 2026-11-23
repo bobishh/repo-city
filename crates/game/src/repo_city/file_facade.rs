@@ -152,6 +152,7 @@ impl Aim {
         size: Vec3,
         eye: Vec3,
         hit_distance: f32,
+        frame: Option<listing::ReadingFrame>,
     ) -> bool {
         let Some(surface) = self.surface.filter(|surface| surface.normal.y == 0.) else {
             return hit_distance <= listing::tool_range(size.x);
@@ -162,7 +163,10 @@ impl Aim {
             - normal.abs().dot(size) / 2.
             - listing::PANEL_OFFSET;
         let width = if normal.x == 0. { size.x } else { size.z };
-        gap <= listing::tool_range(width)
+        gap <= frame.map_or_else(
+            || listing::tool_range(width),
+            |frame| frame.tool_range(width),
+        )
     }
 
     pub(super) fn on_side(self, face: listing::Face) -> Self {
@@ -390,10 +394,12 @@ pub(super) fn reading_plane(
     repo: &Repository,
     explorer: &Explorer,
     camera: &Transform,
+    frame: listing::ReadingFrame,
 ) -> Option<ReadingPlane> {
     let file = repo.files.get(explorer.selected)?;
     let size = listing::block_size(file);
-    let face = listing::Face::at_camera(file, size, camera, (size.x * 1.85).max(8.))?;
+    let range = (size.x * 1.85).max(8.).max(frame.detail_reach(size.x));
+    let face = listing::Face::at_camera(file, size, camera, range)?;
     let normal = face.normal();
     let [x, z] = file.position;
     let center = Vec3::new(x, 0., z);
@@ -442,6 +448,7 @@ pub(super) fn keep_reading_clear(
     explorer: Res<Explorer>,
     camera: Query<&Transform, PlayerCamera>,
     window: Query<&Window, With<PrimaryWindow>>,
+    listing: Res<listing::Listing>,
     mut obstacles: Query<
         (&Transform, &mut Visibility, Option<&StreetSign>),
         Or<(With<FileBeam>, With<district::Beacon>, With<StreetSign>)>,
@@ -450,7 +457,7 @@ pub(super) fn keep_reading_clear(
     let Ok(camera) = camera.single() else {
         return;
     };
-    let reading = reading_plane(&repo.0, &explorer, camera);
+    let reading = reading_plane(&repo.0, &explorer, camera, listing.frame);
     let aspect = window
         .single()
         .map_or(16. / 9., |window| window.width() / window.height().max(1.));
@@ -625,6 +632,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(Repo(repo))
             .insert_resource(Explorer::new(0))
+            .init_resource::<listing::Listing>()
             .init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<Image>>()
             .init_resource::<Assets<StandardMaterial>>()
