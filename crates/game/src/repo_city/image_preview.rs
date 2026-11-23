@@ -244,6 +244,7 @@ mod tests {
         }];
         let mut app = App::new();
         app.init_resource::<ButtonInput<KeyCode>>()
+            .add_message::<bevy::input::keyboard::KeyboardInput>()
             .init_resource::<AccumulatedMouseScroll>()
             .init_resource::<review_tablet::Tablet>()
             .init_resource::<guide::Tour>()

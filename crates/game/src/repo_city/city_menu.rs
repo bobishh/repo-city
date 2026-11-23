@@ -151,7 +151,7 @@ impl Action {
             Self::FindText if stone => "Find on scroll /".into(),
             Self::FindText => "Find in file   /".into(),
             Self::Find if stone => "Find file      /".into(),
-            Self::Find => format!("Find file    {}", file_picker::SHORTCUT),
+            Self::Find => "Find file".into(),
             Self::ChangesOnly if filtered => "Show all files F".into(),
             Self::ChangesOnly => "Only changes   F".into(),
         }

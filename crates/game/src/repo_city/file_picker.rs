@@ -1,5 +1,5 @@
 use bevy::{
-    input::keyboard::KeyboardInput,
+    input::keyboard::{Key, KeyboardInput},
     picking::hover::Hovered,
     ui_widgets::{Activate, Button, observe},
 };
@@ -12,6 +12,27 @@ pub(super) const SHORTCUT: &str = "P";
 pub(super) const SHORTCUT: &str = "Cmd+P";
 
 const PAGE_SIZE: usize = 7;
+
+pub(super) fn search_pressed(
+    keys: &ButtonInput<KeyCode>,
+    input: &mut MessageReader<KeyboardInput>,
+) -> bool {
+    let slash = input.read().any(|event| {
+        event.state.is_pressed()
+            && !event.repeat
+            && matches!(&event.logical_key, Key::Character(value) if value.as_str() == "/")
+    });
+    input.clear();
+    slash
+        && !keys.any_pressed([
+            KeyCode::SuperLeft,
+            KeyCode::SuperRight,
+            KeyCode::ControlLeft,
+            KeyCode::ControlRight,
+            KeyCode::AltLeft,
+            KeyCode::AltRight,
+        ])
+}
 
 #[derive(Resource, Default)]
 pub(super) struct FilePicker {
@@ -207,7 +228,7 @@ pub(super) fn button(
 #[wasm_bindgen::prelude::wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = openFileSearch)]
-    fn browser_search();
+    pub(super) fn browser_search();
 }
 
 pub(super) fn update(

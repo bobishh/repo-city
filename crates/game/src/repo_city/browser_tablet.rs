@@ -1,7 +1,9 @@
 //! Browser service state, presented with the same GPU widgets and screen as desktop.
 use super::*;
 use base64::Engine;
-use bevy::{input_focus::InputFocus, picking::Pickable, text::EditableText};
+use bevy::{
+    input::keyboard::KeyboardInput, input_focus::InputFocus, picking::Pickable, text::EditableText,
+};
 use serde::Deserialize;
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
@@ -401,6 +403,13 @@ pub(super) fn update(
     keys: Res<ButtonInput<KeyCode>>,
     mut images: ResMut<Assets<Image>>,
     mut touch_scroll: Option<ResMut<tablet_display::TouchScroll>>,
+    (mut input, world, review, menu, search): (
+        MessageReader<KeyboardInput>,
+        Res<WorldSet>,
+        Res<review_notes::Review>,
+        Res<city_menu::Menu>,
+        Res<listing::find::Search>,
+    ),
 ) {
     for (binding, mut editor) in &mut editors {
         if let Some(value) = editor.take_change() {
@@ -436,6 +445,17 @@ pub(super) fn update(
             };
             send_action(&serde_json::json!({ "id": node.id, "kind": kind }).to_string());
         }
+    }
+    if file_picker::search_pressed(&keys, &mut input)
+        && world.city_controls()
+        && (!review.blocked || review.tablet_open)
+        && !menu.blocks_controls()
+        && !search.blocks_controls()
+        && !focus
+            .get()
+            .is_some_and(|entity| fields.contains(entity) || editors.contains(entity))
+    {
+        file_picker::browser_search();
     }
     let packet = take_view();
     let view = if packet.is_empty() {

@@ -1140,6 +1140,7 @@ pub(super) fn fold_controls(
     navigation: Res<city_navigation::Navigation>,
     review: Res<review_notes::Review>,
     picker: Res<file_picker::FilePicker>,
+    search: Res<find::Search>,
     settings: Res<reading::Settings>,
     mut camera: Query<&mut Transform, PlayerCamera>,
 ) {
@@ -1159,7 +1160,7 @@ pub(super) fn fold_controls(
     }
     let fold = keys.just_pressed(KeyCode::KeyZ);
     let expand = keys.just_pressed(KeyCode::KeyX);
-    let find = keys.just_pressed(KeyCode::Slash);
+    let find = search.request;
     if !fold && !expand && !find {
         return;
     }

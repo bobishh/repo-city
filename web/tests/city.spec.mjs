@@ -836,6 +836,8 @@ test("restores review progress after reload and resets only the open comparison"
   await page.keyboard.press("KeyV", { delay: 150 });
   await expect.poll(() => read(scope), polling).toContain(reviewed);
 
+  await canvas.click({ position: { x: 640, y: 400 }, button: "right", delay: 150 });
+  await expect(canvas).toHaveAttribute("data-action-menu");
   await page.keyboard.press("Slash", { delay: 150 });
   await expect(canvas).toHaveAttribute("data-pointer-ui", "");
   await page.keyboard.type("row 2", { delay: 40 });
@@ -849,12 +851,11 @@ test("restores review progress after reload and resets only the open comparison"
   await canvas.click({ position: { x: 640, y: 400 }, delay: 150 });
   await expect.poll(() => page.evaluate(() => document.pointerLockElement?.id)).toBe("repo-city");
   await page.keyboard.press("KeyM", { delay: 150 });
-  // Both overview stages keep the cursor free for map navigation.
-  await page.keyboard.press("KeyD", { delay: 1_500 });
   await expect(canvas).toHaveAttribute("data-overview", "");
   await expect.poll(() => page.evaluate(() => document.pointerLockElement)).toBeNull();
   await page.keyboard.press("KeyM", { delay: 150 });
   await expect(canvas).toHaveAttribute("data-overview", "");
+  await expect.poll(() => page.evaluate(() => document.pointerLockElement)).toBeNull();
   await page.keyboard.press("KeyM", { delay: 150 });
   await expect(canvas).not.toHaveAttribute("data-overview", "");
   head = next;
@@ -1108,10 +1109,12 @@ test("VibePad owns file search, extensionless license previews, help toggle and 
   await expect(canvas).toBeFocused();
   await expect(canvas).not.toHaveAttribute("data-pointer-ui", "");
   await page.keyboard.press("h", { delay: 120 }); await expectOpen(page, "Help");
-  await page.keyboard.press("h", { delay: 120 }); await expectClosed(page);
-  await page.keyboard.press("Meta+p", { delay: 120 });
-  const search = page.locator("#review-dialog"); await expectOpen(page);
-  await gpuFill(page, search.getByRole("searchbox", { includeHidden: true }), "missing"); await expect(search.getByRole("status", { includeHidden: true })).toHaveText("No matching files.");
+  await page.keyboard.press("Slash", { delay: 120 }); await expectOpen(page, "Find a file");
+  const search = page.locator("#review-dialog");
+  const query = search.getByRole("searchbox", { includeHidden: true });
+  await page.keyboard.type("missing/path", { delay: 40 });
+  await expect(query).toHaveValue("missing/path");
+  await expect(search.getByRole("status", { includeHidden: true })).toHaveText("No matching files.");
   await gpuFill(page, search.getByRole("searchbox", { includeHidden: true }), "upstream-license"); await page.keyboard.press("ArrowDown", { delay: 120 });
   await gpuFocus(page, search.getByRole("button", { includeHidden: true, name: "skills/differential-review/UPSTREAM-LICENSE", exact: true })); await page.keyboard.press("Enter", { delay: 120 });
   await expectClosed(page);
@@ -1250,8 +1253,8 @@ test("keyboard-only navigation can find a building and wash source without point
   });
   await page.goto("/?repo=owner%2Fkeyboard");
   await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
-  await page.keyboard.press("Meta+p", { delay: 120 });
-  const find = page.locator("#review-dialog"); await expectOpen(page);
+  await page.keyboard.press("Slash", { delay: 120 });
+  const find = page.locator("#review-dialog"); await expectOpen(page, "Find a file");
   await page.keyboard.type("main", { delay: 40 });
   await expect(find.getByRole("searchbox", { includeHidden: true })).toHaveValue("main");
   await expectOpen(page, "Find a file");

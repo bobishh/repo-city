@@ -289,7 +289,8 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       ["Arrows / Shift+Arrows", "Look around; up close, scroll or turn to another wall. Shift keeps free look."],
       ["K", "Use heat or hold to paint"],
       ["E / M", "Fly to the aimed wall or switch overview"],
-      ["Tab / Cmd+P / P", "Open VibePad, find a file, or preview the aimed file"],
+      ["Tab / P", "Open VibePad or preview the aimed file"],
+      ["/ or Cmd+P", "Find a file"],
       ["Z / X", "Collapse or expand the aimed code block"],
       ["H", "Open or put away Help"],
       ["Alt+1–5 / Arrows / Enter", "Select a VibePad tab, move through controls, or activate"],
@@ -786,6 +787,10 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
 
   function fileSearch() {
     if (!session) return;
+    if (dialog.open && dialog.dataset.view === "file-search") {
+      tablet.focus(dialog.querySelector('input[type="search"]'));
+      return;
+    }
     const data = session;
     const paths = (canvas.hasAttribute("data-changes-only") ? changedPaths(data.snapshot)
       : [...new Set([...Object.keys(data.snapshot.before), ...Object.keys(data.snapshot.after)])]).sort();

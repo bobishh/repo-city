@@ -9,6 +9,7 @@ mod codex_protocol;
 mod codex_transport;
 pub(super) mod models;
 pub(super) mod opus_codec;
+mod provider_executable;
 mod rtc;
 pub(super) mod state;
 

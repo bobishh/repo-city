@@ -5,6 +5,7 @@ use std::{
 };
 
 use bevy::{
+    input::keyboard::KeyboardInput,
     input_focus::{FocusCause, InputFocus, tab_navigation::TabIndex},
     text::EditableText,
 };
@@ -513,7 +514,7 @@ pub(super) fn update(
         mut images,
         mut terminal,
         mut trace,
-        (editors, mut agent, party, windows, world),
+        (editors, mut agent, party, windows, world, mut input),
     ): (
         ResMut<reading::Settings>,
         ResMut<guide::Tour>,
@@ -536,6 +537,7 @@ pub(super) fn update(
             Option<Res<review_party::Party>>,
             Query<&Window, With<PrimaryWindow>>,
             Option<Res<WorldSet>>,
+            MessageReader<KeyboardInput>,
         ),
     ),
 ) {
@@ -547,14 +549,21 @@ pub(super) fn update(
         tablet.reading_enabled = reading.enabled;
     }
     let help = keys.just_pressed(KeyCode::KeyH) && unmodified(&keys) && !editing && !terminal_page;
+    let slash = file_picker::search_pressed(&keys, &mut input)
+        && world.as_deref().is_none_or(WorldSet::city_controls)
+        && !editing
+        && !menu.blocks_controls()
+        && !search.blocks_controls()
+        && !repository.blocks_controls();
     let find_file = !terminal_page
-        && keys.just_pressed(KeyCode::KeyP)
-        && keys.any_pressed([
-            KeyCode::SuperLeft,
-            KeyCode::SuperRight,
-            KeyCode::ControlLeft,
-            KeyCode::ControlRight,
-        ]);
+        && (slash
+            || keys.just_pressed(KeyCode::KeyP)
+                && keys.any_pressed([
+                    KeyCode::SuperLeft,
+                    KeyCode::SuperRight,
+                    KeyCode::ControlLeft,
+                    KeyCode::ControlRight,
+                ]));
     let action = tablet
         .action
         .take()
@@ -797,6 +806,11 @@ pub(super) fn update(
                     tablet.history = Some(History::open(&repo.0, 0));
                 }
                 redraw = true;
+            }
+            Some(Action::Switch(Page::Search)) if slash => {
+                if let Some(input) = tablet.search_input {
+                    focus.set(input, FocusCause::Navigated);
+                }
             }
             Some(Action::GitBefore(index) | Action::GitAfter(index)) => {
                 if let Some(history) = tablet.history.as_mut() {
@@ -2143,6 +2157,7 @@ mod tests {
         }
         let mut app = App::new();
         app.init_resource::<ButtonInput<KeyCode>>()
+            .add_message::<KeyboardInput>()
             .init_resource::<AccumulatedMouseScroll>()
             .init_resource::<Tablet>()
             .init_resource::<guide::Tour>()
@@ -2304,6 +2319,7 @@ mod tests {
             }];
             let mut app = App::new();
             app.init_resource::<ButtonInput<KeyCode>>()
+                .add_message::<KeyboardInput>()
                 .init_resource::<AccumulatedMouseScroll>()
                 .init_resource::<Tablet>()
                 .init_resource::<guide::Tour>()
@@ -2384,9 +2400,10 @@ mod tests {
     }
 
     #[test]
-    fn help_preserves_text_input_and_opens_in_vibepad_after_focus_leaves() {
+    fn help_and_search_shortcuts_preserve_text_input_and_open_in_vibepad() {
         let mut app = App::new();
         app.init_resource::<ButtonInput<KeyCode>>()
+            .add_message::<KeyboardInput>()
             .init_resource::<agent_session::Session>()
             .init_resource::<AccumulatedMouseScroll>()
             .init_resource::<Tablet>()
@@ -2432,8 +2449,32 @@ mod tests {
         assert!(!app.world().get::<Pilot>(camera).unwrap().captured);
         assert!(app.world().resource::<review_notes::Review>().tablet_open);
 
-        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        let screen = app.world().resource::<Tablet>().panel;
+        let world = app.world_mut();
+        let window = world.spawn(Window::default()).id();
+        let mut keys = world.resource_mut::<ButtonInput<KeyCode>>();
         keys.reset(KeyCode::KeyH);
+        keys.press(KeyCode::ShiftLeft);
+        world.write_message(KeyboardInput {
+            key_code: KeyCode::Digit7,
+            logical_key: bevy::input::keyboard::Key::Character("/".into()),
+            state: bevy::input::ButtonState::Pressed,
+            text: Some("/".into()),
+            repeat: false,
+            window,
+        });
+        app.update();
+        let tablet = app.world().resource::<Tablet>();
+        assert_eq!(tablet.page_name(), Some("search"));
+        assert_eq!(tablet.panel, screen);
+        assert!(tablet.search_input.is_some());
+        assert_eq!(
+            app.world().resource::<InputFocus>().get(),
+            tablet.search_input
+        );
+
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.reset(KeyCode::ShiftLeft);
         keys.press(KeyCode::Tab);
         app.update();
         assert!(!app.world().resource::<Tablet>().is_open());

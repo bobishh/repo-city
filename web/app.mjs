@@ -141,6 +141,8 @@ window.addEventListener("keydown", event => {
   }
   const locked = document.pointerLockElement === canvas;
   const plain = !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey;
+  if (running && cityControls() && event.target === canvas && event.key === "/" &&
+      !event.metaKey && !event.ctrlKey && !event.altKey) event.preventDefault();
   if (event.target === canvas && canvas.hasAttribute("data-library-reading")
       && event.code === "KeyF" && (event.metaKey || event.ctrlKey)) {
     event.preventDefault();

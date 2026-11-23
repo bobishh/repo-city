@@ -43,6 +43,14 @@
       "sha256": "73ad74cfa8af92bc21c062c800460f47b766c85d04f432e328f5f39f1af038d2"
     }
   ],
+  "codex_executable": {
+    "source": "ecky",
+    "revision": "fc5d88d3845e51761132529c7797b9d3b604a4a3",
+    "path": "src-tauri/src/services/provider_executable.rs",
+    "sha256": "c4765726e28c6d64329eb384bde834fe8b36e15dcce0de6b0da1234ecfcea1d7",
+    "destination": "crates/game/src/repo_city/agent_engine/provider_executable.rs",
+    "adaptation": "Keep Codex discovery, PATH assembly and the ECKY_CODEX_BIN override. Return Repo City's string errors and pass the resolved executable and PATH to its owned app server."
+  },
   "browser_syntax": {
     "package": "@wooorm/starry-night",
     "version": "3.11.0",

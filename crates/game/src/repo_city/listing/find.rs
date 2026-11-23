@@ -162,7 +162,7 @@ pub(crate) fn update(
     let blocked = review.blocked || picker.is_open() || menu.is_open() || !focused;
     if !blocked
         && !search.editing
-        && (requested || (!command && keys.just_pressed(KeyCode::Slash)))
+        && requested
         && let Some((side, _)) = &side
     {
         let key = wall_key(side.face);

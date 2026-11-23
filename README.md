@@ -16,7 +16,7 @@ signing in.
 
 1. Open [Repo City Web](https://repo-city.meta-uber-engineer.dev/) and paste
    `rails/solid_queue`. Select the repository, then choose **Open city**.
-2. Close the controls tour. Press **⌘P** on Mac or **P** on other keyboards.
+2. Close the controls tour. Press **/** to open and focus file search.
    Search for `concurrency_controls.rb` and select it to fly to its source wall.
 3. Click the Repo City logo and open
    [Rails Solid Queue PR #831](https://github.com/rails/solid_queue/pull/831).
@@ -198,7 +198,7 @@ The first city visit offers a controls tour. Open **H** to take it again.
 
 | Action | Control |
 | --- | --- |
-| Find a file by name or path | **P** in the browser, **⌘P** on Mac |
+| Find a file by name or path | **/** opens and focuses search. **⌘P** on Mac and **Ctrl+P** also open it. |
 | Preview a document, image or video | Aim at its building and press **P**. VibePad renders documents and images. Videos open in the browser player or the desktop system player. |
 | Fly | **WASD**, **Space** and **Ctrl** for altitude, **Shift** to boost |
 | Walk | Over a street, press **O** to descend and walk with **WASD**. Press **O** or **Space** to fly again. |
@@ -210,7 +210,7 @@ The first city visit offers a controls tour. Open **H** to take it again.
 | Approach a wall | Far away, left-click a building to fly to its nearest covered lines or the top of its source wall. Press **E** to fly to the aimed face. Scroll to move along the wall. |
 | Thaw or paint lines | **0** equips the heat tool. Click close to a source wall to start or stop heating. Blurred code becomes clear while you aim at the block. In VibePad **Settings**, choose **Immediate** to save the reveal right away or **Delayed** to wait for the reading estimate. **1–9** equip paints; drag from one readable line to another on the same side of the file. |
 | Edit paints and notes | **U** opens paints; **⌘ + scroll** cycles tools on Mac. **J** opens the note you are aiming at or the review list. |
-| Find text on the current wall | **/** or **Find in file** in the actions menu. **Enter** keeps results; **N** and **Shift+N** visit matches. |
+| Find text on the current wall | Choose **Find in file** in the actions menu. **Enter** keeps results. **N** and **Shift+N** visit matches. |
 | Turn to the diff or blame wall | **G** for diff, **B** for blame. Up close, **Left/Right** cycles source, diff and blame. Sign in with GitHub for line attribution in the browser. |
 | Review changed roofs on desktop | **C** visits changed files from the lowest building to the highest. **W / ↑ / scroll up** visits the next building; **S / ↓ / scroll down** returns. Choose hunks with their labeled buttons or **[ / ]**. **Previous hunks / Next hunks** exposes further groups of eight buttons. **Q** leaves the tour at the current diff. |
 | Fold a code block | **Z** collapses the aimed function; **X** expands it. Fixed-line blocks are used when syntax boundaries are unavailable. |
@@ -394,8 +394,10 @@ platforms can set `CC_wasm32_unknown_unknown` to a compatible Clang.
 
 On desktop, choose **Settings → Agent provider** in VibePad, then open **Chat**
 to connect to the locally installed Codex, Agy (Antigravity), Grok, or Muse Code CLI.
-Sign in with that CLI first. City keeps a separate conversation for each
-checkout and provider. Agy requires a CLI with `agy acp`; Grok uses
+On macOS, Repo City prefers Codex bundled with Codex.app or ChatGPT.app, then
+looks on `PATH`. The `ECKY_CODEX_BIN` environment variable can select a specific
+CLI, as in Ecky. Sign in with the selected CLI first. City keeps a separate
+conversation for each checkout and provider. Agy requires a CLI with `agy acp`; Grok uses
 `grok agent stdio`; Muse uses `muse acp`. Sign in to Muse with `muse login`
 before connecting. Agy, Grok and Muse stream text and ask before tool calls that
 require permission. Muse receives the current checkout's Repo City MCP server

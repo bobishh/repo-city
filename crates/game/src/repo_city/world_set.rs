@@ -52,6 +52,10 @@ pub fn color(v: [f32; 3]) -> Color {
     Color::srgb(v[0], v[1], v[2])
 }
 impl WorldSet {
+    pub(super) fn city_controls(&self) -> bool {
+        self.locomotion == "flight-and-anchor"
+    }
+
     pub fn load(selection: Option<&str>) -> Result<Self, String> {
         let selection = selection.unwrap_or("code-city");
         if let Some(adapter) = ADAPTERS.iter().find(|adapter| adapter.id == selection) {

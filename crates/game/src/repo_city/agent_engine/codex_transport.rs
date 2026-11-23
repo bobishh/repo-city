@@ -388,14 +388,14 @@ fn flush_steers(work: &mut Work, wire: &mut Wire, thread: &str) -> Result<(), St
 
 impl Wire {
     fn open(root: &Path) -> Result<Self, String> {
-        let binary = codex_binary().ok_or(
-            "Codex is not installed. Install Codex CLI, then run codex login in your terminal.",
-        )?;
-        Self::open_with(root, &binary)
+        let resolved = super::provider_executable::resolve_codex_executable()?;
+        let mut command = ProcessCommand::new(resolved.path);
+        command.env("PATH", resolved.spawn_path);
+        Self::open_with(root, command)
     }
 
-    fn open_with(root: &Path, binary: &Path) -> Result<Self, String> {
-        let mut child = ProcessCommand::new(binary)
+    fn open_with(root: &Path, mut command: ProcessCommand) -> Result<Self, String> {
+        let mut child = command
             .args(["app-server", "--stdio"])
             .current_dir(root)
             .stdin(Stdio::piped())
@@ -1414,18 +1414,6 @@ fn run(
     Ok(())
 }
 
-fn codex_binary() -> Option<PathBuf> {
-    std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
-        .map(|path| path.join(if cfg!(windows) { "codex.exe" } else { "codex" }))
-        .chain([
-            PathBuf::from("/opt/homebrew/bin/codex"),
-            PathBuf::from("/usr/local/bin/codex"),
-        ])
-        .find(|path| path.is_file())
-}
-
 fn missing_rollout(error: &str, thread: Option<&str>) -> bool {
     thread.is_some_and(|thread| {
         error
@@ -1510,6 +1498,55 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn app_server_launch_uses_the_same_explicit_codex_override_as_ecky() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const TEST: &str = "agent_engine::codex_transport::tests::app_server_launch_uses_the_same_explicit_codex_override_as_ecky";
+        const FIXTURE: &str = "REPO_CITY_CODEX_LAUNCH_FIXTURE";
+        if let Some(root) = std::env::var_os(FIXTURE) {
+            let mut wire = Wire::open(Path::new(&root)).unwrap();
+            let (events, _receive) = mpsc::sync_channel(4);
+            let reply = wire
+                .call("initialize", json!({}), &events, &AtomicBool::new(false))
+                .unwrap();
+            assert_eq!(reply["launcher"], "explicit-codex");
+            return;
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("repo-city-launch-{}-{unique}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let script = r#"#!/bin/sh
+[ "$*" = 'app-server --stdio' ] || exit 1
+read -r request
+printf '{"id":1,"result":{"launcher":"%s"}}\n' "${0##*/}"
+"#;
+        for name in ["codex", "explicit-codex"] {
+            let binary = root.join(name);
+            std::fs::write(&binary, script).unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let output = ProcessCommand::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST])
+            .env(FIXTURE, &root)
+            .env("PATH", &root)
+            .env("ECKY_CODEX_BIN", root.join("explicit-codex"))
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn writer_conflict_preserves_and_delivers_the_prompt_to_a_separate_thread() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -1569,7 +1606,7 @@ for line in sys.stdin:
 "#.replace("PHASE", phase);
             std::fs::write(&binary, script).unwrap();
             std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-            let wire = Wire::open_with(&folder, &binary).unwrap();
+            let wire = Wire::open_with(&folder, ProcessCommand::new(&binary)).unwrap();
             let (commands, input) = mpsc::sync_channel(4);
             let (events, output) = mpsc::sync_channel(32);
             commands
@@ -1677,7 +1714,7 @@ for line in sys.stdin:
     print(json.dumps({'id': request['id'], 'result':result}), flush=True)
 "#).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let wire = Wire::open_with(&folder, &binary).unwrap();
+        let wire = Wire::open_with(&folder, ProcessCommand::new(&binary)).unwrap();
         let (commands, input) = mpsc::sync_channel(8);
         let (events, output) = mpsc::sync_channel(32);
         let stop = Arc::new(AtomicBool::new(false));
@@ -2007,7 +2044,7 @@ for line in sys.stdin:
         )
         .unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let wire = Wire::open_with(&directory, &binary).unwrap();
+        let wire = Wire::open_with(&directory, ProcessCommand::new(&binary)).unwrap();
         let (commands, input) = mpsc::sync_channel(4);
         let (events, output) = mpsc::sync_channel(32);
         let stop = Arc::new(AtomicBool::new(false));
