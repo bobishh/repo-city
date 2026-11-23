@@ -1628,24 +1628,14 @@ impl WallSide {
         }
         // The wall can fill the edge of the screen even when the reticle misses it.
         let center = self.top.with_y(height * 0.5) - camera.translation;
-        let forward = camera.forward().as_vec3();
-        let up = camera.up().as_vec3();
-        let right = camera.right().as_vec3();
         let slope = std::f32::consts::FRAC_PI_8.tan() * if retained { 1.10 } else { 1. };
-        [
-            forward,
-            forward * slope + up,
-            forward * slope - up,
-            forward * (slope * aspect) + right,
-            forward * (slope * aspect) - right,
-        ]
-        .into_iter()
-        .all(|plane| {
-            center.dot(plane)
-                + across.dot(plane).abs() * self.width * 0.5
-                + plane.y.abs() * height * 0.5
-                >= 0.
-        })
+        reading::panel_visible(
+            camera,
+            center,
+            [across * (self.width / 2.), Vec3::Y * (height / 2.)],
+            slope,
+            aspect,
+        )
         .then_some(distance)
     }
 

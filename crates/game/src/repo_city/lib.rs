@@ -600,7 +600,7 @@ fn install_city(app: &mut App, args: &[String]) {
                 )
                     .chain(),
                 flight,
-                (file_facade::keep_beams_clear, targeting).chain(),
+                (file_facade::keep_reading_clear, targeting).chain(),
                 (
                     city_menu::update,
                     listing::fold_controls,
@@ -905,17 +905,20 @@ fn label(
     width: f32,
     ink: [f32; 3],
 ) -> Entity {
-    let texture = images.add(code_texture::render(title, &[], ink, 768, 64));
+    let (image, text) = code_texture::street_sign(title, ink);
+    let texture = images.add(image);
     commands
         .spawn((
-            Mesh3d(meshes.add(Rectangle::new(width, width / 12.))),
+            Mesh3d(meshes.add(Rectangle::new(1., file_facade::SIGN_ASPECT))),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color_texture: Some(texture),
                 unlit: true,
                 cull_mode: None,
                 ..default()
             })),
-            Transform::from_translation(position),
+            Transform::from_translation(position).with_scale(Vec3::new(width, width, 1.)),
+            Visibility::Inherited,
+            file_facade::StreetSign { text },
             CityObject,
         ))
         .id()

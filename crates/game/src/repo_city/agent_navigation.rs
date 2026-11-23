@@ -769,34 +769,40 @@ pub(super) fn draw_measured_link(
     line: usize,
     text: &str,
 ) {
-    match Target::checked(repo, path, line, false) {
-        Ok(target) => {
-            parent.spawn((
-                file_picker::button(
-                    text,
-                    &native_panel::panel_font(),
-                    native_panel::INK,
-                    AlignSelf::Start,
-                ),
-                Outline::new(px(2.), px(2.), Color::NONE),
-                Reference(target),
-                observe(
-                    |event: On<Activate>,
-                     references: Query<&Reference>,
-                     repo: Res<Repo>,
-                     mut navigation: ResMut<Navigation>,
-                     mut tablet: ResMut<review_tablet::Tablet>| {
-                        if let Ok(reference) = references.get(event.entity)
-                            && navigation.follow(&reference.0, &repo.0)
-                        {
-                            tablet.request_close();
-                        }
-                    },
-                ),
-            ));
-        }
-        Err(reason) => native_panel::text(parent, &format!("{text} · {reason}"), native_panel::INK),
+    if let Err(reason) = measured_link(parent, repo, path, line, text, AlignSelf::Start) {
+        native_panel::text(parent, &format!("{text} · {reason}"), native_panel::INK);
     }
+}
+
+pub(super) fn measured_link(
+    parent: &mut ChildSpawnerCommands,
+    repo: &Repository,
+    path: &str,
+    line: usize,
+    text: &str,
+    align: AlignSelf,
+) -> Result<Entity, String> {
+    let target = Target::checked(repo, path, line, false)?;
+    Ok(parent
+        .spawn((
+            file_picker::button(text, &native_panel::panel_font(), native_panel::INK, align),
+            Outline::new(px(2.), px(2.), Color::NONE),
+            Reference(target),
+            observe(
+                |event: On<Activate>,
+                 references: Query<&Reference>,
+                 repo: Res<Repo>,
+                 mut navigation: ResMut<Navigation>,
+                 mut tablet: ResMut<review_tablet::Tablet>| {
+                    if let Ok(reference) = references.get(event.entity)
+                        && navigation.follow(&reference.0, &repo.0)
+                    {
+                        tablet.request_close();
+                    }
+                },
+            ),
+        ))
+        .id())
 }
 
 fn draw_references(parent: &mut ChildSpawnerCommands, text: &str, references: Vec<Link>) -> Entity {

@@ -1,52 +1,25 @@
-//! Native projections of the same provider action history in Chat and Files.
+//! Native projections of the provider action history.
 use super::*;
-use agent_engine::activity::{self, Entry, Kind, Phase};
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum View {
-    Chat,
-    Files,
-}
+use agent_engine::activity::{Entry, Kind, Phase, Timeline};
+use std::collections::HashMap;
 
 #[derive(Component, Clone, Copy)]
 enum Action {
-    Toggle(View),
+    Toggle,
     Inspect(u64),
 }
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 struct State {
-    chat_open: bool,
-    files_open: bool,
+    open: bool,
     inspected: Option<u64>,
     version: u64,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            chat_open: false,
-            files_open: true,
-            inspected: None,
-            version: 0,
-        }
-    }
-}
-
-impl State {
-    fn open(&self, view: View) -> bool {
-        match view {
-            View::Chat => self.chat_open,
-            View::Files => self.files_open,
-        }
-    }
 }
 
 impl native_panel::Actions<Action> for State {
     fn activate(&mut self, action: Action) {
         match action {
-            Action::Toggle(View::Chat) => self.chat_open = !self.chat_open,
-            Action::Toggle(View::Files) => self.files_open = !self.files_open,
+            Action::Toggle => self.open = !self.open,
             Action::Inspect(serial) => {
                 self.inspected = (self.inspected != Some(serial)).then_some(serial)
             }
@@ -56,13 +29,12 @@ impl native_panel::Actions<Action> for State {
 }
 
 #[derive(Component)]
-struct Summary(View);
+struct Summary;
 
 #[derive(Component)]
 struct Rows {
-    view: View,
     scroll: Entity,
-    drawn: Option<(u64, u64, u64)>,
+    drawn: Option<(u64, u64)>,
 }
 
 pub(super) struct Plugin;
@@ -73,7 +45,7 @@ impl bevy::app::Plugin for Plugin {
     }
 }
 
-pub(super) fn spawn(parent: &mut ChildSpawnerCommands, view: View) {
+pub(super) fn spawn(parent: &mut ChildSpawnerCommands) {
     parent
         .spawn(Node {
             width: percent(100.),
@@ -82,14 +54,14 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands, view: View) {
             ..default()
         })
         .with_children(|bar| {
-            let label = if view == View::Chat {
-                "Agent activity"
-            } else {
-                "Recent agent files"
-            };
-            native_panel::button::<_, State>(bar, label, native_panel::INK, Action::Toggle(view));
+            native_panel::button::<_, State>(
+                bar,
+                "Agent activity",
+                native_panel::INK,
+                Action::Toggle,
+            );
             bar.spawn((
-                Summary(view),
+                Summary,
                 Text::default(),
                 native_panel::panel_font(),
                 TextColor(Color::srgb_u8(151, 184, 189)),
@@ -119,13 +91,12 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands, view: View) {
     parent
         .spawn((
             Rows {
-                view,
                 scroll,
                 drawn: None,
             },
             Node {
                 width: percent(100.),
-                height: px(if view == View::Chat { 205. } else { 110. }),
+                height: px(205.),
                 flex_shrink: 0.,
                 display: Display::None,
                 ..default()
@@ -139,167 +110,144 @@ fn update(
     state: Res<State>,
     session: Res<agent_session::Session>,
     repo: Res<Repo>,
-    mut summaries: Query<(&Summary, &mut Text)>,
+    mut summaries: Query<&mut Text, With<Summary>>,
     mut views: Query<(&mut Rows, &mut Node)>,
 ) {
     let timeline = session.timeline(&repo.0.root);
     let entries = timeline.map(|timeline| &timeline.entries);
     let version = timeline.map_or(0, |timeline| timeline.version);
-    let now = activity::now();
     let latest = entries.and_then(|events| {
         events
             .iter()
             .max_by_key(|entry| (entry.updated, entry.serial))
     });
-    let latest_file = entries.and_then(|events| {
-        events
-            .iter()
-            .filter(|entry| !entry.details.locations.is_empty())
-            .max_by_key(|entry| (entry.updated, entry.serial))
-    });
-    for (summary, mut label) in &mut summaries {
-        let value = match summary.0 {
-            View::Chat => {
-                latest.map(|entry| format!("{} · {}", entry.phase.label(), entry.details.title))
-            }
-            View::Files => latest_file.map(|entry| {
-                format!(
-                    "{} · {}",
-                    entry.details.locations[0].path,
-                    age(entry.updated, now)
-                )
-            }),
-        }
-        .unwrap_or_else(|| "No activity in this checkout yet.".into());
+    for mut label in &mut summaries {
+        let value = latest.map_or_else(
+            || "No activity in this checkout yet.".into(),
+            |entry| format!("{} · {}", entry.phase.label(), entry.details.title),
+        );
         if label.0 != value {
             label.0 = value;
         }
     }
     for (mut rows, mut node) in &mut views {
-        let visible = state.open(rows.view)
-            && if rows.view == View::Chat {
-                latest.is_some()
-            } else {
-                latest_file.is_some()
-            };
+        let visible = state.open && latest.is_some();
         node.display = if visible {
             Display::Flex
         } else {
             Display::None
         };
-        let stamp = (
-            state.version,
-            version,
-            if rows.view == View::Files {
-                now / 10
-            } else {
-                0
-            },
-        );
+        let stamp = (state.version, version);
         if !visible || (rows.drawn == Some(stamp) && !repo.is_changed()) {
             continue;
         }
         rows.drawn = Some(stamp);
-        let Some(entries) = entries else {
-            continue;
-        };
+        let Some(entries) = entries else { continue };
         commands
             .entity(rows.scroll)
             .despawn_children()
-            .with_children(|parent| match rows.view {
-                View::Chat => {
-                    for entry in entries.iter().rev().take(32) {
-                        let marked = state.inspected == Some(entry.serial);
-                        let owner = session.activity_owner(&entry.thread);
-                        let marker = if marked { "−" } else { "+" };
-                        let label = format!(
-                            "{marker} {} · {} · {} · {}",
-                            owner,
-                            entry.details.kind.label(),
-                            entry.phase.label(),
-                            entry.details.title
-                        );
-                        native_panel::button::<_, State>(
-                            parent,
-                            &label,
-                            native_panel::INK,
-                            Action::Inspect(entry.serial),
-                        );
-                        if marked {
-                            if !entry.details.body.trim().is_empty() {
-                                native_panel::text(
-                                    parent,
-                                    &entry.details.body,
-                                    Color::srgb_u8(204, 220, 224),
-                                );
-                            }
-                            for location in &entry.details.locations {
-                                let label = format!("{}:{}", location.path, location.line);
-                                agent_navigation::draw_measured_link(
-                                    parent,
-                                    &repo.0,
-                                    &location.path,
-                                    location.line,
-                                    &label,
-                                );
-                            }
+            .with_children(|parent| {
+                for entry in entries.iter().rev().take(32) {
+                    let marked = state.inspected == Some(entry.serial);
+                    let owner = session.activity_owner(&entry.thread);
+                    let marker = if marked { "−" } else { "+" };
+                    let label = format!(
+                        "{marker} {} · {} · {} · {}",
+                        owner,
+                        entry.details.kind.label(),
+                        entry.phase.label(),
+                        entry.details.title
+                    );
+                    native_panel::button::<_, State>(
+                        parent,
+                        &label,
+                        native_panel::INK,
+                        Action::Inspect(entry.serial),
+                    );
+                    if marked {
+                        if !entry.details.body.trim().is_empty() {
+                            native_panel::text(
+                                parent,
+                                &entry.details.body,
+                                Color::srgb_u8(204, 220, 224),
+                            );
+                        }
+                        for location in &entry.details.locations {
+                            let label = format!("{}:{}", location.path, location.line);
+                            agent_navigation::draw_measured_link(
+                                parent,
+                                &repo.0,
+                                &location.path,
+                                location.line,
+                                &label,
+                            );
                         }
                     }
                 }
-                View::Files => recent_files(parent, &repo.0, entries, now),
             });
     }
 }
 
-fn recent_files(
-    parent: &mut ChildSpawnerCommands,
-    repo: &Repository,
-    entries: &std::collections::VecDeque<Entry>,
-    now: u64,
-) {
-    let mut entries = entries
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct FileActivity {
+    pub line: usize,
+    updated: u64,
+    serial: u64,
+    kind: &'static str,
+}
+
+impl FileActivity {
+    fn new(entry: &Entry, line: usize) -> Self {
+        let kind = match (entry.details.kind, entry.phase) {
+            (Kind::Edit, Phase::Completed) => "edited",
+            (Kind::Edit, Phase::Failed) => "edit failed",
+            (Kind::Edit, _) => "editing",
+            (Kind::Tool, _) => "tool target",
+            (Kind::Command, Phase::Running) => "reading",
+            (_, Phase::Failed) => "read failed",
+            _ => "read",
+        };
+        Self {
+            line,
+            updated: entry.updated,
+            serial: entry.serial,
+            kind,
+        }
+    }
+
+    pub(super) fn order(self) -> (u64, u64) {
+        (self.updated, self.serial)
+    }
+
+    pub(super) fn label(self, now: u64, include_age: bool) -> String {
+        let action = format!("Agent {} · L{}", self.kind, self.line);
+        if !include_age {
+            return action;
+        }
+        let age = match now.saturating_sub(self.updated) {
+            0..5 => "just now".into(),
+            time @ 5..60 => format!("{time}s ago"),
+            time @ 60..3600 => format!("{}m ago", time / 60),
+            time => format!("{}h ago", time / 3600),
+        };
+        format!("{action} · {age}")
+    }
+}
+
+pub(super) fn files(timeline: &Timeline) -> HashMap<String, FileActivity> {
+    let mut entries = timeline
+        .entries
         .iter()
         .filter(|entry| !entry.details.locations.is_empty())
         .collect::<Vec<_>>();
     entries.sort_unstable_by_key(|entry| std::cmp::Reverse((entry.updated, entry.serial)));
-    let mut seen = HashSet::new();
-    for (entry, location) in entries
-        .into_iter()
-        .flat_map(|entry| {
-            entry
-                .details
-                .locations
-                .iter()
-                .map(move |location| (entry, location))
-        })
-        .filter(|(_, location)| seen.insert(location.path.as_str()))
-        .take(6)
-    {
-        let kind = match (entry.details.kind, entry.phase) {
-            (Kind::Edit, Phase::Completed) => "Edited",
-            (Kind::Edit, Phase::Failed) => "Edit failed",
-            (Kind::Edit, _) => "Edit",
-            (Kind::Tool, _) => "Tool target",
-            (Kind::Command, Phase::Running) => "Reading",
-            (_, Phase::Failed) => "Read failed",
-            _ => "Read",
-        };
-        let label = format!(
-            "{}:{} · {} · {}",
-            location.path,
-            location.line,
-            kind,
-            age(entry.updated, now)
-        );
-        agent_navigation::draw_measured_link(parent, repo, &location.path, location.line, &label);
+    let mut files = HashMap::new();
+    for entry in entries {
+        for location in &entry.details.locations {
+            files
+                .entry(location.path.clone())
+                .or_insert_with(|| FileActivity::new(entry, location.line));
+        }
     }
-}
-
-fn age(updated: u64, now: u64) -> String {
-    match now.saturating_sub(updated) {
-        0..5 => "just now".into(),
-        time @ 5..60 => format!("{time}s ago"),
-        time @ 60..3600 => format!("{}m ago", time / 60),
-        time => format!("{}h ago", time / 3600),
-    }
+    files
 }

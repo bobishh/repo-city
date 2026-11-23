@@ -18,6 +18,18 @@ use swash::{
     scale::{Render, ScaleContext, Source},
 };
 
+const TITLE_LEFT: f32 = 22.;
+const TITLE_SIZE: f32 = 24.;
+
+pub(super) fn street_sign(title: &str, tint: [f32; 3]) -> (Image, std::ops::Range<f32>) {
+    const WIDTH: u32 = 768;
+    let width = WIDTH as f32;
+    let advance = title.chars().map(source_advance).sum::<f32>() * TITLE_SIZE / 20.;
+    let left = (TITLE_LEFT - 2.) / width - 0.5;
+    let right = (TITLE_LEFT + advance + 2.).min(width) / width - 0.5;
+    (render(title, &[], tint, WIDTH, 64), left..right)
+}
+
 pub fn render(
     title: &str,
     lines: &[(usize, String)],
@@ -337,7 +349,7 @@ pub fn source(
         context: ScaleContext::new(),
     };
     canvas.band(0, height, [9, 17, 23]);
-    canvas.text(title, 22., 34., 24., |_| tint);
+    canvas.text(title, TITLE_LEFT, 34., TITLE_SIZE, |_| tint);
     for (i, (line, mark)) in rows
         .iter()
         .take((height.saturating_sub(65) / 27) as usize)

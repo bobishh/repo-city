@@ -2,6 +2,7 @@
 use super::*;
 
 pub(super) const BEAM_HEIGHT: f32 = 14.;
+pub(super) const SIGN_ASPECT: f32 = 1. / 12.;
 
 #[derive(Resource, Default)]
 pub(super) struct ChangesOnly {
@@ -328,10 +329,61 @@ pub(super) fn transform(file: &repo_world::File, size: Vec3, part: Part) -> Tran
 #[derive(Component)]
 pub(super) struct FileBeam;
 
+#[derive(Component)]
+pub(super) struct StreetSign {
+    pub text: std::ops::Range<f32>,
+}
+
 pub(super) struct ReadingPlane {
     normal: Vec3,
     gap: f32,
-    silhouette: f32,
+    center: Vec2,
+    half: Vec2,
+}
+
+impl ReadingPlane {
+    fn intersects(&self, offset: Vec3, half: Vec3) -> bool {
+        // The wall's bounds widen from the eye to the wall. Compare the sign
+        // with that corridor over the depths occupied by the sign itself.
+        let depth = -offset.dot(self.normal);
+        let half_depth = half.dot(self.normal.abs());
+        let near = ((depth - half_depth) / self.gap).max(0.);
+        let far = ((depth + half_depth) / self.gap).min(1.);
+        if near > far || near >= 1. || far <= 0. {
+            return false;
+        }
+        let side = Vec3::Y.cross(self.normal);
+        let center = Vec2::new(offset.dot(side), offset.y);
+        let half = Vec2::new(half.dot(side.abs()), half.y);
+        let lower = self.center - self.half;
+        let upper = self.center + self.half;
+        (center + half).cmpge((lower * near).min(lower * far)).all()
+            && (center - half).cmple((upper * near).max(upper * far)).all()
+    }
+}
+
+impl StreetSign {
+    fn blocks_reading(
+        &self,
+        pose: &Transform,
+        camera: &Transform,
+        wall: &ReadingPlane,
+        aspect: f32,
+    ) -> bool {
+        let half = Vec3::new(pose.scale.x, pose.scale.y * SIGN_ASPECT, 0.) / 2.;
+        let offset = pose.translation - camera.translation;
+        let near = (offset.abs() - half).max(Vec3::ZERO).length_squared() <= (half.x / 2.).powi(2);
+        let text_center = (self.text.start + self.text.end) / 2. * pose.scale.x;
+        let text_half = (self.text.end - self.text.start) / 2. * pose.scale.x;
+        near && wall.intersects(offset, half)
+            && !reading::panel_visible(
+                camera,
+                offset + Vec3::X * text_center,
+                [Vec3::X * text_half, Vec3::Y * half.y],
+                std::f32::consts::FRAC_PI_8.tan(),
+                aspect,
+            )
+    }
 }
 
 pub(super) fn reading_plane(
@@ -347,11 +399,14 @@ pub(super) fn reading_plane(
     let center = Vec3::new(x, 0., z);
     let gap = (camera.translation - center).dot(normal) - normal.abs().dot(size) / 2.;
     let side = Vec3::Y.cross(normal);
-    let silhouette = (camera.translation - center).dot(side).abs() + size.dot(side.abs()) / 2.;
     (gap > 0.).then_some(ReadingPlane {
         normal,
         gap,
-        silhouette,
+        center: Vec2::new(
+            (center - camera.translation).dot(side),
+            size.y / 2. - camera.translation.y,
+        ),
+        half: Vec2::new(size.dot(side.abs()) / 2., size.y / 2.),
     })
 }
 
@@ -374,7 +429,7 @@ pub(super) fn beam_visible(
         let side = Vec3::Y.cross(reading.normal);
         if depth > -half.dot(reading.normal.abs())
             && depth < reading.gap + half.dot(reading.normal.abs())
-            && delta.dot(side).abs() < reading.silhouette + 0.75
+            && delta.dot(side).abs() < reading.center.x.abs() + reading.half.x + 0.75
         {
             return false;
         }
@@ -382,18 +437,30 @@ pub(super) fn beam_visible(
     true
 }
 
-pub(super) fn keep_beams_clear(
+pub(super) fn keep_reading_clear(
     repo: Res<Repo>,
     explorer: Res<Explorer>,
     camera: Query<&Transform, PlayerCamera>,
-    mut beams: Query<(&Transform, &mut Visibility), Or<(With<FileBeam>, With<district::Beacon>)>>,
+    window: Query<&Window, With<PrimaryWindow>>,
+    mut obstacles: Query<
+        (&Transform, &mut Visibility, Option<&StreetSign>),
+        Or<(With<FileBeam>, With<district::Beacon>, With<StreetSign>)>,
+    >,
 ) {
     let Ok(camera) = camera.single() else {
         return;
     };
     let reading = reading_plane(&repo.0, &explorer, camera);
-    for (pose, mut visibility) in &mut beams {
-        let visible = beam_visible(pose, camera, reading.as_ref());
+    let aspect = window
+        .single()
+        .map_or(16. / 9., |window| window.width() / window.height().max(1.));
+    for (pose, mut visibility, sign) in &mut obstacles {
+        let visible = match sign {
+            Some(sign) => reading
+                .as_ref()
+                .is_none_or(|wall| !sign.blocks_reading(pose, camera, wall, aspect)),
+            None => beam_visible(pose, camera, reading.as_ref()),
+        };
         visibility.set_if_neq(if visible {
             Visibility::Inherited
         } else {
@@ -529,13 +596,101 @@ mod tests {
         let reading = ReadingPlane {
             normal: Vec3::Z,
             gap: 12.,
-            silhouette: 7.,
+            center: Vec2::ZERO,
+            half: Vec2::splat(7.),
         };
         let beam = |x, z| Transform::from_xyz(x, 30., z).with_scale(Vec3::new(0.34, 72., 0.34));
         assert!(!beam_visible(&beam(12.1, 24.), &camera, None));
         assert!(!beam_visible(&beam(13., 18.), &camera, Some(&reading)));
         assert!(beam_visible(&beam(24., 18.), &camera, Some(&reading)));
         assert!(beam_visible(&beam(13., 8.), &camera, Some(&reading)));
+    }
+
+    #[test]
+    fn close_street_signs_clear_the_wall_when_their_text_is_out_of_view() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        let mut repo = repository_picker::empty();
+        repo.files.push(repo_world::File {
+            path: "src/demo.rs".into(),
+            before: None,
+            after: Some(repo_world::Blob {
+                id: "source".into(),
+                mode: "100644".into(),
+                size: 4200,
+            }),
+            change: Change::Added,
+            position: [0., 0.],
+        });
+        let mut app = App::new();
+        app.insert_resource(Repo(repo))
+            .insert_resource(Explorer::new(0))
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .add_systems(Update, keep_reading_clear);
+        let camera = Transform::from_xyz(6., 8., 18.).looking_at(Vec3::new(0., 7., 7.), Vec3::Y);
+        let eye = app.world_mut().spawn((Camera3d::default(), camera)).id();
+        let [blocking, text_visible, above] = app
+            .world_mut()
+            .run_system_once(
+                |mut commands: Commands,
+                 mut meshes: ResMut<Assets<Mesh>>,
+                 mut materials: ResMut<Assets<StandardMaterial>>,
+                 mut images: ResMut<Assets<Image>>| {
+                    [
+                        Vec3::new(-5., 7.6, 12.),
+                        Vec3::new(12., 7.6, 12.),
+                        Vec3::new(-5., 30., 12.),
+                    ]
+                    .map(|position| {
+                        label(
+                            &mut commands,
+                            &mut meshes,
+                            &mut materials,
+                            &mut images,
+                            "district",
+                            position,
+                            24.,
+                            [1.; 3],
+                        )
+                    })
+                },
+            )
+            .unwrap();
+
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(blocking),
+            Some(&Visibility::Hidden)
+        );
+        assert_eq!(
+            app.world().get::<Visibility>(text_visible),
+            Some(&Visibility::Inherited)
+        );
+        assert_eq!(
+            app.world().get::<Visibility>(above),
+            Some(&Visibility::Inherited)
+        );
+
+        app.world_mut()
+            .entity_mut(eye)
+            .insert(Transform::from_xyz(6., 8., 23.).looking_at(Vec3::new(0., 7., 7.), Vec3::Y));
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(blocking),
+            Some(&Visibility::Inherited)
+        );
+
+        app.world_mut().entity_mut(eye).insert(
+            Transform::from_translation(camera.translation)
+                .looking_at(camera.translation + Vec3::Z, Vec3::Y),
+        );
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(blocking),
+            Some(&Visibility::Inherited)
+        );
     }
 
     #[test]

@@ -230,6 +230,29 @@ pub(super) fn panel_in_focus(camera: &Transform, center: Vec3, size: Vec2, reach
     (hit.x - center.x).abs() <= size.x / 2. && (hit.y - center.y).abs() <= size.y / 2.
 }
 
+pub(super) fn panel_visible(
+    camera: &Transform,
+    center: Vec3,
+    half_axes: [Vec3; 2],
+    slope: f32,
+    aspect: f32,
+) -> bool {
+    let forward = camera.forward().as_vec3();
+    let up = camera.up().as_vec3();
+    let right = camera.right().as_vec3();
+    [
+        forward,
+        forward * slope + up,
+        forward * slope - up,
+        forward * (slope * aspect) + right,
+        forward * (slope * aspect) - right,
+    ]
+    .into_iter()
+    .all(|plane| {
+        center.dot(plane) + half_axes[0].dot(plane).abs() + half_axes[1].dot(plane).abs() >= 0.
+    })
+}
+
 pub(super) fn callable_at(explorer: &Explorer, visual: usize) -> Option<std::ops::Range<usize>> {
     let line = explorer.source_layout.rows.get(visual)?.number;
     callable_for_line(explorer, line)

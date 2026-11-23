@@ -22,7 +22,11 @@ pub(super) struct Tablet {
     pending: Option<native_github::Job<FileTimes>>,
     times: FileTimes,
     scope: Option<(PathBuf, String, Option<String>)>,
-    viewed_only: bool,
+    file_filter: FileFilter,
+    file_activity: HashMap<String, agent_timeline::FileActivity>,
+    activity_stamp: Option<(agent_engine::Provider, u64)>,
+    files_scroll: f32,
+    file_buttons: Vec<(String, Entity)>,
     page: usize,
     view: Page,
     dates_requested: bool,
@@ -218,7 +222,7 @@ impl Page {
 #[derive(Component, Clone, Copy)]
 enum Action {
     Visit(usize),
-    Filter(bool),
+    Filter(FileFilter),
     Page(usize),
     Switch(Page),
     Mode(reading::Mode),
@@ -401,19 +405,57 @@ impl Freshness {
     }
 }
 
-fn changed_files<'a>(
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum FileFilter {
+    #[default]
+    Changes,
+    Viewed,
+    Agent,
+}
+
+struct FileRow<'a> {
+    index: usize,
+    file: &'a repo_world::File,
+    freshness: Freshness,
+    activity: Option<agent_timeline::FileActivity>,
+}
+
+impl FileRow<'_> {
+    fn label(&self, filter: FileFilter, elapsed: f64, now: u64) -> String {
+        let freshness = self.freshness.label(elapsed, now);
+        let detail = match self.activity {
+            Some(activity) if filter == FileFilter::Agent || freshness.is_empty() => {
+                activity.label(now, true)
+            }
+            Some(activity) => format!("{freshness} · {}", activity.label(now, false)),
+            None if freshness.is_empty() => " ".into(),
+            None => freshness,
+        };
+        format!("{}\n{detail}", self.file.path)
+    }
+}
+
+fn file_rows<'a>(
     repo: &'a Repository,
     progress: &progress::Progress,
     live: &live_worktree::Live,
     times: &FileTimes,
-    viewed_only: bool,
-) -> Vec<(usize, &'a repo_world::File, Freshness)> {
+    filter: FileFilter,
+    activity: &HashMap<String, agent_timeline::FileActivity>,
+) -> Vec<FileRow<'a>> {
     let mut files = repo
         .files
         .iter()
         .enumerate()
         .filter_map(|(index, file)| {
-            if file.change == Change::Unchanged || (viewed_only && !progress.has_visited(index)) {
+            let activity = activity.get(&file.path).copied();
+            let changed = file.change != Change::Unchanged;
+            let included = match filter {
+                FileFilter::Changes => changed,
+                FileFilter::Viewed => changed && progress.has_visited(index),
+                FileFilter::Agent => activity.is_some(),
+            };
+            if !included {
                 return None;
             }
             let freshness = if repo.is_worktree() {
@@ -423,13 +465,24 @@ fn changed_files<'a>(
             } else {
                 times.get(&file.path).copied().map(Freshness::Committed)
             };
-            Some((index, file, freshness.unwrap_or(Freshness::Unknown)))
+            Some(FileRow {
+                index,
+                file,
+                freshness: freshness.unwrap_or(Freshness::Unknown),
+                activity,
+            })
         })
         .collect::<Vec<_>>();
-    files.sort_unstable_by(|(_, left, a), (_, right, b)| {
-        b.order()
-            .cmp(&a.order())
-            .then_with(|| left.path.cmp(&right.path))
+    files.sort_unstable_by(|left, right| {
+        let order = if filter == FileFilter::Agent {
+            right
+                .activity
+                .map(agent_timeline::FileActivity::order)
+                .cmp(&left.activity.map(agent_timeline::FileActivity::order))
+        } else {
+            right.freshness.order().cmp(&left.freshness.order())
+        };
+        order.then_with(|| left.file.path.cmp(&right.file.path))
     });
     files
 }
@@ -545,6 +598,7 @@ pub(super) fn update(
         .get()
         .is_some_and(|entity| fields.contains(entity) || editors.contains(entity));
     let terminal_page = tablet.is_open() && tablet.view == Page::Terminal;
+    let previous_page = tablet.view;
     if reading.is_changed() {
         tablet.reading_enabled = reading.enabled;
     }
@@ -791,8 +845,8 @@ pub(super) fn update(
                 redraw = true;
             }
             Some(Action::TraceFollow) => redraw = true,
-            Some(Action::Filter(viewed)) => {
-                tablet.viewed_only = viewed;
+            Some(Action::Filter(filter)) => {
+                tablet.file_filter = filter;
                 tablet.page = 0;
                 redraw = true;
             }
@@ -1045,6 +1099,24 @@ pub(super) fn update(
         tablet.dates_requested = true;
         tablet.pending = Some(load_times(&repo.0));
     }
+    if tablet.view == Page::Files {
+        let timeline = agent.as_deref().and_then(|session| {
+            session
+                .timeline(&repo.0.root)
+                .map(|timeline| (session.provider(), timeline))
+        });
+        let stamp = timeline.map(|(provider, timeline)| (provider, timeline.version));
+        if tablet.activity_stamp != stamp {
+            tablet.activity_stamp = stamp;
+            let activity = timeline.map_or_else(HashMap::new, |(_, timeline)| {
+                agent_timeline::files(timeline)
+            });
+            if tablet.file_activity != activity {
+                tablet.file_activity = activity;
+                redraw = true;
+            }
+        }
+    }
     if let Some(history) = tablet.history.as_mut() {
         redraw |= history.poll();
     }
@@ -1121,8 +1193,32 @@ pub(super) fn update(
     if !redraw {
         return;
     }
+    let preserve_file_list = was_open
+        && previous_page == Page::Files
+        && tablet.view == Page::Files
+        && !matches!(action, Some(Action::Filter(_) | Action::Page(_)));
+    let focused_file = if preserve_file_list {
+        tablet
+            .file_buttons
+            .iter()
+            .find_map(|(path, button)| (focus.get() == Some(*button)).then(|| path.clone()))
+    } else {
+        None
+    };
+    tablet.files_scroll = if preserve_file_list {
+        rows.single().map_or(0., |(scroll, _)| scroll.y)
+    } else {
+        0.
+    };
     let files = if tablet.view == Page::Files {
-        changed_files(&repo.0, &progress, &live, &tablet.times, tablet.viewed_only)
+        file_rows(
+            &repo.0,
+            &progress,
+            &live,
+            &tablet.times,
+            tablet.file_filter,
+            &tablet.file_activity,
+        )
     } else {
         Vec::new()
     };
@@ -1146,7 +1242,12 @@ pub(super) fn update(
         world.as_deref().is_some_and(WorldSet::is_library),
     );
     tablet.panel = Some(panel);
-    focus.set(first, FocusCause::Navigated);
+    let focus_target = tablet
+        .file_buttons
+        .iter()
+        .find_map(|(path, button)| (focused_file.as_ref() == Some(path)).then_some(*button))
+        .unwrap_or(first);
+    focus.set(focus_target, FocusCause::Navigated);
 }
 
 impl Tablet {
@@ -1232,7 +1333,7 @@ fn draw_search_results(parent: &mut ChildSpawnerCommands, repo: &Repository, res
 fn draw(
     commands: &mut Commands,
     tablet: &mut Tablet,
-    files: &[(usize, &repo_world::File, Freshness)],
+    files: &[FileRow<'_>],
     elapsed: f64,
     links: Option<&file_links::Links>,
     audio: Option<&city_audio::Settings>,
@@ -1244,6 +1345,7 @@ fn draw(
     library: bool,
 ) -> (Entity, Entity) {
     let title = match tablet.view {
+        Page::Files if repository.is_worktree() => "Live worktree",
         Page::Files => "Changed files",
         Page::Help => "Help",
         Page::Settings => "Settings",
@@ -1285,6 +1387,7 @@ fn draw(
     let mut tab = 0;
     let mut first = None;
     tablet.inputs = None;
+    tablet.file_buttons.clear();
     commands.entity(panel).with_children(|parent| {
         parent
             .spawn(Node {
@@ -1494,16 +1597,13 @@ fn draw(
             }
             Page::Files => {}
         }
-        let revision = if repository.is_worktree() {
-            "Live worktree".into()
-        } else {
-            format!(
+        if !repository.is_worktree() {
+            let revision = format!(
                 "Comparison · {}",
                 repository.revision.chars().take(8).collect::<String>()
-            )
-        };
-        native_panel::text(parent, &revision, native_panel::INK);
-        agent_timeline::spawn(parent, agent_timeline::View::Files);
+            );
+            native_panel::text(parent, &revision, native_panel::INK);
+        }
         parent
             .spawn((Node {
                 flex_direction: FlexDirection::Row,
@@ -1511,9 +1611,13 @@ fn draw(
                 ..default()
             },))
             .with_children(|bar| {
-                for (label, viewed) in [("All changes", false), ("Viewed", true)] {
-                    let entity = add_button(bar, label, Action::Filter(viewed), &mut tab);
-                    if viewed == tablet.viewed_only {
+                for (label, filter) in [
+                    ("All changes", FileFilter::Changes),
+                    ("Viewed", FileFilter::Viewed),
+                    ("Agent files", FileFilter::Agent),
+                ] {
+                    let entity = add_button(bar, label, Action::Filter(filter), &mut tab);
+                    if filter == tablet.file_filter {
                         bar.commands()
                             .entity(entity)
                             .insert(BackgroundColor(Color::srgb_u8(23, 79, 87)));
@@ -1523,7 +1627,7 @@ fn draw(
         parent
             .spawn((
                 FileRows,
-                ScrollPosition::default(),
+                ScrollPosition(Vec2::new(0., tablet.files_scroll)),
                 Node {
                     flex_direction: FlexDirection::Column,
                     flex_grow: 1.,
@@ -1534,24 +1638,38 @@ fn draw(
                 },
             ))
             .with_children(|list| {
-                if tablet.pending.is_some() {
-                    native_panel::text(list, "Loading file dates…", native_panel::INK);
-                } else if files.is_empty() {
-                    let message = if tablet.viewed_only {
-                        "No changed files viewed."
-                    } else {
-                        "No changed files."
+                if files.is_empty() {
+                    let message = match tablet.file_filter {
+                        FileFilter::Changes => "No changed files.",
+                        FileFilter::Viewed => "No changed files viewed.",
+                        FileFilter::Agent => "No agent file activity in this checkout.",
                     };
                     native_panel::text(list, message, native_panel::INK);
                 } else {
-                    for &(index, file, freshness) in
-                        files.iter().skip(first_row).take(FILES_PER_PAGE)
-                    {
-                        let path = format!("{}\n{}", file.path, freshness.label(elapsed, now));
-                        let row = add_button(list, path.trim_end(), Action::Visit(index), &mut tab);
-                        if index == files[first_row].0 {
-                            first = Some(row);
+                    for file in files.iter().skip(first_row).take(FILES_PER_PAGE) {
+                        let label = file.label(tablet.file_filter, elapsed, now);
+                        let link = file.activity.and_then(|activity| {
+                            agent_navigation::measured_link(
+                                list,
+                                repository,
+                                &file.file.path,
+                                activity.line,
+                                &label,
+                                AlignSelf::Auto,
+                            )
+                            .ok()
+                        });
+                        let button = if let Some(link) = link {
+                            list.commands().entity(link).insert(TabIndex(tab));
+                            tab += 1;
+                            link
+                        } else {
+                            add_button(list, &label, Action::Visit(file.index), &mut tab)
+                        };
+                        if file.index == files[first_row].index {
+                            first = Some(button);
                         }
+                        tablet.file_buttons.push((file.file.path.clone(), button));
                     }
                 }
             });
@@ -1562,7 +1680,7 @@ fn draw(
                 ..default()
             })
             .with_children(|bar| {
-                if tablet.pending.is_none() && files.len() > FILES_PER_PAGE {
+                if files.len() > FILES_PER_PAGE {
                     let pages = files.len().div_ceil(FILES_PER_PAGE);
                     if tablet.page > 0 {
                         add_button(bar, "Previous", Action::Page(tablet.page - 1), &mut tab);
@@ -2141,6 +2259,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn live_worktree_uses_one_scroll_area_with_a_full_heading() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        let mut app = App::new();
+        let world = app.world_mut();
+        world
+            .run_system_once(|mut commands: Commands| {
+                let mut repo = repository_picker::empty();
+                repo.revision = "worktree:fixture".into();
+                draw(
+                    &mut commands,
+                    &mut Tablet::default(),
+                    &[],
+                    0.,
+                    None,
+                    None,
+                    None,
+                    &repo,
+                    None,
+                    None,
+                    false,
+                    false,
+                );
+            })
+            .unwrap();
+
+        assert_eq!(world.query::<&tablet_scroll::Area>().iter(world).count(), 1);
+        let heading = world
+            .query_filtered::<&Text, With<native_panel::Heading>>()
+            .single(world)
+            .unwrap();
+        assert_eq!(heading.0, "Live worktree");
+    }
+
+    #[test]
     fn function_keys_toggle_reading_and_sound_without_opening_the_tablet() {
         // Run preference writes in a child with isolated storage, never the player's settings.
         const CHILD: &str = "REPO_CITY_KEY_TEST_CHILD";
@@ -2533,7 +2686,9 @@ mod tests {
     }
 
     #[test]
-    fn tablet_sorts_changed_files_by_time_and_can_show_only_viewed() {
+    fn file_filters_share_rows_and_keep_each_files_latest_agent_location() {
+        use agent_engine::activity::{Details, Kind, Location, Phase, Timeline};
+
         let mut repo = repository_picker::empty();
         repo.files = [
             ("seen.rs", Change::Modified),
@@ -2554,13 +2709,36 @@ mod tests {
         progress.visit(2, &repo.files[2], false);
         let times = FileTimes::from([("seen.rs".into(), 10), ("unseen.rs".into(), 20)]);
         let live = live_worktree::Live::default();
-        let paths = |viewed| {
-            changed_files(&repo, &progress, &live, &times, viewed)
+        let mut timeline = Timeline::default();
+        for (item, path, line, kind) in [
+            ("first", "seen.rs", 2, Kind::Edit),
+            ("second", "seen.rs", 7, Kind::Edit),
+            ("third", "context.rs", 5, Kind::Command),
+        ] {
+            let mut details = Details::new(kind, item);
+            details.locations = vec![Location {
+                path: path.into(),
+                line,
+            }];
+            timeline.record("thread", item, details, Phase::Completed);
+        }
+        let activity = agent_timeline::files(&timeline);
+        let rows = |filter| file_rows(&repo, &progress, &live, &times, filter, &activity);
+        let paths = |filter| {
+            rows(filter)
                 .into_iter()
-                .map(|(_, file, _)| file.path.as_str())
+                .map(|row| row.file.path.as_str())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(paths(false), ["unseen.rs", "seen.rs"]);
-        assert_eq!(paths(true), ["seen.rs"]);
+        assert_eq!(paths(FileFilter::Changes), ["unseen.rs", "seen.rs"]);
+        assert_eq!(paths(FileFilter::Viewed), ["seen.rs"]);
+        assert_eq!(paths(FileFilter::Agent), ["context.rs", "seen.rs"]);
+        let all = rows(FileFilter::Changes);
+        assert_eq!(all[0].activity, None);
+        assert_eq!(all[1].activity.unwrap().line, 7);
+        assert_eq!(
+            all[1].label(FileFilter::Changes, 0., 20),
+            "seen.rs\nCommitted 10s ago · Agent edited · L7"
+        );
     }
 }

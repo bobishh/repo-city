@@ -77,7 +77,7 @@ impl native_panel::Actions<Action> for Party {
 
 pub(in super::super) fn spawn(parent: &mut ChildSpawnerCommands, host: bool) -> Entity {
     native_panel::text(parent, "Room chat", native_panel::INK);
-    agent_timeline::spawn(parent, agent_timeline::View::Chat);
+    agent_timeline::spawn(parent);
     let field = native_panel::input(parent, "Room message", "", 100, true);
     parent.commands().entity(field).insert(Draft(false));
     parent

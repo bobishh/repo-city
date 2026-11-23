@@ -426,8 +426,9 @@ Agent requests take priority over flight proposals. **Settings → Agent provide
 Permissions** selects **Ask me**, **Automatic review**, or **No confirmations**
 for every provider. The default uses automatic review for Codex and shows any
 requests a provider sends to the user. **No confirmations** answers tool requests
-without a Y/N prompt for Codex, Agy, Grok and Muse. Codex also receives approval
-policy `never` on its next connection. **Ask me** keeps tool decisions manual.
+without a Y/N prompt for Codex, Agy, Grok and Muse. Codex uses a workspace
+sandbox. With **No confirmations**, it cannot request broader access. Select
+**Ask me**, then disconnect and reconnect Codex to approve individual requests.
 These preferences are stored
 in `agent-interaction.json` beside desktop preferences. **Stop work** shows
 **Stopping…** until the provider reports the outcome. If only voice is active,
@@ -459,9 +460,11 @@ draw blue beacons at those buildings, including activity from identified child
 agents. Unresolved activity is not assigned to a guessed building.
 Expand **Agent activity** in Chat to inspect commands, edits, and tool calls as
 they run. Expand a step and select an available file link to fly to the reported
-line or the start of the file. **Files → Recent agent files** shows the time of
-the tool event. **Changed files** continues to show the selected Git comparison.
-Switch to **Live worktree** for files created or edited in the current checkout.
+line or the start of the file. In **Files**, changed file rows include the
+latest agent action when available. Select **Agent files** to see the files the
+agent touched, including files it read without editing. Select a row with a
+reported line to fly there. Switch to **Live worktree** for files created or
+edited in the current checkout.
 The action history stays in the local session, including when Chat is in a room.
 Paths such as `crates/explorer/build.rs:12` are highlighted inside chat; click
 to fly to that file and source line. The MCP tool `propose_navigation` shows a

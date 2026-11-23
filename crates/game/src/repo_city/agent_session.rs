@@ -587,7 +587,7 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands) -> Entity {
                     TextColor(native_panel::INK),
                 ));
             });
-            agent_timeline::spawn(body, agent_timeline::View::Chat);
+            agent_timeline::spawn(body);
             body.spawn(Node {
                 height: px(38.),
                 flex_shrink: 0.,
