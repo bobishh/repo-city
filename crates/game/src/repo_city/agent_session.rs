@@ -2,7 +2,7 @@
 //! Lifecycle/transcript conventions adapted from bobishh/ecky at
 //! c48e376f676663272ee3a06622cd81bacb3f24d7; Tauri/CAD services are not copied.
 
-use super::agent_engine::{self, Command, Dialogue, Engine, Event, Projection};
+use super::agent_engine::{self, Approval, Command, Dialogue, Engine, Event, Projection};
 mod controls;
 mod models;
 mod voice_hud;
@@ -84,11 +84,6 @@ struct ConnectionLabel;
 #[derive(Component)]
 struct VoiceLabel;
 
-struct Approval {
-    token: String,
-    title: String,
-}
-
 #[derive(Resource, Default)]
 pub(super) struct Session {
     models: models::Picker,
@@ -142,6 +137,7 @@ impl Session {
             .thread
             .as_deref()
             .unwrap_or("local-session");
+        let approval_description;
         let (thread, key, title, detail, phase) = match event {
             Event::Connected(thread) => (
                 thread.as_str(),
@@ -173,13 +169,16 @@ impl Session {
                     Phase::Failed,
                 ),
             },
-            Event::Approval { token, title } => (
-                owner,
-                format!("request:{token}"),
-                "Permission requested",
-                title.as_str(),
-                Phase::Running,
-            ),
+            Event::Approval(approval) => {
+                approval_description = approval.description();
+                (
+                    owner,
+                    format!("request:{}", approval.token),
+                    "Permission requested",
+                    approval_description.as_str(),
+                    Phase::Running,
+                )
+            }
             Event::Voice { id, active: true } => (
                 owner,
                 format!("voice:{id}"),
@@ -246,14 +245,29 @@ impl Session {
     }
 
     pub(super) fn chat_board(&self) -> Vec<review_party::BoardMessage> {
-        let mut recent = self
+        let mut entries: Vec<&agent_engine::state::Message> = Vec::new();
+        for message in self
             .projection
             .dialogue
             .messages
             .iter()
-            .rev()
             .filter(|message| matches!(message.role.as_str(), "user" | "assistant"))
-            .take(5)
+        {
+            if let Some(previous) = entries.last_mut()
+                && previous.role == "assistant"
+                && message.role == "assistant"
+                && previous.id.starts_with("voice:") != message.id.starts_with("voice:")
+                && same_spoken_reply(&previous.text, &message.text)
+            {
+                if !message.id.starts_with("voice:") {
+                    *previous = message;
+                }
+                continue;
+            }
+            entries.push(message);
+        }
+        entries
+            .into_iter()
             .map(|message| review_party::BoardMessage {
                 login: if message.role == "user" {
                     "You"
@@ -263,9 +277,7 @@ impl Session {
                 .into(),
                 text: message.text.clone(),
             })
-            .collect::<Vec<_>>();
-        recent.reverse();
-        recent
+            .collect()
     }
 
     pub(super) fn follows_agent(&self) -> bool {
@@ -494,6 +506,17 @@ impl Session {
         self.dirty = false;
         Ok(())
     }
+}
+
+fn same_spoken_reply(a: &str, b: &str) -> bool {
+    fn words(value: &str) -> impl Iterator<Item = String> + '_ {
+        value
+            .split(|character: char| !character.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_lowercase)
+    }
+    let mut a = words(a).peekable();
+    a.peek().is_some() && a.eq(words(b))
 }
 
 impl native_panel::Actions<Action> for Session {
@@ -1019,8 +1042,8 @@ fn update(
                     }
                 }
             }
-            Event::Approval { token, title } => {
-                if let Err(error) = session.request_approval(token, title) {
+            Event::Approval(approval) => {
+                if let Err(error) = session.request_approval(approval) {
                     session.notice(&error);
                     session.status = error;
                 }
@@ -1221,7 +1244,7 @@ fn update(
         .approvals
         .first()
         .filter(|_| session.approval_pending())
-        .map_or("", |approval| approval.title.as_str());
+        .map_or("", |approval| approval.summary.as_str());
     for (mut text, _, connection_label, voice_label, state, request) in &mut labels {
         let value = if connection_label.is_some() {
             connection.as_str()
@@ -1516,6 +1539,27 @@ fn encode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn board_keeps_conversation_order_and_shows_one_copy_of_the_spoken_reply() {
+        let mut session = Session::default();
+        let dialogue = &mut session.projection.dialogue;
+        dialogue.message("first", "user", "Show progress", false);
+        dialogue.message("voice:1", "assistant", "Here is the result.", false);
+        dialogue.message("text:1", "assistant", "**Here is the result.**", false);
+        dialogue.message("text:2", "assistant", "**Here is the result.**", false);
+        dialogue.message("second", "user", "Continue", false);
+        let rows = session.chat_board();
+        assert_eq!(
+            rows.iter().map(|row| row.text.as_str()).collect::<Vec<_>>(),
+            [
+                "Show progress",
+                "**Here is the result.**",
+                "**Here is the result.**",
+                "Continue",
+            ]
+        );
+    }
     #[test]
     fn opening_agent_widgets_does_not_connect_or_enable_microphone() {
         let mut app = App::new();

@@ -47,9 +47,6 @@ impl Chat {
             chat: self
                 .entries
                 .iter()
-                .rev()
-                .take(5)
-                .rev()
                 .map(|entry| entry.message.clone())
                 .collect(),
             sketch: self.sketch.clone(),

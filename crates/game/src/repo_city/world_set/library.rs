@@ -213,7 +213,7 @@ pub(super) fn install(app: &mut App, args: &[String]) {
                 browser_refresh.run_if(repository_picker::has_city),
                 review_notes::refresh,
                 #[cfg(target_arch = "wasm32")]
-                touch_input,
+                touch_input.before(city_boards::ScrollInput),
                 actions::update,
                 city_menu::apply_filter_shortcut.run_if(
                     |library: Res<Library>,
@@ -247,7 +247,7 @@ pub(super) fn install(app: &mut App, args: &[String]) {
             )
                 .chain(),
             (
-                controls,
+                controls.after(city_boards::ScrollInput),
                 room::draw,
                 map::draw_shade,
                 owl::fly,

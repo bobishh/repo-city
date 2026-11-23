@@ -42,6 +42,14 @@ test("touch flight controls reset movement for VibePad and backgrounding", async
   expect((await swipe(240, 200)).pulses).toEqual(["ArrowLeft"]);
   await canvas.evaluate(element => element.removeAttribute("data-touch-reading"));
   expect((await swipe(240, 200)).look).toEqual([160, 0]);
+  await canvas.evaluate(element => {
+    const box = element.getBoundingClientRect();
+    const point = (x, y) => [x - box.left, y - box.top];
+    element.dataset.boardAreas = JSON.stringify([[1, [point(120, 155), point(205, 155), point(205, 225), point(120, 225)]]]);
+  });
+  expect(await swipe(160, 125)).toMatchObject({ board: [1, 75], look: [0, 0], pulses: [] });
+  await canvas.evaluate(element => { delete element.dataset.boardAreas; });
+  expect((await swipe(160, 125)).look).toEqual([0, -150]);
   await cdp.detach();
   await page.getByRole("button", { name: "Open VibePad" }).tap();
   expect(JSON.parse(await page.evaluate(() => touch.take())).pulses).toEqual(["Tab"]);

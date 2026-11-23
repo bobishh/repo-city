@@ -103,6 +103,21 @@ pub(super) enum Command {
     Approval { token: String, accept: bool },
 }
 
+pub(super) struct Approval {
+    pub token: String,
+    pub summary: String,
+    pub command: Option<String>,
+}
+
+impl Approval {
+    pub fn description(&self) -> String {
+        match &self.command {
+            Some(command) => format!("{}\n\n{command}", self.summary),
+            None => self.summary.clone(),
+        }
+    }
+}
+
 pub(super) enum Event {
     Models(Result<models::Catalog, String>),
     Connected(String),
@@ -117,10 +132,7 @@ pub(super) enum Event {
     Changed {
         status: Option<String>,
     },
-    Approval {
-        token: String,
-        title: String,
-    },
+    Approval(Approval),
     Voice {
         id: String,
         active: bool,

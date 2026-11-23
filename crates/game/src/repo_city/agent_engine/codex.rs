@@ -1,5 +1,5 @@
 //! Codex adapter: maps app-server messages into the shared agent session contract.
-use super::{CODEX, Command, Engine, Event, Projection, Provider, Start};
+use super::{Approval, CODEX, Command, Engine, Event, Projection, Provider, Start};
 use super::{codex_protocol as protocol, codex_transport as transport};
 use std::path::{Path, PathBuf};
 
@@ -61,20 +61,12 @@ impl Engine for Adapter {
                 }
                 Wire::Approval { id, method, params } => match protocol::approval(params) {
                     Ok(approval) if state.owns_thread(&approval.thread_id) => {
-                        let reason = approval.reason.as_deref().unwrap_or("Permission required");
-                        let command = approval.command.as_deref().unwrap_or("");
-                        let detail = state
-                            .approvals
-                            .get(&approval.item_id)
-                            .map(String::as_str)
-                            .unwrap_or("");
-                        events.push(Event::Approval {
-                            token: id.to_string(),
-                            title: format!("{method}\n{reason}\n{command}\n{detail}")
-                                .chars()
-                                .take(8000)
-                                .collect(),
-                        });
+                        events.push(Event::Approval(approval_request(
+                            id.to_string(),
+                            &method,
+                            approval,
+                            state,
+                        )));
                     }
                     rejected => {
                         let _ = self
@@ -95,6 +87,37 @@ impl Engine for Adapter {
             }
         }
         events
+    }
+}
+
+fn approval_request(
+    token: String,
+    method: &str,
+    approval: protocol::Approval,
+    state: &Projection,
+) -> Approval {
+    let files = method == "item/fileChange/requestApproval";
+    let fallback = if files {
+        "Allow these file changes?"
+    } else {
+        "Allow this command?"
+    };
+    let mut summary = approval
+        .reason
+        .filter(|reason| !reason.trim().is_empty())
+        .unwrap_or_else(|| fallback.into());
+    if let Some(detail) = state
+        .approvals
+        .get(&approval.item_id)
+        .filter(|s| !s.is_empty())
+    {
+        summary.push_str("\n\n");
+        summary.push_str(detail);
+    }
+    Approval {
+        token,
+        summary,
+        command: approval.command.filter(|command| !command.is_empty()),
     }
 }
 

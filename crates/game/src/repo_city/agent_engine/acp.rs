@@ -1,6 +1,6 @@
 //! Desktop ACP client for Grok, Agy and Muse. Ecky 9ea94d7 informed the Grok handshake.
 use super::{
-    Command, Engine, Event, Projection, Prompt, Provider, Start,
+    Approval, Command, Engine, Event, Projection, Prompt, Provider, Start,
     activity::{Details, Kind, Location, Phase},
     state::FileActivity,
 };
@@ -540,13 +540,27 @@ fn run(
                         reject: Permission::option(params, "reject_once"),
                     },
                 );
-                let title = params["toolCall"]["title"]
+                let tool = &params["toolCall"];
+                let command = tool
+                    .pointer("/rawInput/command")
+                    .and_then(Value::as_str)
+                    .filter(|command| !command.is_empty());
+                let summary = tool["title"]
                     .as_str()
+                    .filter(|title| Some(*title) != command)
+                    .or_else(|| command.map(|_| "Allow this command?"))
                     .unwrap_or("Allow this agent tool call?")
                     .chars()
                     .take(300)
                     .collect();
-                send(updates, Update::Event(Event::Approval { token, title }))?;
+                send(
+                    updates,
+                    Update::Event(Event::Approval(Approval {
+                        token,
+                        summary,
+                        command: command.map(str::to_owned),
+                    })),
+                )?;
             }
             (Some(_), Some(id), _) => wire.reject_request(id)?,
             (Some("session/update"), None, Some(turn)) if in_session => {
@@ -926,11 +940,11 @@ sys.stdin.read()
                     Update::Event(Event::Delivery { id, result }) => {
                         delivered = id == "prompt" && result.is_ok()
                     }
-                    Update::Event(Event::Approval { token, title }) => {
-                        assert_eq!(title, "Read the file");
+                    Update::Event(Event::Approval(approval)) => {
+                        assert_eq!(approval.summary, "Read the file");
                         commands
                             .send(Command::Approval {
-                                token,
+                                token: approval.token,
                                 accept: !deny,
                             })
                             .unwrap();

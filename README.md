@@ -426,6 +426,8 @@ the queued message in the independent conversation. **Restore message** copies t
 most recent rejected or unconfirmed message into an empty composer for manual review.
 Requested command and file permissions appear in the same tablet with
 **Approve once** and **Reject**, plus a city overlay with **Y/N** shortcuts.
+Long requests scroll inside the overlay. Commands appear in a separate code block,
+and both actions stay visible below it.
 Y/N remain text while an editor, message field, search, or terminal has focus.
 Agent requests take priority over flight proposals. **Settings → Agent provider →
 Permissions** selects **Ask me**, **Automatic review**, or **No confirmations**
@@ -644,7 +646,9 @@ Joining suspends automatic comment publication.
 
 **Chat** in VibePad shows messages from the current room. On desktop, the same
 tab opens the local agent conversation when flying solo. The chat board shows
-recent messages. The document board previews the root `README.md` from the
+messages in chronological order and follows the latest message while at the bottom.
+Scroll over either board with the wheel or start a swipe on it on touch screens.
+The document board previews the root `README.md` from the
 current revision and displays a staged or shared sketch when available. It
 supports Markdown with repository images and Mermaid flowcharts or sequence
 diagrams. Open a README's building and press **P** for the full document.

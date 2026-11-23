@@ -624,15 +624,18 @@ fn install_city(app: &mut App, args: &[String]) {
                 )
                     .chain(),
                 city_navigation::navigate
+                    .run_if(city_accepts_input)
                     .run_if(city_menu::gameplay_enabled)
                     .run_if(listing::find::movement_enabled),
                 interaction
+                    .run_if(city_accepts_input)
                     .run_if(city_menu::gameplay_enabled)
                     .run_if(listing::find::movement_enabled),
                 comparison_scene::controls
                     .run_if(city_menu::gameplay_enabled)
                     .run_if(listing::find::movement_enabled),
                 listing::controls
+                    .run_if(city_accepts_input)
                     .run_if(city_menu::gameplay_enabled)
                     .run_if(listing::find::movement_enabled),
                 (listing::exposure::update, listing::wash_stream).chain(),
@@ -737,6 +740,7 @@ fn install_city(app: &mut App, args: &[String]) {
             Update,
             browser_touch::update
                 .before(file_facade::lower_unchanged)
+                .before(city_boards::ScrollInput)
                 .before(tablet_display::resize),
         )
         .add_systems(Update, reading::apply.before(listing::update_framing))
@@ -1579,6 +1583,15 @@ fn synchronize_cursor(
     }
 }
 
+fn city_accepts_input(
+    #[cfg(not(target_arch = "wasm32"))] session: Option<Res<agent_session::Session>>,
+) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    return session.is_none_or(|session| !session.approval_pending());
+    #[cfg(target_arch = "wasm32")]
+    true
+}
+
 fn flight(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -1599,9 +1612,10 @@ fn flight(
     file_buttons: Query<&bevy::picking::hover::Hovered, With<file_picker::FileButton>>,
     review: Res<review_notes::Review>,
     search: Res<listing::find::Search>,
-    #[cfg(not(target_arch = "wasm32"))] repository: Option<
-        Res<repository_picker::RepositoryPicker>,
-    >,
+    #[cfg(not(target_arch = "wasm32"))] (repository, session): (
+        Option<Res<repository_picker::RepositoryPicker>>,
+        Option<Res<agent_session::Session>>,
+    ),
     #[cfg(target_arch = "wasm32")] mut previous_pointer_ui: Local<Option<(bool, bool)>>,
     #[cfg(target_arch = "wasm32")] touch: Res<browser_touch::Touch>,
 ) {
@@ -1615,8 +1629,9 @@ fn flight(
     let map_open = navigation.overview();
     let pointer_ui_open = picker.is_open() || review.blocked || search.blocks_controls();
     #[cfg(not(target_arch = "wasm32"))]
-    let pointer_ui_open =
-        pointer_ui_open || repository.is_some_and(|picker| picker.blocks_controls());
+    let pointer_ui_open = pointer_ui_open
+        || repository.is_some_and(|picker| picker.blocks_controls())
+        || !city_accepts_input(session);
     let was_captured = pilot.captured;
     let over_button = !was_captured && file_buttons.iter().any(|hovered| hovered.get());
     #[cfg(target_arch = "wasm32")]

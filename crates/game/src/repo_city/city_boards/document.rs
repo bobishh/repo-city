@@ -123,48 +123,30 @@ fn blocks(source: &str) -> Vec<Block> {
     result
 }
 
-pub(super) fn render(
-    set: &WorldSet,
-    repo: &Repository,
-    document: Option<&Sketch>,
-) -> (Image, bool) {
-    let mut canvas = canvas(
-        set,
-        document.map_or("Documents", |document| &document.title),
-    );
+pub(super) fn layout(repo: &Repository, document: Option<&Sketch>) -> (Page, bool) {
+    let mut page = Page::new(document.map_or("Documents", |document| &document.title));
     let Some(document) = document else {
-        canvas.text(
+        page.text(
             "Open a checkout with a README or stage an MCP sketch.",
-            34.,
-            144.,
             24.,
-            |_| BODY,
+            BODY,
+            false,
         );
-        return (canvas.image(), false);
+        return (page, false);
     };
-    let mut pictures = Vec::new();
-    let mut waiting = false;
-    let mut top = 108.;
     let body = if document.format == Format::Mermaid {
         vec![Block::Mermaid(document.source.clone())]
     } else {
         blocks(&document.source)
     };
     for block in body {
-        if top >= HEIGHT as f32 - 35. {
-            break;
-        }
         match block {
             Block::Heading(text, level) => {
                 let size = if level == HeadingLevel::H1 { 37. } else { 30. };
-                top = lines(&mut canvas, &text, top, size, INK);
+                page.text(&text, size, INK, false);
             }
-            Block::Paragraph(text) => top = lines(&mut canvas, &text, top, 23., BODY),
-            Block::Code(text) => {
-                for line in text.lines() {
-                    top = lines(&mut canvas, line, top, 21., BODY);
-                }
-            }
+            Block::Paragraph(text) => page.text(&text, 23., BODY, false),
+            Block::Code(text) => page.text(text.trim_end_matches('\n'), 21., BODY, true),
             Block::Mermaid(source) => {
                 let sketch = Sketch {
                     title: "Mermaid".into(),
@@ -172,76 +154,22 @@ pub(super) fn render(
                     format: Format::Mermaid,
                 };
                 match sketch.image() {
-                    Ok(image) => top = fit(&mut pictures, image, top, 420),
+                    Ok(image) => page.picture(image, 420),
                     Err(_) => {
-                        top = lines(
-                            &mut canvas,
-                            "Unable to display this Mermaid diagram.",
-                            top,
-                            23.,
-                            BODY,
-                        )
+                        page.text("Unable to display this Mermaid diagram.", 23., BODY, false)
                     }
                 }
             }
             Block::Picture { href, alt } => match picture(repo, &href) {
-                Ok(image) => top = fit(&mut pictures, image, top, 250),
-                Err(error) if loading(&error) => {
-                    waiting = true;
-                    break;
-                }
-                Err(_) if !alt.trim().is_empty() => top = lines(&mut canvas, &alt, top, 21., BODY),
+                Ok(image) => page.picture(image, 250),
+                Err(error) if loading(&error) => return (page, true),
+                Err(_) if !alt.trim().is_empty() => page.text(&alt, 21., BODY, false),
                 Err(_) => {}
             },
         }
-        top += 11.;
+        page.gap(11.);
     }
-
-    let mut result = canvas.image();
-    if !pictures.is_empty()
-        && let Some(bytes) = result.data.take()
-    {
-        let mut background =
-            ::image::RgbaImage::from_raw(WIDTH, HEIGHT, bytes).expect("board dimensions");
-        for (picture, top) in pictures {
-            let x = i64::from((WIDTH - picture.width()) / 2);
-            ::image::imageops::overlay(&mut background, &picture, x, top);
-        }
-        result.data = Some(background.into_raw());
-    }
-    (result, waiting)
-}
-
-fn lines(
-    canvas: &mut code_texture::Canvas,
-    text: &str,
-    mut top: f32,
-    size: f32,
-    ink: [f32; 3],
-) -> f32 {
-    let capacity = (956. / (size * 0.62)) as usize;
-    let mut row = String::new();
-    for word in text.split_whitespace() {
-        if !row.is_empty() && row.chars().count() + word.chars().count() + 1 > capacity {
-            top += size + 5.;
-            if top >= HEIGHT as f32 - 12. {
-                return top;
-            }
-            canvas.text(&row, 34., top, size, |_| ink);
-            row.clear();
-        }
-        if !row.is_empty() {
-            row.push(' ');
-        }
-        row.extend(word.chars().take(capacity));
-    }
-    if !row.is_empty() {
-        top += size + 5.;
-        if top < HEIGHT as f32 - 12. {
-            canvas.text(&row, 34., top, size, |_| ink);
-        }
-    }
-    top
+    (page, false)
 }
 
 fn picture(repo: &Repository, href: &str) -> Result<Image, String> {
@@ -255,37 +183,6 @@ fn picture(repo: &Repository, href: &str) -> Result<Image, String> {
         .position(|file| file.path == path)
         .ok_or("Image is absent from this snapshot.")?;
     image_preview::decode_named(&path, &repo.asset_bytes(index, false)?)
-}
-
-fn fit(
-    pictures: &mut Vec<(::image::RgbaImage, i64)>,
-    image: Image,
-    top: f32,
-    height_limit: u32,
-) -> f32 {
-    let (width, height) = (image.width(), image.height());
-    let available = ((HEIGHT as f32 - top - 17.) as u32).min(height_limit);
-    if available < 48 {
-        return top;
-    }
-    let Some(image) = image
-        .data
-        .and_then(|bytes| ::image::RgbaImage::from_raw(width, height, bytes))
-    else {
-        return top;
-    };
-    let scale = (956. / width as f32)
-        .min(available as f32 / height as f32)
-        .min(1.5);
-    let resized = ::image::imageops::resize(
-        &image,
-        (width as f32 * scale).round().max(1.) as u32,
-        (height as f32 * scale).round().max(1.) as u32,
-        ::image::imageops::FilterType::Triangle,
-    );
-    let ending = top + resized.height() as f32;
-    pictures.push((resized, (top + 6.) as i64));
-    ending
 }
 
 #[cfg(test)]

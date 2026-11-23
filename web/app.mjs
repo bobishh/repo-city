@@ -357,7 +357,7 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
           const { chat, sketch, room } = party.state();
           if (chat === boardChat && sketch === boardSketch && room?.id === boardRoom) return "";
           boardChat = chat; boardSketch = sketch; boardRoom = room?.id;
-          return JSON.stringify({ chat: chat.slice(-5), sketch });
+          return JSON.stringify({ chat: chat.slice(-32), sketch });
         },
         takePartyDestination() { const destination = partyDestination; partyDestination = undefined; return destination ? JSON.stringify(destination) : ""; },
         tourCommand: () => tourCommand,

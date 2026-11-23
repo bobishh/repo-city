@@ -35,6 +35,7 @@ export function createTouchControls({ canvas, document = globalThis.document, br
   const tools = document.createElement("div"); tools.className = "touch-actions"; panel.append(tools);
   const utility = document.createElement("div"); utility.className = "touch-utility"; panel.append(utility);
   let move = [0, 0], look = [0, 0], gaze = [0, 0], looking, last, lookOrigin, swipe = 0, turned = false;
+  let readingBoard, board;
   let sampled = browser.performance.now();
   const held = new Set(), pulses = [];
   const pulse = (label, name, key) => button(label, name, ["Tab", "KeyM", "KeyJ"].includes(key) ? utility : tools).addEventListener("pointerdown", event => {
@@ -84,16 +85,20 @@ export function createTouchControls({ canvas, document = globalThis.document, br
   const clearLook = bindStick(gazeStick, value => { gaze = value; });
   function reset() {
     clearMove(); clearLook(); look = [0, 0]; looking = undefined;
+    readingBoard = undefined; board = undefined;
     held.clear(); pulses.length = 0; sampled = browser.performance.now();
   }
   canvas.addEventListener("pointerdown", event => {
     if (event.pointerType === "mouse" || looking !== undefined || panel.hidden) return;
     event.preventDefault(); looking = event.pointerId; lookOrigin = [event.clientX, event.clientY]; swipe = 0; turned = false; last = [event.clientX, event.clientY]; canvas.setPointerCapture(looking);
+    readingBoard = boardAt(event, canvas);
   });
   canvas.addEventListener("pointermove", event => {
     if (event.pointerId !== looking) return;
     const x = event.clientX - last[0], y = event.clientY - last[1];
-    if (canvas.hasAttribute("data-touch-reading") && Math.hypot(...move) < 0.1) {
+    if (readingBoard !== undefined) {
+      board = [readingBoard, (board?.[0] === readingBoard ? board[1] : 0) - y];
+    } else if (canvas.hasAttribute("data-touch-reading") && Math.hypot(...move) < 0.1) {
       swipe += x;
       if (!turned && Math.abs(swipe) > 48 && Math.abs(swipe) > Math.abs(event.clientY - lookOrigin[1]) * 1.5) {
         pulses.push(swipe < 0 ? "ArrowRight" : "ArrowLeft"); turned = true; look[1] = 0;
@@ -141,9 +146,22 @@ export function createTouchControls({ canvas, document = globalThis.document, br
     take() {
       const now = browser.performance.now(), seconds = Math.min(0.05, Math.max(0, (now - sampled) / 1000));
       sampled = now;
-      const value = { enabled: !panel.hidden, move, look, aim: gaze.map(axis => axis * 800 * seconds), held: [...held], pulses: pulses.splice(0) };
-      look = [0, 0]; return JSON.stringify(value);
+      const value = { enabled: !panel.hidden, move, look, board, aim: gaze.map(axis => axis * 800 * seconds), held: [...held], pulses: pulses.splice(0) };
+      look = [0, 0]; board = undefined; return JSON.stringify(value);
     },
     reset,
   };
+}
+
+function boardAt(event, canvas) {
+  if (!canvas.dataset.boardAreas) return undefined;
+  const rect = canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left, y = event.clientY - rect.top;
+  for (const [index, corners] of JSON.parse(canvas.dataset.boardAreas)) {
+    const sides = corners.map(([ax, ay], i) => {
+      const [bx, by] = corners[(i + 1) % corners.length];
+      return (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+    });
+    if (sides.every(side => side >= 0) || sides.every(side => side <= 0)) return index;
+  }
 }

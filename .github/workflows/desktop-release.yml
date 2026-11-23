@@ -49,7 +49,6 @@ jobs:
       - if: runner.os == 'macOS'
         run: |
           ./scripts/build-macos.sh --locked
-          codesign --force --sign - 'dist/Repo City.app'
           codesign --verify --strict 'dist/Repo City.app'
           ditto -c -k --keepParent 'dist/Repo City.app' "dist/RepoCity-$(uname -m)-apple-darwin.zip"
           unzip -tq dist/RepoCity-*.zip

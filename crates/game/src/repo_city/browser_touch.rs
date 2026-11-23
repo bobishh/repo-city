@@ -18,6 +18,7 @@ pub(super) struct Touch {
     pub enabled: bool,
     pub r#move: [f32; 2],
     pub look: [f32; 2],
+    pub board: Option<(usize, f32)>,
     aim: [f32; 2],
     held: Vec<String>,
     pulses: Vec<String>,
@@ -97,6 +98,7 @@ fn sample() -> Touch {
         next.r#move = [0.; 2];
         next.look = [0.; 2];
         next.aim = [0.; 2];
+        next.board = None;
         next.held.clear();
         next.pulses.clear();
     }
