@@ -230,37 +230,20 @@ fn refreshed_files(previous: &Repository, next: &Repository) -> Option<HashSet<u
 }
 
 fn keep_layout(previous: &Repository, next: &mut Repository) {
-    let positions = previous
-        .files
-        .iter()
-        .map(|file| (file.path.as_str(), file.position))
-        .collect::<HashMap<_, _>>();
-    let previous_districts = previous.districts.iter().cloned();
-    next.districts = previous_districts.collect();
-    // A growing district could displace a building that is already under the camera.
-    const WIDTH: f32 = 27.;
-    const DEPTH: f32 = 30.;
-    let edge = next
-        .districts
-        .iter()
-        .map(|district| district.position[0] + district.size[0])
-        .fold(0., f32::max);
-    let first = edge + 17.;
-    let mut column = 0;
-    for file in &mut next.files {
-        if let Some(position) = positions.get(file.path.as_str()) {
-            file.position = *position;
-        } else {
-            file.position = [first + (column as f32 + 0.5) * WIDTH, DEPTH / 2.];
-            column += 1;
-        }
+    // Saves stay at their addresses. A changed file inventory uses the repository's
+    // freshly packed districts so additions and removals follow their real folders.
+    if previous.files.len() != next.files.len()
+        || previous
+            .files
+            .iter()
+            .zip(&next.files)
+            .any(|(old, new)| old.path != new.path)
+    {
+        return;
     }
-    if column > 0 {
-        next.districts.push(repo_world::District {
-            name: "New files".into(),
-            position: [first, 0.],
-            size: [column as f32 * WIDTH, DEPTH],
-        });
+    next.districts.clone_from(&previous.districts);
+    for (old, new) in previous.files.iter().zip(&mut next.files) {
+        new.position = old.position;
     }
 }
 
@@ -270,6 +253,7 @@ pub(super) fn update(
     repo: Res<Repo>,
     mut explorer: ResMut<Explorer>,
     listing: Res<listing::Listing>,
+    mut camera: Query<&mut Transform, PlayerCamera>,
     old_city: repository_picker::CityEntities,
     mut live: ResMut<Live>,
 ) {
@@ -361,6 +345,20 @@ pub(super) fn update(
             .position(|candidate| candidate.path == file.path)
     });
     let index = selected.unwrap_or_else(|| next.initial_file());
+    if selected.is_some()
+        && let Ok(mut eye) = camera.single_mut()
+    {
+        let file = &repo.0.files[explorer.selected];
+        let [x, z] = file.position;
+        let [next_x, next_z] = next.files[index].position;
+        let size = listing::block_size(file);
+        let reach = listing.frame.detail_reach(size.x).max(size.x * 1.85);
+        if (x, z) != (next_x, next_z)
+            && (explorer.anchored || listing::Face::at_camera(file, size, &eye, reach).is_some())
+        {
+            eye.translation += Vec3::new(next_x - x, 0., next_z - z);
+        }
+    }
     let mut next_explorer = Explorer::new(index);
     if refreshed_files
         .as_ref()
@@ -579,6 +577,35 @@ mod tests {
         next.files.clear();
         assert!(source_changed(&previous, &next));
         assert!(source_changed(&next, &previous));
+    }
+
+    #[test]
+    fn worktree_files_join_their_real_districts_on_each_structural_refresh() {
+        let mut previous = repository_picker::empty();
+        let file = |path: &str, position| repo_world::File {
+            path: path.into(),
+            before: None,
+            after: None,
+            position,
+            change: Change::Added,
+        };
+        previous.files = vec![file("src/main.rs", [12., 12.])];
+        previous.districts = vec![repo_world::District {
+            name: "src".into(),
+            position: [0., 0.],
+            size: [35., 38.],
+        }];
+        for path in ["src/new.rs", "src/next.rs"] {
+            let mut next = previous.clone();
+            next.districts[0].size[0] += 27.;
+            let width = next.districts[0].size[0];
+            next.files.push(file(path, [width - 15., 12.]));
+            keep_layout(&previous, &mut next);
+            assert_eq!(next.districts.len(), 1);
+            assert_eq!(next.districts[0].name, "src");
+            assert!(next.files.last().unwrap().position[0] < next.districts[0].size[0]);
+            previous = next;
+        }
     }
 
     #[test]

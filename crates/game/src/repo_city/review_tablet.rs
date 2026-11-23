@@ -11,6 +11,7 @@ use bevy::{
 };
 
 use super::*;
+use file_picker::content_search;
 
 const FILES_PER_PAGE: usize = 10;
 type FileTimes = HashMap<String, u64>;
@@ -49,10 +50,18 @@ pub(super) struct Tablet {
     search_input: Option<Entity>,
     search_list: Option<Entity>,
     search_results: Vec<usize>,
+    search_text: TextSearch,
     trace_input: Option<Entity>,
     trace_follow: Option<Entity>,
     trace_version: u64,
     chat_room: Option<String>,
+}
+
+#[derive(Default)]
+struct TextSearch {
+    enabled: bool,
+    pending: Option<native_github::Job<Vec<content_search::Match>>>,
+    result: Option<Result<Vec<content_search::Match>, String>>,
 }
 
 struct History {
@@ -222,6 +231,9 @@ impl Page {
 #[derive(Component, Clone, Copy)]
 enum Action {
     Visit(usize),
+    SearchMode(bool),
+    RunSearch,
+    VisitMatch(usize),
     Filter(FileFilter),
     Page(usize),
     Switch(Page),
@@ -791,12 +803,23 @@ pub(super) fn update(
             Some(Action::Visit(index)) if !repo.is_changed() => Some(index),
             _ => None,
         };
+        let match_destination = if let Some(Action::VisitMatch(index)) = action
+            && same_comparison
+            && let Some(Ok(matches)) = &tablet.search_text.result
+            && let Some(found) = matches.get(index)
+        {
+            review.jump_to_source(&repo.0, &found.path, found.line);
+            true
+        } else {
+            false
+        };
         if matches!(action, Some(Action::StartTour)) {
             review.select(0);
             tour.start();
         }
         if matches!(action, Some(Action::Close | Action::StartTour))
             || destination.is_some()
+            || match_destination
             || connection
             || follow_trace
             || (!terminal_page && keys.just_pressed(KeyCode::Escape))
@@ -810,10 +833,18 @@ pub(super) fn update(
             native_panel::close(&mut commands, panel, &mut focus, &parents);
             *tablet = Tablet::default();
             picker.destination = destination;
-            review.blocked |= destination.is_none() && !connection && !follow_trace;
+            review.blocked |=
+                destination.is_none() && !match_destination && !connection && !follow_trace;
             return;
         }
         match action {
+            Some(Action::SearchMode(enabled)) if tablet.search_text.enabled != enabled => {
+                tablet.search_text = TextSearch {
+                    enabled,
+                    ..default()
+                };
+                redraw = true;
+            }
             Some(Action::DocumentPage(page)) => {
                 if let Some(document) = tablet.document.as_mut() {
                     document.page = page;
@@ -1164,23 +1195,52 @@ pub(super) fn update(
             .search_input
             .and_then(|entity| fields.get(entity).ok())
             .map(|field| field.value().to_string());
+        let mut changed = false;
         if let Some(query) = query.filter(|query| query != &tablet.search) {
             tablet.search = query;
-            tablet.search_results = search_results(&repo.0, &tablet.search);
+            if tablet.search_text.enabled {
+                tablet.search_text.pending = None;
+                tablet.search_text.result = None;
+            } else {
+                tablet.search_results = search_results(&repo.0, &tablet.search);
+            }
+            changed = true;
+        }
+        let enter = keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter])
+            && focus.get() == tablet.search_input;
+        if tablet.search_text.enabled {
+            if let Some(result) = tablet
+                .search_text
+                .pending
+                .as_ref()
+                .and_then(native_github::Job::take)
+            {
+                tablet.search_text.pending = None;
+                tablet.search_text.result = Some(result);
+                changed = true;
+            }
+            if (enter || matches!(action, Some(Action::RunSearch)))
+                && !tablet.search.trim().is_empty()
+                && tablet.search_text.pending.is_none()
+            {
+                let snapshot = repo.0.clone();
+                let query = tablet.search.clone();
+                tablet.search_text.pending = Some(native_github::Job::spawn(move || {
+                    content_search::search(&snapshot, &query)
+                }));
+                tablet.search_text.result = None;
+                changed = true;
+            }
+        } else if enter && let Some(&index) = tablet.search_results.first() {
+            tablet.action = Some(Action::Visit(index));
+        }
+        if changed {
             if let Some(list) = tablet.search_list {
                 commands
                     .entity(list)
                     .despawn_children()
-                    .with_children(|parent| {
-                        draw_search_results(parent, &repo.0, &tablet.search_results)
-                    });
+                    .with_children(|parent| draw_find_results(parent, &repo.0, &tablet));
             }
-        }
-        if keys.just_pressed(KeyCode::Enter)
-            && focus.get() == tablet.search_input
-            && let Some(&index) = tablet.search_results.first()
-        {
-            tablet.action = Some(Action::Visit(index));
         }
     }
     if !redraw {
@@ -1336,6 +1396,36 @@ fn draw_search_results(parent: &mut ChildSpawnerCommands, repo: &Repository, res
     }
 }
 
+fn draw_find_results(parent: &mut ChildSpawnerCommands, repo: &Repository, tablet: &Tablet) {
+    if !tablet.search_text.enabled {
+        draw_search_results(parent, repo, &tablet.search_results);
+        return;
+    }
+    let status = match &tablet.search_text.result {
+        Some(Ok(matches)) if matches.is_empty() => "No matching lines.",
+        Some(Ok(matches)) => {
+            for (index, found) in matches.iter().enumerate() {
+                let label = format!("{}:{}  {}", found.path, found.line, found.text);
+                let entity = native_panel::button::<Action, Tablet>(
+                    parent,
+                    &label,
+                    native_panel::INK,
+                    Action::VisitMatch(index),
+                );
+                parent
+                    .commands()
+                    .entity(entity)
+                    .insert(TabIndex(100 + index as i32));
+            }
+            return;
+        }
+        Some(Err(error)) => error,
+        None if tablet.search_text.pending.is_some() => "Searching text…",
+        None => "Press Enter to search.",
+    };
+    native_panel::text(parent, status, native_panel::INK);
+}
+
 fn draw(
     commands: &mut Commands,
     tablet: &mut Tablet,
@@ -1463,9 +1553,34 @@ fn draw(
                 return;
             }
             Page::Search => {
-                tablet.search_results = search_results(repository, &tablet.search);
-                let input =
-                    native_panel::input(parent, "File name or path", &tablet.search, tab, false);
+                if !tablet.search_text.enabled {
+                    tablet.search_results = search_results(repository, &tablet.search);
+                }
+                parent
+                    .spawn(Node {
+                        column_gap: px(6.),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        for (label, enabled) in [("File names", false), ("Text", true)] {
+                            let button =
+                                add_button(row, label, Action::SearchMode(enabled), &mut tab);
+                            if tablet.search_text.enabled == enabled {
+                                row.commands()
+                                    .entity(button)
+                                    .insert(BackgroundColor(Color::srgb_u8(23, 79, 87)));
+                            }
+                        }
+                        if tablet.search_text.enabled {
+                            add_button(row, "Search", Action::RunSearch, &mut tab);
+                        }
+                    });
+                let label = if tablet.search_text.enabled {
+                    "Text in the repository"
+                } else {
+                    "File name or path"
+                };
+                let input = native_panel::input(parent, label, &tablet.search, tab, false);
                 tablet.search_input = Some(input);
                 first = Some(input);
                 tablet.search_list = Some(
@@ -1482,9 +1597,7 @@ fn draw(
                                 ..default()
                             },
                         ))
-                        .with_children(|parent| {
-                            draw_search_results(parent, repository, &tablet.search_results)
-                        })
+                        .with_children(|parent| draw_find_results(parent, repository, tablet))
                         .id(),
                 );
                 return;
@@ -2735,6 +2848,12 @@ mod tests {
         assert_eq!(
             app.world().resource::<InputFocus>().get(),
             tablet.search_input
+        );
+        assert!(
+            app.world_mut()
+                .query::<&Text>()
+                .iter(app.world())
+                .any(|text| text.0 == "Text")
         );
 
         let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();

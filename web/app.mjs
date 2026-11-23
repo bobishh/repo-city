@@ -22,6 +22,8 @@ const cityFile = document.querySelector("#city-file");
 const cityProgress = document.querySelector("#city-progress");
 const cityComparison = document.querySelector("#city-comparison");
 const cityHint = document.querySelector("#city-hint");
+const changeRoute = document.querySelector("#change-review-route");
+const [changeTitle, changePath, changeStops] = changeRoute.children;
 const [cityCount, comparisonCount] = cityProgress.querySelectorAll(".city-count");
 const startScreen = document.querySelector("#start-screen");
 const startControls = document.querySelector("#start-controls");
@@ -254,7 +256,8 @@ async function stageRepository(repository, ref, base) {
   active = { repository, blobs: new Map(), blameFiles: new Map(), marks, progressError, canFilterChanges, comparisonLabel };
   cityRepository.textContent = name;
   cityRepository.title = name;
-  cityComparison.textContent = comparisonLabel;
+  cityComparison.setAttribute("aria-description", comparisonLabel);
+  changeRoute.hidden = true;
   changesOnlyRequested = false;
   progressPanel.hidden = false;
   repositoryVersion++;
@@ -436,13 +439,24 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
             console.warn("Could not save review progress", error);
           });
         },
-        showCityHud(file, city, total, diffs, totalDiffs, hint) {
+        showCityHud(file, city, total, diffs, totalDiffs, hint, routeJson) {
           cityFile.textContent = file;
           cityFile.title = file;
           showProgress(cityCount, city, total);
           showProgress(comparisonCount, diffs, totalDiffs);
           cityHint.textContent = hint;
           cityHint.hidden = !hint;
+          const route = JSON.parse(routeJson);
+          changeRoute.hidden = !route;
+          if (route) {
+            if (changeTitle.textContent !== route.title) changeTitle.textContent = route.title;
+            if (changePath.textContent !== route.path) changePath.textContent = route.path;
+            while (changeStops.children.length > route.stops.length) changeStops.lastElementChild.remove();
+            route.stops.forEach((stop, index) => {
+              const dot = changeStops.children[index] ?? changeStops.appendChild(document.createElement("span"));
+              if (dot.dataset.stop !== stop) dot.dataset.stop = stop;
+            });
+          }
         },
         showBlame(path, before, line) {
           const href = active.repository.blameURL(path, before, line);

@@ -256,7 +256,7 @@ pub(super) struct Review {
     #[cfg(not(target_arch = "wasm32"))]
     destination: Option<Destination>,
     pub aim_note: Option<String>,
-    pub phrase: Option<(f32, String)>,
+    pub phrase: Option<ToolText>,
     #[cfg(not(target_arch = "wasm32"))]
     pub auto_publish: bool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -268,6 +268,12 @@ pub(super) struct Review {
     scroll: f32,
     version: u32,
     scope: String,
+}
+
+pub(super) struct ToolText {
+    pub started: f32,
+    pub text: String,
+    pub progressive: bool,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -312,6 +318,19 @@ impl Default for Review {
 
 impl Review {
     #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn jump_to_source(&mut self, repo: &Repository, path: &str, line: usize) {
+        self.destination = Some(Destination {
+            revision: repo.revision.clone(),
+            anchor: Anchor {
+                path: path.into(),
+                before: false,
+                start: line,
+                end: line,
+            },
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn notify(&mut self, now: f32, text: impl Into<String>) {
         self.feedback = Some((now + 5., text.into()));
     }
@@ -329,6 +348,7 @@ impl Review {
         {
             self.slot = slot;
             self.drag = None;
+            self.phrase = None;
         }
     }
 
@@ -401,6 +421,19 @@ impl Review {
             return false;
         }
         Self::on_snapshot(note, repo)
+    }
+
+    pub fn shows_overview_pin(&self, note: &Note) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        if note.resolved == Some(true)
+            || matches!(
+                self.local_states.get(&note.id),
+                Some(native::LocalState::Read | native::LocalState::Addressed)
+            )
+        {
+            return false;
+        }
+        true
     }
 
     pub fn on_snapshot(note: &Note, repo: &Repository) -> bool {
@@ -559,7 +592,17 @@ pub(super) fn update(
             review.request = Some(Panel::Paints);
         }
         if let Some(slot) = SLOTS.iter().position(|key| keys.just_pressed(*key)) {
+            let previous = review.slot;
             review.select(slot);
+            if review.slot != previous
+                && let Some(paint) = review.paint()
+            {
+                review.phrase = Some(ToolText {
+                    started: time.elapsed_secs(),
+                    text: paint.label.clone(),
+                    progressive: false,
+                });
+            }
         }
         if command_scroll(&keys) {
             let delta = wheel.delta.y
@@ -670,6 +713,39 @@ fn new_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_number_key_shows_the_selected_paints_name() {
+        let mut app = App::new();
+        app.insert_resource(Review {
+            can_paint: true,
+            ..default()
+        })
+        .init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<AccumulatedMouseScroll>()
+        .init_resource::<Time>()
+        .init_resource::<file_picker::FilePicker>()
+        .init_resource::<city_menu::Menu>()
+        .init_resource::<city_navigation::Navigation>()
+        .add_systems(Update, update);
+        app.world_mut().spawn((
+            Camera3d::default(),
+            Pilot {
+                captured: true,
+                ..default()
+            },
+        ));
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Digit2);
+        app.update();
+        let review = app.world().resource::<Review>();
+        assert_eq!(review.slot, 2);
+        assert_eq!(
+            review.phrase.as_ref().map(|phrase| phrase.text.as_str()),
+            review.paint().map(|paint| paint.label.as_str())
+        );
+    }
 
     #[test]
     fn plain_note_paint_has_no_required_comment_template() {

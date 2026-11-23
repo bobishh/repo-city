@@ -16,6 +16,7 @@ extern "C" {
         diffs: usize,
         total_diffs: usize,
         hint: &str,
+        route: &str,
     );
 }
 
@@ -197,17 +198,33 @@ pub(super) struct Hud {
     file: String,
     counts: [usize; 4],
     hint: String,
+    route: Option<city_navigation::RouteHud>,
 }
 
 impl Hud {
-    pub fn publish(&mut self, file: &str, counts: [usize; 4], hint: String) {
-        if self.file == file && self.counts == counts && self.hint == hint {
+    pub fn publish(
+        &mut self,
+        file: &str,
+        counts: [usize; 4],
+        hint: String,
+        route: Option<city_navigation::RouteHud>,
+    ) {
+        if self.file == file && self.counts == counts && self.hint == hint && self.route == route {
             return;
         }
         let [city, total, diffs, total_diffs] = counts;
-        show_city_hud(file, city, total, diffs, total_diffs, &hint);
+        show_city_hud(
+            file,
+            city,
+            total,
+            diffs,
+            total_diffs,
+            &hint,
+            &serde_json::to_string(&route).unwrap(),
+        );
         file.clone_into(&mut self.file);
         self.counts = counts;
         self.hint = hint;
+        self.route = route;
     }
 }

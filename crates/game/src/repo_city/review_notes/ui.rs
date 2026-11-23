@@ -1220,6 +1220,10 @@ mod tests {
             .resource_mut::<Review>()
             .local_states
             .insert("viewed-note".into(), native::LocalState::Read);
+        let review = app.world().resource::<Review>();
+        let repo = &app.world().resource::<Repo>().0;
+        assert!(review.shows_paint(&review.notes[0], repo));
+        assert!(!review.shows_overview_pin(&review.notes[0]));
         app.world_mut()
             .resource_mut::<ReviewUi>()
             .activate(Action::EditNote(0));

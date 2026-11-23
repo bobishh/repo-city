@@ -243,6 +243,66 @@ test.beforeEach(async ({ page }, testInfo) => {
   }
 });
 
+test("steps through pending changes in folder order and restores its progress", async ({ page }, info) => {
+  const paths = ["app/a.rs", "app/nested/a.rs", "app/z.rs", "lib/a.rs"];
+  const trees = new Map();
+  const blobs = new Map();
+  for (const [revision, value] of [[before, 1], [after, 2]]) {
+    trees.set(revision, paths.map((path, index) => {
+      const sha = String(value * 10 + index).padStart(40, "0");
+      const source = Array.from({ length: 12 }, (_, n) => `pub const V${n}: i32 = ${value};\n`).join("");
+      blobs.set(sha, { size: source.length, encoding: "base64", content: Buffer.from(source).toString("base64") });
+      return { path, sha, size: source.length, mode: "100644", type: "blob" };
+    }));
+  }
+  await page.route("**/github/session", request => request.fulfill({ json: { enabled: false } }));
+  await page.route("https://api.github.com/**", request => {
+    const path = new URL(request.request().url()).pathname;
+    const ref = path.split("/").at(-1);
+    const json = path.endsWith("/owner/route") ? { default_branch: "main" }
+      : path.includes("/commits/") ? { sha: ref === before ? before : after, parents: [{ sha: before }] }
+      : path.includes("/git/trees/") ? { tree: trees.get(ref) }
+      : blobs.get(ref);
+    return request.fulfill({ json });
+  });
+  const open = async () => {
+    await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+    await page.locator("canvas").focus();
+  };
+  const filename = page.locator("#city-file");
+  const route = page.getByRole("status", { name: "Change review route" });
+  const files = page.getByRole("group", { name: "Files visited" });
+  const diffs = page.getByRole("group", { name: "Diffs opened" });
+  await page.goto("/?repo=owner%2Froute");
+  await open();
+  await expect(route).toBeHidden();
+  await page.keyboard.press("KeyN", { delay: 130 });
+  await expect(route).toContainText("1 / 4");
+  await expect(route.locator('[data-stop="current"]')).toHaveCount(1);
+  await expect(files).toContainText("1/4", { timeout: 10_000 });
+  await expect(diffs).toContainText("0/4");
+  await expect(route).toBeHidden({ timeout: 10_000 });
+  await page.reload();
+  await open();
+  await page.keyboard.press("KeyN", { delay: 130 });
+  await expect(route).toContainText("app/z.rs");
+  await expect(route).toContainText("2 / 4");
+  await expect(files).toContainText("2/4", { timeout: 10_000 });
+  await expect(filename).toHaveText("z.rs");
+  await page.keyboard.press("Shift+KeyN", { delay: 130 });
+  await expect(route).toContainText("lib/a.rs");
+  await expect(files).toContainText("3/4", { timeout: 10_000 });
+  await page.keyboard.press("KeyG", { delay: 130 });
+  await expect(diffs).toContainText("1/4", { timeout: 10_000 });
+  await page.keyboard.press("KeyN", { delay: 130 });
+  await expect(route).toContainText("Diff review");
+  await expect(route).toContainText("app/a.rs");
+  await expect(diffs).toContainText("2/4", { timeout: 10_000 });
+  await expect(files).toContainText("3/4");
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await page.screenshot({ path: info.outputPath("change-review.png") });
+});
+
 test("opens a public repository and fetches source after the WASM city starts", async ({ page }, testInfo) => {
   const faults = [];
   const consoleLog = [];

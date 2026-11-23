@@ -123,7 +123,6 @@ struct Hop {
     roof: f32,
 }
 
-#[derive(Clone, Copy)]
 enum Arrival {
     Facade,
     Stop,
@@ -131,6 +130,11 @@ enum Arrival {
     ReviewLine,
     Comparison,
     Overview,
+    ChangedFile {
+        path: String,
+        view: changes::FileView,
+        rows: usize,
+    },
 }
 
 impl Hop {
@@ -167,7 +171,10 @@ impl Hop {
             translation.y += lift * (std::f32::consts::PI * eased).sin().max(0.);
         }
         let mut rotation = self.start.rotation.slerp(self.end.rotation, eased);
-        if matches!(self.arrival, Arrival::Facade | Arrival::ReviewLine) {
+        if matches!(
+            self.arrival,
+            Arrival::Facade | Arrival::ReviewLine | Arrival::ChangedFile { .. }
+        ) {
             let smooth = |v: f32| {
                 let v = v.clamp(0., 1.);
                 v * v * (3. - 2. * v)
@@ -200,6 +207,11 @@ impl Hop {
 #[derive(Component)]
 pub(super) struct RouteVisual;
 
+mod changes;
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) use changes::native as changes_hud;
+pub(super) use changes::{RouteHud, source_panel_pose};
+
 #[derive(Resource, Default)]
 pub(super) struct Navigation {
     #[cfg(not(target_arch = "wasm32"))]
@@ -210,6 +222,7 @@ pub(super) struct Navigation {
     overview: Option<(Overview, Transform)>,
     return_from_district: bool,
     history: History,
+    changes: changes::ReviewRoute,
     review_line: Option<(usize, f32)>,
     review_face: Option<listing::Face>,
     pub overview_requested: bool,
@@ -347,9 +360,21 @@ impl Navigation {
             && self.hop.as_ref().is_some_and(|hop| {
                 matches!(
                     hop.arrival,
-                    Arrival::Facade | Arrival::ReviewLine | Arrival::ReviewWall
+                    Arrival::Facade
+                        | Arrival::ReviewLine
+                        | Arrival::ReviewWall
+                        | Arrival::ChangedFile { .. }
                 ) && hop.elapsed >= hop.duration * 0.8
             })
+    }
+
+    pub(super) fn change_route_hud(
+        &self,
+        repo: &Repository,
+        progress: &progress::Progress,
+        now: f32,
+    ) -> Option<RouteHud> {
+        self.changes.hud(repo, progress, now)
     }
 
     pub(super) fn route_status(&self) -> Option<String> {
@@ -739,6 +764,7 @@ pub(super) fn navigate(
     }
 
     if repo.is_changed() {
+        navigation.changes = Default::default();
         #[cfg(not(target_arch = "wasm32"))]
         {
             navigation.review_job = None;
@@ -911,6 +937,7 @@ pub(super) fn navigate(
         return;
     }
     if keys.just_pressed(KeyCode::Escape) {
+        navigation.changes.hide();
         #[cfg(not(target_arch = "wasm32"))]
         {
             navigation.review_job = None;
@@ -945,13 +972,32 @@ pub(super) fn navigate(
         return;
     }
     if let Some(hop) = &mut navigation.hop {
+        if let Arrival::ChangedFile { path, view, rows } = &mut hop.arrival
+            && *path == repo.0.files[explorer.selected].path
+            && *rows != view.wall_rows(&explorer)
+        {
+            // Browser blobs can arrive after the flight starts. Frame the actual
+            // listing once its row count becomes available.
+            *rows = view.wall_rows(&explorer);
+            hop.end = view.destination(&repo.0, &mut explorer, &listing, camera.translation);
+        }
         hop.elapsed += time.delta_secs();
         let progress = hop.elapsed / hop.duration;
         *camera = hop.pose(progress);
         if progress >= 1. {
-            let arrival = hop.arrival;
-            navigation.hop = None;
+            let arrival = navigation.hop.take().unwrap().arrival;
             match arrival {
+                Arrival::ChangedFile { path, view, .. } => {
+                    let file = &repo.0.files[explorer.selected];
+                    if file.path == path && file.change != Change::Unchanged {
+                        saved_progress.visit(explorer.selected, file, view.is_diff());
+                        saved_progress.set_file_cursor(Some(&file.path));
+                        if !explorer.anchored {
+                            saved_progress.record_view(file, &camera, time.elapsed_secs_f64());
+                        }
+                    }
+                    navigation.changes.show(time.elapsed_secs());
+                }
                 Arrival::Comparison => {
                     explorer.comparison_mode = 1;
                     explorer.anchored = true;
@@ -986,8 +1032,19 @@ pub(super) fn navigate(
                     }
                     navigation.redraw = true;
                 }
-                Arrival::Facade | Arrival::Overview | Arrival::ReviewWall | Arrival::ReviewLine => {
+                Arrival::Facade | Arrival::ReviewWall | Arrival::ReviewLine => {
+                    let file = &repo.0.files[explorer.selected];
+                    let size = listing::block_size(file);
+                    if let Some(face) = listing::Face::at_camera(
+                        file,
+                        size,
+                        &camera,
+                        listing.frame.detail_reach(size.x) * 1.4,
+                    ) {
+                        saved_progress.visit(explorer.selected, file, face == listing::Face::Diff);
+                    }
                 }
+                Arrival::Overview => {}
             }
         }
         return;
@@ -1083,7 +1140,7 @@ pub(super) fn navigate(
             explorer.notice = if following_trace {
                 "Open VibePad → Trace to paste a stack trace."
             } else {
-                "This file has no readable text changes. N visits the next changed file."
+                "This file has no readable text changes. N visits the next unseen change."
             }
             .into();
             return;
@@ -1101,7 +1158,16 @@ pub(super) fn navigate(
         fly_to_stop(&mut navigation, *camera, &repo.0, &mut explorer);
         return;
     }
-    let next_changed = keys.just_pressed(KeyCode::KeyN) && !search.owns_next();
+    let next_changed = keys.just_pressed(KeyCode::KeyN)
+        && !search.owns_next()
+        && !keys.any_pressed([
+            KeyCode::SuperLeft,
+            KeyCode::SuperRight,
+            KeyCode::ControlLeft,
+            KeyCode::ControlRight,
+            KeyCode::AltLeft,
+            KeyCode::AltRight,
+        ]);
     let distant_shot = ((pilot.shot || pilot.map_click) && !listing.water_on())
         .then_some(nearest.file)
         .flatten()
@@ -1118,32 +1184,51 @@ pub(super) fn navigate(
                 )
         });
     let target = if let Some(aim) = menu.destination.take() {
-        Some((aim.index, Some(aim)))
+        Some((aim.index, Some(aim), None))
     } else if let Some(file) = requested_file {
-        Some((file, None))
+        Some((file, None, None))
     } else if navigation.overview() && (distant_shot.is_some() || keys.just_pressed(KeyCode::KeyE))
     {
-        nearest.file.map(|aim| (aim.index, None))
+        nearest.file.map(|aim| (aim.index, None, None))
     } else if next_changed {
-        (1..repo.0.files.len())
-            .map(|offset| (explorer.selected + offset) % repo.0.files.len())
-            .find(|&index| repo.0.files[index].change != Change::Unchanged)
-            .map(|index| (index, None))
+        let mode = changes::FileView::current(
+            &explorer,
+            &repo.0.files[explorer.selected],
+            &camera,
+            &listing,
+        );
+        let backwards = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+        let Some(index) = navigation.changes.step(
+            &repo.0,
+            &saved_progress,
+            explorer.selected,
+            backwards,
+            mode.is_diff(),
+            time.elapsed_secs(),
+        ) else {
+            return;
+        };
+        Some((index, None, Some(mode)))
     } else if let Some(aim) = distant_shot {
-        Some((aim.index, Some(aim.on_side(listing::Face::Source))))
+        Some((aim.index, Some(aim.on_side(listing::Face::Source)), None))
     } else if keys.just_pressed(KeyCode::KeyE) {
-        nearest.file.map(|aim| (aim.index, Some(aim))).or_else(|| {
-            nearest
-                .near_source
-                .or_else(|| {
-                    (explorer.anchored || explorer.comparison_mode > 0).then_some(explorer.selected)
-                })
-                .map(|index| (index, None))
-        })
+        nearest
+            .file
+            .map(|aim| (aim.index, Some(aim), None))
+            .or_else(|| {
+                nearest
+                    .near_source
+                    .or_else(|| {
+                        (explorer.anchored || explorer.comparison_mode > 0)
+                            .then_some(explorer.selected)
+                    })
+                    .map(|index| (index, None, None))
+            })
     } else {
         None
     };
-    if let Some((index, aimed)) = target.filter(|(index, _)| focus.includes(&repo.0.files[*index]))
+    if let Some((index, aimed, mode)) =
+        target.filter(|(index, _, _)| focus.includes(&repo.0.files[*index]))
     {
         let from_overview = navigation.overview.take().is_some();
         listing.reset_view();
@@ -1156,13 +1241,29 @@ pub(super) fn navigate(
         let file = &repo.0.files[index];
         navigation.history.record(&file.path);
         let size = listing::block_size(file);
-        let end = listing.arrival_view(&explorer, file, size, aimed, camera.translation);
+        let end = match mode {
+            Some(mode) => mode.destination(&repo.0, &mut explorer, &listing, camera.translation),
+            None => listing.arrival_view(&explorer, file, size, aimed, camera.translation),
+        };
         if camera.translation.distance_squared(end.translation) < 0.04
             && camera.rotation.dot(end.rotation).abs() > 0.9999
         {
+            if let Some(mode) = mode {
+                saved_progress.visit(index, file, mode.is_diff());
+                saved_progress.set_file_cursor(Some(&file.path));
+            }
             return;
         }
         let mut hop = Hop::facade(*camera, end, &repo.0);
+        if let Some(mode) = mode {
+            hop.arrival = Arrival::ChangedFile {
+                path: file.path.clone(),
+                view: mode,
+                rows: mode.wall_rows(&explorer),
+            };
+        } else {
+            navigation.changes.hide();
+        }
         if from_overview {
             hop.duration = hop.duration.min(1.65);
         }
@@ -1437,6 +1538,81 @@ mod tests {
             ))
             .id();
         (app, camera)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn changed_file_flight_keeps_the_diff_face_and_advances_only_on_arrival() {
+        let (mut app, eye) = district_navigation_app();
+        let mut repo = repository_picker::empty();
+        repo.files = ["app/a.rs", "app/nested/a.rs", "app/z.rs", "lib/a.rs"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, path)| repo_world::File {
+                path: path.into(),
+                before: None,
+                after: None,
+                change: Change::Modified,
+                position: [index as f32 * 80., 0.],
+            })
+            .collect();
+        let file = &repo.files[0];
+        let pose = listing::Listing::default().diff_view(&Explorer::new(0), file, 0);
+        app.world_mut()
+            .resource_mut::<progress::Progress>()
+            .visit(0, file, true);
+        *app.world_mut().get_mut::<Transform>(eye).unwrap() = pose;
+        app.world_mut().get_mut::<Pilot>(eye).unwrap().captured = false;
+        app.insert_resource(Repo(repo));
+
+        let fly = |app: &mut App, expected| {
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::KeyN);
+            app.update();
+            assert_eq!(app.world().resource::<Explorer>().selected, expected);
+            let mut navigation = app.world_mut().resource_mut::<Navigation>();
+            let hop = navigation.hop.as_mut().expect("unviewed diff flight");
+            assert!(hop.end.forward().dot(Vec3::NEG_X) > 0.9);
+            hop.elapsed = hop.duration;
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .reset(KeyCode::KeyN);
+            app.update();
+        };
+
+        fly(&mut app, 2);
+        assert_eq!(
+            app.world()
+                .resource::<progress::Progress>()
+                .visited_counts()
+                .1,
+            2
+        );
+        // A manual file selection does not change the route position.
+        app.world_mut().resource_mut::<Explorer>().selected = 0;
+        *app.world_mut().get_mut::<Transform>(eye).unwrap() = pose;
+        fly(&mut app, 1);
+        assert_eq!(
+            app.world()
+                .resource::<progress::Progress>()
+                .visited_counts()
+                .1,
+            3
+        );
+        fly(&mut app, 3);
+        assert_eq!(
+            app.world()
+                .resource::<progress::Progress>()
+                .visited_counts()
+                .1,
+            4
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyN);
+        app.update();
+        assert!(app.world().resource::<Navigation>().hop.is_none());
     }
 
     #[cfg(not(target_arch = "wasm32"))]

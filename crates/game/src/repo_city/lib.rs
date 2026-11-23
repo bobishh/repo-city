@@ -650,6 +650,8 @@ fn install_city(app: &mut App, args: &[String]) {
                 listing::draw,
                 listing::draw_overview,
                 animate,
+                #[cfg(not(target_arch = "wasm32"))]
+                city_navigation::changes_hud::draw,
                 hud,
             )
                 .chain()
@@ -1141,7 +1143,7 @@ fn setup(
                 hud.spawn((
                     ProgressLabel(diff),
                     Text::new(""),
-                    ui_font(21.),
+                    ui_font(15.),
                     TextColor(color(set.ink)),
                 ));
                 hud.spawn((
@@ -1167,6 +1169,8 @@ fn setup(
                 ));
             }
         });
+    #[cfg(not(target_arch = "wasm32"))]
+    city_navigation::changes_hud::spawn(&mut commands, ui_font(14.), color(set.ink));
     #[cfg(not(target_arch = "wasm32"))]
     commands
         .spawn((
@@ -2134,9 +2138,7 @@ fn interaction(
             {
                 explorer.open(&repo.0, index);
             }
-            let [x, z] = repo.0.files[explorer.selected].position;
-            *camera = Transform::from_xyz(x, 6.2, z + 14.5)
-                .looking_at(Vec3::new(x, 6.2, z + 3.2), Vec3::Y);
+            *camera = city_navigation::source_panel_pose(&repo.0.files[explorer.selected]);
         }
         explorer.anchored = enter_wall;
         explorer.notice = if explorer.anchored {
@@ -2547,7 +2549,8 @@ fn hud(
         } else {
             walk_hint.unwrap_or_default().into()
         };
-        browser_hud.publish(filename, [city, total, diffs, total_diffs], hint);
+        let route = navigation.change_route_hud(&repo.0, &progress, time.elapsed_secs());
+        browser_hud.publish(filename, [city, total, diffs, total_diffs], hint, route);
     }
     #[cfg(not(target_arch = "wasm32"))]
     for (gauge, mut node) in &mut gauges {
@@ -2570,12 +2573,12 @@ fn hud(
         if let Some(counter) = counter {
             let value = if counter.0 {
                 if total_diffs == 0 {
-                    "Diff —".into()
+                    "Diffs opened —".into()
                 } else {
-                    format!("Diff {diffs}/{total_diffs}")
+                    format!("Diffs opened {diffs}/{total_diffs}")
                 }
             } else {
-                format!("City {city}/{total}")
+                format!("Files visited {city}/{total}")
             };
             text.set_if_neq(Text::new(value));
             continue;

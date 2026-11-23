@@ -13,7 +13,7 @@ test("mobile city and VibePad fit between Safari safe-area edges in both orienta
     const file = "an_extraordinarily_long_filename_for_a_mobile_screen.rs";
     const body = "fn main() {}\n";
     await page.addInitScript(() => localStorage.setItem("repo-city-guide-v1", "seen"));
-    await page.route("**/game/repo_city_bg.wasm", async route => {
+    await page.route("**/game/**/repo_city_bg.wasm", async route => {
       engineRequested.resolve();
       await download.promise;
       await route.continue();
@@ -42,7 +42,7 @@ test("mobile city and VibePad fit between Safari safe-area edges in both orienta
     await page.getByRole("button", { name: "Close repository picker" }).tap();
     await expect(pad).toBeVisible();
     await expect(page.locator("#repository-query")).toHaveCSS("font-size", "16px");
-    await expect(page.getByRole("group", { name: "City progress" })).toContainText("/1");
+    await expect(page.getByRole("group", { name: "Files visited" })).toContainText("/1");
     await page.evaluate(file => globalThis.repoCity.showBlame(file, false, 1), file);
     await expect(page.getByRole("link", { name: "Blame on GitHub" })).toBeVisible();
 

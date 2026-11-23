@@ -50,6 +50,28 @@ pub(super) struct Checkpoint {
 }
 
 impl Progress {
+    pub(super) fn restore_file_cursor(&mut self, scope: &str) {
+        let key = format!("{scope}|city-change-route");
+        self.file_cursor = self
+            .read_view(&key)
+            .ok()
+            .flatten()
+            .and_then(|json| serde_json::from_str(&json).ok());
+    }
+
+    pub(crate) fn set_file_cursor(&mut self, path: Option<&str>) {
+        self.file_cursor = path.map(str::to_owned);
+        if !self.scope.is_empty() {
+            let key = format!("{}|city-change-route", self.scope);
+            let result = serde_json::to_string(&path)
+                .map_err(|error| error.to_string())
+                .and_then(|json| self.write_view_at(&key, &json));
+            if let Err(error) = result {
+                warn!("Could not save the change review position: {error}");
+            }
+        }
+    }
+
     pub(crate) fn resume_camera(
         &mut self,
         repo: &Repository,
@@ -69,7 +91,7 @@ impl Progress {
         saved.pose(&repo.files[index], frame)
     }
 
-    pub(super) fn record_view(&mut self, file: &repo_world::File, camera: &Transform, now: f64) {
+    pub(crate) fn record_view(&mut self, file: &repo_world::File, camera: &Transform, now: f64) {
         if self.scope.is_empty() {
             return;
         }

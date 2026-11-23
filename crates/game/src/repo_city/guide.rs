@@ -192,6 +192,10 @@ const READING: &[(&str, &str)] = &[
     ("Home", "Frame the file"),
     ("/", "Find text on the aimed wall or find a file"),
     ("N / Shift+N", "Next or previous match"),
+    (
+        "N / Shift+N",
+        "Visit unseen changes when wall search is closed",
+    ),
     ("G / B", "Open diff or blame"),
     ("Left / Right", "Cycle source, diff, and blame up close"),
     ("Z / X", "Collapse or expand the aimed code block"),

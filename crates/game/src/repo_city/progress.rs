@@ -33,6 +33,7 @@ pub(super) struct Progress {
     reset: bool,
     visited: HashSet<usize>,
     visited_diffs: HashSet<usize>,
+    file_cursor: Option<String>,
     total_diffs: usize,
     camera: view::Checkpoint,
     #[cfg(not(target_arch = "wasm32"))]
@@ -54,6 +55,18 @@ impl Progress {
 
     pub(super) fn has_visited(&self, index: usize) -> bool {
         self.visited.contains(&index)
+    }
+
+    pub(super) fn has_visited_view(&self, index: usize, diff: bool) -> bool {
+        if diff {
+            self.visited_diffs.contains(&index)
+        } else {
+            self.has_visited(index)
+        }
+    }
+
+    pub(super) fn file_cursor(&self) -> Option<&str> {
+        self.file_cursor.as_deref()
     }
 
     pub(super) fn visit(&mut self, index: usize, file: &repo_world::File, diff: bool) {
@@ -94,6 +107,7 @@ impl Progress {
     fn load(&mut self, repo: &Repository) -> Vec<String> {
         let scope = comparison_scope(repo);
         if self.scope != scope {
+            self.restore_file_cursor(&scope);
             self.scope = scope;
             self.camera = view::Checkpoint::default();
         }
@@ -280,6 +294,7 @@ pub(super) fn sync(
         explorer.reviewed.clear();
         progress.visited.clear();
         progress.visited_diffs.clear();
+        progress.set_file_cursor(None);
         explorer.notice = "Review progress reset for this comparison.".into();
         listing.clear_progress();
     } else if !review.blocked

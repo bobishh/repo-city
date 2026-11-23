@@ -1291,6 +1291,7 @@ pub(super) fn controls(
     windows: Query<&Window, With<PrimaryWindow>>,
     picker: Res<file_picker::FilePicker>,
     review: Res<review_notes::Review>,
+    mut progress: Option<ResMut<progress::Progress>>,
 ) {
     if picker.is_open() || review.blocked {
         listing.scroll_remaining = 0.;
@@ -1401,6 +1402,9 @@ pub(super) fn controls(
         listing.turn = (t < 1.).then_some((t, start, end));
         if t >= 1. {
             listing.viewing = listing.destination.take();
+            if let Some((progress, face)) = progress.as_deref_mut().zip(listing.viewing) {
+                progress.visit(explorer.selected, file, face == Face::Diff);
+            }
         }
         return;
     }

@@ -151,6 +151,7 @@ pub(crate) fn draw(
     for note in outstanding
         .chain(other_notes)
         .filter(|note| review.shows_paint(note, &repo.0))
+        .filter(|note| !navigation.overview() || review.shows_overview_pin(note))
     {
         let Some(&index) = files_by_path.get(&note.anchor.path) else {
             continue;
@@ -336,7 +337,11 @@ pub(crate) fn draw(
             if let Some((point, _, hit, row_height)) = &target {
                 if pilot.shot {
                     review.drag = Some((point.clone(), point.clone()));
-                    review.phrase = Some((time.elapsed_secs(), preset.spray.clone()));
+                    review.phrase = Some(review_notes::ToolText {
+                        started: time.elapsed_secs(),
+                        text: preset.spray.clone(),
+                        progressive: true,
+                    });
                 } else if let Some((first, range)) = &mut review.drag
                     && let Some(new_range) = first.extend(point)
                 {
@@ -387,11 +392,14 @@ pub(crate) fn draw(
                 explorer.notice = "Thaw these lines first, or mark them on the diff wall.".into();
             }
         }
-        if let Some((start, phrase)) = &review.phrase {
-            let age = time.elapsed_secs() - start;
+        if let Some(phrase) = &review.phrase {
+            let age = time.elapsed_secs() - phrase.started;
             if age < 1.65 {
-                let count = (age * 28.) as usize + 1;
-                hint = phrase.chars().take(count).collect();
+                hint = if phrase.progressive {
+                    phrase.text.chars().take((age * 28.) as usize + 1).collect()
+                } else {
+                    phrase.text.clone()
+                };
                 tint = tint.with_alpha(((1.65 - age) / 0.45).clamp(0., 1.));
             } else {
                 review.phrase = None;

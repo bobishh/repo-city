@@ -291,6 +291,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
       ["E / M", "Fly to the aimed wall or switch overview"],
       ["Tab / P", "Open VibePad or preview the aimed file"],
       ["/", "Find text on the aimed wall or find a file"],
+      ["N / Shift+N", "Visit changes or move between wall search matches"],
       ["Cmd/Ctrl+P", "Find a file"],
       ["Z / X", "Collapse or expand the aimed code block"],
       ["H", "Open or put away Help"],

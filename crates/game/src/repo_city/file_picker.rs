@@ -6,6 +6,9 @@ use bevy::{
 
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) mod content_search;
+
 #[cfg(target_arch = "wasm32")]
 pub(super) const SHORTCUT: &str = "P";
 #[cfg(not(target_arch = "wasm32"))]
