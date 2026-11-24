@@ -28,6 +28,16 @@ pub(super) struct Display {
     pub(super) size: UVec2,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl Display {
+    pub(super) fn smoke_screenshot(&self) -> Screenshot {
+        let NormalizedRenderTarget::Image(image) = &self.target else {
+            unreachable!("VibePad renders to an image");
+        };
+        Screenshot::image(image.handle.clone())
+    }
+}
+
 #[derive(Component)]
 pub(super) struct Screen;
 

@@ -8,7 +8,6 @@ use bevy::{
     input::keyboard::KeyboardInput,
     input_focus::{FocusCause, InputFocus, tab_navigation::TabIndex},
     text::EditableText,
-    ui::RelativeCursorPosition,
 };
 
 use super::*;
@@ -50,8 +49,7 @@ pub(super) struct Tablet {
     history: Option<History>,
     search: String,
     search_input: Option<Entity>,
-    search_lists: Option<[Entity; 2]>,
-    search_results: Vec<usize>,
+    search_list: Option<Entity>,
     search_text: TextSearch,
     trace_input: Option<Entity>,
     trace_follow: Option<Entity>,
@@ -62,8 +60,8 @@ pub(super) struct Tablet {
 #[derive(Default)]
 struct TextSearch {
     due: Option<f64>,
-    pending: Option<(String, native_github::Job<Vec<content_search::Match>>)>,
-    result: Option<Result<Vec<content_search::Match>, String>>,
+    pending: Option<(String, native_github::Job<content_search::Matches>)>,
+    result: Option<Result<content_search::Matches, String>>,
 }
 
 impl TextSearch {
@@ -283,7 +281,7 @@ impl Page {
 #[derive(Component, Clone, Copy)]
 enum Action {
     Visit(usize),
-    VisitMatch(usize),
+    VisitMatch { index: usize, line: usize },
     Filter(FileFilter),
     Page(usize),
     Switch(Page),
@@ -334,10 +332,13 @@ impl Tablet {
         });
     }
 
-    pub(super) fn smoke_find_ready(&self) -> bool {
+    pub(super) fn smoke_find_ready(&self, repo: &Repository) -> bool {
         self.view == Page::Search
             && !self.search.is_empty()
-            && !self.search_results.is_empty()
+            && repo
+                .files
+                .iter()
+                .any(|file| file_picker::rank(&file.path, &self.search.to_lowercase()).is_some())
             && self
                 .search_text
                 .result
@@ -639,14 +640,7 @@ pub(super) fn update(
     mut focus: ResMut<InputFocus>,
     parents: Query<&ChildOf>,
     wheel: Res<AccumulatedMouseScroll>,
-    mut rows: Query<
-        (
-            &mut ScrollPosition,
-            &ComputedNode,
-            Option<&RelativeCursorPosition>,
-        ),
-        With<FileRows>,
-    >,
+    mut rows: Query<(&mut ScrollPosition, &ComputedNode), With<FileRows>>,
     (
         mut reading,
         mut tour,
@@ -856,7 +850,7 @@ pub(super) fn update(
             && let Some(content) = document.content.and_then(|entity| layout.get(entity).ok())
             && content.size().y > 0.
             && let Some(Ok(loaded)) = &document.result
-            && let Ok((scroll, viewport, _)) = rows.single()
+            && let Ok((scroll, viewport)) = rows.single()
             && viewport.size().y > 0.
             && scroll.y * viewport.inverse_scale_factor().recip() + viewport.size().y + 2.
                 >= viewport.content_size().y
@@ -882,12 +876,12 @@ pub(super) fn update(
             Some(Action::Visit(index)) if !repo.is_changed() => Some(index),
             _ => None,
         };
-        let match_destination = if let Some(Action::VisitMatch(index)) = action
+        let match_destination = if let Some(Action::VisitMatch { index, line }) = action
             && same_comparison
-            && let Some(Ok(matches)) = &tablet.search_text.result
-            && let Some(found) = matches.get(index)
+            && !repo.is_changed()
+            && let Some(file) = repo.0.files.get(index)
         {
-            review.jump_to_source(&repo.0, &found.path, found.line);
+            review.jump_to_source(&repo.0, &file.path, line);
             true
         } else {
             false
@@ -1105,21 +1099,7 @@ pub(super) fn update(
         redraw |= tablet.view == Page::Files && repo.is_changed();
         review.blocked = true;
         review.tablet_open = true;
-        let scroll_target = if tablet.view == Page::Search {
-            tablet
-                .search_lists
-                .and_then(|lists| {
-                    lists.into_iter().find(|&list| {
-                        rows.get(list).is_ok_and(|(_, _, hover)| {
-                            hover.is_some_and(RelativeCursorPosition::cursor_over)
-                        })
-                    })
-                })
-                .map_or(Err(()), |target| rows.get_mut(target).map_err(|_| ()))
-        } else {
-            rows.single_mut().map_err(|_| ())
-        };
-        if let Ok((mut scroll, viewport, _)) = scroll_target {
+        if let Ok((mut scroll, viewport)) = rows.single_mut() {
             let delta = match wheel.unit {
                 bevy::input::mouse::MouseScrollUnit::Line => wheel.delta.y * 34.,
                 bevy::input::mouse::MouseScrollUnit::Pixel => wheel.delta.y,
@@ -1289,30 +1269,17 @@ pub(super) fn update(
             && focus.get() == tablet.search_input;
         let changed = edited || repo.is_changed() || previous_page != Page::Search;
         let query = tablet.search.clone();
-        let content_changed =
+        let results_changed =
             tablet
                 .search_text
                 .update(&repo.0, &query, time.elapsed_secs_f64(), changed, submit);
-        if changed {
-            tablet.search_results = search_results(&repo.0, &query);
-        }
-        if let Some([paths, content]) = tablet.search_lists {
-            if changed {
-                commands
-                    .entity(paths)
-                    .insert(ScrollPosition::default())
-                    .despawn_children()
-                    .with_children(|parent| {
-                        draw_search_results(parent, &repo.0, &tablet.search_results)
-                    });
+        if results_changed && let Some(list) = tablet.search_list {
+            let mut list = commands.entity(list);
+            if edited {
+                list.insert(ScrollPosition::default());
             }
-            if content_changed {
-                commands
-                    .entity(content)
-                    .insert(ScrollPosition::default())
-                    .despawn_children()
-                    .with_children(|parent| draw_content_results(parent, &tablet));
-            }
+            list.despawn_children()
+                .with_children(|parent| draw_search_results(parent, &repo.0, &tablet));
         }
     }
     if !redraw {
@@ -1343,7 +1310,7 @@ pub(super) fn update(
         None
     };
     tablet.files_scroll = if preserve_file_list {
-        rows.single().map_or(0., |(scroll, _, _)| scroll.y)
+        rows.single().map_or(0., |(scroll, _)| scroll.y)
     } else {
         0.
     };
@@ -1423,75 +1390,77 @@ impl Tablet {
     }
 }
 
-fn search_results(repo: &Repository, query: &str) -> Vec<usize> {
+fn search_results(
+    repo: &Repository,
+    query: &str,
+    content: Option<&content_search::Matches>,
+) -> Vec<(usize, Option<content_search::FileMatch>)> {
     let query = query.trim().to_lowercase();
     let mut results = repo
         .files
         .iter()
         .enumerate()
         .filter_map(|(index, file)| {
-            file_picker::rank(&file.path, &query).map(|score| (score, index))
+            let rank = file_picker::rank(&file.path, &query);
+            let found = content.and_then(|matches| matches.get(&file.path)).copied();
+            (rank.is_some() || found.is_some()).then_some((
+                rank.unwrap_or(usize::MAX),
+                index,
+                found,
+            ))
         })
         .collect::<Vec<_>>();
-    results.sort_unstable();
-    results.into_iter().map(|(_, index)| index).collect()
+    results.sort_unstable_by_key(|&(rank, index, _)| (rank, index));
+    results
+        .into_iter()
+        .map(|(_, index, found)| (index, found))
+        .collect()
 }
-fn draw_search_results(parent: &mut ChildSpawnerCommands, repo: &Repository, results: &[usize]) {
-    native_panel::text(
-        parent,
-        &if results.is_empty() {
-            "No matching files.".into()
-        } else {
-            format!(
-                "{} files{}",
-                results.len(),
-                if results.len() > 100 {
-                    "; first 100 shown"
-                } else {
-                    ""
-                }
+
+fn draw_search_results(parent: &mut ChildSpawnerCommands, repo: &Repository, tablet: &Tablet) {
+    let content = tablet
+        .search_text
+        .result
+        .as_ref()
+        .and_then(|result| result.as_ref().ok());
+    let results = search_results(repo, &tablet.search, content);
+    let status = match &tablet.search_text.result {
+        Some(Err(error)) => Some(error.as_str()),
+        None if results.is_empty() && !tablet.search.trim().is_empty() => Some("Searching…"),
+        _ if results.is_empty() => Some("No matching files."),
+        _ => None,
+    };
+    if let Some(status) = status {
+        native_panel::text(parent, status, native_panel::INK);
+    }
+    for (row, &(index, found)) in results.iter().take(100).enumerate() {
+        let file = &repo.files[index];
+        let (label, action) = if let Some(found) = found {
+            let unit = if found.count == 1 { "match" } else { "matches" };
+            (
+                format!("{} · {} {unit}", file.path, found.count),
+                Action::VisitMatch {
+                    index,
+                    line: found.first_line,
+                },
             )
-        },
-        native_panel::INK,
-    );
-    for (row, &index) in results.iter().take(100).enumerate() {
-        let entity = native_panel::button::<Action, Tablet>(
-            parent,
-            &repo.files[index].path,
-            native_panel::INK,
-            Action::Visit(index),
-        );
+        } else {
+            (file.path.clone(), Action::Visit(index))
+        };
+        let entity =
+            native_panel::button::<Action, Tablet>(parent, &label, native_panel::INK, action);
         parent
             .commands()
             .entity(entity)
             .insert(TabIndex(100 + row as i32));
     }
-}
-
-fn draw_content_results(parent: &mut ChildSpawnerCommands, tablet: &Tablet) {
-    let status = match &tablet.search_text.result {
-        Some(Ok(matches)) if matches.is_empty() => "No matching lines.",
-        Some(Ok(matches)) => {
-            for (index, found) in matches.iter().enumerate() {
-                let label = format!("{}:{}  {}", found.path, found.line, found.text);
-                let entity = native_panel::button::<Action, Tablet>(
-                    parent,
-                    &label,
-                    native_panel::INK,
-                    Action::VisitMatch(index),
-                );
-                parent
-                    .commands()
-                    .entity(entity)
-                    .insert(TabIndex(200 + index as i32));
-            }
-            return;
-        }
-        Some(Err(error)) => error,
-        None if !tablet.search.trim().is_empty() => "Searching text…",
-        None => "Type to search file contents.",
-    };
-    native_panel::text(parent, status, native_panel::INK);
+    if results.len() > 100 {
+        native_panel::text(
+            parent,
+            &format!("Showing 100 of {} files", results.len()),
+            native_panel::INK,
+        );
+    }
 }
 
 fn draw(
@@ -1621,17 +1590,26 @@ fn draw(
                 return;
             }
             Page::Search => {
-                tablet.search_results = search_results(repository, &tablet.search);
                 let input = native_panel::input(parent, "Path or text", &tablet.search, tab, false);
                 tablet.search_input = Some(input);
                 first = Some(input);
-                let paths = search_section(parent, "Paths", |list| {
-                    draw_search_results(list, repository, &tablet.search_results)
-                });
-                let content = search_section(parent, "In files", |list| {
-                    draw_content_results(list, tablet)
-                });
-                tablet.search_lists = Some([paths, content]);
+                tablet.search_list = Some(
+                    parent
+                        .spawn((
+                            FileRows,
+                            ScrollPosition::default(),
+                            Node {
+                                flex_direction: FlexDirection::Column,
+                                flex_grow: 1.,
+                                min_height: px(0.),
+                                row_gap: px(6.),
+                                overflow: Overflow::scroll_y(),
+                                ..default()
+                            },
+                        ))
+                        .with_children(|list| draw_search_results(list, repository, tablet))
+                        .id(),
+                );
                 return;
             }
             Page::Git => {
@@ -1832,43 +1810,6 @@ fn draw(
             });
     });
     (panel, first.expect("the tablet always has navigation"))
-}
-
-fn search_section(
-    parent: &mut ChildSpawnerCommands,
-    label: &str,
-    results: impl FnOnce(&mut ChildSpawnerCommands),
-) -> Entity {
-    let mut list = Entity::PLACEHOLDER;
-    parent
-        .spawn(Node {
-            flex_direction: FlexDirection::Column,
-            flex_grow: 1.,
-            flex_basis: px(0.),
-            min_height: px(0.),
-            row_gap: px(5.),
-            ..default()
-        })
-        .with_children(|section| {
-            native_panel::text(section, label, native_panel::INK);
-            list = section
-                .spawn((
-                    FileRows,
-                    RelativeCursorPosition::default(),
-                    ScrollPosition::default(),
-                    Node {
-                        flex_direction: FlexDirection::Column,
-                        flex_grow: 1.,
-                        min_height: px(0.),
-                        row_gap: px(6.),
-                        overflow: Overflow::scroll_y(),
-                        ..default()
-                    },
-                ))
-                .with_children(results)
-                .id();
-        });
-    list
 }
 
 fn draw_file_pagination(
@@ -2480,6 +2421,84 @@ mod tests {
     use super::*;
 
     #[test]
+    fn find_renders_one_file_row_for_a_path_and_contents_match() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        let mut repo = repository_picker::empty();
+        for path in ["cart.rs", "needle.rs", "needle-notes.md", "unrelated.rs"] {
+            repo.files.push(repo_world::File {
+                path: path.into(),
+                before: None,
+                after: None,
+                change: repo_world::Change::Unchanged,
+                position: [0., 0.],
+            });
+        }
+        let content = [
+            (
+                "needle.rs".into(),
+                content_search::FileMatch {
+                    first_line: 2,
+                    count: 3,
+                },
+            ),
+            (
+                "cart.rs".into(),
+                content_search::FileMatch {
+                    first_line: 9,
+                    count: 1,
+                },
+            ),
+        ]
+        .into();
+        let rows = search_results(&repo, "needle", Some(&content));
+        assert_eq!(
+            rows,
+            [
+                (1, Some(content["needle.rs"])),
+                (2, None),
+                (0, Some(content["cart.rs"]))
+            ]
+        );
+        let mut app = App::new();
+        let world = app.world_mut();
+        world
+            .run_system_once(move |mut commands: Commands| {
+                let tablet = Tablet {
+                    search: "needle".into(),
+                    search_text: TextSearch {
+                        result: Some(Ok(content.clone())),
+                        ..default()
+                    },
+                    ..default()
+                };
+                commands
+                    .spawn_empty()
+                    .with_children(|list| draw_search_results(list, &repo, &tablet));
+            })
+            .unwrap();
+        let labels: Vec<_> = world
+            .query::<&Text>()
+            .iter(world)
+            .map(|text| text.0.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "needle.rs · 3 matches",
+                "needle-notes.md",
+                "cart.rs · 1 match"
+            ]
+        );
+        assert!(
+            world
+                .query::<&Action>()
+                .iter(world)
+                .any(|action| matches!(action, Action::VisitMatch { index: 1, line: 2 }))
+        );
+    }
+
+    #[test]
     fn live_worktree_uses_one_scroll_area_with_a_full_heading() {
         use bevy::ecs::system::RunSystemOnce;
 
@@ -2924,12 +2943,18 @@ mod tests {
             .iter(app.world())
             .map(|text| text.0.clone())
             .collect();
-        assert!(labels.iter().any(|text| text == "Paths"));
-        assert!(labels.iter().any(|text| text == "In files"));
         assert!(
             !labels
                 .iter()
-                .any(|text| text == "File names" || text == "Text")
+                .any(|text| matches!(text.as_str(), "Paths" | "In files" | "File names" | "Text"))
+        );
+        let world = app.world_mut();
+        assert_eq!(
+            world
+                .query_filtered::<Entity, With<FileRows>>()
+                .iter(world)
+                .count(),
+            1
         );
 
         let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();

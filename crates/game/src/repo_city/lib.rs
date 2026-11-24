@@ -2650,12 +2650,13 @@ fn smoke(
     mut picker: ResMut<repository_picker::RepositoryPicker>,
     mut session: ResMut<agent_session::Session>,
     window: Query<Entity, With<PrimaryWindow>>,
-    (mut tablet, mut review, mut reading, mut audio, navigation): (
+    (mut tablet, mut review, mut reading, mut audio, navigation, display): (
         ResMut<review_tablet::Tablet>,
         ResMut<review_notes::Review>,
         ResMut<reading::Settings>,
         ResMut<city_audio::Settings>,
         Res<city_navigation::Navigation>,
+        Option<Res<tablet_display::Display>>,
     ),
 ) {
     if check.pending || repo.0.files.is_empty() {
@@ -2668,7 +2669,7 @@ fn smoke(
             assert_eq!(explorer.source, expected);
         }
         let report = if check.stop == 35 {
-            "Rendered path matches and matching lines from the same Find input."
+            "Rendered one Find list with paths and per-file match counts."
         } else if check.stop == 34 {
             "Rendered the first page of a document larger than one MiB in VibePad."
         } else if check.stop == 33 {
@@ -3034,7 +3035,7 @@ fn smoke(
                 .expect("Find smoke source file");
             tablet.smoke_set_find_query(&mut commands, query.to_owned());
         }
-        if check.elapsed >= 4. && !tablet.smoke_find_ready() {
+        if check.elapsed >= 4. && !tablet.smoke_find_ready(&repo.0) {
             assert!(
                 check.elapsed < 15.,
                 "Find did not return paths and matching lines"
@@ -3163,7 +3164,12 @@ fn smoke(
     std::fs::create_dir_all(&check.directory).expect("smoke output");
     let path = check.directory.join(format!("{:02}.png", check.stage));
     check.pending = true;
-    commands.spawn(Screenshot::primary_window()).observe(
+    let screenshot = if check.stage == 34 {
+        display.expect("VibePad screen").smoke_screenshot()
+    } else {
+        Screenshot::primary_window()
+    };
+    commands.spawn(screenshot).observe(
         move |event: On<ScreenshotCaptured>, mut check: ResMut<Smoke>, mut commands: Commands| {
             let image = event
                 .image

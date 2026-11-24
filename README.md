@@ -198,7 +198,7 @@ The first city visit offers a controls tour. Open **H** to take it again.
 | Action | Control |
 | --- | --- |
 | Find a file by name or path | **⌘P** on Mac or **Ctrl+P** opens and focuses search. **/** also opens it when you are away from a readable wall or already in VibePad. |
-| Find text across a repository on desktop | Type in **Find**. VibePad shows matching paths and matching lines from the open commit or live worktree. **Enter** starts the contents search immediately. Select a result to fly to the file or line. |
+| Find text across a repository on desktop | Type in **Find**. Each matching file appears once, with a count when the text matches its contents. **Enter** starts the contents search immediately. Select a file to fly to its first text match or to the start of the file. |
 | Preview a document, image or video | Aim at its building and press **P**. VibePad renders documents and images. Videos open in the browser player or the desktop system player. |
 | Fly | **WASD**, **Space** and **Ctrl** for altitude, **Shift** to boost |
 | Walk | Over a street, press **O** to descend and walk with **WASD**. Press **O** or **Space** to fly again. |

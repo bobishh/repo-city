@@ -1,5 +1,6 @@
 //! Read-only literal text search of the open native repository.
 use std::{
+    collections::HashMap,
     io::{self, BufRead, BufReader},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -7,25 +8,26 @@ use std::{
 
 use repo_world::Repository;
 
-const LIMIT: usize = 100;
 const PATHS_PER_COMMAND: usize = 128;
 
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Match {
-    pub path: String,
-    pub line: usize,
-    pub text: String,
+pub(crate) type Matches = HashMap<String, FileMatch>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FileMatch {
+    pub first_line: usize,
+    pub count: usize,
 }
 
-pub(crate) fn search(repo: &Repository, query: &str) -> Result<Vec<Match>, String> {
+pub(crate) fn search(repo: &Repository, query: &str) -> Result<Matches, String> {
     if query.trim().is_empty() {
-        return Ok(Vec::new());
+        return Ok(Matches::new());
     }
     if query.contains(['\0', '\r', '\n']) {
         return Err("Enter one line of text to find.".into());
     }
+    let mut matches = Matches::new();
     let result = if repo.is_worktree() {
-        search_live(repo, query, worktree_search_tools())
+        search_live(repo, query, worktree_search_tools(), &mut matches)
     } else {
         let mut command = Command::new("git");
         command
@@ -34,6 +36,7 @@ pub(crate) fn search(repo: &Repository, query: &str) -> Result<Vec<Match>, Strin
             .args([
                 "grep",
                 "-n",
+                "-o",
                 "-z",
                 "-i",
                 "-F",
@@ -43,9 +46,11 @@ pub(crate) fn search(repo: &Repository, query: &str) -> Result<Vec<Match>, Strin
                 &repo.revision,
                 "--",
             ]);
-        read_matches(&mut command, Some(&repo.revision), LIMIT)
+        read_matches(&mut command, Some(&repo.revision), &mut matches)
     };
-    result.map_err(|error| format!("Could not search the repository: {error}"))
+    result
+        .map(|()| matches)
+        .map_err(|error| format!("Could not search the repository: {error}"))
 }
 
 fn worktree_search_tools() -> [PathBuf; 2] {
@@ -64,7 +69,12 @@ fn worktree_search_tools() -> [PathBuf; 2] {
     [rg, PathBuf::from("grep")]
 }
 
-fn search_live(repo: &Repository, query: &str, [rg, grep]: [PathBuf; 2]) -> io::Result<Vec<Match>> {
+fn search_live(
+    repo: &Repository,
+    query: &str,
+    [rg, grep]: [PathBuf; 2],
+    matches: &mut Matches,
+) -> io::Result<()> {
     let root = repo.root.canonicalize()?;
     let paths = repo
         .files
@@ -81,10 +91,8 @@ fn search_live(repo: &Repository, query: &str, [rg, grep]: [PathBuf; 2]) -> io::
             safe.then(|| Path::new(".").join(&file.path))
         })
         .collect::<Vec<_>>();
-    let mut matches = Vec::new();
     let mut ripgrep = true;
     for chunk in paths.chunks(PATHS_PER_COMMAND) {
-        let remaining = LIMIT - matches.len();
         let mut command = Command::new(&rg);
         command
             .current_dir(&root)
@@ -93,6 +101,7 @@ fn search_live(repo: &Repository, query: &str, [rg, grep]: [PathBuf; 2]) -> io::
                 "--threads",
                 "1",
                 "-n",
+                "-o",
                 "-i",
                 "-F",
                 "--null",
@@ -100,58 +109,45 @@ fn search_live(repo: &Repository, query: &str, [rg, grep]: [PathBuf; 2]) -> io::
                 "--no-heading",
                 "--color",
                 "never",
-                "--max-columns",
-                "240",
-                "--max-columns-preview",
                 "--",
                 query,
             ])
             .args(chunk);
         if ripgrep {
-            match read_matches(&mut command, None, remaining) {
-                Ok(found) => matches.extend(found),
+            match read_matches(&mut command, None, matches) {
+                Ok(()) => continue,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => ripgrep = false,
                 Err(error) => return Err(error),
             }
         }
-        if !ripgrep {
-            let mut command = Command::new(&grep);
-            command
-                .current_dir(&root)
-                .args(["-inH", "-F", "-I", "--null", "--", query])
-                .args(chunk);
-            match read_matches(&mut command, None, remaining) {
-                Ok(found) => matches.extend(found),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    return Ok(search_loaded_files(repo, query));
-                }
-                Err(error) => return Err(error),
+        let mut command = Command::new(&grep);
+        command
+            .current_dir(&root)
+            .args(["-inHo", "-F", "-I", "--null", "--", query])
+            .args(chunk);
+        match read_matches(&mut command, None, matches) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                *matches = search_loaded_files(repo, query);
+                return Ok(());
             }
-        }
-        if matches.len() == LIMIT {
-            break;
+            Err(error) => return Err(error),
         }
     }
-    Ok(matches)
+    Ok(())
 }
 
-fn search_loaded_files(repo: &Repository, query: &str) -> Vec<Match> {
+fn search_loaded_files(repo: &Repository, query: &str) -> Matches {
     let query = query.to_lowercase();
-    let mut matches = Vec::new();
+    let mut matches = Matches::new();
     for (index, file) in repo.files.iter().enumerate() {
         let Ok(source) = repo.source(index, false) else {
             continue;
         };
         for (line, text) in source.lines().enumerate() {
-            if text.to_lowercase().contains(&query) {
-                matches.push(Match {
-                    path: file.path.clone(),
-                    line: line + 1,
-                    text: preview(text),
-                });
-                if matches.len() == LIMIT {
-                    return matches;
-                }
+            let count = text.to_lowercase().matches(&query).count();
+            if count > 0 {
+                record(&mut matches, &file.path, line + 1, count);
             }
         }
     }
@@ -161,20 +157,19 @@ fn search_loaded_files(repo: &Repository, query: &str) -> Vec<Match> {
 fn read_matches(
     command: &mut Command,
     revision: Option<&str>,
-    limit: usize,
-) -> io::Result<Vec<Match>> {
+    matches: &mut Matches,
+) -> io::Result<()> {
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
     let output = child.stdout.take().expect("search stdout is piped");
-    let result = parse_matches(BufReader::new(output), revision, limit);
-    let limited = result.as_ref().is_ok_and(|matches| matches.len() == limit);
-    if limited || result.is_err() {
+    let result = parse_matches(BufReader::new(output), revision, matches);
+    if result.is_err() {
         let _ = child.kill();
     }
     let status = child.wait()?;
-    if limited || status.success() || status.code() == Some(1) {
+    if status.success() || status.code() == Some(1) {
         result
     } else {
         Err(io::Error::other(format!(
@@ -187,38 +182,43 @@ fn read_matches(
 fn parse_matches(
     mut output: impl BufRead,
     revision: Option<&str>,
-    limit: usize,
-) -> io::Result<Vec<Match>> {
+    matches: &mut Matches,
+) -> io::Result<()> {
     let prefix = revision.map_or_else(|| "./".into(), |revision| format!("{revision}:"));
-    let line_delimiter = if revision.is_some() { '\0' } else { ':' };
+    let line_delimiter = if revision.is_some() { 0 } else { b':' };
     let mut path = Vec::new();
     let mut body = Vec::new();
-    let mut matches = Vec::new();
-    while matches.len() < limit && output.read_until(0, &mut path)? > 0 {
+    while output.read_until(0, &mut path)? > 0 {
         let path_text = String::from_utf8_lossy(path.strip_suffix(&[0]).unwrap_or(&path));
+        #[cfg(windows)]
+        let path_text = path_text.replace('\\', "/");
         if output.read_until(b'\n', &mut body)? > 0
-            && let Some((line, text)) = String::from_utf8_lossy(&body).split_once(line_delimiter)
+            && let Some(line) = body.split(|byte| *byte == line_delimiter).next()
+            && let Ok(line) = str::from_utf8(line)
             && let Ok(line) = line.parse::<usize>()
         {
             let path = path_text.strip_prefix(&prefix).unwrap_or(&path_text);
-            matches.push(Match {
-                path: if cfg!(windows) {
-                    path.replace('\\', "/")
-                } else {
-                    path.to_owned()
-                },
-                line,
-                text: preview(text),
-            });
+            record(matches, path, line, 1);
         }
         path.clear();
         body.clear();
     }
-    Ok(matches)
+    Ok(())
 }
 
-fn preview(text: &str) -> String {
-    text.trim().chars().take(240).collect()
+fn record(matches: &mut Matches, path: &str, line: usize, count: usize) {
+    if let Some(found) = matches.get_mut(path) {
+        found.first_line = found.first_line.min(line);
+        found.count += count;
+    } else {
+        matches.insert(
+            path.to_owned(),
+            FileMatch {
+                first_line: line,
+                count,
+            },
+        );
+    }
 }
 
 #[cfg(test)]
@@ -262,42 +262,43 @@ mod tests {
         };
         git(&["init", "--quiet"]);
         let path = "nested/file with spaces.rs";
-        std::fs::write(fixture.0.join(path), "first\n// NEEDLE: commit\n").unwrap();
+        std::fs::write(fixture.0.join(path), "first\n// NEEDLE: commit needle:\n").unwrap();
         git(&["add", "."]);
         git(&["commit", "--quiet", "-m", "snapshot"]);
         let committed = Repository::open(&fixture.0, "HEAD").unwrap();
         std::fs::write(fixture.0.join(path), "first\nsecond\n// Needle: live\n").unwrap();
         let live = Repository::open_worktree(&fixture.0).unwrap();
-        let expected = Match {
-            path: path.into(),
-            line: 3,
-            text: "// Needle: live".into(),
+        let expected = FileMatch {
+            first_line: 3,
+            count: 1,
         };
         assert_eq!(
-            search(&committed, "needle:").unwrap(),
-            [Match {
-                path: path.into(),
-                line: 2,
-                text: "// NEEDLE: commit".into()
-            }]
+            search(&committed, "needle:").unwrap()[path],
+            FileMatch {
+                first_line: 2,
+                count: 2
+            }
         );
-        assert_eq!(
-            search(&live, "needle:").unwrap(),
-            [Match {
-                path: path.into(),
-                line: 3,
-                text: "// Needle: live".into()
-            }]
-        );
-        assert_eq!(
-            search_live(
-                &live,
-                "needle:",
-                [fixture.0.join("missing-rg"), PathBuf::from("grep")]
-            )
-            .unwrap(),
-            [expected]
-        );
+        assert_eq!(search(&live, "needle:").unwrap()[path], expected);
+        let tools = || [fixture.0.join("missing-rg"), PathBuf::from("grep")];
+        let mut fallback = Matches::new();
+        search_live(&live, "needle:", tools(), &mut fallback).unwrap();
+        assert_eq!(fallback[path], expected);
         assert!(search(&live, "needle.*").unwrap().is_empty());
+
+        let many = "// needle needle\n".repeat(150);
+        std::fs::write(fixture.0.join(path), many).unwrap();
+        let live = Repository::open_worktree(&fixture.0).unwrap();
+        let expected = Matches::from([(
+            path.into(),
+            FileMatch {
+                first_line: 1,
+                count: 300,
+            },
+        )]);
+        assert_eq!(search(&live, "needle").unwrap(), expected);
+        let mut fallback = Matches::new();
+        search_live(&live, "needle", tools(), &mut fallback).unwrap();
+        assert_eq!(fallback, expected);
     }
 }
