@@ -76,9 +76,6 @@ The application is a larger work distributed under its own license.
 Markdown parsing uses pulldown-cmark 0.13.6 under the MIT license.
 Copyright 2015 Google Inc. See `licenses/pulldown-cmark-MIT.txt`.
 
-Gemini Live connections use [tungstenite 0.29.0](https://crates.io/crates/tungstenite/0.29.0)
-under the MIT license. See `licenses/tungstenite-MIT.txt`.
-
 GPU document layout uses bevy_markup 0.8.0 under MIT or Apache-2.0.
 Copyright 2026 Nikita Chashchinskii. See `licenses/bevy-markup-MIT.txt`
 and `licenses/bevy-markup-APACHE.txt`.

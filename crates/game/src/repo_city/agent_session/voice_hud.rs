@@ -19,11 +19,14 @@ enum Phase {
     Waiting,
     Listening,
     Speaking,
+    Terminal,
     Failed,
 }
 fn phase(session: &Session) -> Phase {
     if session.voice_error.is_some() {
         Phase::Failed
+    } else if session.agy_terminal && session.voice_active() {
+        Phase::Terminal
     } else if !session.voice_active() {
         Phase::Off
     } else if session.voice_waiting {
@@ -162,6 +165,7 @@ pub(super) fn update(
         ),
         Phase::Listening => ("Listening · F5", Color::srgb_u8(100, 225, 205)),
         Phase::Speaking => ("Agent speaking · F5", Color::srgb_u8(174, 149, 239)),
+        Phase::Terminal => ("Antigravity terminal · F5", native_panel::INK),
         Phase::Failed => ("Voice failed · Agent", Color::srgb_u8(240, 113, 108)),
     };
     for mut caption in &mut captions {

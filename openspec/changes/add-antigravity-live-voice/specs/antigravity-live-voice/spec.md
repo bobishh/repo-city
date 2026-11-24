@@ -1,33 +1,37 @@
 ## ADDED Requirements
 
-### Requirement: Use native Gemini audio in Antigravity voice mode
+### Requirement: Start built-in Antigravity voice
 
-Repo City SHALL provide an explicit voice control with Antigravity selected. The client SHALL send microphone audio to Gemini Live and play the model's audio output. It SHALL clear stale playback when Gemini reports an interruption. The voice connection SHALL require separate Gemini API credentials and surface failures without stopping the ACP text session.
+Repo City SHALL provide an explicit desktop voice control for Antigravity. It SHALL open the interactive Antigravity CLI using its existing account sign-in and let the CLI manage microphone and speaker audio.
 
-#### Scenario: Start and interrupt a spoken reply
+#### Scenario: Open voice with an Antigravity account
 
-- **GIVEN** Antigravity is selected and Gemini Live credentials are configured
-- **WHEN** the user starts voice and speaks, then interrupts a spoken reply
-- **THEN** Repo City plays Gemini's audio and discards the interrupted reply's queued audio
+- **GIVEN** Antigravity is selected and the user has signed in to its CLI
+- **WHEN** the user starts voice in VibePad or presses F5
+- **THEN** VibePad opens the Antigravity terminal and starts its built-in voice mode using that account
 
-#### Scenario: Credentials are missing
+### Requirement: Preserve the conversation during handoff
 
-- **GIVEN** no Gemini API key is configured
-- **WHEN** the user starts voice
-- **THEN** Repo City displays the configuration error and keeps chat available
+Repo City SHALL release the ACP session after the current turn completes. It SHALL resume its conversation ID in the terminal and confirm the identity before sending the voice shortcut. The terminal SHALL use the workspace sandbox and display Antigravity's permission prompts.
 
-### Requirement: Keep spoken work in the active ACP session
+#### Scenario: ACP is working when voice is requested
 
-The voice connection SHALL submit, steer, check and stop work through the Antigravity adapter associated with the active checkout. Repository permission decisions SHALL use the active Repo City permission mode. Ending voice SHALL release audio resources without canceling the ACP turn.
+- **GIVEN** an Antigravity turn is running through ACP
+- **WHEN** the user requests voice
+- **THEN** the active turn completes before the terminal takes over its conversation
 
-#### Scenario: Ask a question while Antigravity works
+#### Scenario: The terminal resumes a different conversation
 
-- **GIVEN** an active Antigravity conversation and an open voice connection
-- **WHEN** the user delegates a task and asks for progress before it finishes
-- **THEN** the task uses the same ACP conversation and the voice connection can report its progress and result
+- **GIVEN** a voice session is requested for an existing ACP conversation
+- **WHEN** the terminal reports a different conversation ID
+- **THEN** Repo City does not send its voice start shortcut
 
-#### Scenario: Return to typing during a task
+### Requirement: Stop voice while keeping terminal work
 
-- **GIVEN** a task is still running in the Antigravity conversation
-- **WHEN** the user stops voice
-- **THEN** microphone capture stops and the task continues in Chat
+Repo City SHALL use the CLI voice stop shortcut without closing the terminal. It SHALL reconnect ACP to the saved conversation after the interactive terminal exits.
+
+#### Scenario: The user hangs up during CLI work
+
+- **GIVEN** Antigravity is running a task in the voice terminal
+- **WHEN** the user stops voice through Repo City
+- **THEN** Antigravity ends voice and continues the task in the terminal

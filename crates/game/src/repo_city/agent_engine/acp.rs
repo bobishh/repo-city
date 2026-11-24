@@ -135,7 +135,7 @@ impl Engine for Adapter {
     }
 }
 
-fn executable(provider: Provider) -> Option<PathBuf> {
+pub(crate) fn executable(provider: Provider) -> Option<PathBuf> {
     let filename = if cfg!(windows) {
         format!("{}.exe", provider.id)
     } else {
@@ -184,7 +184,6 @@ impl Wire {
         let mut child = Process::new(binary)
             .args(args)
             .current_dir(root)
-            .env_remove("REPO_CITY_GEMINI_API_KEY")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -421,6 +420,7 @@ fn run(
     let mut turn: Option<Turn> = None;
     let mut permissions = HashMap::new();
     let mut steering = HashMap::new();
+    let mut voice = None;
     while !stopped.load(Ordering::Acquire) {
         match commands.try_recv() {
             Ok(Command::RefreshModels) if turn.is_none() => {
@@ -517,9 +517,41 @@ fn run(
                     Permission::answer(permission, accept, &mut wire)?;
                 }
             }
-            Ok(Command::Voice { .. } | Command::StopVoice) => {}
+            Ok(Command::Voice { id, .. }) if provider == super::AGY => {
+                if turn.is_some() {
+                    send(
+                        updates,
+                        Update::Event(Event::VoiceWaiting { id: id.clone() }),
+                    )?;
+                }
+                voice = Some(id);
+            }
+            Ok(Command::StopVoice) => voice = None,
+            Ok(Command::Voice { .. }) => {}
             Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
             Err(mpsc::TryRecvError::Empty) => {}
+        }
+        if let Some(id) = voice.take_if(|_| turn.is_none()) {
+            send(
+                updates,
+                Update::Event(Event::VoiceStarting { id: id.clone() }),
+            )?;
+            match wire.call("session/close", json!({"sessionId":session}), stopped) {
+                Ok(_) => {
+                    drop(wire);
+                    return send(
+                        updates,
+                        Update::Event(Event::VoiceTerminal {
+                            id,
+                            conversation: session,
+                        }),
+                    );
+                }
+                Err(error) => {
+                    send(updates, Update::Event(Event::Voice { id, active: false }))?;
+                    send(updates, Update::Event(Event::VoiceError(error)))?;
+                }
+            }
         }
         if turn
             .as_ref()
@@ -621,16 +653,6 @@ fn run(
                     && let Err(error) = &result
                 {
                     send(updates, Update::Event(Event::Error(error.clone())))?;
-                }
-                if provider == super::AGY {
-                    send(
-                        updates,
-                        Update::Event(Event::WorkFinished {
-                            id: active.prompt.id.clone(),
-                            result: result.clone(),
-                            stopped: canceled,
-                        }),
-                    )?;
                 }
                 active.delivered(updates, result)?;
                 turn = None;
@@ -919,6 +941,10 @@ else:
     emit(method="session/update", params={"sessionId":session, "update":{"sessionUpdate":"tool_call", "locations":[{"path":"src/main.rs","line":7}]}})
     emit(method="session/update", params={"sessionId":session, "update":{"sessionUpdate":"agent_message_chunk", "content":{"type":"text","text":"Answer"}}})
     emit(id=prompt["id"], result={"stopReason":"end_turn"})
+if provider == "agy" and session == "saved":
+    close = json.loads(input())
+    assert close["method"] == "session/close" and close["params"]["sessionId"] == session
+    emit(id=close["id"], result={})
 sys.stdin.read()
 "#).unwrap();
         std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -972,6 +998,9 @@ sys.stdin.read()
                 (false, false, false, false, false);
             let mut steered = provider != super::super::AGY;
             let mut completed = false;
+            let handoff = provider == super::super::AGY && restore;
+            let mut waited_for_voice = false;
+            let mut opened_voice = false;
             while let Ok(event) = events.recv_timeout(Duration::from_secs(5)) {
                 match event {
                     Update::Models(Ok(catalog)) => {
@@ -994,6 +1023,14 @@ sys.stdin.read()
                             })
                             .unwrap();
                         if provider == super::super::AGY {
+                            if handoff {
+                                commands
+                                    .send(Command::Voice {
+                                        id: "voice".into(),
+                                        context: String::new(),
+                                    })
+                                    .unwrap();
+                            }
                             commands
                                 .send(Command::Steer(Prompt {
                                     id: "steer".into(),
@@ -1003,6 +1040,7 @@ sys.stdin.read()
                                 .unwrap();
                         }
                     }
+                    Update::Event(Event::VoiceWaiting { id }) => waited_for_voice = id == "voice",
                     Update::File { path, line } => file = path == "src/main.rs" && line == 7,
                     Update::Delta { text, .. } => {
                         answer = text == if deny { "Permission denied" } else { "Answer" };
@@ -1012,17 +1050,13 @@ sys.stdin.read()
                     }
                     Update::Turn(None, status) => {
                         assert_eq!(status, if deny { "Work stopped" } else { "Connected" });
-                        if provider != super::super::AGY {
-                            completed = true;
+                        completed = true;
+                        if !handoff {
                             break;
                         }
                     }
-                    Update::Event(Event::WorkFinished {
-                        id,
-                        result,
-                        stopped,
-                    }) => {
-                        completed = id == "prompt" && result.is_ok() && !stopped;
+                    Update::Event(Event::VoiceTerminal { id, conversation }) => {
+                        opened_voice = completed && id == "voice" && conversation == "saved";
                         break;
                     }
                     _ => {}
@@ -1030,6 +1064,10 @@ sys.stdin.read()
             }
             drop(commands);
             let outcome = worker.join().unwrap();
+            assert!(
+                !handoff || (waited_for_voice && opened_voice),
+                "voice must wait for the ACP turn and keep its ID"
+            );
             assert!(outcome.is_ok(), "{}: {outcome:?}", provider.label);
             assert!(
                 connected && delivered && (file || deny) && answer && model && steered && completed,

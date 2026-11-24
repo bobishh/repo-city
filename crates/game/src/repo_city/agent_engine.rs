@@ -7,12 +7,12 @@ mod codex;
 mod codex_projection;
 mod codex_protocol;
 mod codex_transport;
-mod gemini_live;
 pub(super) mod models;
 pub(super) mod opus_codec;
 mod provider_executable;
 mod rtc;
 pub(super) mod state;
+pub(super) use acp::executable as acp_executable;
 
 pub(super) use state::{Dialogue, Projection};
 use std::{
@@ -133,10 +133,9 @@ pub(super) enum Event {
         id: String,
         result: Result<(), String>,
     },
-    WorkFinished {
+    VoiceTerminal {
         id: String,
-        result: Result<(), String>,
-        stopped: bool,
+        conversation: String,
     },
     Changed {
         status: Option<String>,
@@ -169,12 +168,7 @@ pub(super) trait Engine: Send + Sync {
 pub(super) fn connect(provider: Provider, start: Start) -> Result<Box<dyn Engine>, String> {
     match provider.id {
         "codex" => Ok(Box::new(codex::Adapter::start(start))),
-        "agy" => {
-            let speaking = start.speaking.clone();
-            let inner = Box::new(acp::Adapter::start(provider, start)?);
-            Ok(Box::new(gemini_live::Adapter::new(inner, speaking)))
-        }
-        "grok" | "muse" => Ok(Box::new(acp::Adapter::start(provider, start)?)),
+        "agy" | "grok" | "muse" => Ok(Box::new(acp::Adapter::start(provider, start)?)),
         _ => Err(format!("Unknown agent provider {}.", provider.label)),
     }
 }

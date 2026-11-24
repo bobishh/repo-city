@@ -1,5 +1,7 @@
 //! Persistent native shell and Alacritty screen displayed inside VibePad.
+mod agy;
 mod session;
+pub(super) use agy::print_title as print_agy_title;
 
 use super::*;
 use bevy::{
@@ -58,6 +60,8 @@ pub(super) struct Terminal {
     root: Option<PathBuf>,
     pending: Option<native_github::Job<Mutex<Session>>>,
     session: Option<Mutex<Session>>,
+    agy: Option<agy::Agy>,
+    showing_agy: bool,
     image: Option<Handle<Image>>,
     error: String,
     status: String,
@@ -86,7 +90,67 @@ impl native_panel::Actions<Action> for Terminal {
 }
 
 impl Terminal {
+    pub(super) fn agy_open(&self, root: &std::path::Path) -> bool {
+        self.agy
+            .as_ref()
+            .is_some_and(|agy| agy.root == root && !agy.finished())
+    }
+
+    pub(super) fn start_agy(
+        &mut self,
+        root: PathBuf,
+        conversation: String,
+        approval: agent_engine::ApprovalMode,
+    ) -> Result<(), String> {
+        if self.agy.as_ref().is_some_and(|agy| !agy.finished()) {
+            return Err("Exit the other Antigravity terminal before starting voice here.".into());
+        }
+        self.agy = Some(agy::Agy::start(root, conversation, approval));
+        self.dirty = true;
+        Ok(())
+    }
+
+    pub(super) fn toggle_agy_voice(&mut self, root: &std::path::Path) -> bool {
+        let Some(agy) = self
+            .agy
+            .as_mut()
+            .filter(|agy| agy.root == root && !agy.finished())
+        else {
+            return false;
+        };
+        agy.requested = !agy.requested;
+        agy.requested
+    }
+
+    pub(super) fn agy_voice_requested(&self, root: &std::path::Path) -> bool {
+        self.agy
+            .as_ref()
+            .is_some_and(|agy| agy.root == root && agy.requested && !agy.finished())
+    }
+
+    pub(super) fn take_agy_exit(&mut self, root: &std::path::Path) -> Option<Result<(), String>> {
+        self.agy
+            .take_if(|agy| agy.root == root && agy.finished())
+            .map(agy::Agy::outcome)
+    }
+
+    fn show_agy_for(&mut self, root: &std::path::Path) {
+        let showing = self.agy.as_ref().is_some_and(|agy| agy.root == root);
+        if self.showing_agy != showing {
+            self.showing_agy = showing;
+            self.image = None;
+            self.dirty = true;
+        }
+    }
+
     fn maintain(&mut self, root: &std::path::Path, now: Instant, pad_open: bool) {
+        self.show_agy_for(root);
+        if let Some(agy) = &mut self.agy {
+            if agy.root != root {
+                agy.requested = false;
+            }
+            self.dirty |= agy.poll() && self.showing_agy;
+        }
         if pad_open && !self.pad_open {
             self.recovery.reopen(now);
         }
@@ -107,10 +171,11 @@ impl Terminal {
             }
             self.dirty = true;
         }
-        let exited = if let Some(session) = self.session_mut() {
+        let exited = if let Some(session) = self.session.as_mut().and_then(|pty| pty.get_mut().ok())
+        {
             let changed = session.poll();
             let exited = session.exited;
-            self.dirty |= changed;
+            self.dirty |= changed && !self.showing_agy;
             exited
         } else {
             false
@@ -156,14 +221,19 @@ impl Terminal {
         }));
     }
     fn session_mut(&mut self) -> Option<&mut Session> {
-        self.session.as_mut()?.get_mut().ok()
+        if self.showing_agy {
+            self.agy.as_mut()?.pty()
+        } else {
+            self.session.as_mut()?.get_mut().ok()
+        }
     }
     pub(super) fn draw(
         &mut self,
         parent: &mut ChildSpawnerCommands,
         root: &std::path::Path,
     ) -> Entity {
-        if self.root.as_deref() != Some(root) {
+        self.show_agy_for(root);
+        if !self.showing_agy && self.root.as_deref() != Some(root) {
             self.start(root.to_owned());
         }
 
@@ -182,7 +252,11 @@ impl Terminal {
                     .and_then(|name| name.to_str())
                     .unwrap_or("Repository");
                 tools.spawn((
-                    Text::new(name),
+                    Text::new(if self.showing_agy {
+                        format!("Antigravity · {name}")
+                    } else {
+                        name.to_owned()
+                    }),
                     TextFont::from_font_size(13.),
                     TextColor(Color::srgb_u8(139, 180, 185)),
                 ));
@@ -204,13 +278,15 @@ impl Terminal {
                     Action::Paste,
                 );
                 tools.commands().entity(paste).insert(TabIndex(41));
-                let restart = native_panel::button::<Action, Self>(
-                    tools,
-                    "Restart",
-                    native_panel::INK,
-                    Action::Restart,
-                );
-                tools.commands().entity(restart).insert(TabIndex(42));
+                if !self.showing_agy {
+                    let restart = native_panel::button::<Action, Self>(
+                        tools,
+                        "Restart",
+                        native_panel::INK,
+                        Action::Restart,
+                    );
+                    tools.commands().entity(restart).insert(TabIndex(42));
+                }
             });
         let image = self.image.clone().unwrap_or_default();
         let view = parent
@@ -259,6 +335,11 @@ impl Terminal {
     }
 
     fn visible_status(&self) -> &str {
+        if self.showing_agy
+            && let Some(agy) = &self.agy
+        {
+            return agy.status();
+        }
         match self.status.as_str() {
             "Shell ready" => "",
             other => other,
@@ -287,7 +368,8 @@ pub(super) fn update(
     terminal.maintain(&repo.0.root, Instant::now(), tablet.is_open());
     if let Some(action) = terminal.action.take() {
         match action {
-            Action::Restart => terminal.start(repo.0.root.clone()),
+            Action::Restart if !terminal.showing_agy => terminal.start(repo.0.root.clone()),
+            Action::Restart => {}
             Action::Paste => terminal.paste = Some(clipboard.fetch_text()),
             Action::Copy => {
                 if let Some(session) = terminal.session_mut() {
@@ -333,7 +415,7 @@ pub(super) fn update(
             .read()
             .filter(|event| event.state == ButtonState::Pressed)
         {
-            if event.key_code == KeyCode::F6
+            if matches!(event.key_code, KeyCode::F5 | KeyCode::F6 | KeyCode::F7)
                 || command
                 || control && shift && matches!(event.key_code, KeyCode::KeyC | KeyCode::KeyV)
                 || control && event.key_code == KeyCode::Tab

@@ -65,10 +65,27 @@ pub(super) struct Session {
 
 impl Session {
     pub fn open(root: &Path, shell: Option<&str>) -> Result<Self, String> {
-        Self::start(root, shell)
+        let program = shell.map(str::to_owned).unwrap_or_else(|| {
+            if cfg!(windows) {
+                "powershell.exe".into()
+            } else {
+                std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
+            }
+        });
+        let mut command = CommandBuilder::new(&program);
+        if cfg!(windows) {
+            command.arg("-NoLogo");
+        } else {
+            command.arg("-i");
+        }
+        Self::open_program(root, command, &program)
     }
 
-    fn start(root: &Path, shell: Option<&str>) -> Result<Self, String> {
+    pub fn open_program(
+        root: &Path,
+        mut command: CommandBuilder,
+        program: &str,
+    ) -> Result<Self, String> {
         let size = Size {
             rows: 30,
             cols: 100,
@@ -81,22 +98,9 @@ impl Session {
                 pixel_height: 0,
             })
             .map_err(|e| e.to_string())?;
-        let program = shell.map(str::to_owned).unwrap_or_else(|| {
-            if cfg!(windows) {
-                "powershell.exe".into()
-            } else {
-                std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
-            }
-        });
-        let mut command = CommandBuilder::new(&program);
         command.cwd(root);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
-        if cfg!(windows) {
-            command.arg("-NoLogo");
-        } else {
-            command.arg("-i");
-        }
         let child = pair
             .slave
             .spawn_command(command)
@@ -154,7 +158,7 @@ impl Session {
             parser: Processor::new(),
             size,
             exited: false,
-            title: program,
+            title: program.into(),
         })
     }
 

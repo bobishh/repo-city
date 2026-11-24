@@ -223,8 +223,8 @@ Continuation rows keep the original line number for notes, search and links.
 
 On desktop, **F4** or **Settings → Reading → Reading mode** toggles reading off
 and on. While off, source is visible and timers pause without changing saved
-progress. **F10** mutes all application output, including room and agent voice;
-press it again to restore sound. It does not mute microphone capture.
+progress. **F10** mutes Repo City audio, including room audio and Codex voice.
+Press it again to restore sound. Use Antigravity's terminal controls for its audio.
 
 **Reading block** chooses whole functions where syntax boundaries are available,
 or fixed-line blocks. **Lines per reading block** sets the fallback/fixed block size
@@ -453,19 +453,14 @@ requests microphone access only when you start voice. The HUD shows the voice st
 while VibePad is put away. **F5** stops voice, and **Disconnect** closes the agent
 connection. City audio pauses for the voice conversation.
 
-**Antigravity voice** uses native Gemini Live audio. The microphone stays active
-while Gemini speaks, so use headphones to prevent echo. You can interrupt speech,
-start a task, steer work, ask for progress, or explicitly stop work. The current
-Antigravity conversation handles the work and Repo City presents its permission
-requests. If voice disconnects, the Antigravity chat and running task remain available.
-
-Antigravity voice requires a [Gemini API key](https://aistudio.google.com/apikey)
-with access to Gemini Live. Set `REPO_CITY_GEMINI_API_KEY` or `GEMINI_API_KEY` in
-Repo City's launch environment. On macOS, you can also add a password item to your
-login keychain with the name `Repo City Gemini Live` and account `gemini-api-key`.
-Use the API key as that item's password. Repo City sends microphone audio to Google
-while voice is active, and provides Gemini with bounded updates from the active
-Antigravity conversation when needed for spoken progress and results.
+**Antigravity voice** uses [the built-in CLI voice mode](https://antigravity.google/docs/cli/commands/voice/).
+Sign in through `agy` 1.5.0 or later with a Google account that has access to voice.
+Repo City waits for any current ACP turn, opens the same conversation in VibePad's
+terminal and starts voice. Complete any sign-in or workspace trust prompts in
+the terminal. Antigravity handles audio, transcripts and approvals there.
+**F5** hangs up while any CLI work continues. Exit the CLI to
+return the conversation to text controls in Chat. Spoken turns stay in
+Antigravity's conversation history.
 
 **Codex voice** requires app-server realtime support. If work is running, Codex waits
 for it to finish before opening voice. The microphone pauses while Codex speaks.

@@ -30,7 +30,10 @@ impl bevy::app::Plugin for Plugin {
             })
             .add_systems(Startup, voice_hud::spawn)
             .add_systems(Update, voice_hud::update.after(update))
-            .add_systems(Update, update.after(review_tablet::update))
+            .add_systems(
+                Update,
+                update.after(review_tablet::update).before(terminal::update),
+            )
             .add_systems(Update, presence.after(update));
         app.add_systems(Update, models::update.after(update));
         controls::register(app);
@@ -104,6 +107,7 @@ pub(super) struct Session {
     follow_agent: bool,
     voice_connected: bool,
     voice_waiting: bool,
+    agy_terminal: bool,
     dirty: bool,
     saved_at: f64,
     status: String,
@@ -112,6 +116,15 @@ pub(super) struct Session {
 }
 
 impl Session {
+    pub(super) fn smoke_start_agy_voice(&mut self) {
+        self.selected = agent_engine::AGY;
+        self.action = Some(Action::Voice);
+    }
+
+    pub(super) fn smoke_stop_agy_voice(&mut self) {
+        self.action = Some(Action::Voice);
+    }
+
     pub(super) fn timeline(&self, root: &Path) -> Option<&agent_engine::activity::Timeline> {
         (self.root.as_deref() == Some(root)).then_some(&self.projection.timeline)
     }
@@ -236,7 +249,7 @@ impl Session {
                 "",
                 Phase::Ended,
             ),
-            Event::Changed { .. } | Event::Models(_) | Event::WorkFinished { .. } => return,
+            Event::Changed { .. } | Event::Models(_) | Event::VoiceTerminal { .. } => return,
         };
         let mut details = Details::new(Kind::Session, title);
         details.body = detail.into();
@@ -306,6 +319,9 @@ impl Session {
         if self.selected == provider {
             return Ok(());
         }
+        if self.agy_terminal {
+            return Err("Exit the Antigravity terminal before changing agents.".into());
+        }
         if self.pending_send.is_some() || self.projection.turn.is_some() {
             return Err("Stop the active turn before changing agents.".into());
         }
@@ -335,6 +351,9 @@ impl Session {
         self.projection.voice.is_some()
     }
     fn connect(&mut self) -> Result<(), String> {
+        if self.agy_terminal {
+            return Err("Antigravity is open in the VibePad terminal.".into());
+        }
         if self.client.is_none() {
             let root = self.root.clone().ok_or("Open a local checkout first.")?;
             self.interaction = controls::Settings::load()?;
@@ -401,6 +420,8 @@ impl Session {
 
     fn can_send(&self) -> bool {
         !self.stopping
+            && !self.agy_terminal
+            && !(self.provider() == agent_engine::AGY && self.voice_active())
             && !self.models.selecting()
             && self.pending_send.is_none()
             && !self.prompt.trim().is_empty()
@@ -495,6 +516,7 @@ impl Session {
         self.connected = false;
         self.voice_connected = false;
         self.voice_waiting = false;
+        self.agy_terminal = false;
         self.voice_error = None;
         self.projection.voice = None;
         self.projection.turn = None;
@@ -933,10 +955,11 @@ fn update(
     )>,
     mut transcripts: Query<(Entity, &mut Transcript)>,
     editing: Query<(), Or<(With<EditableText>, With<source_editor::View>)>>,
-    blockers: (
-        Res<terminal::Terminal>,
+    (mut terminal, wall_search, windows, mut tablet): (
+        ResMut<terminal::Terminal>,
         Res<listing::find::Search>,
         Query<&Window, With<PrimaryWindow>>,
+        Option<ResMut<review_tablet::Tablet>>,
     ),
 ) {
     let root = &repo.0.root;
@@ -963,6 +986,32 @@ fn update(
         session.version = session.version.wrapping_add(1);
         for (_, mut field, _) in &mut prompts {
             field.editor_mut().set_text("");
+        }
+    }
+    if session.provider() == agent_engine::AGY {
+        if let Some(outcome) = terminal.take_agy_exit(root) {
+            session.agy_terminal = false;
+            session.projection.voice = None;
+            session.voice_waiting = false;
+            if let Some(tablet) = tablet.as_deref_mut()
+                && tablet.page_name() == Some("terminal")
+            {
+                tablet.open_page(review_tablet::Page::Agent);
+            }
+            if let Err(error) = session.connect().and(outcome) {
+                session.notice(&error);
+                session.voice_error = Some(error);
+            }
+        } else if terminal.agy_open(root) {
+            session.agy_terminal = true;
+            if terminal.agy_voice_requested(root) {
+                session
+                    .projection
+                    .voice
+                    .get_or_insert_with(|| "agy-terminal".into());
+            } else {
+                session.projection.voice = None;
+            }
         }
     }
     for (_, mut field, mut marker) in &mut prompts {
@@ -1005,6 +1054,7 @@ fn update(
     if !events.is_empty() {
         session.version = session.version.wrapping_add(1);
     }
+    let mut restore_agy_chat = false;
     for event in events {
         session.record_engine_event(&event);
         match event {
@@ -1060,7 +1110,29 @@ fn update(
                     }
                 }
             }
-            Event::WorkFinished { .. } => {}
+            Event::VoiceTerminal { id, conversation } => {
+                session.client = None;
+                session.connected = false;
+                session.voice_waiting = false;
+                if session.projection.voice.as_deref() == Some(id.as_str()) {
+                    match terminal.start_agy(root.clone(), conversation, session.approval_mode()) {
+                        Ok(()) => {
+                            session.agy_terminal = true;
+                            session.status = "Antigravity terminal".into();
+                            if let Some(tablet) = tablet.as_deref_mut() {
+                                tablet.open_page(review_tablet::Page::Terminal);
+                            }
+                        }
+                        Err(error) => {
+                            session.projection.voice = None;
+                            session.voice_error = Some(error);
+                            restore_agy_chat = true;
+                        }
+                    }
+                } else {
+                    restore_agy_chat = true;
+                }
+            }
             Event::Approval(approval) => {
                 if let Err(error) = session.request_approval(approval) {
                     session.notice(&error);
@@ -1105,6 +1177,9 @@ fn update(
             }
             Event::VoiceError(error) => session.voice_error = Some(error),
             Event::Closed => {
+                if session.client.is_none() {
+                    continue;
+                }
                 let error = session.models.failure();
                 let provider = session.provider();
                 session.disconnect();
@@ -1117,10 +1192,13 @@ fn update(
             }
         }
     }
-    let window_focused = blockers.2.single().is_ok_and(|window| window.focused);
+    if restore_agy_chat && let Err(error) = session.connect() {
+        session.status = error;
+    }
+    let window_focused = windows.single().is_ok_and(|window| window.focused);
     let keyboard_allowed = window_focused
-        && !blockers.0.active
-        && !blockers.1.blocks_controls()
+        && !terminal.active
+        && !wall_search.blocks_controls()
         && !focus.get().is_some_and(|entity| editing.contains(entity))
         && !keys.any_pressed([
             KeyCode::ControlLeft,
@@ -1172,7 +1250,15 @@ fn update(
             Action::Voice if session.provider().capabilities.voice => {
                 session.voice_error = None;
                 session.voice_waiting = false;
-                if session.voice_active() {
+                if session.agy_terminal {
+                    session.projection.voice = terminal
+                        .toggle_agy_voice(root)
+                        .then(|| "agy-terminal".into());
+                    if let Some(tablet) = tablet.as_deref_mut() {
+                        tablet.open_page(review_tablet::Page::Terminal);
+                    }
+                    Ok(())
+                } else if session.voice_active() {
                     session.projection.voice = None;
                     session.voice_connected = false;
                     session.send(Command::StopVoice)
@@ -1225,7 +1311,9 @@ fn update(
     let connection = format!(
         "{} · {}",
         session.provider().label,
-        if session.connected {
+        if session.agy_terminal {
+            "terminal"
+        } else if session.connected {
             if session.stopping {
                 "stopping"
             } else if session.projection.turn.is_some() {
@@ -1241,6 +1329,8 @@ fn update(
     );
     let voice = if !session.provider().capabilities.voice {
         "Text only"
+    } else if session.agy_terminal {
+        "Voice controls in Terminal"
     } else if session.voice_active() {
         if session.voice_waiting {
             "F5 · Waiting for current turn…"
@@ -1289,7 +1379,7 @@ fn update(
             node.display = display;
         }
         let enabled = match action {
-            Action::Connect => session.client.is_none(),
+            Action::Connect => session.client.is_none() && !session.agy_terminal,
             Action::Disconnect => session.client.is_some(),
             Action::Stop => session.can_stop(),
             Action::Send => session.can_send(),

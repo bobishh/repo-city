@@ -400,6 +400,11 @@ pub fn run() {
         return;
     }
     #[cfg(not(target_arch = "wasm32"))]
+    if args.iter().any(|arg| arg == "--agy-terminal-title") {
+        terminal::print_agy_title();
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     if args.iter().any(|arg| arg == "--notes-mcp") {
         let result = arg("--repo")
             .ok_or_else(|| "--notes-mcp requires --repo PATH".to_owned())
@@ -809,6 +814,7 @@ fn install_city(app: &mut App, args: &[String]) {
                     "--smoke-review-roofs" => Some(31),
                     "--smoke-document" => Some(33),
                     "--smoke-find" => Some(34),
+                    "--smoke-agy-terminal" => Some(35),
                     "--smoke-overview" => Some(24),
                     "--smoke-empty-diff" => Some(18),
                     "--smoke-frost" => Some(20),
@@ -820,6 +826,7 @@ fn install_city(app: &mut App, args: &[String]) {
                 elapsed: 0.,
                 stage,
                 stop: match stage {
+                    35 => 38,
                     29 => 31,
                     31 => 33,
                     15 => 18,
@@ -2668,7 +2675,9 @@ fn smoke(
             explorer.reload(&repo.0);
             assert_eq!(explorer.source, expected);
         }
-        let report = if check.stop == 35 {
+        let report = if check.stop == 38 {
+            "Opened the Antigravity voice terminal, stopped voice, and returned to the same ACP chat after the CLI exited."
+        } else if check.stop == 35 {
             "Rendered one Find list with paths and per-file match counts."
         } else if check.stop == 34 {
             "Rendered the first page of a document larger than one MiB in VibePad."
@@ -3043,6 +3052,23 @@ fn smoke(
             return;
         }
     }
+    if matches!(check.stage, 35 | 36) {
+        if previous < 0.5 && check.elapsed >= 0.5 {
+            if check.stage == 35 {
+                session.smoke_start_agy_voice();
+            } else {
+                session.smoke_stop_agy_voice();
+            }
+        }
+        if check.elapsed >= 4. && tablet.page_name() != Some("terminal") {
+            assert!(check.elapsed < 15., "Antigravity terminal did not open");
+            return;
+        }
+    }
+    if check.stage == 37 && check.elapsed >= 4. && tablet.page_name() != Some("agent") {
+        assert!(check.elapsed < 15., "Antigravity chat did not reopen");
+        return;
+    }
     if check.stage == 10 && previous < 1. && check.elapsed >= 1. {
         use bevy::input::{
             ButtonState,
@@ -3164,7 +3190,7 @@ fn smoke(
     std::fs::create_dir_all(&check.directory).expect("smoke output");
     let path = check.directory.join(format!("{:02}.png", check.stage));
     check.pending = true;
-    let screenshot = if check.stage == 34 {
+    let screenshot = if matches!(check.stage, 34..=37) {
         display.expect("VibePad screen").smoke_screenshot()
     } else {
         Screenshot::primary_window()
