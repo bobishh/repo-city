@@ -50,7 +50,6 @@ pub(crate) struct ReviewUi {
     message: String,
     auth: Option<repository_picker::AuthPrompt>,
     scroll: f32,
-    empty_until: f32,
     status_scope: String,
     status_job: Option<native_github::Job<Vec<(Note, native::LocalState)>>>,
     status_due: f32,
@@ -104,7 +103,7 @@ impl ReviewUi {
         changed
     }
 
-    fn select_view(&mut self, panel: Panel, review: &Review, repo: &Repository, github: bool) {
+    fn select_view(&mut self, panel: Panel, review: &Review, repo: &Repository) {
         self.focused_note = match panel {
             Panel::Aimed => review
                 .aim_note
@@ -118,19 +117,10 @@ impl ReviewUi {
                 .cloned(),
             _ => None,
         };
-        self.view = match panel {
-            Panel::Paints => Some(View::Palette(review.slot)),
-            Panel::Notes | Panel::Aimed
-                if github
-                    || review
-                        .notes
-                        .iter()
-                        .any(|note| Review::on_snapshot(note, repo)) =>
-            {
-                Some(View::Notes { editing: false })
-            }
-            _ => None,
-        };
+        self.view = Some(match panel {
+            Panel::Paints => View::Palette(review.slot),
+            Panel::Notes | Panel::Aimed => View::Notes { editing: false },
+        });
     }
 
     fn includes(&self, note: &Note, repo: &Repository) -> bool {
@@ -368,6 +358,13 @@ fn draw(
                         ScrollPosition(Vec2::new(0., ui.scroll)),
                     ))
                     .with_children(|list| {
+                        if notes.is_empty() && comments.is_none() {
+                            native_panel::text(
+                                list,
+                                "No review notes yet. Choose a paint and mark readable lines.",
+                                INK,
+                            );
+                        }
                         if all && let Some(comments) = comments {
                             let status = match comments {
                                 native_github::PullComments::Loading => "Loading GitHub comments…",
@@ -691,7 +688,6 @@ pub(crate) fn update(
     mut focus: ResMut<InputFocus>,
     parents: Query<&ChildOf>,
     fields: Query<&EditableText>,
-    mut hint: Query<&mut Visibility, With<EmptyNotesHint>>,
     mut feedback: Query<&mut Text, With<Feedback>>,
     repo: Option<Res<Repo>>,
     mut picker: Option<ResMut<repository_picker::RepositoryPicker>>,
@@ -783,33 +779,21 @@ pub(crate) fn update(
     }
     let was_open = ui.view.is_some();
     if let Some(panel) = review.request.take() {
-        ui.select_view(panel, &review, repo, comments.is_some());
-        if ui.view.is_none() {
-            ui.empty_until = time.elapsed_secs() + 3.5;
-        } else {
-            ui.empty_until = 0.;
-            ui.message.clear();
-            ui.scroll = 0.;
-            redraw = true;
-            review.drag = None;
-            if let Ok(mut pilot) = camera.single_mut() {
-                pilot.captured = false;
-                pilot.firing = false;
-                pilot.shot = false;
-                pilot.fire_ready = false;
-            }
-            if let Ok(mut cursor) = cursor.single_mut() {
-                cursor.grab_mode = CursorGrabMode::None;
-                cursor.visible = true;
-            }
+        ui.select_view(panel, &review, repo);
+        ui.message.clear();
+        ui.scroll = 0.;
+        redraw = true;
+        review.drag = None;
+        if let Ok(mut pilot) = camera.single_mut() {
+            pilot.captured = false;
+            pilot.firing = false;
+            pilot.shot = false;
+            pilot.fire_ready = false;
         }
-    }
-    if let Ok(mut hint) = hint.single_mut() {
-        hint.set_if_neq(if time.elapsed_secs() < ui.empty_until {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        });
+        if let Ok(mut cursor) = cursor.single_mut() {
+            cursor.grab_mode = CursorGrabMode::None;
+            cursor.visible = true;
+        }
     }
 
     let action = ui.action.take().or_else(|| {
@@ -831,7 +815,7 @@ pub(crate) fn update(
                 Err(error) => message = error,
             },
             Action::AllComments => {
-                ui.select_view(Panel::Notes, &review, repo, comments.is_some());
+                ui.select_view(Panel::Notes, &review, repo);
                 ui.scroll = 0.;
                 redraw = true;
             }
@@ -1321,13 +1305,13 @@ mod tests {
             .collect();
         review.aim_note = Some("aimed".into());
         let mut ui = ReviewUi::default();
-        ui.select_view(Panel::Aimed, &review, &repo, false);
+        ui.select_view(Panel::Aimed, &review, &repo);
         assert!(!ui.includes(&review.notes[0], &repo));
         assert!(ui.includes(&review.notes[1], &repo));
-        ui.select_view(Panel::Notes, &review, &repo, false);
+        ui.select_view(Panel::Notes, &review, &repo);
         assert!(review.notes.iter().all(|note| ui.includes(note, &repo)));
         review.aim_note = Some("missing".into());
-        ui.select_view(Panel::Aimed, &review, &repo, false);
+        ui.select_view(Panel::Aimed, &review, &repo);
         assert!(review.notes.iter().all(|note| ui.includes(note, &repo)));
     }
 

@@ -1057,6 +1057,16 @@ pub(super) fn replace_selection(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+impl RepositoryPicker {
+    fn open_folder(&mut self, path: PathBuf) {
+        self.status = "Reading repository…".into();
+        self.local = Some(native_github::Job::spawn(move || {
+            load(&path, "WORKTREE", None)
+        }));
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn close_view(
     commands: &mut Commands,
     picker: &mut RepositoryPicker,
@@ -1218,8 +1228,7 @@ pub(super) fn open_repository(
     }) {
         picker.folder = None;
         if let Some(path) = result {
-            picker.status = "Reading repository…".into();
-            picker.local = Some(native_github::Job::spawn(move || load(&path, "HEAD", None)));
+            picker.open_folder(path);
         }
     }
     if let Some(result) = picker.device.as_ref().and_then(native_github::Job::take) {
@@ -1368,10 +1377,7 @@ pub(super) fn open_repository(
                     }
                 } else {
                     let path = PathBuf::from(input.trim());
-                    picker.status = "Reading repository…".into();
-                    picker.local = Some(native_github::Job::spawn(move || {
-                        load(&path, "WORKTREE", None)
-                    }));
+                    picker.open_folder(path);
                     close_view(&mut commands, &mut picker, &mut focus, &parents);
                 }
             }
@@ -1549,6 +1555,79 @@ mod tests {
             (name == "XDG_CONFIG_HOME").then(|| "/reviewer/config".into())
         });
         assert_eq!(directory, Some(PathBuf::from("/reviewer/config/Repo City")));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn choosing_a_native_folder_opens_its_saved_worktree() {
+        use std::{process::Command, time::Duration};
+
+        let root = std::env::temp_dir().join(format!("repo-city-folder-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let fixture = Fixture(root);
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .current_dir(&fixture.0)
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        std::fs::write(fixture.0.join("source.rs"), "committed\n").unwrap();
+        git(&["add", "source.rs"]);
+        git(&["commit", "-qm", "initial"]);
+        std::fs::write(fixture.0.join("source.rs"), "saved locally\n").unwrap();
+
+        let (send, receive) = mpsc::channel();
+        send.send(Some(fixture.0.clone())).unwrap();
+        let mut picker = RepositoryPicker::new(String::new());
+        picker.folder = Some(std::sync::Mutex::new(receive));
+        let mut app = App::new();
+        app.insert_resource(picker)
+            .insert_resource(Repo(empty()))
+            .insert_resource(WorldSet::load(None).unwrap())
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<InputFocus>()
+            .init_resource::<AccumulatedMouseScroll>()
+            .init_resource::<Clipboard>()
+            .init_resource::<review_notes::Review>()
+            .init_resource::<live_worktree::Live>()
+            .add_systems(Update, open_repository);
+        app.world_mut()
+            .spawn((Window::default(), CursorOptions::default(), PrimaryWindow));
+        app.update();
+        let picker = app.world().resource::<RepositoryPicker>();
+        let job = picker.local.as_ref().expect("folder should start opening");
+        let opened = (0..300)
+            .find_map(|_| {
+                std::thread::sleep(Duration::from_millis(10));
+                job.take()
+            })
+            .expect("folder snapshot result")
+            .unwrap();
+        assert!(opened.is_worktree());
+        assert_eq!(opened.source(0, false).unwrap(), "saved locally\n");
     }
 
     #[cfg(not(target_arch = "wasm32"))]

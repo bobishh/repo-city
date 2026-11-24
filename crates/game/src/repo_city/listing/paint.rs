@@ -360,36 +360,33 @@ pub(crate) fn draw(
                 }
             }
         } else if let Some((_, anchor)) = review.drag.take() {
-            let readable = target.as_ref().is_some_and(|(point, face, _, _)| {
-                anchor.includes(point)
-                    && (*face == Face::Diff
-                        || (anchor.start..=anchor.end).all(|row| {
-                            listing
-                                .revealed
-                                .contains(&(explorer.selected, anchor.before, row))
-                        }))
-            });
-            if readable {
-                match review.save_draft(&repo.0, anchor) {
-                    Ok(note) => {
-                        review.aim_note = Some(note.id);
-                        #[cfg(target_arch = "wasm32")]
-                        {
-                            explorer.notice =
-                                "Draft saved. Press J to reopen an aimed note.".into();
-                        }
-                        #[cfg(not(target_arch = "wasm32"))]
-                        if !review.auto_publish {
-                            review.notify(
-                                time.elapsed_secs(),
-                                "Draft saved locally · J opens review",
-                            );
-                        }
-                    }
-                    Err(error) => explorer.notice = error,
+            let release = target
+                .as_ref()
+                .filter(|(point, _, _, _)| anchor.includes(point));
+            let saved = match release {
+                Some((_, face, _, _)) if can_save(&listing, &explorer, &anchor, *face) => {
+                    review.save_draft(&repo.0, anchor)
                 }
-            } else {
-                explorer.notice = "Thaw these lines first, or mark them on the diff wall.".into();
+                Some(_) => Err("Thaw these lines first, or mark them on the diff wall.".into()),
+                None => Err("Release over the marked lines to save a note.".into()),
+            };
+            match saved {
+                Ok(note) => {
+                    review.aim_note = Some(note.id);
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        explorer.notice = "Draft saved. Press J to reopen an aimed note.".into();
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if !review.auto_publish {
+                        review.notify(time.elapsed_secs(), "Draft saved locally · J opens review");
+                    }
+                }
+                Err(error) => {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    review.notify(time.elapsed_secs(), error.clone());
+                    explorer.notice = error;
+                }
             }
         }
         if let Some(phrase) = &review.phrase {
@@ -408,4 +405,51 @@ pub(crate) fn draw(
     }
     text.set_if_neq(Text::new(hint));
     ink.set_if_neq(TextColor(tint));
+}
+
+fn can_save(
+    listing: &Listing,
+    explorer: &Explorer,
+    anchor: &review_notes::Anchor,
+    face: Face,
+) -> bool {
+    face == Face::Diff
+        || (anchor.start..=anchor.end)
+            .all(|line| listing.source_row_is_readable(explorer, line.saturating_sub(1)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use review_notes::Anchor;
+
+    #[test]
+    fn paint_accepts_visible_source_without_earned_reading_credit() {
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight("source.rs", "first\nsecond\n"));
+        let mut listing = Listing::default();
+        let anchor = Anchor {
+            path: "source.rs".into(),
+            before: false,
+            start: 1,
+            end: 2,
+        };
+        assert!(!can_save(&listing, &explorer, &anchor, Face::Source));
+        assert!(can_save(&listing, &explorer, &anchor, Face::Diff));
+        listing.show_all_source = true;
+        assert!(can_save(&listing, &explorer, &anchor, Face::Source));
+        assert_eq!(listing.counts(&explorer).0, 0);
+        listing.show_all_source = false;
+        listing.present_range(&explorer, 1, 1);
+        assert!(can_save(
+            &listing,
+            &explorer,
+            &Anchor {
+                end: 1,
+                ..anchor.clone()
+            },
+            Face::Source
+        ));
+        assert!(!can_save(&listing, &explorer, &anchor, Face::Source));
+    }
 }

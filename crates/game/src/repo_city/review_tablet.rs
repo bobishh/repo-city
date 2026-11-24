@@ -8,12 +8,14 @@ use bevy::{
     input::keyboard::KeyboardInput,
     input_focus::{FocusCause, InputFocus, tab_navigation::TabIndex},
     text::EditableText,
+    ui::RelativeCursorPosition,
 };
 
 use super::*;
 use file_picker::content_search;
 
 const FILES_PER_PAGE: usize = 10;
+const TEXT_SEARCH_DELAY: f64 = 0.25;
 type FileTimes = HashMap<String, u64>;
 
 #[derive(Resource, Default)]
@@ -48,7 +50,7 @@ pub(super) struct Tablet {
     history: Option<History>,
     search: String,
     search_input: Option<Entity>,
-    search_list: Option<Entity>,
+    search_lists: Option<[Entity; 2]>,
     search_results: Vec<usize>,
     search_text: TextSearch,
     trace_input: Option<Entity>,
@@ -59,9 +61,59 @@ pub(super) struct Tablet {
 
 #[derive(Default)]
 struct TextSearch {
-    enabled: bool,
-    pending: Option<native_github::Job<Vec<content_search::Match>>>,
+    due: Option<f64>,
+    pending: Option<(String, native_github::Job<Vec<content_search::Match>>)>,
     result: Option<Result<Vec<content_search::Match>, String>>,
+}
+
+impl TextSearch {
+    fn update(
+        &mut self,
+        repo: &Repository,
+        query: &str,
+        now: f64,
+        changed: bool,
+        submit: bool,
+    ) -> bool {
+        let has_query = !query.trim().is_empty();
+        if changed {
+            self.due = has_query.then_some(now + TEXT_SEARCH_DELAY);
+            self.result = None;
+        }
+        let already_searching = self.due.is_none()
+            && self
+                .pending
+                .as_ref()
+                .is_some_and(|(active, _)| active == query);
+        let submit = submit && has_query && !already_searching;
+        if submit {
+            self.due = Some(now);
+            self.result = None;
+        }
+        let mut redraw = changed || submit;
+        if let Some((active, result)) = self
+            .pending
+            .as_ref()
+            .and_then(|(active, job)| job.take().map(|result| (active, result)))
+        {
+            if active == query && self.due.is_none() {
+                self.result = Some(result);
+                redraw = true;
+            }
+            self.pending = None;
+        }
+        if self.pending.is_none() && self.due.is_some_and(|due| now >= due) {
+            self.due = None;
+            let snapshot = repo.clone();
+            let query = query.to_owned();
+            self.pending = Some((
+                query.clone(),
+                native_github::Job::spawn(move || content_search::search(&snapshot, &query)),
+            ));
+            redraw = true;
+        }
+        redraw
+    }
 }
 
 struct History {
@@ -231,8 +283,6 @@ impl Page {
 #[derive(Component, Clone, Copy)]
 enum Action {
     Visit(usize),
-    SearchMode(bool),
-    RunSearch,
     VisitMatch(usize),
     Filter(FileFilter),
     Page(usize),
@@ -273,6 +323,28 @@ impl native_panel::Actions<Action> for Tablet {
 }
 
 impl Tablet {
+    pub(super) fn smoke_set_find_query(&self, commands: &mut Commands, query: String) {
+        let input = self.search_input.expect("Find input");
+        commands.queue(move |world: &mut World| {
+            world
+                .get_mut::<EditableText>(input)
+                .expect("Find text editor")
+                .editor_mut()
+                .set_text(&query);
+        });
+    }
+
+    pub(super) fn smoke_find_ready(&self) -> bool {
+        self.view == Page::Search
+            && !self.search.is_empty()
+            && !self.search_results.is_empty()
+            && self
+                .search_text
+                .result
+                .as_ref()
+                .is_some_and(|result| result.as_ref().is_ok_and(|matches| !matches.is_empty()))
+    }
+
     pub(super) fn smoke_open_document(&mut self, repo: &Repository, index: usize, before: bool) {
         self.document = Document::open(repo, index, before, 0..6);
         self.open_page(Page::Document);
@@ -567,7 +639,14 @@ pub(super) fn update(
     mut focus: ResMut<InputFocus>,
     parents: Query<&ChildOf>,
     wheel: Res<AccumulatedMouseScroll>,
-    mut rows: Query<(&mut ScrollPosition, &ComputedNode), With<FileRows>>,
+    mut rows: Query<
+        (
+            &mut ScrollPosition,
+            &ComputedNode,
+            Option<&RelativeCursorPosition>,
+        ),
+        With<FileRows>,
+    >,
     (
         mut reading,
         mut tour,
@@ -777,7 +856,7 @@ pub(super) fn update(
             && let Some(content) = document.content.and_then(|entity| layout.get(entity).ok())
             && content.size().y > 0.
             && let Some(Ok(loaded)) = &document.result
-            && let Ok((scroll, viewport)) = rows.single()
+            && let Ok((scroll, viewport, _)) = rows.single()
             && viewport.size().y > 0.
             && scroll.y * viewport.inverse_scale_factor().recip() + viewport.size().y + 2.
                 >= viewport.content_size().y
@@ -838,13 +917,6 @@ pub(super) fn update(
             return;
         }
         match action {
-            Some(Action::SearchMode(enabled)) if tablet.search_text.enabled != enabled => {
-                tablet.search_text = TextSearch {
-                    enabled,
-                    ..default()
-                };
-                redraw = true;
-            }
             Some(Action::DocumentPage(page)) => {
                 if let Some(document) = tablet.document.as_mut() {
                     document.page = page;
@@ -897,7 +969,7 @@ pub(super) fn update(
                 }
                 redraw = true;
             }
-            Some(Action::Switch(Page::Search)) if slash => {
+            Some(Action::Switch(Page::Search)) if find_file => {
                 if let Some(input) = tablet.search_input {
                     focus.set(input, FocusCause::Navigated);
                 }
@@ -1033,7 +1105,21 @@ pub(super) fn update(
         redraw |= tablet.view == Page::Files && repo.is_changed();
         review.blocked = true;
         review.tablet_open = true;
-        if let Ok((mut scroll, viewport)) = rows.single_mut() {
+        let scroll_target = if tablet.view == Page::Search {
+            tablet
+                .search_lists
+                .and_then(|lists| {
+                    lists.into_iter().find(|&list| {
+                        rows.get(list).is_ok_and(|(_, _, hover)| {
+                            hover.is_some_and(RelativeCursorPosition::cursor_over)
+                        })
+                    })
+                })
+                .map_or(Err(()), |target| rows.get_mut(target).map_err(|_| ()))
+        } else {
+            rows.single_mut().map_err(|_| ())
+        };
+        if let Ok((mut scroll, viewport, _)) = scroll_target {
             let delta = match wheel.unit {
                 bevy::input::mouse::MouseScrollUnit::Line => wheel.delta.y * 34.,
                 bevy::input::mouse::MouseScrollUnit::Pixel => wheel.delta.y,
@@ -1195,51 +1281,37 @@ pub(super) fn update(
             .search_input
             .and_then(|entity| fields.get(entity).ok())
             .map(|field| field.value().to_string());
-        let mut changed = false;
-        if let Some(query) = query.filter(|query| query != &tablet.search) {
+        let edited = query.as_ref().is_some_and(|query| query != &tablet.search);
+        if let Some(query) = query.filter(|_| edited) {
             tablet.search = query;
-            if tablet.search_text.enabled {
-                tablet.search_text.pending = None;
-                tablet.search_text.result = None;
-            } else {
-                tablet.search_results = search_results(&repo.0, &tablet.search);
-            }
-            changed = true;
         }
-        let enter = keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter])
+        let submit = keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter])
             && focus.get() == tablet.search_input;
-        if tablet.search_text.enabled {
-            if let Some(result) = tablet
+        let changed = edited || repo.is_changed() || previous_page != Page::Search;
+        let query = tablet.search.clone();
+        let content_changed =
+            tablet
                 .search_text
-                .pending
-                .as_ref()
-                .and_then(native_github::Job::take)
-            {
-                tablet.search_text.pending = None;
-                tablet.search_text.result = Some(result);
-                changed = true;
-            }
-            if (enter || matches!(action, Some(Action::RunSearch)))
-                && !tablet.search.trim().is_empty()
-                && tablet.search_text.pending.is_none()
-            {
-                let snapshot = repo.0.clone();
-                let query = tablet.search.clone();
-                tablet.search_text.pending = Some(native_github::Job::spawn(move || {
-                    content_search::search(&snapshot, &query)
-                }));
-                tablet.search_text.result = None;
-                changed = true;
-            }
-        } else if enter && let Some(&index) = tablet.search_results.first() {
-            tablet.action = Some(Action::Visit(index));
-        }
+                .update(&repo.0, &query, time.elapsed_secs_f64(), changed, submit);
         if changed {
-            if let Some(list) = tablet.search_list {
+            tablet.search_results = search_results(&repo.0, &query);
+        }
+        if let Some([paths, content]) = tablet.search_lists {
+            if changed {
                 commands
-                    .entity(list)
+                    .entity(paths)
+                    .insert(ScrollPosition::default())
                     .despawn_children()
-                    .with_children(|parent| draw_find_results(parent, &repo.0, &tablet));
+                    .with_children(|parent| {
+                        draw_search_results(parent, &repo.0, &tablet.search_results)
+                    });
+            }
+            if content_changed {
+                commands
+                    .entity(content)
+                    .insert(ScrollPosition::default())
+                    .despawn_children()
+                    .with_children(|parent| draw_content_results(parent, &tablet));
             }
         }
     }
@@ -1271,7 +1343,7 @@ pub(super) fn update(
         None
     };
     tablet.files_scroll = if preserve_file_list {
-        rows.single().map_or(0., |(scroll, _)| scroll.y)
+        rows.single().map_or(0., |(scroll, _, _)| scroll.y)
     } else {
         0.
     };
@@ -1396,11 +1468,7 @@ fn draw_search_results(parent: &mut ChildSpawnerCommands, repo: &Repository, res
     }
 }
 
-fn draw_find_results(parent: &mut ChildSpawnerCommands, repo: &Repository, tablet: &Tablet) {
-    if !tablet.search_text.enabled {
-        draw_search_results(parent, repo, &tablet.search_results);
-        return;
-    }
+fn draw_content_results(parent: &mut ChildSpawnerCommands, tablet: &Tablet) {
     let status = match &tablet.search_text.result {
         Some(Ok(matches)) if matches.is_empty() => "No matching lines.",
         Some(Ok(matches)) => {
@@ -1415,13 +1483,13 @@ fn draw_find_results(parent: &mut ChildSpawnerCommands, repo: &Repository, table
                 parent
                     .commands()
                     .entity(entity)
-                    .insert(TabIndex(100 + index as i32));
+                    .insert(TabIndex(200 + index as i32));
             }
             return;
         }
         Some(Err(error)) => error,
-        None if tablet.search_text.pending.is_some() => "Searching text…",
-        None => "Press Enter to search.",
+        None if !tablet.search.trim().is_empty() => "Searching text…",
+        None => "Type to search file contents.",
     };
     native_panel::text(parent, status, native_panel::INK);
 }
@@ -1459,7 +1527,7 @@ fn draw(
             .as_ref()
             .map_or("Markdown", |document| document.path.as_str()),
         Page::Git => "Git history",
-        Page::Search => "Find a file",
+        Page::Search => "Find in repository",
         Page::Terminal => "Terminal",
         Page::Trace => "Paste a trace",
         Page::Agent => "Chat",
@@ -1553,53 +1621,17 @@ fn draw(
                 return;
             }
             Page::Search => {
-                if !tablet.search_text.enabled {
-                    tablet.search_results = search_results(repository, &tablet.search);
-                }
-                parent
-                    .spawn(Node {
-                        column_gap: px(6.),
-                        ..default()
-                    })
-                    .with_children(|row| {
-                        for (label, enabled) in [("File names", false), ("Text", true)] {
-                            let button =
-                                add_button(row, label, Action::SearchMode(enabled), &mut tab);
-                            if tablet.search_text.enabled == enabled {
-                                row.commands()
-                                    .entity(button)
-                                    .insert(BackgroundColor(Color::srgb_u8(23, 79, 87)));
-                            }
-                        }
-                        if tablet.search_text.enabled {
-                            add_button(row, "Search", Action::RunSearch, &mut tab);
-                        }
-                    });
-                let label = if tablet.search_text.enabled {
-                    "Text in the repository"
-                } else {
-                    "File name or path"
-                };
-                let input = native_panel::input(parent, label, &tablet.search, tab, false);
+                tablet.search_results = search_results(repository, &tablet.search);
+                let input = native_panel::input(parent, "Path or text", &tablet.search, tab, false);
                 tablet.search_input = Some(input);
                 first = Some(input);
-                tablet.search_list = Some(
-                    parent
-                        .spawn((
-                            FileRows,
-                            ScrollPosition::default(),
-                            Node {
-                                flex_direction: FlexDirection::Column,
-                                flex_grow: 1.,
-                                min_height: px(0.),
-                                row_gap: px(6.),
-                                overflow: Overflow::scroll_y(),
-                                ..default()
-                            },
-                        ))
-                        .with_children(|parent| draw_find_results(parent, repository, tablet))
-                        .id(),
-                );
+                let paths = search_section(parent, "Paths", |list| {
+                    draw_search_results(list, repository, &tablet.search_results)
+                });
+                let content = search_section(parent, "In files", |list| {
+                    draw_content_results(list, tablet)
+                });
+                tablet.search_lists = Some([paths, content]);
                 return;
             }
             Page::Git => {
@@ -1800,6 +1832,43 @@ fn draw(
             });
     });
     (panel, first.expect("the tablet always has navigation"))
+}
+
+fn search_section(
+    parent: &mut ChildSpawnerCommands,
+    label: &str,
+    results: impl FnOnce(&mut ChildSpawnerCommands),
+) -> Entity {
+    let mut list = Entity::PLACEHOLDER;
+    parent
+        .spawn(Node {
+            flex_direction: FlexDirection::Column,
+            flex_grow: 1.,
+            flex_basis: px(0.),
+            min_height: px(0.),
+            row_gap: px(5.),
+            ..default()
+        })
+        .with_children(|section| {
+            native_panel::text(section, label, native_panel::INK);
+            list = section
+                .spawn((
+                    FileRows,
+                    RelativeCursorPosition::default(),
+                    ScrollPosition::default(),
+                    Node {
+                        flex_direction: FlexDirection::Column,
+                        flex_grow: 1.,
+                        min_height: px(0.),
+                        row_gap: px(6.),
+                        overflow: Overflow::scroll_y(),
+                        ..default()
+                    },
+                ))
+                .with_children(results)
+                .id();
+        });
+    list
 }
 
 fn draw_file_pagination(
@@ -2849,11 +2918,18 @@ mod tests {
             app.world().resource::<InputFocus>().get(),
             tablet.search_input
         );
+        let labels: Vec<_> = app
+            .world_mut()
+            .query::<&Text>()
+            .iter(app.world())
+            .map(|text| text.0.clone())
+            .collect();
+        assert!(labels.iter().any(|text| text == "Paths"));
+        assert!(labels.iter().any(|text| text == "In files"));
         assert!(
-            app.world_mut()
-                .query::<&Text>()
-                .iter(app.world())
-                .any(|text| text.0 == "Text")
+            !labels
+                .iter()
+                .any(|text| text == "File names" || text == "Text")
         );
 
         let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();

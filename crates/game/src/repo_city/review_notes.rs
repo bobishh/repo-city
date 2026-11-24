@@ -207,40 +207,6 @@ struct Payload {
 #[derive(Component)]
 pub(super) struct ToolHud;
 
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Component)]
-pub(super) struct EmptyNotesHint;
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) fn spawn_empty_hint(commands: &mut Commands, font: TextFont, ink: Color) {
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                top: percent(50.),
-                width: percent(100.),
-                padding: UiRect::top(px(54.)),
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            EmptyNotesHint,
-            Visibility::Hidden,
-            bevy::picking::Pickable::IGNORE,
-        ))
-        .with_child((
-            Text::new("No review notes yet. Choose a paint and spray the lines you want to mark."),
-            font,
-            TextColor(ink),
-            BackgroundColor(Color::srgba(0.024, 0.066, 0.08, 0.95)),
-            Node {
-                max_width: percent(80.),
-                padding: UiRect::axes(px(12.), px(8.)),
-                ..default()
-            },
-            bevy::picking::Pickable::IGNORE,
-        ));
-}
-
 #[derive(Resource)]
 pub(super) struct Review {
     pub palette: Vec<Option<Preset>>,
@@ -814,7 +780,7 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn opening_empty_notes_keeps_capture_and_the_hint_expires() {
+    fn opening_empty_notes_opens_the_review_panel() {
         let mut app = App::new();
         app.init_resource::<ReviewUi>()
             .init_resource::<bevy::input_focus::InputFocus>()
@@ -826,10 +792,6 @@ mod tests {
                 ..default()
             })
             .add_systems(Update, panels);
-        let hint = app
-            .world_mut()
-            .spawn((EmptyNotesHint, Visibility::Hidden))
-            .id();
         let camera = app
             .world_mut()
             .spawn((
@@ -841,19 +803,13 @@ mod tests {
             ))
             .id();
         app.update();
-        assert_eq!(
-            app.world().get::<Visibility>(hint),
-            Some(&Visibility::Inherited)
-        );
-        assert!(app.world().get::<Pilot>(camera).unwrap().captured);
-        assert!(app.world().resource::<Review>().request.is_none());
-        app.world_mut()
-            .resource_mut::<Time>()
-            .advance_by(std::time::Duration::from_secs(4));
-        app.update();
-        assert_eq!(
-            app.world().get::<Visibility>(hint),
-            Some(&Visibility::Hidden)
+        assert!(app.world().resource::<Review>().tablet_open);
+        assert!(!app.world().get::<Pilot>(camera).unwrap().captured);
+        assert!(
+            app.world_mut()
+                .query::<&Text>()
+                .iter(app.world())
+                .any(|text| text.0.starts_with("No review notes yet"))
         );
     }
 

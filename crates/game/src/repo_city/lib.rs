@@ -808,6 +808,7 @@ fn install_city(app: &mut App, args: &[String]) {
                     "--smoke-hunk-pages" => Some(29),
                     "--smoke-review-roofs" => Some(31),
                     "--smoke-document" => Some(33),
+                    "--smoke-find" => Some(34),
                     "--smoke-overview" => Some(24),
                     "--smoke-empty-diff" => Some(18),
                     "--smoke-frost" => Some(20),
@@ -1048,8 +1049,6 @@ fn setup(
     file_picker::spawn(&mut commands, &ui_font(13.), color(set.ink));
     city_menu::spawn(&mut commands, &ui_font(13.), color(set.ink));
     guide::spawn_hint(&mut commands, &ui_font(13.), color(set.ink));
-    #[cfg(not(target_arch = "wasm32"))]
-    review_notes::spawn_empty_hint(&mut commands, ui_font(13.), color(set.ink));
     listing::find::spawn(&mut commands, &ui_font(13.), color(set.ink));
     #[cfg(not(target_arch = "wasm32"))]
     review_tablet::spawn_help(&mut commands, &ui_font(15.), color(set.ink));
@@ -2668,7 +2667,9 @@ fn smoke(
             explorer.reload(&repo.0);
             assert_eq!(explorer.source, expected);
         }
-        let report = if check.stop == 34 {
+        let report = if check.stop == 35 {
+            "Rendered path matches and matching lines from the same Find input."
+        } else if check.stop == 34 {
             "Rendered the first page of a document larger than one MiB in VibePad."
         } else if check.stop == 33 {
             "Rendered a comparison roof tour and moved to the next changed building without hunk floors."
@@ -3021,6 +3022,25 @@ fn smoke(
     check.elapsed += time.delta_secs();
     if check.stage == 33 && previous < 1. && check.elapsed >= 1. {
         tablet.smoke_open_document(&repo.0, explorer.selected, explorer.before);
+    }
+    if check.stage == 34 {
+        if previous < 0.5 && check.elapsed >= 0.5 {
+            tablet.open_page(review_tablet::Page::Search);
+        }
+        if previous < 1. && check.elapsed >= 1. {
+            let query = std::path::Path::new(&repo.0.files[explorer.selected].path)
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .expect("Find smoke source file");
+            tablet.smoke_set_find_query(&mut commands, query.to_owned());
+        }
+        if check.elapsed >= 4. && !tablet.smoke_find_ready() {
+            assert!(
+                check.elapsed < 15.,
+                "Find did not return paths and matching lines"
+            );
+            return;
+        }
     }
     if check.stage == 10 && previous < 1. && check.elapsed >= 1. {
         use bevy::input::{

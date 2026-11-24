@@ -198,7 +198,7 @@ The first city visit offers a controls tour. Open **H** to take it again.
 | Action | Control |
 | --- | --- |
 | Find a file by name or path | **⌘P** on Mac or **Ctrl+P** opens and focuses search. **/** also opens it when you are away from a readable wall or already in VibePad. |
-| Find text across a repository on desktop | In VibePad **Find → Text**, type a literal query and press **Enter**. Select a result to fly to its line. Search reads the chosen commit or the live files, depending on the open snapshot. |
+| Find text across a repository on desktop | Type in **Find**. VibePad shows matching paths and matching lines from the open commit or live worktree. **Enter** starts the contents search immediately. Select a result to fly to the file or line. |
 | Preview a document, image or video | Aim at its building and press **P**. VibePad renders documents and images. Videos open in the browser player or the desktop system player. |
 | Fly | **WASD**, **Space** and **Ctrl** for altitude, **Shift** to boost |
 | Walk | Over a street, press **O** to descend and walk with **WASD**. Press **O** or **Space** to fly again. |
@@ -570,7 +570,7 @@ remain required. Landscape provides more reading space.
 
 ## Leave review notes
 
-Thaw the source or use the readable diff wall. Pick a paint with **U** and
+Aim at readable source or a diff wall. Pick a paint with **U** and
 drag over lines to color them and save a draft with that paint's reusable
 prompt. Each draft keeps its original file, revision, and line range.
 Change a paint's name, color, spray text, or reusable prompt in **Paints**.
