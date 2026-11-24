@@ -2,6 +2,7 @@ use alacritty_terminal::{
     Term,
     event::{Event, EventListener, WindowSize},
     grid::{Dimensions, Scroll},
+    index::{Column, Line},
     term::{Config, TermMode, cell::Flags},
     vte::ansi::{Color, CursorShape, Processor, Rgb},
 };
@@ -249,6 +250,16 @@ impl Session {
     }
     pub fn bottom(&mut self) {
         self.term.scroll_display(Scroll::Bottom);
+    }
+    /// Screen rows at the bottom of the live terminal, independent of scrollback.
+    pub fn screen_rows(&self) -> impl Iterator<Item = String> + '_ {
+        let grid = self.term.grid();
+        (0..grid.screen_lines() as i32).rev().map(|line| {
+            let row = &grid[Line(line)];
+            (0..grid.columns())
+                .map(|column| row[Column(column)].c)
+                .collect()
+        })
     }
     pub fn frame(&self) -> Frame {
         let content = self.term.renderable_content();

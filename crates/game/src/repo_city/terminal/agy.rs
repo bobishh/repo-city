@@ -12,11 +12,19 @@ const DIFFERENT: &str = "Repo City Agy different conversation";
 const F6: &[u8] = b"\x1b[17~";
 const F7: &[u8] = b"\x1b[18~";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in super::super) enum Voice {
+    Off,
+    Connecting,
+    Connected,
+}
+
 pub(super) struct Agy {
     pub root: PathBuf,
     process: Process,
     pub requested: bool,
     sent: bool,
+    connected: bool,
 }
 
 enum Process {
@@ -66,6 +74,7 @@ impl Agy {
             process: Process::Starting(job),
             requested: true,
             sent: false,
+            connected: false,
         }
     }
 
@@ -90,12 +99,36 @@ impl Agy {
         if pty.title == DIFFERENT {
             self.requested = false;
         }
+        if changed {
+            let connected = pty
+                .screen_rows()
+                .filter(|row| !row.trim().is_empty())
+                .take(6)
+                .any(|row| live_voice_row(&row));
+            if self.connected && !connected {
+                self.requested = false;
+                self.sent = false;
+            } else if !self.connected && connected && !self.sent && pty.title != DIFFERENT {
+                // The call may have been started with /voice inside the terminal.
+                self.requested = true;
+                self.sent = true;
+            }
+            self.connected = connected;
+        }
         if let Some(key) = voice_key(self.requested, self.sent, &pty.title)
             && pty.send(key.to_vec()).is_ok()
         {
             self.sent = self.requested;
         }
         changed
+    }
+
+    pub fn voice(&self) -> Voice {
+        match (self.requested, self.connected) {
+            (_, true) => Voice::Connected,
+            (false, false) => Voice::Off,
+            (true, false) => Voice::Connecting,
+        }
     }
 
     pub fn pty(&mut self) -> Option<&mut Session> {
@@ -122,14 +155,37 @@ impl Agy {
             Process::Open(pty) if pty.lock().is_ok_and(|pty| pty.title == DIFFERENT) => {
                 "Antigravity opened a different conversation. Voice start canceled."
             }
-            Process::Open(_) if self.sent => "F5 · Stop Antigravity voice",
-            Process::Open(_) if self.requested => {
-                "Waiting for Antigravity · F5 cancels voice start"
-            }
-            Process::Open(_) => "F5 · Start Antigravity voice",
+            Process::Open(_) => match self.voice() {
+                Voice::Connected => "Voice connected · F5 hangs up",
+                Voice::Connecting if self.sent => "Connecting voice… · F5 cancels",
+                Voice::Connecting => "Waiting for Antigravity · F5 cancels voice start",
+                Voice::Off => "Voice off · F5 starts voice",
+            },
             Process::Exited(_) => "Antigravity terminal closed",
         }
     }
+}
+
+// Antigravity shows this status below the prompt while the CLI call is live.
+fn live_voice_row(row: &str) -> bool {
+    let mut words = row
+        .trim_start_matches(|ch: char| !ch.is_alphanumeric())
+        .split_whitespace();
+    if words.next() != Some("Live") {
+        return false;
+    }
+    let Some((minutes, seconds)) = words.next().and_then(|time| time.split_once(':')) else {
+        return false;
+    };
+    !minutes.is_empty()
+        && minutes.bytes().all(|ch| ch.is_ascii_digit())
+        && seconds.len() == 2
+        && seconds.bytes().all(|ch| ch.is_ascii_digit())
+        && words.next() == Some("·")
+        && matches!(
+            words.next(),
+            Some("listening" | "thinking" | "speaking" | "muted")
+        )
 }
 
 fn voice_key(requested: bool, sent: bool, title: &str) -> Option<&'static [u8]> {
@@ -169,6 +225,17 @@ pub(crate) fn print_title() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_voice_footer_confirms_a_call_even_when_controls_are_clipped() {
+        assert!(live_voice_row(
+            "  ● Live 01:53 · speaking · f6 mute · esc hang up"
+        ));
+        assert!(live_voice_row("● Live 00:00 · listening"));
+        assert!(!live_voice_row("  🎤 Started voice chat · 7:31PM"));
+        assert!(!live_voice_row("● Live 00:00 · connecting"));
+        assert!(!live_voice_row("  Logs: Live 00:00 · listening"));
+    }
 
     #[test]
     fn voice_waits_for_the_exact_idle_conversation_and_hangs_up_while_working() {

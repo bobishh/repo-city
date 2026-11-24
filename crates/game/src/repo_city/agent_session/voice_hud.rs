@@ -19,20 +19,20 @@ enum Phase {
     Waiting,
     Listening,
     Speaking,
-    Terminal,
+    AgyConnected,
     Failed,
 }
 fn phase(session: &Session) -> Phase {
     if session.voice_error.is_some() {
         Phase::Failed
-    } else if session.agy_terminal && session.voice_active() {
-        Phase::Terminal
     } else if !session.voice_active() {
         Phase::Off
     } else if session.voice_waiting {
         Phase::Waiting
     } else if !session.voice_connected {
         Phase::Connecting
+    } else if session.agy_terminal {
+        Phase::AgyConnected
     } else if session.is_speaking() {
         Phase::Speaking
     } else {
@@ -165,7 +165,7 @@ pub(super) fn update(
         ),
         Phase::Listening => ("Listening · F5", Color::srgb_u8(100, 225, 205)),
         Phase::Speaking => ("Agent speaking · F5", Color::srgb_u8(174, 149, 239)),
-        Phase::Terminal => ("Antigravity terminal · F5", native_panel::INK),
+        Phase::AgyConnected => ("Antigravity voice on · F5", Color::srgb_u8(100, 225, 205)),
         Phase::Failed => ("Voice failed · Agent", Color::srgb_u8(240, 113, 108)),
     };
     for mut caption in &mut captions {
@@ -205,6 +205,19 @@ pub(super) fn update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn antigravity_terminal_start_still_shows_voice_connecting() {
+        let mut session = Session::default();
+        session.agy_terminal = true;
+        session.projection.voice = Some("call".into());
+        assert_eq!(phase(&session), Phase::Connecting);
+        session.sync_agy_voice(terminal::AgyVoice::Connected);
+        assert_eq!(phase(&session), Phase::AgyConnected);
+        session.sync_agy_voice(terminal::AgyVoice::Off);
+        assert_eq!(phase(&session), Phase::Off);
+    }
+
     #[test]
     fn hud_reports_connecting_before_audio_ready_and_keeps_failure_visible() {
         let mut session = Session::default();

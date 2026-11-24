@@ -125,6 +125,10 @@ impl Session {
         self.action = Some(Action::Voice);
     }
 
+    pub(super) fn smoke_agy_status(&self) -> (bool, bool) {
+        (self.agy_terminal, self.voice_connected)
+    }
+
     pub(super) fn timeline(&self, root: &Path) -> Option<&agent_engine::activity::Timeline> {
         (self.root.as_deref() == Some(root)).then_some(&self.projection.timeline)
     }
@@ -242,14 +246,17 @@ impl Session {
                 error.as_str(),
                 Phase::Failed,
             ),
-            Event::Closed => (
+            Event::Closed if self.client.is_some() => (
                 owner,
                 "connection".into(),
                 "Provider disconnected",
                 "",
                 Phase::Ended,
             ),
-            Event::Changed { .. } | Event::Models(_) | Event::VoiceTerminal { .. } => return,
+            Event::Changed { .. }
+            | Event::Models(_)
+            | Event::VoiceTerminal { .. }
+            | Event::Closed => return,
         };
         let mut details = Details::new(Kind::Session, title);
         details.body = detail.into();
@@ -350,6 +357,32 @@ impl Session {
     pub(super) fn voice_active(&self) -> bool {
         self.projection.voice.is_some()
     }
+
+    fn sync_agy_voice(&mut self, voice: terminal::AgyVoice) {
+        use terminal::AgyVoice;
+        let connected = voice == AgyVoice::Connected;
+        let was_connected = std::mem::replace(&mut self.voice_connected, connected);
+        if voice == AgyVoice::Off {
+            if let Some(id) = self.projection.voice.take() {
+                self.record_engine_event(&Event::Voice { id, active: false });
+            }
+        } else {
+            if self.projection.voice.is_none() {
+                let id = format!("city-{}", nonce());
+                self.projection.voice = Some(id.clone());
+                self.record_engine_event(&Event::VoiceStarting { id });
+            }
+            if connected && !was_connected {
+                let id = self
+                    .projection
+                    .voice
+                    .clone()
+                    .expect("active Antigravity call");
+                self.record_engine_event(&Event::Voice { id, active: true });
+            }
+        }
+    }
+
     fn connect(&mut self) -> Result<(), String> {
         if self.agy_terminal {
             return Err("Antigravity is open in the VibePad terminal.".into());
@@ -560,7 +593,11 @@ impl Drop for Session {
 }
 
 /// The session outlives this view; closing VibePad does not stop conversation or voice.
-pub(super) fn spawn(parent: &mut ChildSpawnerCommands) -> Entity {
+pub(super) fn spawn(
+    parent: &mut ChildSpawnerCommands,
+    terminal: Option<&mut terminal::Terminal>,
+    root: &Path,
+) -> Entity {
     let mut prompt = None;
     parent
         .spawn(Node {
@@ -652,6 +689,10 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands) -> Entity {
                 ));
             });
             agent_timeline::spawn(body);
+            if let Some(terminal) = terminal {
+                prompt = Some(terminal.draw(body, root));
+                return;
+            }
             body.spawn(Node {
                 height: px(38.),
                 flex_shrink: 0.,
@@ -814,7 +855,7 @@ pub(super) fn spawn(parent: &mut ChildSpawnerCommands) -> Entity {
                     });
             });
         });
-    prompt.expect("Agent view always has a message composer")
+    prompt.expect("Agent view always has an input")
 }
 
 fn draw_dialogue(
@@ -991,7 +1032,7 @@ fn update(
     if session.provider() == agent_engine::AGY {
         if let Some(outcome) = terminal.take_agy_exit(root) {
             session.agy_terminal = false;
-            session.projection.voice = None;
+            session.sync_agy_voice(terminal::AgyVoice::Off);
             session.voice_waiting = false;
             if let Some(tablet) = tablet.as_deref_mut()
                 && tablet.page_name() == Some("terminal")
@@ -1002,16 +1043,9 @@ fn update(
                 session.notice(&error);
                 session.voice_error = Some(error);
             }
-        } else if terminal.agy_open(root) {
+        } else if let Some(voice) = terminal.agy_voice(root) {
             session.agy_terminal = true;
-            if terminal.agy_voice_requested(root) {
-                session
-                    .projection
-                    .voice
-                    .get_or_insert_with(|| "agy-terminal".into());
-            } else {
-                session.projection.voice = None;
-            }
+            session.sync_agy_voice(voice);
         }
     }
     for (_, mut field, mut marker) in &mut prompts {
@@ -1118,18 +1152,19 @@ fn update(
                     match terminal.start_agy(root.clone(), conversation, session.approval_mode()) {
                         Ok(()) => {
                             session.agy_terminal = true;
-                            session.status = "Antigravity terminal".into();
+                            session.status = "".into();
                             if let Some(tablet) = tablet.as_deref_mut() {
-                                tablet.open_page(review_tablet::Page::Terminal);
+                                tablet.open_agy_voice();
                             }
                         }
                         Err(error) => {
-                            session.projection.voice = None;
+                            session.sync_agy_voice(terminal::AgyVoice::Off);
                             session.voice_error = Some(error);
                             restore_agy_chat = true;
                         }
                     }
                 } else {
+                    session.record_engine_event(&Event::Voice { id, active: false });
                     restore_agy_chat = true;
                 }
             }
@@ -1251,12 +1286,7 @@ fn update(
                 session.voice_error = None;
                 session.voice_waiting = false;
                 if session.agy_terminal {
-                    session.projection.voice = terminal
-                        .toggle_agy_voice(root)
-                        .then(|| "agy-terminal".into());
-                    if let Some(tablet) = tablet.as_deref_mut() {
-                        tablet.open_page(review_tablet::Page::Terminal);
-                    }
+                    terminal.toggle_agy_voice(root);
                     Ok(())
                 } else if session.voice_active() {
                     session.projection.voice = None;
@@ -1329,8 +1359,6 @@ fn update(
     );
     let voice = if !session.provider().capabilities.voice {
         "Text only"
-    } else if session.agy_terminal {
-        "Voice controls in Terminal"
     } else if session.voice_active() {
         if session.voice_waiting {
             "F5 · Waiting for current turn…"
@@ -1650,6 +1678,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn antigravity_voice_handoff_does_not_report_a_provider_disconnect() {
+        let mut session = Session::default();
+        session.projection.dialogue.thread = Some("conversation".into());
+        session.record_engine_event(&Event::Connected("conversation".into()));
+        session.record_engine_event(&Event::VoiceStarting { id: "call".into() });
+        session.agy_terminal = true;
+        session.record_engine_event(&Event::Closed);
+        assert_eq!(
+            session.projection.timeline.entries[0].details.title,
+            "Connected to provider"
+        );
+    }
+
+    #[test]
     fn only_the_streaming_reply_changes_from_literal_text_to_markdown() {
         #[derive(Component)]
         struct Panel;
@@ -1742,7 +1784,7 @@ mod tests {
         app.init_resource::<Session>()
             .add_systems(Startup, |mut commands: Commands| {
                 commands.spawn(Node::default()).with_children(|parent| {
-                    spawn(parent);
+                    spawn(parent, None, Path::new("."));
                 });
             });
         app.update();
@@ -1771,7 +1813,7 @@ mod tests {
             .commands()
             .entity(root)
             .with_children(|parent| {
-                spawn(parent);
+                spawn(parent, None, Path::new("."));
             });
         app.world_mut().flush();
         let mut actions = app.world_mut().query::<&Action>();

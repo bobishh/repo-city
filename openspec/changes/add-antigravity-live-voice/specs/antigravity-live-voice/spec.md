@@ -8,7 +8,13 @@ Repo City SHALL provide an explicit desktop voice control for Antigravity. It SH
 
 - **GIVEN** Antigravity is selected and the user has signed in to its CLI
 - **WHEN** the user starts voice in VibePad or presses F5
-- **THEN** VibePad opens the Antigravity terminal and starts its built-in voice mode using that account
+- **THEN** VibePad opens the Antigravity terminal in Chat and starts its built-in voice mode using that account
+
+#### Scenario: Hide VibePad during a call
+
+- **GIVEN** Antigravity's terminal reports that voice is connected
+- **WHEN** the user hides and reopens VibePad with the keyboard
+- **THEN** the HUD shows the connected call while VibePad is hidden, and Chat resumes the same terminal with the conversation still visible
 
 ### Requirement: Preserve the conversation during handoff
 

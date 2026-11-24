@@ -27,6 +27,7 @@ pub(super) struct Tablet {
     file_filter: FileFilter,
     file_activity: HashMap<String, agent_timeline::FileActivity>,
     activity_stamp: Option<(agent_engine::Provider, u64)>,
+    agy_chat: bool,
     files_scroll: f32,
     file_buttons: Vec<(String, Entity)>,
     page: usize,
@@ -387,6 +388,14 @@ impl Tablet {
         self.action = Some(Action::Switch(page));
     }
 
+    pub(super) fn open_agy_voice(&mut self) {
+        self.open_page(if self.chat_room.is_some() {
+            Page::Terminal
+        } else {
+            Page::Agent
+        });
+    }
+
     pub(super) fn is_open(&self) -> bool {
         self.panel.is_some()
     }
@@ -687,7 +696,13 @@ pub(super) fn update(
     let editing = focus
         .get()
         .is_some_and(|entity| fields.contains(entity) || editors.contains(entity));
-    let terminal_page = tablet.is_open() && tablet.view == Page::Terminal;
+    let chat_room = party.as_deref().and_then(review_party::Party::chat_room);
+    let agy_chat = chat_room.is_none()
+        && terminal
+            .as_deref()
+            .is_some_and(|terminal| terminal.agy_voice(&repo.0.root).is_some());
+    let terminal_page = tablet.is_open()
+        && (tablet.view == Page::Terminal || tablet.view == Page::Agent && tablet.agy_chat);
     let previous_page = tablet.view;
     if reading.is_changed() {
         tablet.reading_enabled = reading.enabled;
@@ -775,9 +790,12 @@ pub(super) fn update(
         }
     }
     let mut redraw = !was_open || toggle_reading || toggle_sound;
-    let chat_room = party.as_deref().and_then(review_party::Party::chat_room);
     if tablet.chat_room.as_deref() != chat_room {
         tablet.chat_room = chat_room.map(str::to_owned);
+        redraw |= tablet.view == Page::Agent;
+    }
+    if tablet.agy_chat != agy_chat {
+        tablet.agy_chat = agy_chat;
         redraw |= tablet.view == Page::Agent;
     }
     if let Some(panel) = tablet.panel {
@@ -1135,6 +1153,7 @@ pub(super) fn update(
             }
             _ if markdown.is_some() => Page::Document,
             _ if image.is_some() => Page::Image,
+            _ if plain_tab(&keys) && agy_chat => Page::Agent,
             _ if plain_tab(&keys) => Page::Files,
             _ => return,
         };
@@ -1581,7 +1600,8 @@ fn draw(
                 first = Some(if tablet.chat_room.is_some() {
                     review_party::chat::spawn(parent, hosts_room)
                 } else {
-                    agent_session::spawn(parent)
+                    let agy = terminal.as_deref_mut().filter(|_| tablet.agy_chat);
+                    agent_session::spawn(parent, agy, &repository.root)
                 });
                 return;
             }

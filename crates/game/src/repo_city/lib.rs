@@ -826,7 +826,7 @@ fn install_city(app: &mut App, args: &[String]) {
                 elapsed: 0.,
                 stage,
                 stop: match stage {
-                    35 => 38,
+                    35 => 39,
                     29 => 31,
                     31 => 33,
                     15 => 18,
@@ -2675,8 +2675,8 @@ fn smoke(
             explorer.reload(&repo.0);
             assert_eq!(explorer.source, expected);
         }
-        let report = if check.stop == 38 {
-            "Opened the Antigravity voice terminal, stopped voice, and returned to the same ACP chat after the CLI exited."
+        let report = if check.stop == 39 {
+            "Antigravity voice connected in Chat, stayed connected while VibePad was hidden, and stopped before returning to ACP."
         } else if check.stop == 35 {
             "Rendered one Find list with paths and per-file match counts."
         } else if check.stop == 34 {
@@ -3052,22 +3052,55 @@ fn smoke(
             return;
         }
     }
-    if matches!(check.stage, 35 | 36) {
+    if matches!(check.stage, 35..=38) {
         if previous < 0.5 && check.elapsed >= 0.5 {
-            if check.stage == 35 {
-                session.smoke_start_agy_voice();
-            } else {
-                session.smoke_stop_agy_voice();
+            match check.stage {
+                35 => session.smoke_start_agy_voice(),
+                36 => tablet.request_close(),
+                37 => session.smoke_stop_agy_voice(),
+                _ => {}
             }
         }
-        if check.elapsed >= 4. && tablet.page_name() != Some("terminal") {
-            assert!(check.elapsed < 15., "Antigravity terminal did not open");
+        if check.stage == 36 && previous < 2. && check.elapsed >= 2. {
+            assert!(!tablet.is_open(), "VibePad did not close");
+            assert!(
+                session.smoke_agy_status().1,
+                "Hiding VibePad interrupted voice"
+            );
+            use bevy::input::{
+                ButtonState,
+                keyboard::{Key, KeyboardInput},
+            };
+            let window = window.single().expect("primary smoke window");
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                commands.write_message(KeyboardInput {
+                    key_code: KeyCode::Tab,
+                    logical_key: Key::Tab,
+                    text: None,
+                    state,
+                    repeat: false,
+                    window,
+                });
+            }
+        }
+        let expected = match check.stage {
+            35 | 36 => (true, true),
+            37 => (true, false),
+            _ => (false, false),
+        };
+        if check.elapsed >= 4.
+            && (tablet.page_name() != Some("agent") || session.smoke_agy_status() != expected)
+        {
+            assert!(
+                check.elapsed < 15.,
+                "Antigravity smoke step {} expected Chat and {:?}, got {:?} and {:?}",
+                check.stage,
+                expected,
+                tablet.page_name(),
+                session.smoke_agy_status()
+            );
             return;
         }
-    }
-    if check.stage == 37 && check.elapsed >= 4. && tablet.page_name() != Some("agent") {
-        assert!(check.elapsed < 15., "Antigravity chat did not reopen");
-        return;
     }
     if check.stage == 10 && previous < 1. && check.elapsed >= 1. {
         use bevy::input::{
@@ -3190,7 +3223,7 @@ fn smoke(
     std::fs::create_dir_all(&check.directory).expect("smoke output");
     let path = check.directory.join(format!("{:02}.png", check.stage));
     check.pending = true;
-    let screenshot = if matches!(check.stage, 34..=37) {
+    let screenshot = if matches!(check.stage, 34..=38) {
         display.expect("VibePad screen").smoke_screenshot()
     } else {
         Screenshot::primary_window()

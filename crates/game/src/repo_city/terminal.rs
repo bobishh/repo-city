@@ -1,7 +1,7 @@
 //! Persistent native shell and Alacritty screen displayed inside VibePad.
 mod agy;
 mod session;
-pub(super) use agy::print_title as print_agy_title;
+pub(super) use agy::{Voice as AgyVoice, print_title as print_agy_title};
 
 use super::*;
 use bevy::{
@@ -90,10 +90,11 @@ impl native_panel::Actions<Action> for Terminal {
 }
 
 impl Terminal {
-    pub(super) fn agy_open(&self, root: &std::path::Path) -> bool {
+    pub(super) fn agy_voice(&self, root: &std::path::Path) -> Option<AgyVoice> {
         self.agy
             .as_ref()
-            .is_some_and(|agy| agy.root == root && !agy.finished())
+            .filter(|agy| agy.root == root && !agy.finished())
+            .map(agy::Agy::voice)
     }
 
     pub(super) fn start_agy(
@@ -110,22 +111,14 @@ impl Terminal {
         Ok(())
     }
 
-    pub(super) fn toggle_agy_voice(&mut self, root: &std::path::Path) -> bool {
-        let Some(agy) = self
+    pub(super) fn toggle_agy_voice(&mut self, root: &std::path::Path) {
+        if let Some(agy) = self
             .agy
             .as_mut()
             .filter(|agy| agy.root == root && !agy.finished())
-        else {
-            return false;
-        };
-        agy.requested = !agy.requested;
-        agy.requested
-    }
-
-    pub(super) fn agy_voice_requested(&self, root: &std::path::Path) -> bool {
-        self.agy
-            .as_ref()
-            .is_some_and(|agy| agy.root == root && agy.requested && !agy.finished())
+        {
+            agy.requested = !agy.requested;
+        }
     }
 
     pub(super) fn take_agy_exit(&mut self, root: &std::path::Path) -> Option<Result<(), String>> {
@@ -362,9 +355,10 @@ pub(super) fn update(
     mut ime: MessageReader<bevy::window::Ime>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
-    let shown = tablet.page_name() == Some("terminal");
     let view = views.iter().next().map(|(entity, _, _)| entity);
-    terminal.active = shown && focus.get() == view && view.is_some();
+    let shown = view.is_some() && matches!(tablet.page_name(), Some("terminal" | "agent"));
+    terminal.active = shown && focus.get() == view;
+    let pad_was_open = terminal.pad_open;
     terminal.maintain(&repo.0.root, Instant::now(), tablet.is_open());
     if let Some(action) = terminal.action.take() {
         match action {
@@ -418,7 +412,7 @@ pub(super) fn update(
             if matches!(event.key_code, KeyCode::F5 | KeyCode::F6 | KeyCode::F7)
                 || command
                 || control && shift && matches!(event.key_code, KeyCode::KeyC | KeyCode::KeyV)
-                || control && event.key_code == KeyCode::Tab
+                || event.key_code == KeyCode::Tab && (control || !pad_was_open)
             {
                 continue;
             }
