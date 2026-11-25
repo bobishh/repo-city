@@ -1,4 +1,5 @@
 //! Interactive Antigravity owns voice and audio while VibePad supplies its terminal.
+//! The automatic slash command and empty prompt check follow Ecky b8868ae.
 use super::*;
 
 use portable_pty::CommandBuilder;
@@ -9,7 +10,7 @@ const EXPECTED: &str = "REPO_CITY_AGY_CONVERSATION";
 const TITLE_EXE: &str = "REPO_CITY_AGY_TITLE_EXE";
 const READY: &str = "Repo City Agy ready";
 const DIFFERENT: &str = "Repo City Agy different conversation";
-const F6: &[u8] = b"\x1b[17~";
+const START_VOICE: &[u8] = b"/voice live\r";
 const F7: &[u8] = b"\x1b[18~";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +38,7 @@ impl Agy {
     pub fn start(
         root: PathBuf,
         conversation: String,
+        model: Option<String>,
         approval: agent_engine::ApprovalMode,
     ) -> Self {
         let directory = root.clone();
@@ -60,6 +62,9 @@ impl Agy {
                 "--settings",
                 &settings.to_string(),
             ]);
+            if let Some(model) = model {
+                command.args(["--model", &model]);
+            }
             if approval == agent_engine::ApprovalMode::Never {
                 command.arg("--dangerously-skip-permissions");
             }
@@ -115,10 +120,12 @@ impl Agy {
             }
             self.connected = connected;
         }
-        if let Some(key) = voice_key(self.requested, self.sent, &pty.title)
-            && pty.send(key.to_vec()).is_ok()
+        if let Some(input) =
+            voice_input(self.requested, self.sent, &pty.title, pty.at_empty_prompt())
+            && pty.send(input.to_vec()).is_ok()
         {
             self.sent = self.requested;
+            return true;
         }
         changed
     }
@@ -188,9 +195,15 @@ fn live_voice_row(row: &str) -> bool {
         )
 }
 
-fn voice_key(requested: bool, sent: bool, title: &str) -> Option<&'static [u8]> {
+fn voice_input(
+    requested: bool,
+    sent: bool,
+    title: &str,
+    empty_prompt: bool,
+) -> Option<&'static [u8]> {
     match (requested, sent) {
-        (true, false) if title == READY => Some(F6),
+        // An idle agent can still have a draft in its terminal editor.
+        (true, false) if title == READY && empty_prompt => Some(START_VOICE),
         (false, true) => Some(F7),
         _ => None,
     }
@@ -244,22 +257,28 @@ mod tests {
             agent_state: Some(status.into()),
         };
         assert_eq!(
-            voice_key(true, false, title(state("other", "idle"), "saved")),
+            voice_input(true, false, title(state("other", "idle"), "saved"), true),
             None
         );
         assert_eq!(
-            voice_key(true, false, title(state("saved", "working"), "saved")),
+            voice_input(true, false, title(state("saved", "working"), "saved"), true),
             None
         );
         assert_eq!(
-            voice_key(true, false, title(state("saved", "idle"), "saved")),
-            Some(F6)
+            voice_input(true, false, title(state("saved", "idle"), "saved"), true),
+            Some(b"/voice live\r".as_slice())
         );
-        assert_eq!(voice_key(true, true, READY), None);
+        assert_eq!(voice_input(true, false, READY, false), None);
+        assert_eq!(voice_input(true, true, READY, true), None);
         assert_eq!(
-            voice_key(false, true, title(state("saved", "working"), "saved")),
+            voice_input(
+                false,
+                true,
+                title(state("saved", "working"), "saved"),
+                false
+            ),
             Some(F7)
         );
-        assert_eq!(voice_key(false, false, READY), None);
+        assert_eq!(voice_input(false, false, READY, true), None);
     }
 }

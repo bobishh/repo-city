@@ -136,6 +136,7 @@ pub(super) enum Event {
     VoiceTerminal {
         id: String,
         conversation: String,
+        model: Option<String>,
     },
     Changed {
         status: Option<String>,

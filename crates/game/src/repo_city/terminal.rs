@@ -101,12 +101,13 @@ impl Terminal {
         &mut self,
         root: PathBuf,
         conversation: String,
+        model: Option<String>,
         approval: agent_engine::ApprovalMode,
     ) -> Result<(), String> {
         if self.agy.as_ref().is_some_and(|agy| !agy.finished()) {
             return Err("Exit the other Antigravity terminal before starting voice here.".into());
         }
-        self.agy = Some(agy::Agy::start(root, conversation, approval));
+        self.agy = Some(agy::Agy::start(root, conversation, model, approval));
         self.dirty = true;
         Ok(())
     }

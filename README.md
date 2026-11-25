@@ -455,9 +455,10 @@ connection. City audio pauses for the voice conversation.
 
 **Antigravity voice** uses [the built-in CLI voice mode](https://antigravity.google/docs/cli/commands/voice/).
 Sign in through `agy` 1.5.0 or later with a Google account that has access to voice.
-Repo City waits for any current ACP turn, then opens the same conversation in
-**Chat** using Antigravity's terminal. Complete sign-in or workspace trust prompts
-there. Chat and the HUD show when the call connects. Hide VibePad with **Ctrl+Tab**
+Repo City waits for any current ACP turn, then opens the same conversation and
+model in **Chat** using Antigravity's terminal. Complete sign-in or workspace
+trust prompts there. Repo City runs `/voice live` once the prompt is ready.
+Chat and the HUD show when the call connects. Hide VibePad with **Ctrl+Tab**
 and reopen it with **Tab** to return to the conversation during the call.
 **F5** hangs up while any CLI work continues. Exit the CLI to return to Chat's
 text controls. Spoken turns stay in Antigravity's conversation history.

@@ -518,13 +518,18 @@ fn run(
                 }
             }
             Ok(Command::Voice { id, .. }) if provider == super::AGY => {
-                if turn.is_some() {
-                    send(
-                        updates,
-                        Update::Event(Event::VoiceWaiting { id: id.clone() }),
-                    )?;
+                if let Some(error) = model_error.clone() {
+                    send(updates, Update::Event(Event::Voice { id, active: false }))?;
+                    send(updates, Update::Event(Event::VoiceError(error)))?;
+                } else {
+                    if turn.is_some() {
+                        send(
+                            updates,
+                            Update::Event(Event::VoiceWaiting { id: id.clone() }),
+                        )?;
+                    }
+                    voice = Some(id);
                 }
-                voice = Some(id);
             }
             Ok(Command::StopVoice) => voice = None,
             Ok(Command::Voice { .. }) => {}
@@ -544,6 +549,7 @@ fn run(
                         Update::Event(Event::VoiceTerminal {
                             id,
                             conversation: session,
+                            model: models.and_then(|models| models.catalog.current),
                         }),
                     );
                 }
@@ -1055,8 +1061,15 @@ sys.stdin.read()
                             break;
                         }
                     }
-                    Update::Event(Event::VoiceTerminal { id, conversation }) => {
-                        opened_voice = completed && id == "voice" && conversation == "saved";
+                    Update::Event(Event::VoiceTerminal {
+                        id,
+                        conversation,
+                        model,
+                    }) => {
+                        opened_voice = completed
+                            && id == "voice"
+                            && conversation == "saved"
+                            && model.as_deref() == Some("requested");
                         break;
                     }
                     _ => {}
@@ -1066,7 +1079,7 @@ sys.stdin.read()
             let outcome = worker.join().unwrap();
             assert!(
                 !handoff || (waited_for_voice && opened_voice),
-                "voice must wait for the ACP turn and keep its ID"
+                "voice must wait for the ACP turn and keep its conversation and confirmed model"
             );
             assert!(outcome.is_ok(), "{}: {outcome:?}", provider.label);
             assert!(

@@ -18,7 +18,7 @@ Repo City SHALL provide an explicit desktop voice control for Antigravity. It SH
 
 ### Requirement: Preserve the conversation during handoff
 
-Repo City SHALL release the ACP session after the current turn completes. It SHALL resume its conversation ID in the terminal and confirm the identity before sending the voice shortcut. The terminal SHALL use the workspace sandbox and display Antigravity's permission prompts.
+Repo City SHALL release the ACP session after the current turn completes. It SHALL resume its conversation ID in the terminal, pass the confirmed ACP model when available, and confirm the conversation identity before submitting `/voice live` at an empty prompt. The terminal SHALL use the workspace sandbox and display Antigravity's permission prompts.
 
 #### Scenario: ACP is working when voice is requested
 
@@ -30,7 +30,7 @@ Repo City SHALL release the ACP session after the current turn completes. It SHA
 
 - **GIVEN** a voice session is requested for an existing ACP conversation
 - **WHEN** the terminal reports a different conversation ID
-- **THEN** Repo City does not send its voice start shortcut
+- **THEN** Repo City leaves voice startup canceled
 
 ### Requirement: Stop voice while keeping terminal work
 

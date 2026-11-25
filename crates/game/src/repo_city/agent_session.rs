@@ -1144,12 +1144,21 @@ fn update(
                     }
                 }
             }
-            Event::VoiceTerminal { id, conversation } => {
+            Event::VoiceTerminal {
+                id,
+                conversation,
+                model,
+            } => {
                 session.client = None;
                 session.connected = false;
                 session.voice_waiting = false;
                 if session.projection.voice.as_deref() == Some(id.as_str()) {
-                    match terminal.start_agy(root.clone(), conversation, session.approval_mode()) {
+                    match terminal.start_agy(
+                        root.clone(),
+                        conversation,
+                        model,
+                        session.approval_mode(),
+                    ) {
                         Ok(()) => {
                             session.agy_terminal = true;
                             session.status = "".into();

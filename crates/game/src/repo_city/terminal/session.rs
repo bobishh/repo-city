@@ -251,6 +251,15 @@ impl Session {
     pub fn bottom(&mut self) {
         self.term.scroll_display(Scroll::Bottom);
     }
+    pub fn at_empty_prompt(&self) -> bool {
+        let grid = self.term.grid();
+        let row = &grid[grid.cursor.point.line];
+        let text: String = (0..grid.columns())
+            .map(|column| row[Column(column)].c)
+            .collect();
+        text.trim() == ">"
+    }
+
     /// Screen rows at the bottom of the live terminal, independent of scrollback.
     pub fn screen_rows(&self) -> impl Iterator<Item = String> + '_ {
         let grid = self.term.grid();
