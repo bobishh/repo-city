@@ -636,7 +636,7 @@ fn unmodified(keys: &ButtonInput<KeyCode>) -> bool {
 
 pub(super) fn update(
     mut commands: Commands,
-    keys: Res<ButtonInput<KeyCode>>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
     time: Res<Time>,
     repo: Res<Repo>,
     progress: Res<progress::Progress>,
@@ -703,6 +703,7 @@ pub(super) fn update(
             .is_some_and(|terminal| terminal.agy_voice(&repo.0.root).is_some());
     let terminal_page = tablet.is_open()
         && (tablet.view == Page::Terminal || tablet.view == Page::Agent && tablet.agy_chat);
+    let terminal_escape = terminal_page && keys.just_pressed(KeyCode::Escape) && unmodified(&keys);
     let previous_page = tablet.view;
     if reading.is_changed() {
         tablet.reading_enabled = reading.enabled;
@@ -913,6 +914,7 @@ pub(super) fn update(
             || match_destination
             || connection
             || follow_trace
+            || terminal_escape
             || (!terminal_page && keys.just_pressed(KeyCode::Escape))
             || (!terminal_page && plain_tab(&keys))
             || (terminal_page
@@ -921,6 +923,9 @@ pub(super) fn update(
             || (help && tablet.view == Page::Help)
             || !same_comparison
         {
+            if terminal_escape {
+                keys.clear_just_pressed(KeyCode::Escape);
+            }
             native_panel::close(&mut commands, panel, &mut focus, &parents);
             *tablet = Tablet::default();
             picker.destination = destination;

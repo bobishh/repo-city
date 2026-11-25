@@ -458,8 +458,9 @@ Sign in through `agy` 1.5.0 or later with a Google account that has access to vo
 Repo City waits for any current ACP turn, then opens the same conversation and
 model in **Chat** using Antigravity's terminal. Complete sign-in or workspace
 trust prompts there. Repo City runs `/voice live` once the prompt is ready.
-Chat and the HUD show when the call connects. Hide VibePad with **Ctrl+Tab**
-and reopen it with **Tab** to return to the conversation during the call.
+Chat and the HUD show when the call connects. Hide VibePad with **Esc**
+or **Ctrl+Tab** and reopen it with **Tab** during the call. While the terminal
+has focus, **Shift+Esc** sends Escape to Antigravity.
 **F5** hangs up while any CLI work continues. Exit the CLI to return to Chat's
 text controls. Spoken turns stay in Antigravity's conversation history.
 
@@ -532,8 +533,9 @@ expose a local terminal.
 
 On desktop, **Tab → Terminal** opens a persistent shell in the current checkout.
 It uses Alacritty's terminal emulator and a real PTY, including cursor movement,
-alternate screens, UTF-8, resizing, clipboard paste and Ctrl+C. **Ctrl+Tab** puts
-away the tablet while the shell keeps running; plain Tab and Esc go to the shell.
+alternate screens, UTF-8, resizing, clipboard paste and Ctrl+C. **Esc** and
+**Ctrl+Tab** put away the tablet while the shell keeps running. **Tab** and
+**Shift+Esc** send Tab and Escape to the shell.
 **F6** switches keyboard focus between the shell and tablet controls.
 Exiting the shell starts a new session in the same checkout. Five consecutive
 exits within two seconds of startup pause automatic restarts, including failed

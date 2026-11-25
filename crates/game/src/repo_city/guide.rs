@@ -248,10 +248,13 @@ const WORKBENCH: &[(&str, &str)] = &[
         "Switch between shell/editor input and tablet controls",
     ),
     (
-        "Ctrl+Tab",
+        "Esc / Ctrl+Tab",
         "Put away the tablet while the terminal has focus",
     ),
-    ("Tab / Esc / Ctrl+C", "Pass through to the focused shell"),
+    (
+        "Tab / Shift+Esc / Ctrl+C",
+        "Send Tab, Escape or interrupt to the focused shell",
+    ),
 ];
 
 #[cfg(not(target_arch = "wasm32"))]

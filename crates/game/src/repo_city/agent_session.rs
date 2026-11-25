@@ -683,7 +683,11 @@ pub(super) fn spawn(
                     },
                 ));
                 bar.spawn((
-                    Text::new("Show code while following. Esc pauses."),
+                    Text::new(if terminal.is_some() {
+                        "Esc hides VibePad. Shift+Esc goes to Agy."
+                    } else {
+                        "Show code while following. Esc pauses."
+                    }),
                     native_panel::panel_font(),
                     TextColor(native_panel::INK),
                 ));

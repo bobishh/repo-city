@@ -2676,7 +2676,7 @@ fn smoke(
             assert_eq!(explorer.source, expected);
         }
         let report = if check.stop == 39 {
-            "Antigravity voice connected in Chat, stayed connected while VibePad was hidden, and stopped before returning to ACP."
+            "Antigravity voice connected in Chat, stayed connected when Escape hid VibePad, and stopped before returning to ACP."
         } else if check.stop == 35 {
             "Rendered one Find list with paths and per-file match counts."
         } else if check.stop == 34 {
@@ -3056,9 +3056,40 @@ fn smoke(
         if previous < 0.5 && check.elapsed >= 0.5 {
             match check.stage {
                 35 => session.smoke_start_agy_voice(),
-                36 => tablet.request_close(),
                 37 => session.smoke_stop_agy_voice(),
                 _ => {}
+            }
+        }
+        if check.stage == 36 {
+            use bevy::input::{
+                ButtonState,
+                keyboard::{Key, KeyboardInput},
+            };
+            let window = window.single().expect("primary smoke window");
+            let mut key = |key_code, logical_key, state| {
+                commands.write_message(KeyboardInput {
+                    key_code,
+                    logical_key,
+                    text: None,
+                    state,
+                    repeat: false,
+                    window,
+                });
+            };
+            let crossed = |at| previous < at && check.elapsed >= at;
+            if crossed(0.5) {
+                key(KeyCode::ShiftLeft, Key::Shift, ButtonState::Pressed);
+                key(KeyCode::Escape, Key::Escape, ButtonState::Pressed);
+                key(KeyCode::Escape, Key::Escape, ButtonState::Released);
+            } else if crossed(1.) {
+                assert!(tablet.is_open(), "Shift+Escape must reach the terminal");
+                key(KeyCode::ShiftLeft, Key::Shift, ButtonState::Released);
+                key(KeyCode::Tab, Key::Tab, ButtonState::Pressed);
+                key(KeyCode::Tab, Key::Tab, ButtonState::Released);
+            } else if crossed(1.5) {
+                assert!(tablet.is_open(), "Tab must reach the terminal");
+                key(KeyCode::Escape, Key::Escape, ButtonState::Pressed);
+                key(KeyCode::Escape, Key::Escape, ButtonState::Released);
             }
         }
         if check.stage == 36 && previous < 2. && check.elapsed >= 2. {
