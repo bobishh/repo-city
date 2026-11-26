@@ -14,6 +14,8 @@ use std::{
     thread,
 };
 
+pub(super) const DEFAULT_BACKGROUND: [u8; 3] = [13, 17, 23];
+
 #[derive(Clone)]
 struct Events(SyncSender<Event>);
 impl EventListener for Events {
@@ -59,6 +61,7 @@ pub(super) struct Session {
     events: Receiver<Event>,
     term: Term<Events>,
     parser: Processor,
+    background: [u8; 3],
     pub size: Size,
     pub exited: bool,
     pub title: String,
@@ -79,13 +82,14 @@ impl Session {
         } else {
             command.arg("-i");
         }
-        Self::open_program(root, command, &program)
+        Self::open_program(root, command, &program, DEFAULT_BACKGROUND)
     }
 
     pub fn open_program(
         root: &Path,
         mut command: CommandBuilder,
         program: &str,
+        background: [u8; 3],
     ) -> Result<Self, String> {
         let size = Size {
             rows: 30,
@@ -157,6 +161,7 @@ impl Session {
                 Events(event_sender),
             ),
             parser: Processor::new(),
+            background,
             size,
             exited: false,
             title: program.into(),
@@ -229,7 +234,7 @@ impl Session {
                     );
                 }
                 Event::ColorRequest(index, format) => {
-                    let [r, g, b] = palette(index);
+                    let [r, g, b] = palette(index, self.background);
                     let _ = self.send(format(Rgb { r, g, b }).into_bytes());
                 }
                 _ => {}
@@ -272,18 +277,19 @@ impl Session {
     }
     pub fn frame(&self) -> Frame {
         let content = self.term.renderable_content();
+        let color_at = |index| palette(index, self.background);
         let mut cells = (0..self.size.rows as usize * self.size.cols as usize)
             .map(|_| Cell {
                 text: " ".into(),
-                fg: palette(256),
-                bg: palette(257),
+                fg: color_at(256),
+                bg: self.background,
                 underline: false,
             })
             .collect::<Vec<_>>();
         let color = |color: Color| match color {
             Color::Spec(rgb) => [rgb.r, rgb.g, rgb.b],
-            Color::Indexed(index) => palette(index as usize),
-            Color::Named(name) => palette(name as usize),
+            Color::Indexed(index) => color_at(index as usize),
+            Color::Named(name) => color_at(name as usize),
         };
         for indexed in content.display_iter {
             let row = indexed.point.line.0 + content.display_offset as i32;
@@ -368,7 +374,7 @@ impl Drop for Session {
     }
 }
 
-fn palette(index: usize) -> [u8; 3] {
+fn palette(index: usize, background: [u8; 3]) -> [u8; 3] {
     const ANSI: [[u8; 3]; 16] = [
         [16, 22, 29],
         [248, 112, 124],
@@ -395,7 +401,7 @@ fn palette(index: usize) -> [u8; 3] {
             [component(n / 36), component(n / 6 % 6), component(n % 6)]
         }
         232..=255 => [8 + (index - 232) as u8 * 10; 3],
-        257 => [13, 17, 23],
+        257 => background,
         _ => [225, 233, 241],
     }
 }

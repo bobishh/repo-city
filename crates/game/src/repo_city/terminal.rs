@@ -283,6 +283,11 @@ impl Terminal {
                 }
             });
         let image = self.image.clone().unwrap_or_default();
+        let [red, green, blue] = if self.showing_agy {
+            agy::BACKGROUND
+        } else {
+            session::DEFAULT_BACKGROUND
+        };
         let view = parent
             .spawn((
                 View,
@@ -294,7 +299,7 @@ impl Terminal {
                     min_height: px(0.),
                     ..default()
                 },
-                BackgroundColor(Color::srgb_u8(13, 17, 23)),
+                BackgroundColor(Color::srgb_u8(red, green, blue)),
             ))
             .observe(
                 |mut event: On<bevy::input_focus::FocusedInput<KeyboardInput>>| {
@@ -558,7 +563,7 @@ fn render(frame: &session::Frame) -> Image {
                 index % frame.size.cols as usize,
             ));
         let (fg, bg) = if cursor {
-            ([13, 17, 23], [170, 228, 222])
+            (session::DEFAULT_BACKGROUND, [170, 228, 222])
         } else {
             (cell.fg, cell.bg)
         };

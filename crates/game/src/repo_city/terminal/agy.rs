@@ -6,6 +6,8 @@ use portable_pty::CommandBuilder;
 use serde::Deserialize;
 use std::io::Read;
 
+pub(super) const BACKGROUND: [u8; 3] = [7, 13, 23];
+
 const EXPECTED: &str = "REPO_CITY_AGY_CONVERSATION";
 const TITLE_EXE: &str = "REPO_CITY_AGY_TITLE_EXE";
 const READY: &str = "Repo City Agy ready";
@@ -52,6 +54,7 @@ impl Agy {
                 "exec \"$REPO_CITY_AGY_TITLE_EXE\" --agy-terminal-title"
             };
             let settings = serde_json::json!({
+                "colorScheme": "dark",
                 "title": {"command": title, "type": "command", "enabled": true}
             });
             let mut command = CommandBuilder::new(binary);
@@ -72,7 +75,7 @@ impl Agy {
             command.env_remove("REPO_CITY_GEMINI_API_KEY");
             command.env(TITLE_EXE, exe);
             command.env(EXPECTED, conversation);
-            Session::open_program(&directory, command, "Antigravity").map(Mutex::new)
+            Session::open_program(&directory, command, "Antigravity", BACKGROUND).map(Mutex::new)
         });
         Self {
             root,
