@@ -310,11 +310,12 @@ pub(super) fn setup(
         brightness: 1650.,
         ..default()
     });
+    let mobile = mobile_scene();
     let eye = commands
         .spawn((
             Camera3d::default(),
             RenderLayers::layer(0),
-            Msaa::Sample4,
+            if mobile { Msaa::Off } else { Msaa::Sample4 },
             ShadowFilteringMethod::Gaussian,
             Pilot::default(),
             DistanceFog {
@@ -335,7 +336,7 @@ pub(super) fn setup(
         DirectionalLight {
             color: Color::srgb(1., 0.94, 0.84),
             illuminance: 6900.,
-            shadow_maps_enabled: true,
+            shadow_maps_enabled: !mobile,
             ..default()
         },
         CascadeShadowConfigBuilder {

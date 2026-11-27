@@ -564,7 +564,9 @@ leaves the wall.
 Use Up, Down and Fast to fly; altitude buttons hide while reading. **Pad** opens
 VibePad, and the top-right cross puts it away. Controls reset when a menu opens,
 the page loses focus, or a touch is cancelled. A WebGPU-capable browser and GPU
-remain required. Landscape provides more reading space.
+remain required. On touch-first browsers, the 3D scene skips dynamic shadows
+and multisample anti-aliasing to reduce GPU load. Landscape provides more
+reading space.
 
 ## Leave review notes
 

@@ -4,7 +4,7 @@ import { expectOpen, readTablet } from "./gpu-tablet.mjs";
 test("mobile city and VibePad fit between Safari safe-area edges in both orientations", async ({ browser, baseURL }, info) => {
   const portrait = { width: 320, height: 568 };
   const landscape = { width: 734, height: 256 };
-  const context = await browser.newContext({ baseURL, viewport: portrait, isMobile: true, hasTouch: true });
+  const context = await browser.newContext({ baseURL, viewport: portrait, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
   const download = Promise.withResolvers();
   const engineRequested = Promise.withResolvers();
   try {
@@ -12,7 +12,19 @@ test("mobile city and VibePad fit between Safari safe-area edges in both orienta
     const head = "b".repeat(40), base = "a".repeat(40);
     const file = "an_extraordinarily_long_filename_for_a_mobile_screen.rs";
     const body = "fn main() {}\n";
-    await page.addInitScript(() => localStorage.setItem("repo-city-guide-v1", "seen"));
+    await page.addInitScript(() => {
+      localStorage.setItem("repo-city-guide-v1", "seen");
+      window.sceneTextures = [];
+      const createTexture = GPUDevice.prototype.createTexture;
+      GPUDevice.prototype.createTexture = function (descriptor) {
+        const { label, size } = descriptor;
+        if (["main_texture_a", "main_texture_sampled", "directional_light_shadow_map_texture"].includes(label)) {
+          const [width, height, layers = 1] = size[Symbol.iterator] ? size : [size.width, size.height, size.depthOrArrayLayers];
+          window.sceneTextures.push({ label, width, height, layers });
+        }
+        return createTexture.call(this, descriptor);
+      };
+    });
     await page.route("**/game/**/repo_city_bg.wasm", async route => {
       engineRequested.resolve();
       await download.promise;
@@ -35,6 +47,12 @@ test("mobile city and VibePad fit between Safari safe-area edges in both orienta
     await expect(page.locator("#touch-controls")).toBeHidden();
     download.resolve();
     await expect(pad).toBeVisible({ timeout: 90_000 });
+    await expect.poll(() => page.evaluate(() => window.sceneTextures.some(texture =>
+      texture.label === "main_texture_a" && texture.width >= 320 && texture.height >= 568))).toBe(true);
+    const sceneTextures = await page.evaluate(() => window.sceneTextures);
+    expect(sceneTextures.some(texture => texture.label === "main_texture_sampled" &&
+      texture.width >= 320 && texture.height >= 568)).toBe(false);
+    expect(sceneTextures.some(texture => texture.label === "directional_light_shadow_map_texture" && texture.layers > 1)).toBe(false);
     await expect(page.locator("#start-controls")).toBeHidden();
     await page.getByRole("button", { name: "Repo City", exact: true }).tap();
     await expect(page.locator("#repository-dialog")).toBeVisible();

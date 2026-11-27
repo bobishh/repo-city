@@ -946,6 +946,13 @@ fn label(
         .id()
 }
 
+fn mobile_scene() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    return browser_touch::mobile_scene();
+    #[cfg(not(target_arch = "wasm32"))]
+    false
+}
+
 fn setup(
     mut commands: Commands,
     set: Res<WorldSet>,
@@ -1016,6 +1023,7 @@ fn setup(
         plate: plate.clone(),
         unit: unit.clone(),
     });
+    let mobile = mobile_scene();
     let pilot = commands
         .spawn((
             Camera3d::default(),
@@ -1025,7 +1033,7 @@ fn setup(
                 far: 100_000.,
                 ..default()
             }),
-            Msaa::Sample4,
+            if mobile { Msaa::Off } else { Msaa::Sample4 },
             Transform::default(),
             Pilot::default(),
         ))
@@ -1040,7 +1048,7 @@ fn setup(
     commands.spawn((
         DirectionalLight {
             illuminance: 10000.,
-            shadow_maps_enabled: true,
+            shadow_maps_enabled: !mobile,
             ..default()
         },
         bevy::light::CascadeShadowConfigBuilder {

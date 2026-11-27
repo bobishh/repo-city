@@ -5,6 +5,9 @@ use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
 extern "C" {
+    #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = mobileScene)]
+    pub(super) fn mobile_scene() -> bool;
+
     #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = takeTouchInput)]
     fn take_input() -> String;
 

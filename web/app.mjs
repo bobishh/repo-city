@@ -306,6 +306,7 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
       canvas.dataset.world = world;
       globalThis.repoCity = {
         worldSet: () => world,
+        mobileScene: () => matchMedia("(pointer: coarse)").matches,
         libraryReading(path, first, last, status, face) {
           const position = first ? `, lines ${first}–${last}` : "";
           const notice = status ? `, ${status}` : "";
