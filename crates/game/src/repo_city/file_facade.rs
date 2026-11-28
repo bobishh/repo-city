@@ -190,14 +190,6 @@ impl Aim {
     }
 }
 
-pub(super) fn mirror_view(file: &repo_world::File, size: Vec3, height: f32) -> Transform {
-    let [x, z] = file.position;
-    let target = Vec3::new(x, size.y * height, z - size.z / 2. - listing::PANEL_OFFSET);
-    let eye = target.with_y(target.y.max(city_navigation::STREET_EYE_HEIGHT))
-        - Vec3::Z * (size.x * 0.84).max(0.18);
-    Transform::from_translation(eye).looking_at(target, Vec3::Y)
-}
-
 pub(super) fn beam_material([r, g, b]: [f32; 3]) -> StandardMaterial {
     StandardMaterial {
         base_color: Color::srgb(r, g, b),

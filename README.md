@@ -264,6 +264,8 @@ source line is saved as read only after all its continuations are cleared.
 the end of an automatic flight. It defaults to 14 logical pixels and accepts
 8–32. The city adjusts the approach distance with the viewport height and
 switches from the distant facade texture to detailed code as you approach.
+An automatic flight to a text wall finishes once the aimed lines are drawn.
+Press **Esc** to cancel while source loads or the wall is being prepared.
 Reading a close diff or blame wall uses the same timer and reveals only its visible source lines on the correct comparison side. Flying past or looking away does not complete a block.
 Function blocks do not nest: an outer function owns its entire source interval,
 including callbacks inside it. Moving between those lines keeps the same block

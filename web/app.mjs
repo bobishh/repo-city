@@ -524,6 +524,7 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
           if (entry.bytes) return entry.bytes;
           throw entry.error;
         },
+        blobPending: sha => active.blobs.get(sha)?.pending ?? false,
       };
       canvas.hidden = false;
       if (world !== defaultWorld) canvas.setAttribute("aria-label", worldName);

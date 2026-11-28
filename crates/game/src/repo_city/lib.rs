@@ -2683,7 +2683,9 @@ fn hud(
     });
     #[cfg(target_arch = "wasm32")]
     {
-        let hint = if navigation.overview() {
+        let hint = if let Some(hint) = navigation.wall_arrival_hint() {
+            hint.into()
+        } else if navigation.overview() {
             navigation.prompt(&explorer)
         } else {
             walk_hint.unwrap_or_default().into()

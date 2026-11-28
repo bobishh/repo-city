@@ -103,3 +103,53 @@ test("a plain click near the roof of a Ruby file returns to its code", async ({ 
   expect(Math.abs((await saved()).rotation[0])).toBeLessThan(0.1);
   await page.screenshot({ path: info.outputPath("source-wall-after-roof-click.png") });
 });
+
+test("a cold file click completes only when its detailed source is drawn", async ({ page }, info) => {
+  const revision = "d".repeat(40), targetBlob = "e".repeat(40);
+  const initial = "src/main.rs", target = "src/generators_test_helper.rb";
+  const initialSource = "fn main() {}\n";
+  const source = Array.from({ length: 300 }, (_, index) => `check(${index})\n`).join("");
+  let releaseSource;
+  const delayed = new Promise(resolve => { releaseSource = resolve; });
+  await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
+  await page.route("https://api.github.com/**", async route => {
+    const api = new URL(route.request().url()).pathname;
+    if (api.endsWith("/repos/owner/cold-wall")) return route.fulfill({ json: { default_branch: "main" } });
+    if (api.includes("/commits/")) return route.fulfill({ json: { sha: revision, parents: [] } });
+    if (api.includes("/git/trees/")) return route.fulfill({ json: { tree: [
+      { path: initial, type: "blob", mode: "100644", sha: revision, size: initialSource.length },
+      { path: target, type: "blob", mode: "100644", sha: targetBlob, size: source.length },
+    ] } });
+    const cold = api.endsWith(targetBlob);
+    if (cold) await delayed;
+    const text = cold ? source : initialSource;
+    return route.fulfill({ json: { size: text.length, encoding: "base64", content: Buffer.from(text).toString("base64") } });
+  });
+  try {
+    await page.goto("/?repo=owner%2Fcold-wall");
+    await expect(page.locator("#start-screen")).toBeHidden({ timeout: 90_000 });
+    const canvas = page.locator("canvas");
+    await canvas.focus();
+    await page.keyboard.press("KeyM", { delay: 130 });
+    await expect(canvas).toHaveAttribute("data-overview", "");
+    await page.waitForTimeout(1200);
+    // The taller, colder building sits on the back lot in this district.
+    await canvas.click({ position: { x: 640, y: 275 }, delay: 150 });
+    await expect(page.locator("#city-file")).toHaveText("generators_test_helper.rb");
+    await expect(canvas).not.toHaveAttribute("data-overview", "");
+    await canvas.evaluate(element => element.requestPointerLock());
+    const offset = () => page.evaluate(path => {
+      const scope = JSON.stringify(["owner/cold-wall", "d".repeat(40), null]);
+      const view = JSON.parse(localStorage.getItem("repo-city-last-view-v1:" + scope));
+      return view?.path === path ? view.offset[2] : null;
+    }, target);
+    await expect(page.locator("#city-hint")).toContainText("Loading source");
+    expect(await offset()).toBeNull();
+    releaseSource();
+    await expect.poll(() => offset().then(value => value ?? Infinity)).toBeLessThan(14);
+    await expect(page.locator("#city-hint")).toBeHidden();
+    await page.screenshot({ path: info.outputPath("cold-wall-arrival.png") });
+  } finally {
+    releaseSource();
+  }
+});

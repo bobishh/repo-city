@@ -125,6 +125,8 @@ struct Hop {
 
 enum Arrival {
     Facade,
+    FileWall(WallArrival),
+    SettleWall(WallArrival),
     Stop,
     ReviewWall,
     ReviewLine,
@@ -137,7 +139,28 @@ enum Arrival {
     },
 }
 
+#[derive(Clone, Copy)]
+struct WallArrival {
+    index: usize,
+    before: bool,
+    aim: Option<file_facade::Aim>,
+    rows: usize,
+}
+
+impl WallArrival {
+    fn current(self, explorer: &Explorer) -> bool {
+        explorer.selected == self.index && explorer.before == self.before
+    }
+}
+
 impl Hop {
+    fn wall(&self) -> Option<WallArrival> {
+        match self.arrival {
+            Arrival::FileWall(wall) | Arrival::SettleWall(wall) => Some(wall),
+            _ => None,
+        }
+    }
+
     fn new(start: Transform, end: Transform, arrival: Arrival) -> Self {
         let duration = (start.translation.distance(end.translation) / 90. + 0.65).clamp(0.8, 3.0);
         Self {
@@ -165,15 +188,19 @@ impl Hop {
         let eased = t * t * (3. - 2. * t);
         let lift = (self.start.translation.distance(self.end.translation) * 0.18).clamp(6., 34.);
         let mut translation = self.start.translation.lerp(self.end.translation, eased);
-        if !matches!(self.arrival, Arrival::Stop | Arrival::ReviewWall)
-            || self.start.translation.xz() != self.end.translation.xz()
+        if !matches!(self.arrival, Arrival::SettleWall(_))
+            && (!matches!(self.arrival, Arrival::Stop | Arrival::ReviewWall)
+                || self.start.translation.xz() != self.end.translation.xz())
         {
             translation.y += lift * (std::f32::consts::PI * eased).sin().max(0.);
         }
         let mut rotation = self.start.rotation.slerp(self.end.rotation, eased);
         if matches!(
             self.arrival,
-            Arrival::Facade | Arrival::ReviewLine | Arrival::ChangedFile { .. }
+            Arrival::Facade
+                | Arrival::FileWall(_)
+                | Arrival::ReviewLine
+                | Arrival::ChangedFile { .. }
         ) {
             let smooth = |v: f32| {
                 let v = v.clamp(0., 1.);
@@ -358,14 +385,26 @@ impl Navigation {
     pub(super) fn approaching_listing(&self) -> bool {
         self.route.is_none()
             && self.hop.as_ref().is_some_and(|hop| {
-                matches!(
-                    hop.arrival,
-                    Arrival::Facade
-                        | Arrival::ReviewLine
-                        | Arrival::ReviewWall
-                        | Arrival::ChangedFile { .. }
-                ) && hop.elapsed >= hop.duration * 0.8
+                matches!(hop.arrival, Arrival::SettleWall(_))
+                    || (matches!(
+                        hop.arrival,
+                        Arrival::Facade
+                            | Arrival::FileWall(_)
+                            | Arrival::ReviewLine
+                            | Arrival::ReviewWall
+                            | Arrival::ChangedFile { .. }
+                    ) && hop.elapsed >= hop.duration * 0.8)
             })
+    }
+
+    pub(super) fn wall_arrival_hint(&self) -> Option<&'static str> {
+        let hop = self.hop.as_ref()?;
+        let wall = hop.wall()?;
+        (hop.elapsed >= hop.duration).then_some(if wall.rows == 0 {
+            "Loading source… · Esc to cancel"
+        } else {
+            "Preparing code… · Esc to cancel"
+        })
     }
 
     pub(super) fn change_route_hud(
@@ -393,6 +432,9 @@ impl Navigation {
     }
 
     pub(super) fn prompt(&self, explorer: &Explorer) -> String {
+        if let Some(hint) = self.wall_arrival_hint() {
+            return hint.into();
+        }
         if let Some((level, _)) = self.overview {
             return match level {
                 Overview::Project => "Click a district to approach its files · Esc resumes flight",
@@ -619,7 +661,7 @@ pub(super) fn navigate(
     mut listing: ResMut<listing::Listing>,
     mut menu: ResMut<city_menu::Menu>,
     mut saved_progress: ResMut<progress::Progress>,
-    search: Res<listing::find::Search>,
+    (search, prepared): (Res<listing::find::Search>, Res<listing::PreparedTiles>),
     mut review: Option<ResMut<review_notes::Review>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut camera: Query<(&mut Transform, &Pilot), PlayerCamera>,
@@ -973,6 +1015,22 @@ pub(super) fn navigate(
         return;
     }
     if let Some(hop) = &mut navigation.hop {
+        // Before the horizontal part of the flight, use the loaded wall directly.
+        if let Arrival::FileWall(mut wall) = hop.arrival
+            && hop.elapsed <= hop.duration * 0.2
+            && wall.current(&explorer)
+            && wall.rows != listing::Listing::arrival_rows(&explorer, wall.aim)
+        {
+            wall.rows = listing::Listing::arrival_rows(&explorer, wall.aim);
+            let end = listing.arrival_view(&explorer, &repo.0, &focus, wall.aim);
+            hop.end = end;
+            hop.roof = hop.roof.max(end.translation.y).max(flight_roof(
+                hop.start.translation,
+                end.translation,
+                &repo.0,
+            ));
+            hop.arrival = Arrival::FileWall(wall);
+        }
         if let Arrival::ChangedFile { path, view, rows } = &mut hop.arrival
             && *path == repo.0.files[explorer.selected].path
             && *rows != view.wall_rows(&explorer)
@@ -982,10 +1040,35 @@ pub(super) fn navigate(
             *rows = view.wall_rows(&explorer);
             hop.end = view.destination(&repo.0, &mut explorer, &listing, &focus);
         }
-        hop.elapsed += time.delta_secs();
+        hop.elapsed = (hop.elapsed + time.delta_secs()).min(hop.duration);
         let progress = hop.elapsed / hop.duration;
         *camera = hop.pose(progress);
         if progress >= 1. {
+            if let Some(mut wall) = hop.wall() {
+                if !wall.current(&explorer) {
+                    navigation.hop = None;
+                    return;
+                }
+                let rows = listing::Listing::arrival_rows(&explorer, wall.aim);
+                if rows != wall.rows {
+                    wall.rows = rows;
+                    let end = listing.arrival_view(&explorer, &repo.0, &focus, wall.aim);
+                    let mut settle = Hop::new(*camera, end, Arrival::SettleWall(wall));
+                    settle.duration = 0.35;
+                    navigation.hop = Some(settle);
+                    return;
+                }
+                let file = &repo.0.files[wall.index];
+                if rows == 0 {
+                    if !listing::Listing::arrival_loading(&repo.0, &explorer, wall.aim) {
+                        navigation.hop = None;
+                    }
+                    return;
+                }
+                if !listing.arrival_is_drawn(&explorer, file, wall.aim, &camera, &prepared) {
+                    return;
+                }
+            }
             let arrival = navigation.hop.take().unwrap().arrival;
             match arrival {
                 Arrival::ChangedFile { path, view, .. } => {
@@ -1038,7 +1121,11 @@ pub(super) fn navigate(
                     }
                     navigation.redraw = true;
                 }
-                Arrival::Facade | Arrival::ReviewWall | Arrival::ReviewLine => {
+                Arrival::Facade
+                | Arrival::FileWall(_)
+                | Arrival::SettleWall(_)
+                | Arrival::ReviewWall
+                | Arrival::ReviewLine => {
                     let file = &repo.0.files[explorer.selected];
                     let size = listing::block_size(file);
                     if let Some(face) = listing::Face::at_camera(
@@ -1249,13 +1336,11 @@ pub(super) fn navigate(
             Some(mode) => mode.destination(&repo.0, &mut explorer, &listing, &focus),
             None => listing.arrival_view(&explorer, &repo.0, &focus, aimed),
         };
-        if camera.translation.distance_squared(end.translation) < 0.04
-            && camera.rotation.dot(end.rotation).abs() > 0.9999
-        {
-            if let Some(mode) = mode {
-                saved_progress.visit(index, file, mode.is_diff());
-                saved_progress.set_file_cursor(Some(&file.path));
-            }
+        let same_pose = camera.translation.distance_squared(end.translation) < 0.04
+            && camera.rotation.dot(end.rotation).abs() > 0.9999;
+        if same_pose && let Some(mode) = mode {
+            saved_progress.visit(index, file, mode.is_diff());
+            saved_progress.set_file_cursor(Some(&file.path));
             return;
         }
         let mut hop = Hop::facade(*camera, end, &repo.0);
@@ -1266,6 +1351,18 @@ pub(super) fn navigate(
                 rows: mode.wall_rows(&explorer),
             };
         } else {
+            let wall = WallArrival {
+                index,
+                before: explorer.before,
+                aim: aimed,
+                rows: listing::Listing::arrival_rows(&explorer, aimed),
+            };
+            if same_pose {
+                hop.arrival = Arrival::SettleWall(wall);
+                hop.elapsed = hop.duration;
+            } else {
+                hop.arrival = Arrival::FileWall(wall);
+            }
             navigation.changes.hide();
         }
         if from_overview {
@@ -1513,6 +1610,7 @@ mod tests {
             .insert_resource(WorldSet::load(None).unwrap())
             .insert_resource(Explorer::new(0))
             .init_resource::<Navigation>()
+            .init_resource::<listing::PreparedTiles>()
             .init_resource::<Nearest>()
             .init_resource::<Time>()
             .init_resource::<ButtonInput<KeyCode>>()
@@ -1546,6 +1644,77 @@ mod tests {
             ))
             .id();
         (app, camera)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_file_wall_waits_for_the_rendered_rows_and_escape_cancels() {
+        let (mut app, camera) = district_navigation_app();
+        let world = app.world_mut();
+        world
+            .resource_mut::<Explorer>()
+            .set_highlighted(syntax::highlight("current.rs", "fn ready() {}\n"));
+        let explorer = world.resource::<Explorer>();
+        let end = world.resource::<listing::Listing>().arrival_view(
+            explorer,
+            &world.resource::<Repo>().0,
+            world.resource::<file_facade::ChangesOnly>(),
+            None,
+        );
+        let arrival = Arrival::FileWall(WallArrival {
+            index: 0,
+            before: false,
+            aim: None,
+            rows: listing::Listing::arrival_rows(explorer, None),
+        });
+        let mut hop = Hop::new(*world.get::<Transform>(camera).unwrap(), end, arrival);
+        hop.elapsed = hop.duration;
+        world.resource_mut::<Navigation>().hop = Some(hop);
+
+        app.update();
+        let navigation = app.world().resource::<Navigation>();
+        assert!(navigation.is_flying());
+        assert_eq!(
+            navigation.wall_arrival_hint(),
+            Some("Preparing code… · Esc to cancel")
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.update();
+        assert!(!app.world().resource::<Navigation>().is_flying());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_unavailable_source_does_not_complete_a_reading_arrival() {
+        let (mut app, camera) = district_navigation_app();
+        let world = app.world_mut();
+        let end = world.resource::<listing::Listing>().arrival_view(
+            world.resource::<Explorer>(),
+            &world.resource::<Repo>().0,
+            world.resource::<file_facade::ChangesOnly>(),
+            None,
+        );
+        let arrival = Arrival::FileWall(WallArrival {
+            index: 0,
+            before: false,
+            aim: None,
+            rows: 0,
+        });
+        let mut hop = Hop::new(*world.get::<Transform>(camera).unwrap(), end, arrival);
+        hop.elapsed = hop.duration;
+        world.resource_mut::<Navigation>().hop = Some(hop);
+
+        app.update();
+        assert!(!app.world().resource::<Navigation>().is_flying());
+        assert_eq!(
+            app.world()
+                .resource::<progress::Progress>()
+                .visited_counts()
+                .0,
+            0
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1967,6 +2136,7 @@ mod tests {
             .init_resource::<AccumulatedMouseScroll>()
             .init_resource::<Nearest>()
             .init_resource::<Navigation>()
+            .init_resource::<listing::PreparedTiles>()
             .init_resource::<file_facade::ChangesOnly>()
             .init_resource::<city_menu::Menu>()
             .init_resource::<file_picker::FilePicker>()
@@ -2011,6 +2181,7 @@ mod tests {
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<AccumulatedMouseScroll>()
             .init_resource::<Navigation>()
+            .init_resource::<listing::PreparedTiles>()
             .init_resource::<file_facade::ChangesOnly>()
             .init_resource::<city_menu::Menu>()
             .init_resource::<file_picker::FilePicker>()
@@ -2196,6 +2367,7 @@ mod tests {
             .init_resource::<listing::Listing>()
             .init_resource::<listing::find::Search>()
             .init_resource::<progress::Progress>()
+            .init_resource::<listing::PreparedTiles>()
             .add_systems(Update, navigate);
         app.world_mut().spawn((Window::default(), PrimaryWindow));
         app.world_mut().spawn((

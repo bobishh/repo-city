@@ -15,6 +15,7 @@ pub(super) mod layout;
 mod overview;
 mod paint;
 pub(super) use cover::Plugin as CoverPlugin;
+pub(crate) use cover::PreparedTiles;
 pub(super) use paint::draw as paint_notes;
 pub(super) use paint::spawn_reticle;
 
@@ -899,31 +900,8 @@ impl Listing {
         let file = &repo.files[explorer.selected];
         let size = block_size(file);
         let surface = aim.and_then(|aim| aim.surface);
-        let face = match surface {
-            Some(file_facade::Surface {
-                normal: Vec3::NEG_Z,
-                height,
-            }) => {
-                return file_facade::mirror_view(file, size, height);
-            }
-            Some(file_facade::Surface {
-                normal: Vec3::X, ..
-            }) => Face::Diff,
-            Some(file_facade::Surface {
-                normal: Vec3::NEG_X,
-                ..
-            }) => Face::Blame,
-            _ => Face::Source,
-        };
-        let count = if face == Face::Diff {
-            diff_rows(explorer)
-        } else {
-            if face == Face::Source {
-                explorer.source_layout.len()
-            } else {
-                explorer.blame_layout.len()
-            }
-        };
+        let face = Face::for_arrival(aim);
+        let count = face.rows(explorer);
         let side = WallSide::new(file, count, face, size);
         let y = if count == 0 {
             side.wall.y(0.5)
@@ -940,6 +918,42 @@ impl Listing {
             side.wall.y(row as f32 + 0.5)
         };
         side.view_in_street(y, self.frame, repo, focus)
+    }
+
+    pub(super) fn arrival_rows(explorer: &Explorer, aim: Option<file_facade::Aim>) -> usize {
+        Face::for_arrival(aim).rows(explorer)
+    }
+
+    pub(super) fn arrival_is_drawn(
+        &self,
+        explorer: &Explorer,
+        file: &repo_world::File,
+        aim: Option<file_facade::Aim>,
+        camera: &Transform,
+        prepared: &PreparedTiles,
+    ) -> bool {
+        let face = Face::for_arrival(aim);
+        let count = face.rows(explorer);
+        let side = WallSide::new(file, count, face, block_size(file));
+        side.ray_hit(camera, 0.12, f32::INFINITY)
+            .is_some_and(|(hit, _)| {
+                self.detail_row_ready(explorer, face, side.wall.row(hit.y, count), prepared)
+            })
+    }
+
+    pub(super) fn arrival_loading(
+        _repo: &Repository,
+        _explorer: &Explorer,
+        _aim: Option<file_facade::Aim>,
+    ) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        {
+            _repo.source_pending(_explorer.selected, _explorer.before)
+                || (Face::for_arrival(_aim) == Face::Diff
+                    && _repo.source_pending(_explorer.selected, !_explorer.before))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        false
     }
 
     pub(super) fn diff_view(
@@ -1958,6 +1972,25 @@ impl WallSide {
 }
 
 impl Face {
+    fn for_arrival(aim: Option<file_facade::Aim>) -> Self {
+        match aim
+            .and_then(|aim| aim.surface)
+            .map(|surface| surface.normal)
+        {
+            Some(Vec3::X) => Self::Diff,
+            Some(Vec3::NEG_X) => Self::Blame,
+            _ => Self::Source,
+        }
+    }
+
+    fn rows(self, explorer: &Explorer) -> usize {
+        match self {
+            Self::Source => explorer.source_layout.len(),
+            Self::Diff => diff_rows(explorer),
+            Self::Blame => explorer.blame_layout.len(),
+        }
+    }
+
     fn angle(self) -> f32 {
         match self {
             Self::Source => 0.,

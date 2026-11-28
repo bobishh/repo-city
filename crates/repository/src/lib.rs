@@ -459,6 +459,16 @@ impl Repository {
         let anatomy = anatomy::analyze(&self.files[index].path, &source);
         Ok((source, anatomy))
     }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn source_pending(&self, index: usize, before: bool) -> bool {
+        self.files.get(index).is_some_and(|file| {
+            (if before { &file.before } else { &file.after })
+                .as_ref()
+                .is_some_and(|blob| browser_blob_pending(&blob.id))
+        })
+    }
+
     pub fn initial_file(&self) -> usize {
         self.files
             .iter()
@@ -737,6 +747,8 @@ mod tests {
 extern "C" {
     #[wasm_bindgen(catch, js_namespace = repoCity, js_name = blob)]
     fn browser_blob(sha: &str) -> Result<Vec<u8>, wasm_bindgen::JsValue>;
+    #[wasm_bindgen(js_namespace = repoCity, js_name = blobPending)]
+    fn browser_blob_pending(sha: &str) -> bool;
     #[wasm_bindgen(js_namespace = repoCity, js_name = snapshot)]
     fn browser_snapshot() -> String;
     #[wasm_bindgen(js_namespace = repoCity, js_name = showBlame)]
