@@ -17,8 +17,9 @@ presentation adapter. An adapter owns its Bevy scene and declares the
 interactions it implements. JSON supplies the presentation ID and palette.
 A new adapter can be added without changing repository storage or services.
 
-In Repo Reef, the lamp limits visibility during travel and in the map view.
-At a station it lights the active reading surface evenly. Reading uses the
+In Repo Reef, distant stations remain visible in silhouette. The headlamps
+light nearby surfaces, and the map lights the area under the pointer.
+At a station the active reading surface lights evenly. Reading uses the
 shared block timer. Completed lines retain a dim glow when the player
 leaves. Paint marks use the shared review
 anchors, including the file path, snapshot side and original line range.

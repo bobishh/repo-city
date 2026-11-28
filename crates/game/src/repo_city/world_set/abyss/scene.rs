@@ -6,7 +6,7 @@ mod chart;
 mod terrain;
 use bevy::light::NotShadowCaster;
 use std::f32::consts::TAU;
-use terrain::{Geometry, TILE_SIZE, WATER_CELL};
+use terrain::{Geometry, TILE_SIZE};
 
 pub(super) const PILOT_EYE: Vec3 = Vec3::new(0., 0.43, -0.48);
 pub(super) fn lens_center(side: f32) -> Vec3 {
@@ -29,15 +29,12 @@ pub(crate) struct Station;
 #[derive(Component)]
 struct BedTile(IVec2);
 #[derive(Component)]
-struct WaterCell(IVec3);
-#[derive(Component)]
 struct ChartLight;
-#[derive(Component)]
-struct Backscatter;
 #[derive(Component)]
 struct SurveyLamp;
 
-const SURVEY_INTENSITY: f32 = 7_000_000.;
+const SURVEY_INTENSITY: f32 = 3_200_000.;
+const WATER_LIGHT: f32 = 1050.;
 
 pub(super) fn install(app: &mut App) {
     chart::install(app);
@@ -49,8 +46,17 @@ pub(super) fn install(app: &mut App) {
     .add_systems(PostStartup, rig)
     .add_systems(
         Update,
-        (trim_view, drift_snow, survey_lamps).after(city_navigation::navigate),
+        (trim_view, survey_lamps).after(city_navigation::navigate),
     );
+}
+
+/// Keep distant station contours visible between pools of light.
+pub(crate) fn distant_tint(overview: bool) -> Color {
+    if overview {
+        Color::WHITE
+    } else {
+        Color::srgb(0.70, 0.80, 0.93)
+    }
 }
 
 pub(crate) fn rim_material(coverage: code_texture::Coverage) -> StandardMaterial {
@@ -87,67 +93,12 @@ fn lenses() -> Mesh {
     mesh.finish()
 }
 
-/// Thin, depth-tested slices approximate the light scattered back toward the pilot.
-/// Nearby hulls occlude the farther water, while an empty trench shows the full beam.
-fn scatter_slice() -> Mesh {
-    use bevy::{
-        asset::RenderAssetUsages,
-        mesh::{Indices, PrimitiveTopology},
-    };
-    const SEGMENTS: u32 = 48;
-    let mut positions = Vec::new();
-    let mut colors = Vec::new();
-    let mut indices = Vec::new();
-    for (ring, (angle, opacity)) in [
-        (0., 0.054),
-        (LAMP_INNER_ANGLE * 0.55, 0.045),
-        (LAMP_INNER_ANGLE, 0.032),
-        ((LAMP_INNER_ANGLE + LAMP_OUTER_ANGLE) / 2., 0.017),
-        (LAMP_OUTER_ANGLE, 0.),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        for i in 0..SEGMENTS {
-            let (sin, cos) = (TAU * i as f32 / SEGMENTS as f32).sin_cos();
-            positions.push([cos * angle.tan(), sin * angle.tan(), 0.]);
-            colors.push(
-                Color::srgba(0.26, 0.60, 0.68, opacity)
-                    .to_linear()
-                    .to_f32_array(),
-            );
-            if ring > 0 {
-                let base = (ring as u32 - 1) * SEGMENTS;
-                let a = base + i;
-                let b = base + (i + 1) % SEGMENTS;
-                indices.extend([a, a + SEGMENTS, b + SEGMENTS, a, b + SEGMENTS, b]);
-            }
-        }
-    }
-    Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
-    )
-    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0., 0., 1.]; positions.len()])
-    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-    .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
-    .with_inserted_indices(Indices::U32(indices))
-}
-
 fn rig(
     mut commands: Commands,
     pilot: Single<Entity, PlayerCamera>,
-    set: Res<WorldSet>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let fog = color(set.background);
-    commands.entity(*pilot).insert(DistanceFog {
-        color: fog,
-        directional_light_color: Color::NONE,
-        falloff: FogFalloff::Exponential { density: 0.019 },
-        ..default()
-    });
     for side in [-1., 1.] {
         commands.spawn((
             Name::new("Survey lamp"),
@@ -166,35 +117,11 @@ fn rig(
             Transform::from_translation(lens_center(side) - PILOT_EYE),
         ));
     }
-    let scatter = meshes.add(scatter_slice());
-    let haze = materials.add(StandardMaterial {
-        unlit: true,
-        fog_enabled: false,
-        alpha_mode: AlphaMode::Add,
-        ..default()
-    });
-    let water = commands
-        .spawn((
-            ChildOf(*pilot),
-            Backscatter,
-            Transform::IDENTITY,
-            Visibility::Inherited,
-        ))
-        .id();
-    for distance in [6., 18., 39.] {
-        commands.spawn((
-            ChildOf(water),
-            NotShadowCaster,
-            Mesh3d(scatter.clone()),
-            MeshMaterial3d(haze.clone()),
-            Transform::from_xyz(0., 0., -distance).with_scale(Vec3::splat(distance)),
-        ));
-    }
     commands.spawn((
         ChartLight,
         DirectionalLight {
             color: Color::srgb(0.66, 0.67, 1.),
-            illuminance: 720.,
+            illuminance: WATER_LIGHT,
             ..default()
         },
         Transform::from_xyz(-15., 38., -22.).looking_at(Vec3::ZERO, Vec3::Y),
@@ -214,21 +141,6 @@ fn rig(
                 MeshMaterial3d(finish.clone()),
                 Transform::from_xyz(i as f32 * TILE_SIZE, 0., j as f32 * TILE_SIZE),
             ));
-        }
-    }
-    let snow = meshes.add(terrain::marine_snow());
-    for x in -1..=1 {
-        for y in -1..=1 {
-            for z in -1..=1 {
-                let cell = IVec3::new(x, y, z);
-                commands.spawn((
-                    WaterCell(cell),
-                    NotShadowCaster,
-                    Mesh3d(snow.clone()),
-                    MeshMaterial3d(finish.clone()),
-                    Transform::from_translation(cell.as_vec3() * WATER_CELL),
-                ));
-            }
         }
     }
     commands.insert_resource(Seafloor {
@@ -251,40 +163,18 @@ fn rig(
     });
 }
 
-fn drift_snow(
-    camera: Single<&Transform, PlayerCamera>,
-    time: Option<Res<Time>>,
-    mut water: Query<(&WaterCell, &mut Transform), Without<Camera3d>>,
-) {
-    let elapsed = time.map_or(0., |time| time.elapsed_secs());
-    let drift = Vec3::new(0.045, -0.12, -0.025) * elapsed;
-    let center = ((camera.translation - drift) / WATER_CELL)
-        .floor()
-        .as_ivec3();
-    for (cell, mut pose) in &mut water {
-        pose.translation = (center + cell.0).as_vec3() * WATER_CELL + drift;
-    }
-}
-
 fn trim_view(
-    view: Single<(&Transform, &mut DistanceFog), PlayerCamera>,
+    eye: Single<&Transform, PlayerCamera>,
     mut light: Single<&mut DirectionalLight, With<ChartLight>>,
     mut tiles: Query<(&BedTile, &mut Transform), Without<Camera3d>>,
     navigation: Option<Res<city_navigation::Navigation>>,
-    mut was_map: Local<bool>,
 ) {
-    let (eye, mut fog) = view.into_inner();
     let map = navigation
         .as_deref()
         .is_some_and(city_navigation::Navigation::overview);
-    if map != *was_map {
-        fog.falloff = if map {
-            FogFalloff::Exponential { density: 0.00001 }
-        } else {
-            FogFalloff::Exponential { density: 0.019 }
-        };
-        light.illuminance = if map { 4400. } else { 720. };
-        *was_map = map;
+    let illuminance = if map { 4400. } else { WATER_LIGHT };
+    if light.illuminance != illuminance {
+        light.illuminance = illuminance;
     }
     let center = (eye.translation.xz() / TILE_SIZE).floor().as_ivec2();
     for (tile, mut pose) in &mut tiles {
@@ -302,7 +192,6 @@ fn survey_lamps(
     repo: Option<Res<Repo>>,
     explorer: Option<Res<Explorer>>,
     listing: Option<Res<listing::Listing>>,
-    mut scatter: Single<&mut Visibility, With<Backscatter>>,
     mut lamps: Query<&mut SpotLight, With<SurveyLamp>>,
 ) {
     let aspect = windows
@@ -322,14 +211,12 @@ fn survey_lamps(
                         listing.close_face(file, &eye, &explorer, aspect).is_some()
                     })
             });
-    let surveying = !map && !reading;
-    scatter.set_if_neq(if surveying {
-        Visibility::Inherited
+    let intensity = if !map && !reading {
+        SURVEY_INTENSITY
     } else {
-        Visibility::Hidden
-    });
+        0.
+    };
     for mut lamp in &mut lamps {
-        let intensity = if surveying { SURVEY_INTENSITY } else { 0. };
         if lamp.intensity != intensity {
             lamp.intensity = intensity;
         }
@@ -457,7 +344,7 @@ mod tests {
         for side in [-1., 1.] {
             assert!(mounts.contains(&(lens_center(side) - PILOT_EYE)));
         }
-        assert!(world.get::<DistanceFog>(pilot).is_some());
+        assert!(world.get::<DistanceFog>(pilot).is_none());
 
         // Unread station ribs require incident light. Read ribs keep a cyan emission.
         use code_texture::Coverage;

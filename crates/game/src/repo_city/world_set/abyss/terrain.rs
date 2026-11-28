@@ -112,29 +112,6 @@ pub(super) fn vent() -> Mesh {
     mesh.finish()
 }
 
-pub(super) const WATER_CELL: f32 = 24.;
-
-pub(super) fn marine_snow() -> Mesh {
-    let mut mesh = Geometry::default();
-    for i in 0..90 {
-        let seed = i * 5 + 1;
-        let center = Vec3::new(noise(seed), noise(seed + 1), noise(seed + 2)) * WATER_CELL;
-        let radius = 0.007 + noise(seed + 3) * 0.016;
-        let p = center + Vec3::Y * radius * 1.8;
-        let q = center - Vec3::Y * radius;
-        let tint = Color::srgb(0.72, 0.82, 0.77);
-        for j in 0..3 {
-            let point = |j: usize| {
-                let angle = TAU * j as f32 / 3.;
-                center + Vec3::new(angle.cos(), 0., angle.sin()) * radius
-            };
-            mesh.tri(p, point(j + 1), point(j), tint);
-            mesh.tri(q, point(j), point(j + 1), tint);
-        }
-    }
-    mesh.finish()
-}
-
 pub(super) fn seabed() -> Mesh {
     const ROWS: usize = 80;
     let mut mesh = Geometry::default();

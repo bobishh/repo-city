@@ -390,15 +390,26 @@ pub(super) fn draw_distant_city(
     navigation: Res<city_navigation::Navigation>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    maps: Query<(Entity, &Mesh3d), With<DistantCity>>,
+    maps: Query<(Entity, &Mesh3d, &MeshMaterial3d<StandardMaterial>), With<DistantCity>>,
     mut previous_progress: Local<Option<f32>>,
 ) {
-    let enabled = repo.0.files.len() > EAGER_FILES && (!set.is_abyss() || navigation.overview());
+    let enabled = repo.0.files.len() > EAGER_FILES;
+    let tint = if set.is_abyss() {
+        world_set::abyss::scene::distant_tint(navigation.overview())
+    } else {
+        Color::WHITE
+    };
     let progress = focus.animation_progress();
     if enabled
         && !repo.is_changed()
-        && let Ok((_, handle)) = maps.single()
+        && let Ok((_, handle, material)) = maps.single()
     {
+        if let Some(existing) = materials.get(&material.0)
+            && existing.base_color != tint
+            && let Some(mut existing) = materials.get_mut(&material.0)
+        {
+            existing.base_color = tint;
+        }
         if *previous_progress == Some(progress) {
             return;
         }
@@ -412,7 +423,7 @@ pub(super) fn draw_distant_city(
     if !enabled && maps.is_empty() {
         return;
     }
-    for (entity, _) in &maps {
+    for (entity, ..) in &maps {
         commands.entity(entity).despawn();
     }
     if enabled {
@@ -422,6 +433,7 @@ pub(super) fn draw_distant_city(
             bevy::light::NotShadowCaster,
             Mesh3d(meshes.add(distant_city(&repo.0, &focus, &set))),
             MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: tint,
                 unlit: true,
                 cull_mode: None,
                 ..default()

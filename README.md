@@ -133,7 +133,8 @@ Press **O** to drop a private survey buoy, or press **O** beside a buoy
 to retrieve it. Touch controls offer the same action with **Buoy**.
 Buoys stay in this dive across visits and work without signing in.
 
-The headlamp limits how far you can see while travelling and on the map.
+While travelling, headlamps light nearby surfaces and distant stations remain
+visible in silhouette. The map lights the area under the pointer.
 At a station the active reading surface lights evenly. Keep a source block
 in view for the configured reading time. Read lines
 retain a faint phosphorescent glow when you turn away.
