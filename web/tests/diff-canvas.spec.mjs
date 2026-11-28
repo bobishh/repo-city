@@ -6,7 +6,10 @@ for (const world of ["code-city", "repo-polis"]) {
     const revision = "b".repeat(40);
     const base = "a".repeat(40);
     const treeEntry = (path, sha) => ({ path, sha, mode: "100644", type: "blob", size: 20 });
-    await page.addInitScript(() => localStorage.setItem("repo-city-guide-v1", "seen"));
+    await page.addInitScript(() => {
+      document.addEventListener("DOMContentLoaded", () => document.documentElement.setAttribute("data-canvas-inspection", ""), { once: true });
+      localStorage.setItem("repo-city-guide-v1", "seen");
+    });
     const pull = world === "repo-polis";
     await page.route("**/github/session", route => route.fulfill({ json: pull ? { enabled: true, login: "reviewer" } : { enabled: false } }));
     await page.route(/\/github\/api\/|https:\/\/api.github.com\//, route => {
@@ -58,7 +61,8 @@ for (const world of ["code-city", "repo-polis"]) {
         control = controls.find(item => item.label === label);
         return Boolean(control);
       }).toBe(true);
-      await page.mouse.click(control.x * 1280, control.y * 800, { delay: 100 });
+      const bounds = await scene.boundingBox();
+      await page.mouse.click(bounds.x + control.x * bounds.width, bounds.y + control.y * bounds.height, { delay: 100 });
     };
     if (!pull) {
       const original = await layout();
@@ -72,9 +76,17 @@ for (const world of ["code-city", "repo-polis"]) {
       await clickControl("Reading view");
       await expect.poll(async () => (await layout()).overview).toBe(false);
       const [left, top] = (await layout()).tiles[0];
-      await drag(left + width - 6, top + height - 6, 160, 75);
+      const [, neighborY, neighborWidth] = (await layout()).tiles[1];
+      await drag(left + width - 2, top + 92, 160, 0);
       await expect.poll(async () => (await layout()).tiles[0][2]).toBeGreaterThan(width + 75);
-      await expect.poll(async () => (await layout()).tiles[1][1]).toBeGreaterThan(top + 100);
+      await expect.poll(async () => (await layout()).tiles[1][2]).toBeLessThan(neighborWidth - 75);
+      expect((await layout()).tiles[1][1]).toBeCloseTo(neighborY);
+      const beforeWindowResize = (await layout()).tiles;
+      await page.setViewportSize({ width: 1000, height: 720 });
+      await expect.poll(async () => (await layout()).viewport).toEqual([1000, 638]);
+      expect((await layout()).tiles.map(([x, y, w, h]) => [x, y - (82 - 44), w, h])).toEqual(beforeWindowResize);
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await expect.poll(async () => (await layout()).viewport).toEqual([1280, 756]);
       const [tileX, tileY] = (await layout()).tiles[0];
       await page.mouse.click(Math.max(32, tileX + 24), tileY + 60, { delay: 100 });
       await clickControl("Comment");

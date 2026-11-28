@@ -19,7 +19,10 @@ test("groups selected repository files in a named canvas and adds the aimed scro
   const unchanged = ["src/first.rs", "src/second.rs", "src/scroll.rs"];
   const source = Array.from({ length: 120 }, (_, row) => `pub const ROW_${row + 1}: usize = ${row + 1};\n`).join("");
   const entry = (path, sha) => ({ path, sha, mode: "100644", type: "blob", size: source.length });
-  await page.addInitScript(() => localStorage.setItem("repo-city-guide-v1", "seen"));
+  await page.addInitScript(() => {
+    document.addEventListener("DOMContentLoaded", () => document.documentElement.setAttribute("data-canvas-inspection", ""), { once: true });
+    localStorage.setItem("repo-city-guide-v1", "seen");
+  });
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
   await page.route("https://api.github.com/**", route => {
     const path = new URL(route.request().url()).pathname;
@@ -95,7 +98,7 @@ test("groups selected repository files in a named canvas and adds the aimed scro
   await expect(scene).not.toHaveAttribute("data-diff-canvas", /src\/changed\.rs/);
 });
 
-test("loads every visible diff while leaving offscreen source unread", async ({ page }) => {
+test("loads every visible diff and arranges the overview for the window", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 2130, height: 900 });
   const revision = "a".repeat(40);
   const base = "b".repeat(40);
@@ -103,7 +106,7 @@ test("loads every visible diff while leaving offscreen source unread", async ({ 
     `const ROW_${row}: usize = ${before && [4, 40].includes(row) ? row + 200 : row};`
   ).join("\n") + "\n";
   const contents = new Map();
-  const tree = before => Array.from({ length: 12 }, (_, index) => {
+  const tree = before => Array.from({ length: 14 }, (_, index) => {
     const sha = (index + (before ? 100 : 200)).toString(16).padStart(40, "0");
     const source = body(before);
     contents.set(sha, source);
@@ -111,7 +114,10 @@ test("loads every visible diff while leaving offscreen source unread", async ({ 
   });
   const headTree = tree(false), baseTree = tree(true);
   const requested = new Set();
-  await page.addInitScript(() => localStorage.setItem("repo-city-guide-v1", "seen"));
+  await page.addInitScript(() => {
+    document.addEventListener("DOMContentLoaded", () => document.documentElement.setAttribute("data-canvas-inspection", ""), { once: true });
+    localStorage.setItem("repo-city-guide-v1", "seen");
+  });
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
   await page.route("https://api.github.com/**", route => {
     const path = new URL(route.request().url()).pathname;
@@ -141,4 +147,26 @@ test("loads every visible diff while leaving offscreen source unread", async ({ 
   }, { timeout: 30_000 }).toBeGreaterThanOrEqual(6);
   expect(requested.has(headTree.at(-1).sha)).toBe(false);
   expect(requested.has(baseTree.at(-1).sha)).toBe(false);
+
+  const contextButtons = () => scene.evaluate(element =>
+    JSON.parse(element.dataset.diffCanvasControls ?? "[]").filter(button => button.label === "Show 31 unchanged lines")
+  );
+  await expect.poll(async () => (await contextButtons()).length).toBeGreaterThanOrEqual(6);
+  const beforeExpansion = await contextButtons();
+  await canvasClick(page, "Show 31 unchanged lines");
+  await expect.poll(async () => (await contextButtons()).length).toBeLessThan(beforeExpansion.length);
+
+  await page.setViewportSize({ width: 2130, height: 620 });
+  await canvasClick(page, "Show all");
+  const geometry = async () => JSON.parse(await scene.getAttribute("data-diff-canvas-layout"));
+  await expect.poll(async () => (await geometry()).overview).toBe(true);
+  const { tiles } = await geometry();
+  expect(tiles).toHaveLength(14);
+  expect(tiles.every(([x, y, w, h]) => x >= 0 && y >= 0 && x + w <= 2130.01 && y + h <= 620.01)).toBe(true);
+  const area = tiles.reduce((total, [, , width, height]) => total + width * height, 0);
+  expect(area / (2130 * (620 - 44))).toBeGreaterThan(0.88);
+  const lastRow = tiles.filter(tile => tile[1] === tiles.at(-1)[1]);
+  expect(lastRow.at(-1)[0] + lastRow.at(-1)[2]).toBeGreaterThan(2100);
+  await expect.poll(() => requested.has(headTree.at(-1).sha) && requested.has(baseTree.at(-1).sha)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("overview.png") });
 });

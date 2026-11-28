@@ -4,7 +4,10 @@ use std::collections::{HashMap, HashSet};
 use repo_world::{Change, File, Repository};
 use serde::{Deserialize, Serialize};
 
+mod placement;
 mod storage;
+
+pub(super) use placement::{Axis, GAP};
 #[cfg(test)]
 mod tests;
 
@@ -42,6 +45,8 @@ pub(super) struct Tile {
     pub positioned: bool,
     #[serde(default)]
     pub size: [f32; 2],
+    #[serde(default)]
+    origin: Option<[f32; 2]>,
     explicit: bool,
 }
 
@@ -52,6 +57,7 @@ impl Tile {
             viewport: Viewport::default(),
             positioned: false,
             size: [0.; 2],
+            origin: None,
             explicit,
         }
     }
@@ -75,6 +81,8 @@ pub(super) struct Canvas {
     pub tiles: Vec<Tile>,
     pub pan: [f32; 2],
     pub zoom: f32,
+    #[serde(default)]
+    pub layout_width: Option<f32>,
 }
 
 impl Canvas {
@@ -84,6 +92,7 @@ impl Canvas {
             tiles: Vec::new(),
             pan: [0., 0.],
             zoom: 1.,
+            layout_width: None,
         }
     }
 }
@@ -242,7 +251,15 @@ impl Book {
                             .size
                             .iter()
                             .all(|value| value.is_finite() && (0. ..=2400.).contains(value))
+                            || tile.origin.is_some_and(|origin| {
+                                origin.iter().any(|value| !value.is_finite() || *value < 0.)
+                                    || tile.size[0] < placement::MIN_PANE.x
+                                    || tile.size[1] < placement::MIN_PANE.y
+                            })
                     })
+                    || canvas
+                        .layout_width
+                        .is_some_and(|width| !width.is_finite() || width <= 0.)
                     || !canvas.zoom.is_finite()
                     || !canvas.pan.iter().all(|component| component.is_finite())
             })

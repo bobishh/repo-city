@@ -62,11 +62,12 @@ enum Action {
     Add,
     Tile(String),
     Hunk(String, bool),
+    ExpandContext(String, std::ops::Range<usize>),
     Scroll(String, isize),
     Columns(String, isize),
     Zoom(f32, Vec2),
     Pan(Vec2),
-    Resize(String, Vec2),
+    Resize(String, model::Axis, f32),
     Select(Selection),
     Comment,
     SaveComment,
@@ -105,6 +106,7 @@ pub(super) struct Canvas {
     body: Option<Entity>,
     actions: Vec<Action>,
     dirty: bool,
+    pan_dirty: bool,
     save_pending: bool,
     save_age: f32,
     shown_in_tablet: bool,
@@ -204,6 +206,10 @@ impl Canvas {
 
     fn edit(&mut self) {
         self.dirty = true;
+        self.save_layout();
+    }
+
+    fn save_layout(&mut self) {
         self.save_pending = true;
         self.save_age = 0.;
     }
@@ -330,6 +336,9 @@ fn update(
         }
         canvas.dirty = true;
     }
+    if canvas.model_mut().place_tiles(size.x) {
+        canvas.edit();
+    }
     if let Some(anchor) = canvas.reveal.take() {
         let path = &anchor.path;
         if !canvas.model().tiles.iter().any(|tile| &tile.path == path)
@@ -349,15 +358,25 @@ fn update(
         {
             canvas.last_reveal = Some(anchor.clone());
             let content = canvas.contents.entry(path.clone()).or_default();
+            #[cfg(target_arch = "wasm32")]
             content.refresh(&repo.0, &path);
             let row = content.row_at_anchor(anchor.line, anchor.before);
-            let pending = content.pending();
+            content.expose(row);
+            let file = repo
+                .0
+                .files
+                .binary_search_by(|file| file.path.cmp(path))
+                .ok()
+                .map(|index| &repo.0.files[index]);
+            let pending = content.pending() || !content.matches(file);
             canvas.pending_reveal = pending.then_some(anchor.clone());
             let tile = &mut canvas.model_mut().tiles[index];
             tile.viewport.row = row;
             tile.positioned = !pending;
+            canvas.model_mut().place_tiles(size.x);
             let layout = view::Layout::new(size, canvas.model());
-            canvas.model_mut().pan = layout.reveal(index).to_array();
+            let pan = layout.reveal(&canvas.model().tiles, index);
+            canvas.model_mut().pan = pan.to_array();
             canvas.overview = false;
             canvas.focus = Some(anchor.path);
             canvas.edit();
@@ -420,7 +439,7 @@ fn browser_open(open: bool) {
 
 enum Gesture {
     Pan,
-    Resize(String, Vec2),
+    Resize(String, model::Axis, f32),
     Select(Selection),
 }
 
@@ -430,13 +449,18 @@ fn selection_at(
     repo: &Repository,
     point: Vec2,
 ) -> Option<Selection> {
-    let index = layout.tile_body_at(point)?;
+    let index = layout.tile_body_at(point, &canvas.model().tiles)?;
     let tile = &canvas.model().tiles[index];
     let content = canvas.contents.get(&tile.path)?;
-    let row = layout.row_at(point, index);
-    let lines = content.lines(content.first_visible(tile), row + 1);
-    let line = lines.get(row)?;
+    let row = layout.row_at(point, &canvas.model().tiles, index);
+    let lines = content.visible_rows(content.first_visible(tile), row + 1);
+    let content::Visible::Code(line) = lines.get(row)? else {
+        return None;
+    };
     let file = tile.file(repo)?;
+    if !content.matches(Some(file)) {
+        return None;
+    }
     let blob = if line.before {
         file.before.as_ref()?
     } else {
@@ -451,6 +475,7 @@ fn selection_at(
             end: line_number,
         },
         blob: blob.id.clone(),
+        section: line.section,
     })
 }
 
@@ -532,11 +557,11 @@ fn input(
         typing.clear();
     }
     if matches!(canvas.dialog, Dialog::None) && canvas.elapsed >= FULL {
-        let layout = view::Layout::for_view(size, canvas.model(), canvas.overview);
+        let layout = view::Layout::new(size, canvas.model());
         let cursor = window.cursor_position().unwrap_or(size / 2.);
-        let index = layout.tile_at(cursor);
+        let index = layout.tile_at(cursor, &canvas.model().tiles);
         let hovered = layout
-            .tile_body_at(cursor)
+            .tile_body_at(cursor, &canvas.model().tiles)
             .map(|index| canvas.model().tiles[index].path.clone());
         let control = keys.any_pressed([
             KeyCode::ControlLeft,
@@ -546,27 +571,26 @@ fn input(
         ]);
         let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
         if !canvas.overview && buttons.just_pressed(MouseButton::Left) && cursor.y >= layout.top {
-            let gesture = match index {
-                Some(index) if layout.grip_at(cursor, index) => {
-                    let tile = &canvas.model().tiles[index];
-                    Some(Gesture::Resize(
-                        tile.path.clone(),
-                        layout.rect(index).1 / layout.zoom,
-                    ))
-                }
-                _ if hovered.is_some() => {
-                    selection_at(&canvas, &layout, &repo.0, cursor).map(|selection| {
-                        actions.push(Action::Select(selection.clone()));
-                        Gesture::Select(selection)
-                    })
-                }
-                Some(index)
-                    if cursor.y - layout.top
-                        >= layout.rect(index).0.y + layout.rect(index).1.y - view::TILE_FOOTER =>
-                {
-                    None
-                }
-                _ => Some(Gesture::Pan),
+            let tiles = &canvas.model().tiles;
+            let gesture = if let Some((index, axis)) = layout.divider_at(cursor, tiles) {
+                let tile = &tiles[index];
+                Some(Gesture::Resize(
+                    tile.path.clone(),
+                    axis,
+                    tile.size[axis.along()],
+                ))
+            } else if hovered.is_some() {
+                selection_at(&canvas, &layout, &repo.0, cursor).map(|selection| {
+                    actions.push(Action::Select(selection.clone()));
+                    Gesture::Select(selection)
+                })
+            } else if index.is_some_and(|index| {
+                let (position, extent) = layout.rect(tiles, index);
+                cursor.y - layout.top >= position.y + extent.y - view::TILE_FOOTER
+            }) {
+                None
+            } else {
+                Some(Gesture::Pan)
             };
             *drag = gesture.map(|gesture| (gesture, cursor));
         }
@@ -578,19 +602,20 @@ fn input(
             *previous = cursor;
             match gesture {
                 Gesture::Pan => actions.push(Action::Pan(-delta)),
-                Gesture::Resize(path, dimensions) => {
-                    *dimensions = (*dimensions + delta / layout.zoom)
-                        .clamp(Vec2::new(280., 175.), Vec2::splat(2400.));
-                    actions.push(Action::Resize(path.clone(), *dimensions));
+                Gesture::Resize(path, axis, extent) => {
+                    *extent += delta[axis.along()] / layout.zoom;
+                    actions.push(Action::Resize(path.clone(), *axis, *extent));
                 }
                 Gesture::Select(origin) => {
                     if let Some(end) = selection_at(&canvas, &layout, &repo.0, cursor)
                         && origin.blob == end.blob
+                        && origin.section == end.section
                         && let Some(anchor) = origin.anchor.extend(&end.anchor)
                     {
                         actions.push(Action::Select(Selection {
                             anchor,
                             blob: origin.blob.clone(),
+                            section: origin.section,
                         }));
                     }
                 }
@@ -655,7 +680,7 @@ fn input(
             match event.phase {
                 TouchPhase::Started if touch_drag.is_none() => {
                     let path = layout
-                        .tile_body_at(event.position)
+                        .tile_body_at(event.position, &canvas.model().tiles)
                         .map(|index| canvas.model().tiles[index].path.clone());
                     *touch_drag = Some((event.id, event.position, 0., path));
                 }
@@ -736,6 +761,7 @@ fn input(
                 | Action::Scroll(..)
                 | Action::Columns(..)
                 | Action::Hunk(..)
+                | Action::ExpandContext(..)
                 | Action::Pan(_)
                 | Action::Zoom(..)
                 | Action::Resize(..)
@@ -780,7 +806,7 @@ fn apply(canvas: &mut Canvas, repo: &Repository, size: Vec2, action: Action) {
     ) {
         canvas.pending_reveal = None;
     }
-    canvas.dirty = true;
+    canvas.dirty |= !matches!(action, Action::Pan(_));
     match action {
         Action::Comment | Action::EditLines | Action::SaveComment => unreachable!(),
         #[cfg(not(target_arch = "wasm32"))]
@@ -814,6 +840,7 @@ fn apply(canvas: &mut Canvas, repo: &Repository, size: Vec2, action: Action) {
             if let Dialog::Canvases(Some(paths)) = dialog {
                 book.add_paths(repo, paths.iter().map(String::as_str));
             }
+            book.active_mut().place_tiles(size.x);
             canvas.focus = None;
             canvas.selection = None;
             canvas.edit();
@@ -830,6 +857,7 @@ fn apply(canvas: &mut Canvas, repo: &Repository, size: Vec2, action: Action) {
             match book.create(&canvas.name) {
                 Ok(()) => {
                     book.add_paths(repo, paths.iter().map(String::as_str));
+                    book.active_mut().place_tiles(size.x);
                     canvas.dialog = Dialog::None;
                     canvas.focus = None;
                     canvas.selection = None;
@@ -882,7 +910,8 @@ fn apply(canvas: &mut Canvas, repo: &Repository, size: Vec2, action: Action) {
                     .position(|tile| tile.path == path)
                 {
                     let reading = view::Layout::new(size, canvas.model());
-                    canvas.model_mut().pan = reading.reveal(index).to_array();
+                    let pan = reading.reveal(&canvas.model().tiles, index);
+                    canvas.model_mut().pan = pan.to_array();
                     canvas.edit();
                 }
             }
@@ -916,27 +945,24 @@ fn apply(canvas: &mut Canvas, repo: &Repository, size: Vec2, action: Action) {
                 canvas.edit();
             }
         }
+        Action::ExpandContext(path, range) => {
+            if let Some(content) = canvas.contents.get_mut(&path) {
+                content.expand(range);
+                canvas.focus = Some(path);
+            }
+        }
         Action::Scroll(path, delta) => {
-            let (rows, first) = canvas
-                .contents
-                .get(&path)
-                .map_or((0, 0), |content| (content.len(), content.row_at_line(None)));
-            if rows > 0
-                && delta != 0
-                && let Some(tile) = canvas
-                    .model_mut()
+            if let Some(content) = canvas.contents.get(&path)
+                && let Some(index) = canvas
+                    .model()
                     .tiles
-                    .iter_mut()
-                    .find(|tile| tile.path == path)
+                    .iter()
+                    .position(|tile| tile.path == path)
             {
-                let current = if tile.positioned {
-                    tile.viewport.row
-                } else {
-                    first
-                };
-                tile.viewport.row = current
-                    .saturating_add_signed(delta)
-                    .min(rows.saturating_sub(1));
+                let start = content.first_visible(&canvas.model().tiles[index]);
+                let row = content.scroll(start, delta);
+                let tile = &mut canvas.model_mut().tiles[index];
+                tile.viewport.row = row;
                 tile.positioned = true;
                 canvas.focus = Some(path);
                 canvas.edit();
@@ -958,19 +984,13 @@ fn apply(canvas: &mut Canvas, repo: &Repository, size: Vec2, action: Action) {
                 canvas.edit();
             }
         }
-        Action::Resize(path, extent) => {
-            if let Some(tile) = canvas
-                .model_mut()
-                .tiles
-                .iter_mut()
-                .find(|tile| tile.path == path)
-            {
-                tile.size = extent.to_array();
+        Action::Resize(path, axis, extent) => {
+            if canvas.model_mut().resize(&path, axis, extent) {
                 canvas.edit();
             }
         }
         Action::Zoom(delta, center) => {
-            let view = view::Layout::for_view(size, canvas.model(), canvas.overview);
+            let view = view::Layout::new(size, canvas.model());
             canvas.overview = false;
             let model = canvas.model_mut();
             model.zoom = (view.zoom * 1.22_f32.powf(delta)).clamp(0.025, 2.5);
@@ -981,7 +1001,8 @@ fn apply(canvas: &mut Canvas, repo: &Repository, size: Vec2, action: Action) {
         Action::Pan(delta) => {
             let model = canvas.model_mut();
             model.pan = view::Layout::clamp(Vec2::from_array(model.pan) + delta).to_array();
-            canvas.edit();
+            canvas.pan_dirty = true;
+            canvas.save_layout();
         }
         Action::Overview => canvas.overview = !canvas.overview,
     }

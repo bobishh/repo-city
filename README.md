@@ -325,14 +325,19 @@ unchanged file contents and diffs.
 ## Compare files on a canvas
 
 Press **Tab** and choose **Files → Open canvas**. The tablet screen expands to fill
-the window. Each tile shows the diff for a changed file in the open comparison.
+the window. Changed files show additions and deletions with up to two lines of
+nearby context. Click a collapsed range to read the surrounding source.
+Unchanged files show their source.
 Drag a file header or the space between files to pan. **WASD** and the arrow
-keys also pan. Drag the bottom-right grip to resize a file and reflow the grid.
-**Cmd/Ctrl +/−** zooms around the view. **Show all** fits the grid. **Reading view**
-restores the previous zoom and position, or select a file to open it there.
+keys also pan. Drag the right or bottom edge to resize a pane. A shared divider
+resizes both panes. Other panes keep their positions when the window resizes.
+**Cmd/Ctrl +/−** zooms around the view. **Show all** arranges file cards to fit the
+window. **Reading view** restores the previous layout and position. Select a card
+to return directly to its file.
 
 In a live desktop worktree, the watcher updates diffs and adds new changed files
-while the canvas is open. Drag across code lines to select a range. **Comment**
+while the canvas is open and preserves the positions of the files already there.
+Drag across code lines to select a range. **Comment**
 saves a review note on that side of the diff. Web comments use the signed-in
 pull request review. **Edit lines** opens the same private draft editor as the
 tablet's file preview. In a desktop worktree, **Apply to file** writes the selected

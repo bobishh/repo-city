@@ -4,6 +4,13 @@ use super::*;
 #[derive(Component)]
 pub(super) struct DialogControls;
 
+pub(super) fn inspection_enabled() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.document_element())
+        .is_some_and(|root| root.has_attribute("data-canvas-inspection"))
+}
+
 pub(super) fn publish(
     canvas: Res<Canvas>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -16,7 +23,7 @@ pub(super) fn publish(
     texts: Query<&Text>,
     mut previous: Local<Option<String>>,
 ) {
-    let controls = if canvas.target && canvas.elapsed >= FULL {
+    let controls = if canvas.target && canvas.elapsed >= FULL && inspection_enabled() {
         windows.single().ok().map(|window| {
             let viewport = Vec2::new(
                 window.physical_width() as f32,

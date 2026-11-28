@@ -112,3 +112,60 @@ fn named_canvases_restore_selection_order_and_viewports_with_scope_check() {
     assert!(reopened.select(0));
     assert_eq!(paths(&reopened), ["a"]);
 }
+
+#[test]
+fn layout_is_saved_and_worktree_refresh_never_moves_surviving_panels() {
+    let scope = Scope("layout".into());
+    let before = repo(
+        "worktree:before",
+        &[
+            ("a", Change::Modified),
+            ("b", Change::Modified),
+            ("c", Change::Modified),
+        ],
+    );
+    let after = repo(
+        "worktree:after",
+        &[
+            ("a", Change::Unchanged),
+            ("b", Change::Modified),
+            ("c", Change::Modified),
+            ("d", Change::Added),
+        ],
+    );
+    let mut book = Book::new(scope.clone(), &before);
+    assert!(book.active_mut().place_tiles(1280.));
+    let rect = book.active().tiles[1].rect().unwrap();
+    assert!(book.refresh(&after));
+    assert!(book.active_mut().place_tiles(750.));
+    assert_eq!(book.active().tiles[0].rect(), Some(rect));
+    let reopened = Book::decode(&scope, &book.encode().unwrap()).unwrap();
+    assert_eq!(reopened.active().tiles[0].rect(), Some(rect));
+    assert!(reopened.active().tiles[2].rect().is_some());
+}
+
+#[test]
+fn resizing_shares_only_the_touched_divider_and_respects_minimums() {
+    let repo = repo(
+        "head",
+        &[
+            ("a", Change::Modified),
+            ("b", Change::Modified),
+            ("c", Change::Modified),
+        ],
+    );
+    let mut book = Book::new(Scope("resize".into()), &repo);
+    let canvas = book.active_mut();
+    assert!(canvas.place_tiles(1280.));
+    let [a, b, c] = [0, 1, 2].map(|i| canvas.tiles[i].rect().unwrap());
+    assert!(canvas.resize("a", Axis::Horizontal, a.size.x + 160.));
+    let [left, right, below] = [0, 1, 2].map(|i| canvas.tiles[i].rect().unwrap());
+    assert_eq!(left.origin, a.origin);
+    assert_eq!(left.size.x, a.size.x + 160.);
+    assert_eq!(right.origin.x, b.origin.x + 160.);
+    assert_eq!(right.end(), b.end());
+    assert_eq!(below, c);
+    assert!(canvas.resize("a", Axis::Horizontal, 2400.));
+    assert_eq!(canvas.tiles[1].rect().unwrap().size.x, 280.);
+    assert_eq!(canvas.tiles[2].rect(), Some(c));
+}

@@ -2,6 +2,7 @@ use bevy::{
     camera::visibility::RenderLayers,
     picking::{Pickable, events::PointerClick, pointer::PointerButton},
     text::LineBreak,
+    ui::{UiTransform, Val2},
 };
 
 use super::{content::Rows, *};
@@ -12,8 +13,7 @@ pub(super) const TILE_FOOTER: f32 = 29.;
 fn toolbar_height(width: f32) -> f32 {
     if width >= 1060. { 44. } else { 82. }
 }
-const GAP: f32 = 12.;
-const BASE_TILE_HEIGHT: f32 = 394.;
+use model::GAP;
 const CACHED_TILES: usize = 32;
 const INK: Color = Color::srgb(0.89, 0.91, 0.94);
 const MUTED: Color = Color::srgb(0.64, 0.70, 0.78);
@@ -24,19 +24,69 @@ const CANVAS: Color = Color::srgb(0.033, 0.045, 0.065);
 mod layout;
 pub(super) use layout::Layout;
 
+#[derive(Default)]
+pub(super) struct RenderedTiles {
+    surface: Option<Surface>,
+    tiles: HashMap<String, Pane>,
+    header: Option<Header>,
+    dialog: bool,
+    empty: Option<Entity>,
+}
+
+#[derive(Clone, Copy)]
+struct Surface {
+    body: Entity,
+    board: Entity,
+    header: Entity,
+    overlay: Entity,
+}
+
+#[derive(PartialEq)]
+struct Header {
+    width: f32,
+    name: String,
+    zoom: f32,
+    overview: bool,
+    files: usize,
+    has_selection: bool,
+    status: String,
+    #[cfg(not(target_arch = "wasm32"))]
+    agent: Option<AgentLabels>,
+}
+
+struct Pane {
+    entity: Entity,
+    drawn: PaneKey,
+}
+
+#[derive(PartialEq)]
+struct PaneKey {
+    extent: Vec2,
+    zoom: f32,
+    overview: bool,
+    content: u64,
+    viewport: model::Viewport,
+    positioned: bool,
+    focus: bool,
+    selection: Option<review_notes::Anchor>,
+    change: Option<Change>,
+}
+
 pub(super) fn render(
     mut commands: Commands,
     mut canvas: ResMut<Canvas>,
     windows: Query<&Window, With<PrimaryWindow>>,
     pose: Query<&Transform, With<android::ViewTablet>>,
-    mut root_nodes: Query<&mut Node>,
+    mut nodes: Query<&mut Node>,
+    mut transforms: Query<&mut UiTransform>,
     repo: Res<Repo>,
+    mut rendered: Local<RenderedTiles>,
+    #[cfg(not(target_arch = "wasm32"))] mut worker: Local<content::Worker>,
     #[cfg(not(target_arch = "wasm32"))] session: Option<Res<agent_session::Session>>,
-    #[cfg(not(target_arch = "wasm32"))] mut agent_labels: Local<Option<AgentLabels>>,
 ) {
     if !canvas.is_open() || canvas.elapsed < RAISE || canvas.book.is_none() {
         if let Some(root) = canvas.root
-            && let Ok(mut node) = root_nodes.get_mut(root)
+            && let Ok(mut node) = nodes.get_mut(root)
         {
             node.display = Display::None;
         }
@@ -75,10 +125,35 @@ pub(super) fn render(
     canvas.document_feedback = None;
     let mut redraw = canvas.dirty;
     #[cfg(not(target_arch = "wasm32"))]
+    if let Some((scope, batch)) = worker.take() {
+        redraw = true;
+        if canvas
+            .book
+            .as_ref()
+            .is_some_and(|book| book.scope() == &scope)
+        {
+            for (path, content) in batch {
+                let file = repo
+                    .0
+                    .files
+                    .binary_search_by(|file| file.path.cmp(&path))
+                    .ok()
+                    .map(|index| &repo.0.files[index]);
+                if content.matches(file) {
+                    canvas.contents.insert(path, content);
+                }
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let agent = session.as_deref().map(AgentLabels::new);
+    #[cfg(not(target_arch = "wasm32"))]
     {
-        let labels = session.as_deref().map(AgentLabels::new);
-        redraw |= *agent_labels != labels;
-        *agent_labels = labels;
+        redraw |= rendered
+            .header
+            .as_ref()
+            .and_then(|header| header.agent.as_ref())
+            != agent.as_ref();
     }
     let (root, body) = match (canvas.root, canvas.body) {
         (Some(root), Some(body)) => (root, body),
@@ -132,7 +207,7 @@ pub(super) fn render(
         node.width = px(extent.x);
         node.height = px(extent.y);
     };
-    if let Ok(mut node) = root_nodes.get_mut(root) {
+    if let Ok(mut node) = nodes.get_mut(root) {
         if node.display != Display::Flex
             || node.left != px(bounds.0.x)
             || node.top != px(bounds.0.y)
@@ -148,10 +223,13 @@ pub(super) fn render(
             }
         });
     }
-    if !redraw {
+    let pan_dirty = std::mem::take(&mut canvas.pan_dirty);
+    if !redraw && !pan_dirty {
         return;
     }
-    if let Ok(mut node) = root_nodes.get_mut(body) {
+    if let Ok(mut node) = nodes.get_mut(body)
+        && (node.width != px(size.x) || node.height != px(size.y))
+    {
         node.width = px(size.x);
         node.height = px(size.y);
     }
@@ -162,7 +240,7 @@ pub(super) fn render(
         .tiles
         .iter()
         .enumerate()
-        .filter(|(index, _)| layout.visible(*index))
+        .filter(|(index, _)| layout.visible(&canvas.model().tiles, *index))
         .map(|(index, tile)| (index, tile.path.clone()))
         .collect::<Vec<_>>();
     if canvas.contents.len() > CACHED_TILES {
@@ -175,7 +253,24 @@ pub(super) fn render(
             visible_paths.contains(path.as_str()) || focus.as_ref() == Some(path)
         });
     }
-    for (_, path) in visible.iter().filter(|_| layout.zoom >= 0.42) {
+    let previews = if canvas.overview {
+        visible
+            .iter()
+            .filter(|(index, _)| {
+                let (_, extent) = layout.rect(&canvas.model().tiles, *index);
+                extent.x >= 200. && extent.y >= 110.
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    } else if layout.zoom >= 0.42 {
+        visible.clone()
+    } else {
+        Vec::new()
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    worker.schedule(&canvas, &repo.0, &previews);
+    #[cfg(target_arch = "wasm32")]
+    for (_, path) in &previews {
         canvas
             .contents
             .entry(path.clone())
@@ -185,9 +280,16 @@ pub(super) fn render(
     if let Some(anchor) = canvas.pending_reveal.as_ref()
         && let Some(content) = canvas.contents.get(&anchor.path)
         && !content.pending()
+        && canvas
+            .model()
+            .tiles
+            .iter()
+            .find(|tile| tile.path == anchor.path)
+            .is_some_and(|tile| content.matches(tile.file(&repo.0)))
     {
         let row = content.row_at_anchor(anchor.line, anchor.before);
         let path = canvas.pending_reveal.take().unwrap().path;
+        canvas.contents.get_mut(&path).unwrap().expose(row);
         if let Some(tile) = canvas
             .model_mut()
             .tiles
@@ -200,49 +302,190 @@ pub(super) fn render(
             canvas.dirty = false;
         }
     }
-    commands
-        .entity(body)
-        .despawn_children()
-        .with_children(|parent| {
-            toolbar(
-                parent,
-                &canvas,
-                &layout,
-                #[cfg(not(target_arch = "wasm32"))]
-                agent_labels.as_ref(),
-            );
-            parent
-                .spawn(Node {
+    let surface = if let Some(surface) = rendered.surface.filter(|surface| surface.body == body) {
+        surface
+    } else {
+        let header = commands.spawn((ChildOf(body), Node::default())).id();
+        let board = commands
+            .spawn((
+                ChildOf(body),
+                Node {
                     width: percent(100.),
                     height: px(layout.viewport.y),
                     overflow: Overflow::clip(),
                     ..default()
-                })
+                },
+            ))
+            .id();
+        let overlay = commands
+            .spawn((
+                ChildOf(body),
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: percent(100.),
+                    height: percent(100.),
+                    ..default()
+                },
+                Pickable::IGNORE,
+            ))
+            .id();
+        let surface = Surface {
+            body,
+            header,
+            board,
+            overlay,
+        };
+        *rendered = RenderedTiles {
+            surface: Some(surface),
+            ..default()
+        };
+        surface
+    };
+    if let Ok(mut board) = nodes.get_mut(surface.board)
+        && board.height != px(layout.viewport.y)
+    {
+        board.height = px(layout.viewport.y);
+    }
+    if redraw || rendered.header.is_none() {
+        let header = Header {
+            width: size.x,
+            name: canvas.model().name.clone(),
+            zoom: layout.zoom,
+            overview: canvas.overview,
+            files: canvas.model().tiles.len(),
+            has_selection: canvas.selection.is_some(),
+            status: canvas.status.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            agent,
+        };
+        if rendered.header.as_ref() != Some(&header) {
+            commands
+                .entity(surface.header)
+                .despawn_children()
                 .with_children(|parent| {
-                    if canvas.model().tiles.is_empty() {
-                        parent.spawn((
-                            label("No files on this canvas", 15., MUTED),
-                            Node {
-                                margin: UiRect::all(px(18.)),
-                                ..default()
-                            },
-                        ));
-                    }
-                    for (index, path) in &visible {
-                        let tile = &canvas.model().tiles[*index];
-                        let content = canvas.contents.get(path);
-                        panel(parent, &canvas, &layout, *index, tile, content);
-                    }
+                    toolbar(
+                        parent,
+                        &canvas,
+                        &layout,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        header.agent.as_ref(),
+                    );
                 });
-            if let Dialog::Document(document) = &canvas.dialog {
-                let (field, feedback) = document_panel(parent, document, &repo.0, size);
-                canvas.document_input = field;
-                canvas.document_feedback = feedback;
-            } else if !matches!(canvas.dialog, Dialog::None) {
-                dialog(parent, &canvas, &repo.0, size);
-            }
-        });
+            rendered.header = Some(header);
+        }
+    }
+    let has_dialog = !matches!(canvas.dialog, Dialog::None);
+    if (redraw && has_dialog) || rendered.dialog != has_dialog {
+        commands
+            .entity(surface.overlay)
+            .despawn_children()
+            .with_children(|parent| {
+                if let Dialog::Document(document) = &canvas.dialog {
+                    let (field, feedback) = document_panel(parent, document, &repo.0, size);
+                    canvas.document_input = field;
+                    canvas.document_feedback = feedback;
+                } else if has_dialog {
+                    dialog(parent, &canvas, &repo.0, size);
+                }
+            });
+        rendered.dialog = has_dialog;
+    }
+    if canvas.model().tiles.is_empty() && rendered.empty.is_none() {
+        let empty = commands
+            .spawn((
+                ChildOf(surface.board),
+                label("No files on this canvas", 15., MUTED),
+                Node {
+                    margin: UiRect::all(px(18.)),
+                    ..default()
+                },
+            ))
+            .id();
+        rendered.empty = Some(empty);
+    } else if !canvas.model().tiles.is_empty()
+        && let Some(empty) = rendered.empty.take()
+    {
+        commands.entity(empty).despawn();
+    }
+    sync_panes(
+        &mut commands,
+        &mut transforms,
+        &mut rendered.tiles,
+        surface.board,
+        &canvas,
+        &layout,
+        &repo.0,
+        &visible,
+    );
     #[cfg(target_arch = "wasm32")]
+    if geometry::inspection_enabled() {
+        publish_view(&canvas, &layout);
+    }
+}
+
+fn sync_panes(
+    commands: &mut Commands,
+    transforms: &mut Query<&mut UiTransform>,
+    panes: &mut HashMap<String, Pane>,
+    board: Entity,
+    canvas: &Canvas,
+    layout: &Layout,
+    repo: &Repository,
+    visible: &[(usize, String)],
+) {
+    let visible_paths: HashSet<_> = visible.iter().map(|(_, path)| path.as_str()).collect();
+    panes.retain(|path, pane| {
+        let keep = visible_paths.contains(path.as_str());
+        if !keep {
+            commands.entity(pane.entity).despawn();
+        }
+        keep
+    });
+    commands.entity(board).with_children(|parent| {
+        for (index, path) in visible {
+            let tile = &canvas.model().tiles[*index];
+            let file = tile.file(repo);
+            let content = canvas
+                .contents
+                .get(path)
+                .filter(|content| content.matches(file));
+            let (point, extent) = layout.rect(&canvas.model().tiles, *index);
+            let change = file.map(|file| &file.change);
+            let drawn = PaneKey {
+                extent,
+                zoom: layout.zoom,
+                overview: canvas.overview,
+                content: content.map_or(0, |content| content.revision),
+                viewport: tile.viewport,
+                positioned: tile.positioned,
+                focus: canvas.focus.as_ref() == Some(path),
+                selection: canvas
+                    .selection
+                    .as_ref()
+                    .filter(|selection| selection.anchor.path == *path)
+                    .map(|s| s.anchor.clone()),
+                change: change.cloned(),
+            };
+            if let Some(existing) = panes.get(path) {
+                if existing.drawn == drawn {
+                    if let Ok(mut transform) = transforms.get_mut(existing.entity) {
+                        let translation = Val2::new(px(point.x), px(point.y));
+                        if transform.translation != translation {
+                            transform.translation = translation;
+                        }
+                    }
+                    continue;
+                }
+                parent.commands().entity(existing.entity).despawn();
+            }
+            let entity = panel(parent, canvas, layout, *index, tile, content, change);
+            panes.insert(path.clone(), Pane { entity, drawn });
+        }
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+fn publish_view(canvas: &Canvas, layout: &Layout) {
     if let Some(document) = web_sys::window().and_then(|window| window.document())
         && let Some(element) = document.get_element_by_id("repo-city")
     {
@@ -258,15 +501,19 @@ pub(super) fn render(
             &serde_json::to_string(&paths).unwrap_or_default(),
         );
         let _ = element.set_attribute("data-diff-canvas-status", &canvas.status);
-        let _ = element.toggle_attribute_with_force("data-diff-canvas-editor", show_document);
+        let _ = element.toggle_attribute_with_force(
+            "data-diff-canvas-editor",
+            matches!(canvas.dialog, Dialog::Document(_)),
+        );
         let _ = element.set_attribute(
             "data-diff-canvas-layout",
             &serde_json::json!({
                 "pan": layout.pan.to_array(),
                 "zoom": layout.zoom,
                 "overview": canvas.overview,
+                "viewport": layout.viewport.to_array(),
                 "tiles": (0..paths.len()).map(|index| {
-                    let (point, extent) = layout.rect(index);
+                    let (point, extent) = layout.rect(&canvas.model().tiles, index);
                     [point.x, point.y + layout.top, extent.x, extent.y]
                 }).collect::<Vec<_>>(),
             })
@@ -443,33 +690,70 @@ fn panel(
     index: usize,
     tile: &model::Tile,
     content: Option<&Content>,
-) {
-    let (point, extent) = layout.rect(index);
+    change: Option<&Change>,
+) -> Entity {
+    let (point, extent) = layout.rect(&canvas.model().tiles, index);
     let zoom = layout.zoom;
     let selected = canvas.focus.as_deref() == Some(tile.path.as_str());
-    if zoom < 0.42 || extent.y < TILE_HEADER + TILE_FOOTER + 18. {
-        parent
+    if canvas.overview || zoom < 0.42 || extent.y < TILE_HEADER + TILE_FOOTER + 18. {
+        let (folder, name) = tile.path.rsplit_once('/').unwrap_or(("", &tile.path));
+        let directory = folder.rsplit('/').next().unwrap_or(folder);
+        let (accent, kind) = match change {
+            Some(Change::Added) => (Color::srgb(0.34, 0.75, 0.56), "Added"),
+            Some(Change::Removed) => (Color::srgb(0.88, 0.49, 0.57), "Removed"),
+            Some(Change::Unchanged) => (MUTED, "Source"),
+            Some(_) => (Color::srgb(0.48, 0.68, 0.92), "Changed"),
+            None => (MUTED, "Unavailable"),
+        };
+        return parent
             .spawn((
                 Node {
                     position_type: PositionType::Absolute,
-                    left: px(point.x),
-                    top: px(point.y),
+                    left: px(0.),
+                    top: px(0.),
                     width: px(extent.x),
                     height: px(extent.y),
                     overflow: Overflow::clip(),
-                    padding: UiRect::all(px((8. * zoom).min(3.))),
-                    ..default()
+                    padding: UiRect::all(px((8. * zoom).min(10.))),
+                    border: UiRect::left(px((3. * zoom).max(1.))),
+                    ..container(FlexDirection::Column, 3.)
                 },
+                UiTransform::from_xy(px(point.x), px(point.y)),
                 BackgroundColor(if selected {
                     Color::srgb(0.19, 0.32, 0.49)
                 } else {
                     CHROME
                 }),
+                BorderColor::all(accent),
                 Action::Tile(tile.path.clone()),
             ))
             .observe(clicked)
-            .with_child(label(tile.path.clone(), (32. * zoom).clamp(3., 13.), INK));
-        return;
+            .with_children(|card| {
+                card.spawn(label(name, (16. * zoom).clamp(9., 18.), INK));
+                if extent.y >= 40. {
+                    let detail = if directory.is_empty() {
+                        kind.to_owned()
+                    } else {
+                        format!("{kind} · {directory}")
+                    };
+                    card.spawn(label(detail, (11. * zoom).clamp(6., 13.), accent));
+                }
+                if extent.x >= 200. && extent.y >= 110. {
+                    if let Some(content) = content {
+                        let count = ((extent.y - 44.) / (17. * zoom)).floor().max(1.) as usize;
+                        let start = content.first_visible(tile);
+                        for line in content.lines(start, count.min(40)) {
+                            row(card, line, 0, zoom, false);
+                        }
+                        if let Rows::Error(error) = &content.rows {
+                            card.spawn(label(error, (12. * zoom).clamp(7., 13.), MUTED));
+                        }
+                    } else {
+                        card.spawn(label("Loading source…", (12. * zoom).clamp(7., 13.), MUTED));
+                    }
+                }
+            })
+            .id();
     }
     let empty = Content::default();
     let content = content.unwrap_or(&empty);
@@ -478,14 +762,15 @@ fn panel(
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                left: px(point.x),
-                top: px(point.y),
+                left: px(0.),
+                top: px(0.),
                 width: px(extent.x),
                 height: px(extent.y),
                 overflow: Overflow::clip(),
                 border: UiRect::all(px(1.)),
                 ..container(FlexDirection::Column, 0.)
             },
+            UiTransform::from_xy(px(point.x), px(point.y)),
             BorderColor::all(if selected {
                 Color::srgb(0.45, 0.70, 0.99)
             } else {
@@ -540,17 +825,27 @@ fn panel(
                     let count = ((extent.y - TILE_HEADER - TILE_FOOTER - 2.) / (17. * zoom))
                         .ceil()
                         .max(1.) as usize;
-                    let lines = content.lines(top, count);
+                    let lines = content.visible_rows(top, count);
                     if lines.is_empty() {
                         let status = match &content.rows {
                             Rows::Diff(_) => "No text changes",
                             Rows::Source(_) => "Empty source",
                             Rows::Error(error) => error,
-                            Rows::Missing => "File unavailable in this snapshot",
+                            Rows::Missing if change.is_none() => {
+                                "File unavailable in this snapshot"
+                            }
+                            Rows::Missing => "Loading source…",
                         };
                         parent.spawn(label(status, 13., MUTED));
                     }
-                    for line in lines {
+                    for display in lines {
+                        let line = match display {
+                            content::Visible::Code(line) => line,
+                            content::Visible::Gap(range) => {
+                                context_button(parent, &tile.path, range, zoom);
+                                continue;
+                            }
+                        };
                         let selected = canvas.selection.as_ref().is_some_and(|selection| {
                             let anchor = &selection.anchor;
                             anchor.path == tile.path
@@ -572,21 +867,59 @@ fn panel(
                         button(parent, "‹ hunk", Action::Hunk(tile.path.clone(), false));
                         button(parent, "hunk ›", Action::Hunk(tile.path.clone(), true));
                     }
-                    parent
-                        .spawn((
-                            Node {
-                                position_type: PositionType::Absolute,
-                                right: px(2.),
-                                bottom: px(0.),
-                                width: px(16.),
-                                height: px(16.),
-                                ..default()
-                            },
-                            Pickable::IGNORE,
-                        ))
-                        .with_child(label("◢", 11., MUTED));
                 });
-        });
+            for position in [
+                Node {
+                    right: px(0.),
+                    top: percent(50.),
+                    width: px(3.),
+                    height: px(24.),
+                    ..default()
+                },
+                Node {
+                    left: percent(50.),
+                    bottom: px(0.),
+                    width: px(24.),
+                    height: px(3.),
+                    ..default()
+                },
+            ] {
+                parent.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        ..position
+                    },
+                    BackgroundColor(MUTED.with_alpha(0.55)),
+                    Pickable::IGNORE,
+                ));
+            }
+        })
+        .id()
+}
+
+fn context_button(
+    parent: &mut ChildSpawnerCommands,
+    path: &str,
+    range: std::ops::Range<usize>,
+    zoom: f32,
+) {
+    let caption = format!("Show {} unchanged lines", range.len());
+    parent
+        .spawn((
+            bevy::ui_widgets::Button,
+            Node {
+                width: percent(100.),
+                height: px(17. * zoom),
+                min_height: px(17. * zoom),
+                padding: UiRect::horizontal(px(6.)),
+                overflow: Overflow::clip(),
+                ..default()
+            },
+            BackgroundColor(CHROME),
+            Action::ExpandContext(path.into(), range),
+        ))
+        .observe(clicked)
+        .with_child(label(caption, 12. * zoom, MUTED));
 }
 
 fn row(
@@ -891,11 +1224,12 @@ mod tests {
             tiles: Vec::new(),
             pan: [-300., -200.],
             zoom: 1.,
+            layout_width: None,
         };
         let layout = Layout::new(Vec2::new(1280., 800.), &model);
         assert_eq!(layout.pan, Vec2::new(-300., -200.));
         assert_eq!(Layout::clamp(Vec2::new(600., 800.)), Vec2::new(600., 800.));
         assert_eq!(Layout::clamp(Vec2::ZERO), Vec2::ZERO);
-        assert_eq!(layout.tile_at(Vec2::new(10., 80.)), None);
+        assert_eq!(layout.tile_at(Vec2::new(10., 80.), &model.tiles), None);
     }
 }

@@ -4,6 +4,7 @@ use super::*;
 pub(super) struct Selection {
     pub anchor: review_notes::Anchor,
     pub blob: String,
+    pub section: usize,
 }
 
 impl Selection {
