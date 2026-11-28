@@ -14,6 +14,7 @@ use pulldown_cmark::{Event, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::VecDeque,
     fs::OpenOptions,
     io::Write,
     ops::Range,
@@ -365,6 +366,7 @@ pub(super) struct Navigation {
     next_poll: f64,
     followed: Option<(PathBuf, u64)>,
     next_follow: f64,
+    canvas_follow: EditFollower,
 }
 impl Navigation {
     fn follow_activity(
@@ -415,6 +417,71 @@ impl Navigation {
         accept && proposal.current(repo, process, timestamp) && self.follow(&proposal.target, repo)
     }
 }
+
+#[derive(Default)]
+struct EditFollower {
+    root: PathBuf,
+    followed: VecDeque<(String, String, u64)>,
+}
+
+impl EditFollower {
+    fn target<'a>(
+        &mut self,
+        repo: &Repository,
+        timeline: &'a agent_engine::activity::Timeline,
+        elapsed: f64,
+        timestamp: u64,
+        touched_at: impl Fn(&str) -> Option<f64>,
+    ) -> Option<&'a agent_engine::activity::Location> {
+        use agent_engine::activity::{Kind, Phase};
+
+        if !repo.is_worktree() {
+            return None;
+        }
+        if self.root != repo.root {
+            self.root.clone_from(&repo.root);
+            self.followed.clear();
+        }
+
+        // A completed edit can arrive before the filesystem watcher publishes its snapshot.
+        const FRESH_SECONDS: u64 = 6;
+        let completed: Vec<_> = timeline
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.phase == Phase::Completed
+                    && entry.details.kind == Kind::Edit
+                    && timestamp.saturating_sub(entry.updated) <= FRESH_SECONDS
+                    && !self.followed.iter().any(|(thread, item, serial)| {
+                        *serial == entry.serial && thread == &entry.thread && item == &entry.item
+                    })
+            })
+            .filter_map(|entry| {
+                let location = entry.details.locations.iter().find(|location| {
+                    touched_at(&location.path)
+                        .is_some_and(|touched| elapsed - touched <= FRESH_SECONDS as f64)
+                        && repo.files.iter().any(|file| {
+                            file.path == location.path && file.change != Change::Unchanged
+                        })
+                })?;
+                Some((entry, location))
+            })
+            .collect();
+        let (_, location) = completed
+            .iter()
+            .max_by_key(|(entry, _)| (entry.updated, entry.serial))?;
+        self.followed.extend(
+            completed
+                .iter()
+                .map(|(entry, _)| (entry.thread.clone(), entry.item.clone(), entry.serial)),
+        );
+        while self.followed.len() > 96 {
+            self.followed.pop_front();
+        }
+        Some(location)
+    }
+}
+
 impl native_panel::Actions<Decision> for Navigation {
     fn activate(&mut self, action: Decision) {
         self.decision = Some(action);
@@ -506,6 +573,8 @@ fn update(
     mut navigation: ResMut<Navigation>,
     mut session: ResMut<agent_session::Session>,
     city: Res<city_navigation::Navigation>,
+    mut canvas: Option<ResMut<canvas::Canvas>>,
+    live: Option<Res<live_worktree::Live>>,
     mut toasts: Query<&mut Node, With<Toast>>,
     mut labels: Query<&mut Text, With<ToastText>>,
 ) {
@@ -537,7 +606,9 @@ fn update(
     {
         navigation.pending = None;
     }
+    let canvas_open = canvas.as_ref().is_some_and(|canvas| canvas.is_open());
     let keyboard_allowed = windows.single().is_ok_and(|window| window.focused)
+        && !canvas.as_ref().is_some_and(|canvas| canvas.typing())
         && !terminal.active
         && !search.blocks_controls()
         && !focus.get().is_some_and(|entity| inputs.contains(entity))
@@ -552,6 +623,7 @@ fn update(
             KeyCode::ShiftRight,
         ]);
     if keyboard_allowed
+        && !canvas_open
         && keys.any_just_pressed([
             KeyCode::Escape,
             KeyCode::KeyW,
@@ -567,8 +639,30 @@ fn update(
     {
         session.pause_following();
     }
-    if keyboard_allowed && session.follows_agent() && !city.guides_camera() {
-        if let Some(activity) = session.file_activity()
+    if canvas_open
+        && let Some(activity) = session.file_activity()
+        && navigation
+            .followed
+            .as_ref()
+            .is_none_or(|(root, serial)| root != &repo.0.root || *serial != activity.serial)
+    {
+        navigation.followed = Some((repo.0.root.clone(), activity.serial));
+    }
+    if keyboard_allowed && session.follows_agent() {
+        if let Some(canvas) = canvas.as_deref_mut().filter(|canvas| canvas.is_open()) {
+            if let (Some(timeline), Some(live)) = (session.timeline(&repo.0.root), live.as_deref())
+                && let Some(location) = navigation.canvas_follow.target(
+                    &repo.0,
+                    timeline,
+                    time.elapsed_secs_f64(),
+                    timestamp / 1_000,
+                    |path| live.touched_at(path),
+                )
+            {
+                canvas.show_change(&location.path, Some(location.line));
+            }
+        } else if !city.guides_camera()
+            && let Some(activity) = session.file_activity()
             && navigation.follow_activity(&repo.0, activity, time.elapsed_secs_f64())
         {
             tablet.request_close();
@@ -591,7 +685,17 @@ fn update(
             timestamp,
         )
     {
-        tablet.request_close();
+        if let Some(canvas) = canvas.as_deref_mut().filter(|canvas| canvas.is_open()) {
+            if navigation
+                .destination
+                .as_ref()
+                .is_some_and(|target| canvas.show_anchor(&target.path, target.line, target.before))
+            {
+                navigation.destination = None;
+            }
+        } else {
+            tablet.request_close();
+        }
     }
     for mut toast in &mut toasts {
         let display = if navigation.pending.is_some() {
@@ -1496,6 +1600,46 @@ mod tests {
         activity.path = "../other/private.rs".into();
         assert!(!navigation.follow_activity(&repo, &activity, 4.));
         assert!(navigation.take_destination(&repo).is_none());
+    }
+
+    #[test]
+    fn canvas_follow_requires_a_confirmed_changed_path_and_consumes_completed_edits_once() {
+        use agent_engine::activity::{Details, Kind, Location, Phase, Timeline};
+
+        let mut repo = repository();
+        repo.revision = "worktree:head".into();
+        repo.files[0].change = Change::Modified;
+        let mut timeline = Timeline::default();
+        let location = Location {
+            path: repo.files[0].path.clone(),
+            line: 7,
+        };
+        let mut read = Details::new(Kind::Command, "Read");
+        read.locations.push(location.clone());
+        timeline.record("thread", "read", read, Phase::Completed);
+        let mut edit = Details::new(Kind::Edit, "Edit");
+        edit.locations.push(Location {
+            path: repo.files[1].path.clone(),
+            line: 1,
+        });
+        edit.locations.push(location.clone());
+        timeline.record("thread", "edit", edit.clone(), Phase::Running);
+
+        let mut follow = EditFollower::default();
+        let time = agent_engine::activity::now();
+        let touched = |_: &str| Some(19.);
+        assert_eq!(follow.target(&repo, &timeline, 20., time, touched), None);
+        timeline.record("thread", "edit", edit, Phase::Completed);
+        assert_eq!(follow.target(&repo, &timeline, 20., time, |_| None), None);
+        assert_eq!(
+            follow.target(&repo, &timeline, 20., time, |_| Some(1.)),
+            None
+        );
+        assert_eq!(
+            follow.target(&repo, &timeline, 20., time, touched),
+            Some(&location)
+        );
+        assert_eq!(follow.target(&repo, &timeline, 20., time, touched), None);
     }
 
     #[test]

@@ -679,13 +679,15 @@ fn tablet_grip(w: &Workshop, commands: &mut Commands, tablet: Entity, side: f32)
 
 pub(super) fn show_tablet(
     review: Res<review_notes::Review>,
+    canvas: Option<Res<super::canvas::Canvas>>,
     time: Res<Time>,
     mut amount: Local<f32>,
     mut mirror: Query<&mut Visibility, (With<MirrorTablet>, Without<ViewTablet>)>,
     mut view: Query<(&mut Visibility, &mut Transform), With<ViewTablet>>,
     window: Query<&Window, With<PrimaryWindow>>,
 ) {
-    let direction = if review.tablet_open { 1. } else { -1. };
+    let raised = review.tablet_open || canvas.is_some_and(|canvas| canvas.raises_tablet());
+    let direction = if raised { 1. } else { -1. };
     *amount = (*amount + direction * time.delta_secs() / 0.38).clamp(0., 1.);
     for mut visibility in &mut mirror {
         visibility.set_if_neq(if review.tablet_open {

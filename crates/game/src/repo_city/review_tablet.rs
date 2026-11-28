@@ -283,6 +283,8 @@ impl Page {
 enum Action {
     Visit(usize),
     VisitMatch { index: usize, line: usize },
+    OpenCanvas,
+    ChooseCanvasFiles,
     Filter(FileFilter),
     Page(usize),
     Switch(Page),
@@ -666,7 +668,7 @@ pub(super) fn update(
         mut images,
         mut terminal,
         mut trace,
-        (editors, mut agent, party, windows, world, mut input),
+        (editors, mut agent, party, windows, world, mut input, canvas_state),
     ): (
         ResMut<reading::Settings>,
         ResMut<guide::Tour>,
@@ -690,9 +692,15 @@ pub(super) fn update(
             Query<&Window, With<PrimaryWindow>>,
             Option<Res<WorldSet>>,
             MessageReader<KeyboardInput>,
+            Option<Res<canvas::Canvas>>,
         ),
     ),
 ) {
+    if canvas::active(canvas_state) {
+        review.blocked = true;
+        review.tablet_open = tablet.is_open();
+        return;
+    }
     let editing = focus
         .get()
         .is_some_and(|entity| fields.contains(entity) || editors.contains(entity));
@@ -934,6 +942,8 @@ pub(super) fn update(
             return;
         }
         match action {
+            Some(Action::OpenCanvas) => canvas::open(&mut commands, canvas::Open::Changed),
+            Some(Action::ChooseCanvasFiles) => canvas::open(&mut commands, canvas::Open::Choose),
             Some(Action::DocumentPage(page)) => {
                 if let Some(document) = tablet.document.as_mut() {
                     document.page = page;
@@ -1765,6 +1775,8 @@ fn draw(
             .spawn((Node {
                 flex_direction: FlexDirection::Row,
                 column_gap: px(6.),
+                row_gap: px(6.),
+                flex_wrap: FlexWrap::Wrap,
                 ..default()
             },))
             .with_children(|bar| {
@@ -1780,6 +1792,13 @@ fn draw(
                             .insert(BackgroundColor(Color::srgb_u8(23, 79, 87)));
                     }
                 }
+                add_button(bar, "Open canvas", Action::OpenCanvas, &mut tab);
+                add_button(
+                    bar,
+                    "Choose files for canvas",
+                    Action::ChooseCanvasFiles,
+                    &mut tab,
+                );
             });
         draw_file_pagination(
             parent,
@@ -2559,6 +2578,17 @@ mod tests {
             .single(world)
             .unwrap();
         assert_eq!(heading.0, "Live worktree");
+        let mut actions = world.query::<&Action>();
+        assert!(
+            actions
+                .iter(world)
+                .any(|action| matches!(action, Action::OpenCanvas))
+        );
+        assert!(
+            actions
+                .iter(world)
+                .any(|action| matches!(action, Action::ChooseCanvasFiles))
+        );
     }
 
     #[test]

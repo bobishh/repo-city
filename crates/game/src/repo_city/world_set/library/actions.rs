@@ -10,6 +10,7 @@ pub(super) struct Gesture {
 }
 
 pub(super) fn update(
+    mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
@@ -20,11 +21,12 @@ pub(super) fn update(
     mut menu: ResMut<city_menu::Menu>,
     mut library: ResMut<Library>,
     (aim, nearest, mut map): (Res<aim::Aim>, Res<Nearest>, ResMut<map::Map>),
-    (repo, explorer, mut review, mut filter): (
+    (repo, explorer, mut review, mut filter, canvas_state): (
         Res<Repo>,
         Res<Explorer>,
         ResMut<review_notes::Review>,
         ResMut<file_facade::ChangesOnly>,
+        Option<Res<canvas::Canvas>>,
     ),
     mut view: city_menu::MenuView,
     #[cfg(not(target_arch = "wasm32"))] picker: Res<repository_picker::RepositoryPicker>,
@@ -35,7 +37,8 @@ pub(super) fn update(
         || map.open()
         || review.blocked
         || review.tablet_open
-        || library.input.is_some();
+        || library.input.is_some()
+        || canvas::active(canvas_state);
     #[cfg(not(target_arch = "wasm32"))]
     let blocked = blocked || picker.blocks_controls();
     if let Some(drag) = &mut gesture.drag {
@@ -76,12 +79,14 @@ pub(super) fn update(
         return;
     }
 
-    let selected = match gesture.aim {
+    let aimed_file = match gesture.aim {
         Some(aim::Target::File(index) | aim::Target::Line { file: index, .. }) => Some(index),
-        _ if library.reader.is_some() => Some(explorer.selected),
         _ => None,
-    }
-    .and_then(|index| repo.0.files.get(index).map(|file| (index, file)));
+    };
+    let selected = aimed_file
+        .or_else(|| library.reader.is_some().then_some(explorer.selected))
+        .and_then(|index| repo.0.files.get(index).map(|file| (index, file)));
+    let canvas_file = aimed_file.and_then(|index| repo.0.files.get(index));
     let folder = match gesture.aim {
         Some(aim::Target::Cabinet(index)) => Some(index),
         _ => selected.and_then(|(_, file)| {
@@ -100,6 +105,7 @@ pub(super) fn update(
         (Action::Notes, true),
         (Action::FindText, library.reader.is_some()),
         (Action::ChangesOnly, filter.available),
+        (Action::AddToCanvas, canvas_file.is_some()),
         (Action::Folder, folder.is_some()),
         (Action::Preview, selected.is_some()),
     ]
@@ -147,6 +153,10 @@ pub(super) fn update(
                     review.request = Some(review_notes::Panel::Aimed);
                 }
                 Action::ChangesOnly => filter.toggle(),
+                Action::AddToCanvas => {
+                    let file = canvas_file.expect("available aimed file");
+                    canvas::open(&mut commands, canvas::Open::Files(vec![file.path.clone()]));
+                }
                 Action::Folder => map.show_folder(folder.expect("available folder")),
                 Action::Preview => {
                     let (index, file) = selected.expect("available file");

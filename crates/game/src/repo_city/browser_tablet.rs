@@ -14,6 +14,8 @@ extern "C" {
     fn take_view() -> String;
     #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = tabletAction)]
     fn send_action(value: &str);
+    #[wasm_bindgen(js_namespace = ["globalThis", "repoCity"], js_name = takeCanvasRequest)]
+    fn take_canvas_request() -> String;
 }
 
 #[derive(Clone, Default, Deserialize)]
@@ -403,14 +405,18 @@ pub(super) fn update(
     keys: Res<ButtonInput<KeyCode>>,
     mut images: ResMut<Assets<Image>>,
     mut touch_scroll: Option<ResMut<tablet_display::TouchScroll>>,
-    (mut input, world, review, menu, search): (
+    (mut input, world, review, menu, search, canvas_state): (
         MessageReader<KeyboardInput>,
         Res<WorldSet>,
         Res<review_notes::Review>,
         Res<city_menu::Menu>,
         Res<listing::find::Search>,
+        Option<Res<canvas::Canvas>>,
     ),
 ) {
+    if canvas::active(canvas_state) {
+        return;
+    }
     for (binding, mut editor) in &mut editors {
         if let Some(value) = editor.take_change() {
             send_action(
@@ -445,6 +451,14 @@ pub(super) fn update(
             };
             send_action(&serde_json::json!({ "id": node.id, "kind": kind }).to_string());
         }
+    }
+    let canvas_request = match take_canvas_request().as_str() {
+        "changed" => Some(canvas::Open::Changed),
+        "choose" => Some(canvas::Open::Choose),
+        _ => None,
+    };
+    if let Some(request) = canvas_request {
+        canvas::open(&mut commands, request);
     }
     if file_picker::search_pressed(&keys, &mut input)
         && world.city_controls()

@@ -321,6 +321,27 @@ the same place and facing the same wall.
 changes you opened. In the browser, a pull request or branch update keeps visits to
 unchanged file contents and diffs.
 
+## Compare files on a canvas
+
+Press **Tab** and choose **Files → Open canvas**. The tablet screen expands to fill
+the window. Each tile shows the diff for a changed file in the open comparison.
+Drag a file header or the space between files to pan. **WASD** and the arrow
+keys also pan. Drag the bottom-right grip to resize a file and reflow the grid.
+**Cmd/Ctrl +/−** zooms around the view. **Show all** fits the grid. **Reading view**
+restores the previous zoom and position, or select a file to open it there.
+
+In a live desktop worktree, the watcher updates diffs and adds new changed files
+while the canvas is open. Drag across code lines to select a range. **Comment**
+saves a review note on that side of the diff. Web comments use the signed-in
+pull request review. **Edit lines** opens the same private draft editor as the
+tablet's file preview. In a desktop worktree, **Apply to file** writes the selected
+current-side range after checking the original file.
+
+Choose **Add to canvas…** from a file's actions menu to place it on a saved
+canvas or create a named one. You can include unchanged files to read their
+source alongside a change. **Esc** returns from the canvas. Your layouts are
+stored on this device.
+
 ## Follow file connections
 
 Open **Tab → Connections** while focused on a file. VibePad lists its imports

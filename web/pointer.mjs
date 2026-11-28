@@ -1,6 +1,6 @@
 export function setupPointer(canvas, menu, enabled = () => true) {
   const locked = () => document.pointerLockElement === canvas;
-  const modalOpen = () => menu.open || Boolean(document.querySelector("dialog[open]"));
+  const modalOpen = () => menu.open || canvas.hasAttribute("data-diff-canvas") || Boolean(document.querySelector("dialog[open]"));
 
   function release() {
     if (locked()) document.exitPointerLock();

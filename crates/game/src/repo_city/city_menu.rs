@@ -12,6 +12,7 @@ const PADDING: f32 = 6.;
 pub(super) struct Menu {
     anchor: Option<Vec2>,
     aim: Option<file_facade::Aim>,
+    canvas_path: Option<String>,
     pub(super) destination: Option<file_facade::Aim>,
     dismissed: bool,
     selected: usize,
@@ -43,6 +44,7 @@ impl Menu {
         self.dismissed = self.is_open();
         self.anchor = None;
         self.aim = None;
+        self.canvas_path = None;
         self.selected = 0;
         self.scroll = 0.;
     }
@@ -124,10 +126,11 @@ pub(super) enum Action {
     ChangesOnly,
     Folder,
     Preview,
+    AddToCanvas,
 }
 
 impl Action {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::Approach,
         Self::Diff,
         Self::Blame,
@@ -136,12 +139,14 @@ impl Action {
         Self::Notes,
         Self::FindText,
         Self::ChangesOnly,
+        Self::AddToCanvas,
     ];
 
     fn label(self, filtered: bool, stone: bool) -> String {
         match self {
             Self::Folder => "Folder map     M".into(),
             Self::Preview => "Preview        P".into(),
+            Self::AddToCanvas => "Add to canvas…".into(),
             Self::Approach if stone => "Open scroll    E".into(),
             Self::Approach => "Fly to face    E".into(),
             Self::Diff => "Diff           G".into(),
@@ -208,7 +213,7 @@ impl Action {
             Self::Diff => menu.destination = menu.aim.map(|aim| aim.on_side(listing::Face::Diff)),
             Self::Blame => menu.destination = menu.aim.map(|aim| aim.on_side(listing::Face::Blame)),
             Self::ChangesOnly => focus.toggle(),
-            Self::Folder | Self::Preview => return,
+            Self::Folder | Self::Preview | Self::AddToCanvas => return,
         }
         menu.close();
     }
@@ -418,6 +423,7 @@ fn spawn_menu(commands: &mut Commands, font: &TextFont, ink: Color, stone: bool)
 }
 
 pub(super) fn update(
+    mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     wheel: Res<AccumulatedMouseScroll>,
@@ -430,10 +436,15 @@ pub(super) fn update(
     mut search: ResMut<listing::find::Search>,
     mut focus: ResMut<file_facade::ChangesOnly>,
     mut view: MenuView,
+    (repo, canvas_state): (Res<Repo>, Option<Res<canvas::Canvas>>),
 ) {
     menu.begin_frame();
     let right_click = mouse.just_pressed(MouseButton::Right) || keyboard_menu(&keys);
-    if review.blocked || search.blocks_controls() || picker.is_open() {
+    if review.blocked
+        || search.blocks_controls()
+        || picker.is_open()
+        || canvas::active(canvas_state)
+    {
         menu.close();
     } else if navigation.guides_camera() || listing.turning() {
         menu.close();
@@ -455,18 +466,34 @@ pub(super) fn update(
             .into_iter()
             .filter(|action| action.available(aimed, &search, review.can_paint, focus.available));
         menu.select(&wheel, &keys, available.clone().count());
-        let confirm = mouse.just_pressed(MouseButton::Left)
-            || keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]);
-        if let Some(action) = shortcut.or_else(|| {
-            confirm
-                .then(|| available.clone().nth(menu.selected))
-                .flatten()
-        }) {
-            action.choose(&mut menu, &mut picker, &mut review, &mut search, &mut focus);
+        let click = mouse.just_pressed(MouseButton::Left);
+        let confirm = click || keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]);
+        let choice = shortcut.or_else(|| {
+            if click && view.hovered() == Some(Action::AddToCanvas) {
+                Some(Action::AddToCanvas)
+            } else if confirm {
+                available.clone().nth(menu.selected)
+            } else {
+                None
+            }
+        });
+        if let Some(action) = choice {
+            if action == Action::AddToCanvas {
+                if let Some(path) = menu.canvas_path.take() {
+                    canvas::open(&mut commands, canvas::Open::Files(vec![path]));
+                }
+                menu.close();
+            } else {
+                action.choose(&mut menu, &mut picker, &mut review, &mut search, &mut focus);
+            }
         }
     } else if right_click && let Some((point, _)) = nearest.screen {
         menu.anchor = Some(point);
         menu.aim = nearest.file;
+        menu.canvas_path = menu
+            .aim
+            .and_then(|aim| repo.0.files.get(aim.index))
+            .map(|file| file.path.clone());
     }
     let available = Action::ALL
         .into_iter()
@@ -490,6 +517,13 @@ pub(super) fn update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn add_to_canvas_requires_an_aimed_file() {
+        let search = listing::find::Search::default();
+        assert!(!Action::AddToCanvas.available(false, &search, true, true));
+        assert!(Action::AddToCanvas.available(true, &search, false, false));
+    }
 
     #[test]
     fn wheel_wraps_and_accumulates_trackpad_motion() {

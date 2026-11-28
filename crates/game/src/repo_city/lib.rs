@@ -16,6 +16,7 @@ mod browser_audio;
 mod browser_tablet;
 #[cfg(target_arch = "wasm32")]
 mod browser_touch;
+mod canvas;
 #[cfg(not(target_arch = "wasm32"))]
 mod city_audio;
 mod city_boards;
@@ -387,6 +388,7 @@ struct Smoke {
     prepared: bool,
     expected_draft: Option<String>,
     capture_attempts: usize,
+    canvas_live_path: Option<String>,
 }
 
 pub fn run() {
@@ -564,6 +566,7 @@ pub fn run() {
     .init_resource::<listing::Listing>()
     .add_plugins(bevy::input_focus::tab_navigation::TabNavigationPlugin);
     install(&mut app, &args);
+    canvas::register(&mut app);
     #[cfg(target_arch = "wasm32")]
     app.run();
     #[cfg(not(target_arch = "wasm32"))]
@@ -623,7 +626,6 @@ fn install_city(app: &mut App, args: &[String]) {
                 )
                     .chain(),
                 (
-                    review_notes::refresh,
                     review_notes::update,
                     review_notes::panels,
                     review_notes::update_color_picker,
@@ -653,10 +655,7 @@ fn install_city(app: &mut App, args: &[String]) {
                     guide::advance.run_if(|set: Res<WorldSet>| !set.is_abyss()),
                     listing::paint_notes,
                     listing::find::mark,
-                    (
-                        android::show_sprayer.run_if(|set: Res<WorldSet>| !set.is_abyss()),
-                        android::show_tablet,
-                    ),
+                    android::show_sprayer.run_if(|set: Res<WorldSet>| !set.is_abyss()),
                 )
                     .chain(),
                 physics::splashes,
@@ -672,6 +671,7 @@ fn install_city(app: &mut App, args: &[String]) {
             )
                 .chain()
                 .run_if(world_set::abyss::piloting)
+                .run_if(not(canvas::active))
                 .run_if(repository_picker::has_city),
         );
     app.add_systems(
@@ -679,6 +679,7 @@ fn install_city(app: &mut App, args: &[String]) {
         city_menu::apply_filter_shortcut
             .after(file_facade::lower_unchanged)
             .before(file_picker::update)
+            .run_if(not(canvas::active))
             .run_if(repository_picker::has_city),
     );
     app.add_systems(
@@ -700,6 +701,13 @@ fn install_city(app: &mut App, args: &[String]) {
         progress::sync
             .after(listing::wash_stream)
             .before(listing::draw)
+            .run_if(repository_picker::has_city),
+    );
+    app.add_systems(
+        Update,
+        review_notes::refresh
+            .after(progress::restore)
+            .before(review_notes::update)
             .run_if(repository_picker::has_city),
     );
     tablet_display::register(app);
@@ -823,6 +831,7 @@ fn install_city(app: &mut App, args: &[String]) {
                     "--smoke-review-roofs" => Some(31),
                     "--smoke-document" => Some(33),
                     "--smoke-find" => Some(34),
+                    "--smoke-diff-canvas" => Some(60),
                     "--smoke-agy-terminal" => Some(35),
                     "--smoke-overview" => Some(24),
                     "--smoke-empty-diff" => Some(18),
@@ -845,6 +854,7 @@ fn install_city(app: &mut App, args: &[String]) {
                     20 => 23,
                     25 => 27,
                     27 => 29,
+                    60 if arg("--smoke-canvas-live-file").is_some() => 62,
                     _ => (stage + 1).max(9),
                 },
                 pending: false,
@@ -852,6 +862,7 @@ fn install_city(app: &mut App, args: &[String]) {
                 prepared: false,
                 expected_draft: None,
                 capture_attempts: 0,
+                canvas_live_path: arg("--smoke-canvas-live-file").map(str::to_owned),
             })
             .add_systems(Update, smoke.after(animate));
         }
@@ -2802,7 +2813,19 @@ fn smoke(
             explorer.reload(&repo.0);
             assert_eq!(explorer.source, expected);
         }
-        let report = if check.stop == 44 {
+        let report = if matches!(check.stop, 61 | 62) {
+            commands.queue(|world: &mut World| {
+                assert!(
+                    world.resource::<canvas::Canvas>().hides_tablet(),
+                    "the canvas did not reach fullscreen"
+                );
+            });
+            if check.stop == 62 {
+                "Opened the fullscreen canvas and picked up a newly saved file."
+            } else {
+                "Opened the fullscreen comparison canvas."
+            }
+        } else if check.stop == 44 {
             "Rendered the survey dive, reading surface, saved phosphor, bathyscaphe exterior and illuminated chart."
         } else if check.stop == 39 {
             "Antigravity voice connected in Chat, stayed connected when Escape hid VibePad, and stopped before returning to ACP."
@@ -2850,6 +2873,11 @@ fn smoke(
     }
     if !check.prepared {
         match check.stage {
+            60 => {
+                tablet.open_page(review_tablet::Page::Files);
+                canvas::open(&mut commands, canvas::Open::Changed);
+            }
+            61 => {}
             10 => picker.smoke_open(),
             11 => tablet.open_help(),
             12 => {
@@ -3313,6 +3341,19 @@ fn smoke(
     if matches!(check.stage, 31 | 32) && (!navigation.reviewing() || navigation.is_flying()) {
         assert!(check.elapsed < 30., "roof review smoke timed out");
         return;
+    }
+    if check.stage == 61
+        && let Some(path) = check.canvas_live_path.clone()
+    {
+        if !repo.0.files.iter().any(|file| file.path == path) {
+            assert!(check.elapsed < 20., "watcher did not load the new file");
+            return;
+        }
+        if check.elapsed >= 3. {
+            commands.queue(move |world: &mut World| {
+                assert!(world.resource::<canvas::Canvas>().smoke_shows(&path));
+            });
+        }
     }
     let settle = if check.stage == 21 { 0.8 } else { 4. };
     if check.elapsed < settle {

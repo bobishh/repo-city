@@ -212,6 +212,9 @@ pub(super) fn install(app: &mut App, args: &[String]) {
                 #[cfg(target_arch = "wasm32")]
                 browser_refresh.run_if(repository_picker::has_city),
                 review_notes::refresh,
+            )
+                .chain(),
+            (
                 #[cfg(target_arch = "wasm32")]
                 touch_input.before(city_boards::ScrollInput),
                 actions::update,
@@ -245,7 +248,8 @@ pub(super) fn install(app: &mut App, args: &[String]) {
                 trace_import::update,
                 journey::update,
             )
-                .chain(),
+                .chain()
+                .run_if(not(canvas::active)),
             (
                 controls.after(city_boards::ScrollInput),
                 room::draw,
@@ -258,9 +262,9 @@ pub(super) fn install(app: &mut App, args: &[String]) {
                 seeing::share,
                 place::save,
                 progress::sync.run_if(repository_picker::has_city),
-                android::show_tablet,
             )
-                .chain(),
+                .chain()
+                .run_if(not(canvas::active)),
         )
             .chain(),
     );

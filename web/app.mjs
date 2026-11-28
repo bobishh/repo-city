@@ -42,6 +42,7 @@ const submit = document.querySelector("#open-city");
 const syntax = createSyntaxCache();
 let active;
 let running = false;
+let canvasRequest = "";
 let world = defaultWorld;
 const library = () => world === "repo-polis";
 const diving = () => world === "abyss";
@@ -50,6 +51,7 @@ const releasePointer = setupPointer(canvas, dialog);
 const touch = createTouchControls({ canvas, onPad: () => review.changedFiles(), walking: library, diving });
 const review = createReview({
   audio, canvas, release: releasePointer, onClose: focusCanvas, library, diving,
+  onCanvas: request => { canvasRequest = request; },
   onCompare: (repository, before, after) => openRepository(repository, after, before, true),
   onTour(started) {
     tourCommand = ((tourCommand & ~1) + 2) | Number(started);
@@ -89,6 +91,8 @@ window.addEventListener("keydown", event => {
 });
 window.addEventListener("keyup", event => { if (event.code === "F8") { event.preventDefault(); party.talk(false); } });
 let sourceVersion = 0;
+const loadingSource = "Loading source from GitHub…";
+const canvasBlobConcurrency = 2;
 
 function loadBlob(snapshot, sha) {
   const { repository, blobs } = snapshot;
@@ -96,15 +100,26 @@ function loadBlob(snapshot, sha) {
   if (entry) {
     blobs.delete(sha);
   } else {
-    entry = { error: "Loading source from GitHub…", promise: repository.blob(sha) };
+    entry = { error: loadingSource, pending: true, promise: repository.blob(sha) };
+    snapshot.pendingBlobs++;
     entry.promise.then(
       bytes => { entry.bytes = bytes; },
       error => { entry.error = error.message; },
-    ).finally(() => { if (snapshot === active && blobs.has(sha)) sourceVersion++; });
+    ).finally(() => {
+      entry.pending = false;
+      snapshot.pendingBlobs--;
+      blobs.delete(sha);
+      blobs.set(sha, entry);
+      // Keep the four most recent results and every request still in flight.
+      if (blobs.size - snapshot.pendingBlobs > 4) {
+        for (const [key, item] of blobs) {
+          if (!item.pending) { blobs.delete(key); break; }
+        }
+      }
+      if (snapshot === active) sourceVersion++;
+    });
   }
   blobs.set(sha, entry);
-  // Retain both diff snapshots plus the current and previous preview.
-  if (blobs.size > 4) blobs.delete(blobs.keys().next().value);
   return entry;
 }
 let repositoryVersion = 0;
@@ -134,7 +149,16 @@ function focusCanvas() {
   if (running && !document.querySelector("dialog[open]")) canvas.focus({ preventScroll: true });
 }
 
+canvas.addEventListener("wheel", event => {
+  if (canvas.hasAttribute("data-diff-canvas") && (event.metaKey || event.ctrlKey)) event.preventDefault();
+}, { passive: false });
+
 window.addEventListener("keydown", event => {
+  if (event.target === canvas && canvas.hasAttribute("data-diff-canvas")) {
+    if (/^(Arrow|Page)/.test(event.code) || ["Tab", "Home", "End", "Space", "Escape"].includes(event.code) ||
+        ((event.metaKey || event.ctrlKey) && ["Equal", "Minus", "NumpadAdd", "NumpadSubtract", "Digit0"].includes(event.code))) event.preventDefault();
+    return;
+  }
   if (event.target === canvas && canvas.hasAttribute("data-library-input")) return;
   if (event.target === canvas && canvas.hasAttribute("data-library-map")) {
     if (/^(Arrow|Page)/.test(event.code) || ["Tab", "Home", "End"].includes(event.code)) event.preventDefault();
@@ -259,7 +283,8 @@ async function stageRepository(repository, ref, base) {
   });
   const canFilterChanges = Boolean(snapshot.baseline);
   const comparisonLabel = pull ? "PR" : base?.trim() ? "Compare" : snapshot.baseline ? "Last commit" : "Initial";
-  active = { repository, blobs: new Map(), blameFiles: new Map(), marks, progressError, canFilterChanges, comparisonLabel };
+  active = { repository, blobs: new Map(), pendingBlobs: 0, blameFiles: new Map(), marks, progressError, canFilterChanges, comparisonLabel };
+  canvasRequest = "";
   cityRepository.textContent = name;
   cityRepository.title = name;
   changeRoute.hidden = true;
@@ -394,6 +419,11 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
         reviewTablet: review.tablet,
         tabletView: review.tabletView,
         tabletAction: review.tabletAction,
+        takeCanvasRequest() {
+          const request = canvasRequest;
+          canvasRequest = "";
+          return request;
+        },
         tabletLayout: review.tabletLayout,
         readTablet: review.readTablet,
         takeTraceRequest: review.takeTraceRequest,
@@ -487,6 +517,8 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
           return blameFiles.get(key).data;
         },
         blob(sha) {
+          if (canvas.hasAttribute("data-diff-canvas") && !active.blobs.has(sha) &&
+              active.pendingBlobs >= canvasBlobConcurrency) throw loadingSource;
           const entry = loadBlob(active, sha);
           if (entry.bytes) return entry.bytes;
           throw entry.error;

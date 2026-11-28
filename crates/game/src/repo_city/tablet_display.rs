@@ -209,26 +209,30 @@ pub(super) fn target(commands: &mut Commands, root: Entity) {
 pub(super) fn toggle(
     display: Res<Display>,
     review: Res<review_notes::Review>,
+    canvas: Option<Res<canvas::Canvas>>,
     shown: Query<&Visibility, With<android::ViewTablet>>,
     mut cameras: Query<&mut Camera>,
     mut nodes: Query<&mut Node>,
 ) {
-    let raised = review.tablet_open;
+    let hides_tablet = canvas.as_ref().is_some_and(|canvas| canvas.hides_tablet());
+    let overlay = canvas::active(canvas);
+    let raised = review.tablet_open && !hides_tablet;
     if let Ok(mut camera) = cameras.get_mut(display.ui)
         && camera.is_active != raised
     {
         camera.is_active = raised;
     }
-    let visible = raised
-        || shown
-            .single()
-            .is_ok_and(|visibility| *visibility != Visibility::Hidden);
+    let visible = !hides_tablet
+        && (raised
+            || shown
+                .single()
+                .is_ok_and(|visibility| *visibility != Visibility::Hidden));
     if let Ok(mut camera) = cameras.get_mut(display.view)
         && camera.is_active != visible
     {
         camera.is_active = visible;
     }
-    let visibility = if raised {
+    let visibility = if raised || overlay {
         bevy::ui::Display::Flex
     } else {
         bevy::ui::Display::None
@@ -256,6 +260,7 @@ fn project_pointer(origin: Vec3, direction: Vec3) -> Option<Vec2> {
 pub(super) fn pointer(
     display: Option<Res<Display>>,
     review: Res<review_notes::Review>,
+    canvas: Option<Res<canvas::Canvas>>,
     window: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform)>,
     screen: Query<&GlobalTransform, With<Screen>>,
@@ -268,6 +273,7 @@ pub(super) fn pointer(
     scroll_parts: Query<(&UiGlobalTransform, &ComputedNode), With<tablet_scroll::Part>>,
 ) {
     let Some(display) = display else { return };
+    let tablet_open = review.tablet_open && !canvas::active(canvas);
     let project = |point: Vec2| {
         let (camera, view) = cameras.get(display.view).ok()?;
         let ray = camera.viewport_to_world(view, point).ok()?;
@@ -278,7 +284,7 @@ pub(super) fn pointer(
         )
         .map(|point| point * display.size.as_vec2() / SIZE.as_vec2())
     };
-    if !review.tablet_open && touch.take().is_some() {
+    if !tablet_open && touch.take().is_some() {
         *tap_release = None;
         let location = Location {
             target: display.target.clone(),
@@ -296,7 +302,7 @@ pub(super) fn pointer(
         ));
     }
     let position = (|| {
-        if !review.tablet_open {
+        if !tablet_open {
             return None;
         }
         #[cfg(target_arch = "wasm32")]
@@ -333,7 +339,7 @@ pub(super) fn pointer(
         // Window resources are updated after First. Consume ordered motion events here so
         // a move and press delivered in one frame hit the current control, not the old one.
         if let WindowEvent::CursorMoved(event) = event
-            && review.tablet_open
+            && tablet_open
             && touch.is_none()
         {
             location.position = project(event.position).unwrap_or(outside);
@@ -349,7 +355,7 @@ pub(super) fn pointer(
             }
         }
         if let WindowEvent::TouchInput(event) = event
-            && review.tablet_open
+            && tablet_open
         {
             use bevy::input::touch::TouchPhase;
             let point = project(event.position);
@@ -440,7 +446,7 @@ pub(super) fn pointer(
                 ButtonState::Pressed if location.position != outside => {
                     PointerAction::Press(PointerButton::Primary)
                 }
-                ButtonState::Released if review.tablet_open => {
+                ButtonState::Released if tablet_open => {
                     PointerAction::Release(PointerButton::Primary)
                 }
                 _ => continue,

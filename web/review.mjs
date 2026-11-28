@@ -34,7 +34,7 @@ const changedPaths = ({ before, after }) => [...new Set([...Object.keys(before),
   path => before[path]?.id !== after[path]?.id || before[path]?.mode !== after[path]?.mode,
 );
 
-export function createReview({ canvas, release, onClose, onTour, audio, onCompare = () => {}, library = () => false, diving = () => false }) {
+export function createReview({ canvas, release, onClose, onTour, audio, onCompare = () => {}, onCanvas = () => {}, library = () => false, diving = () => false }) {
   const dialog = document.querySelector("#review-dialog");
   const tablet = createTablet(dialog, canvas);
   const settingsKey = "repo-city-reading-v1";
@@ -862,7 +862,8 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     let dates = {};
     const all = button("All changes", () => { viewedOnly = false; render(); });
     const seen = button("Viewed", () => { viewedOnly = true; render(); });
-    bar.append(all, seen);
+    bar.append(all, seen, button("Open canvas", () => onCanvas("changed")),
+      button("Choose files for canvas", () => onCanvas("choose")));
     dialog.append(bar, status, list);
     show();
 

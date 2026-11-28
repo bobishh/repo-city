@@ -381,6 +381,61 @@ impl Review {
         Ok(note)
     }
 
+    pub(super) fn local_comment(&self, repo: &Repository, anchor: &Anchor) -> Option<&Note> {
+        self.notes.iter().find(|note| {
+            !note.remote
+                && note.published.is_none()
+                && &note.anchor == anchor
+                && Self::on_snapshot(note, repo)
+        })
+    }
+
+    pub(super) fn save_comment(
+        &mut self,
+        repo: &Repository,
+        anchor: Anchor,
+        blob: String,
+        text: String,
+    ) -> Result<(), String> {
+        if text.trim().is_empty() {
+            return Err("Write a comment before saving.".into());
+        }
+        let mut note = self
+            .local_comment(repo, &anchor)
+            .cloned()
+            .unwrap_or_else(|| Note {
+                id: new_id(),
+                revision: repo.revision.clone(),
+                baseline: repo.baseline.clone(),
+                source_blob: Some(blob),
+                anchor,
+                text: String::new(),
+                preset: Preset {
+                    id: "plain-note".into(),
+                    label: "Note".into(),
+                    spray: String::new(),
+                    prompt: String::new(),
+                    color: [120, 177, 240],
+                },
+                published: None,
+                remote: false,
+                resolved: None,
+                attention: false,
+            });
+        note.text = text;
+        self.write_note(&note)?;
+        if let Some(previous) = self
+            .notes
+            .iter_mut()
+            .find(|previous| previous.id == note.id)
+        {
+            *previous = note;
+        } else {
+            self.notes.push(note);
+        }
+        Ok(())
+    }
+
     pub fn shows_paint(&self, note: &Note, repo: &Repository) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         if self.local_states.get(&note.id) == Some(&native::LocalState::Addressed) {

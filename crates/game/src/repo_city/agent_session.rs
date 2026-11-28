@@ -354,6 +354,29 @@ impl Session {
     pub(super) fn is_speaking(&self) -> bool {
         self.speaking.load(Ordering::Relaxed)
     }
+    pub(super) fn toggle_canvas_voice(&mut self) {
+        if self.provider().capabilities.voice {
+            self.action = Some(Action::Voice);
+        }
+    }
+
+    pub(super) fn toggle_canvas_follow(&mut self) {
+        self.action = Some(Action::Follow);
+    }
+
+    pub(super) fn canvas_voice_label(&self) -> Option<&'static str> {
+        self.provider()
+            .capabilities
+            .voice
+            .then_some(if self.voice_connected {
+                "F5 Voice on"
+            } else if self.voice_waiting || self.voice_active() {
+                "F5 Voice connecting"
+            } else {
+                "F5 Voice off"
+            })
+    }
+
     pub(super) fn voice_active(&self) -> bool {
         self.projection.voice.is_some()
     }
@@ -1000,11 +1023,12 @@ fn update(
     )>,
     mut transcripts: Query<(Entity, &mut Transcript)>,
     editing: Query<(), Or<(With<EditableText>, With<source_editor::View>)>>,
-    (mut terminal, wall_search, windows, mut tablet): (
+    (mut terminal, wall_search, windows, mut tablet, canvas): (
         ResMut<terminal::Terminal>,
         Res<listing::find::Search>,
         Query<&Window, With<PrimaryWindow>>,
         Option<ResMut<review_tablet::Tablet>>,
+        Option<Res<canvas::Canvas>>,
     ),
 ) {
     let root = &repo.0.root;
@@ -1077,7 +1101,8 @@ fn update(
         }
         area.previous_y = position.y;
     }
-    if keys.just_pressed(KeyCode::F5) && session.provider().capabilities.voice {
+    let canvas_typing = canvas.as_ref().is_some_and(|canvas| canvas.typing());
+    if !canvas_typing && keys.just_pressed(KeyCode::F5) && session.provider().capabilities.voice {
         session.action = Some(Action::Voice);
     }
     let events = {
@@ -1245,6 +1270,7 @@ fn update(
     }
     let window_focused = windows.single().is_ok_and(|window| window.focused);
     let keyboard_allowed = window_focused
+        && !canvas_typing
         && !terminal.active
         && !wall_search.blocks_controls()
         && !focus.get().is_some_and(|entity| editing.contains(entity))
@@ -1258,7 +1284,12 @@ fn update(
             KeyCode::ShiftLeft,
             KeyCode::ShiftRight,
         ]);
-    controls::shortcuts(&mut keys, &mut session, window_focused, keyboard_allowed);
+    controls::shortcuts(
+        &mut keys,
+        &mut session,
+        window_focused && !canvas_typing,
+        keyboard_allowed,
+    );
     if let Err(error) = session.approve_pending() {
         session.status = error;
     }

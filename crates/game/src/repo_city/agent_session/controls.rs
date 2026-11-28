@@ -11,7 +11,11 @@ use bevy::{
 pub(super) fn register(app: &mut App) {
     app.add_observer(prompt_input)
         .add_systems(Startup, spawn_banner)
-        .add_systems(Update, banner.after(super::update));
+        .add_systems(Update, banner.after(super::update))
+        .add_systems(
+            PostUpdate,
+            target_banner.before(bevy::ui::UiSystems::Prepare),
+        );
 }
 
 pub(super) use agent_engine::ApprovalMode;
@@ -165,6 +169,8 @@ pub(crate) fn settings(parent: &mut ChildSpawnerCommands, provider: agent_engine
 #[derive(Component)]
 pub(super) struct Hint;
 #[derive(Component)]
+struct BannerRoot;
+#[derive(Component)]
 struct Banner;
 #[derive(Component)]
 struct BannerText;
@@ -176,6 +182,7 @@ struct BannerDetails;
 pub(super) fn spawn_banner(mut commands: Commands) {
     commands
         .spawn((
+            BannerRoot,
             Node {
                 position_type: PositionType::Absolute,
                 top: Val::Vh(8.),
@@ -200,12 +207,32 @@ pub(super) fn spawn_banner(mut commands: Commands) {
                     border: UiRect::all(px(1.)),
                     ..default()
                 },
-                GlobalZIndex(70),
+                GlobalZIndex(1_200),
                 BackgroundColor(Color::srgb_u8(10, 29, 36)),
                 BorderColor::all(Color::srgb_u8(239, 192, 121)),
             ))
             .with_children(banner_content);
         });
+}
+
+fn target_banner(
+    mut commands: Commands,
+    canvas: Option<Res<canvas::Canvas>>,
+    banners: Query<(Entity, Option<&bevy::ui::UiTargetCamera>), With<BannerRoot>>,
+) {
+    let target = canvas.as_ref().and_then(|canvas| canvas.overlay_camera());
+    for (entity, current) in &banners {
+        if current.map(|camera| camera.0) == target {
+            continue;
+        }
+        if let Some(camera) = target {
+            commands
+                .entity(entity)
+                .insert(bevy::ui::UiTargetCamera(camera));
+        } else {
+            commands.entity(entity).remove::<bevy::ui::UiTargetCamera>();
+        }
+    }
 }
 
 fn banner_content(card: &mut ChildSpawnerCommands) {
