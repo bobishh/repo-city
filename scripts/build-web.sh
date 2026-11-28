@@ -30,6 +30,7 @@ cp web/node_modules/vscode-textmate/LICENSE.md "$output/syntax-licenses/vscode-t
 cp web/node_modules/@wooorm/starry-night/lang/*.js "$output/syntax-source/"
 cp web/assets/repo-city-start.webp web/assets/caveat-latin-wght.woff2 web/assets/OFL-Caveat.txt "$output/assets/"
 cp assets/repo-polis-cover.webp "$output/assets/repo-polis-start.webp"
+cp assets/abyss-cover.webp "$output/assets/"
 cp web/assets/robot-head.svg web/assets/apple-touch-icon.png "$output/assets/"
 cp assets/fonts/GFSDidot-Regular.ttf "$output/assets/"
 wasm-bindgen --target web --remove-name-section --remove-producers-section \

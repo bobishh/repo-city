@@ -43,12 +43,13 @@ const syntax = createSyntaxCache();
 let active;
 let running = false;
 let world = defaultWorld;
-const cityControls = () => world === defaultWorld;
+const library = () => world === "repo-polis";
+const diving = () => world === "abyss";
 const audio = createCityAudio({ active: () => running && !dialog.open && !canvas.hidden });
 const releasePointer = setupPointer(canvas, dialog);
-const touch = createTouchControls({ canvas, onPad: () => review.changedFiles(), walking: () => !cityControls() });
+const touch = createTouchControls({ canvas, onPad: () => review.changedFiles(), walking: library, diving });
 const review = createReview({
-  audio, canvas, release: releasePointer, onClose: focusCanvas, library: () => !cityControls(),
+  audio, canvas, release: releasePointer, onClose: focusCanvas, library, diving,
   onCompare: (repository, before, after) => openRepository(repository, after, before, true),
   onTour(started) {
     tourCommand = ((tourCommand & ~1) + 2) | Number(started);
@@ -119,11 +120,10 @@ function nameOpenButton() {
   const option = worldSelect.selectedOptions[0];
   submit.textContent = option.dataset.openLabel ?? "Open world";
   document.documentElement.dataset.world = worldSelect.value;
-  const library = worldSelect.value === "repo-polis";
-  const artwork = library ? "./assets/repo-polis-start.webp" : "./assets/repo-city-start.webp";
+  const artwork = option.dataset.cover ?? "./assets/repo-city-start.webp";
   const image = startScreen.querySelector("img");
   if (image.getAttribute("src") !== artwork) image.src = artwork;
-  document.title = library ? `${option.label} · Repo City Web` : "Repo City Web";
+  document.title = worldSelect.value === defaultWorld ? "Repo City Web" : `${option.label} · Repo City Web`;
 }
 worldSelect.addEventListener("change", nameOpenButton);
 nameOpenButton();
@@ -142,7 +142,7 @@ window.addEventListener("keydown", event => {
   }
   const locked = document.pointerLockElement === canvas;
   const plain = !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey;
-  if (running && cityControls() && event.target === canvas && event.key === "/" &&
+  if (running && !library() && event.target === canvas && event.key === "/" &&
       !event.metaKey && !event.ctrlKey && !event.altKey) event.preventDefault();
   if (event.target === canvas && canvas.hasAttribute("data-library-reading")
       && event.code === "KeyF" && (event.metaKey || event.ctrlKey)) {
@@ -152,7 +152,7 @@ window.addEventListener("keydown", event => {
   if (event.altKey && event.code === "Digit0" && !event.ctrlKey && !event.metaKey) {
     event.preventDefault(); event.stopPropagation(); review.dismissTablet(); logo.click(); return;
   }
-  if (running && !cityControls() && event.target === canvas &&
+  if (running && library() && event.target === canvas &&
       (/^(Arrow|Page)/.test(event.code) || ["Home", "End", "Space"].includes(event.code))) {
     event.preventDefault();
   }
@@ -190,7 +190,7 @@ window.addEventListener("keydown", event => {
   }
   if (review.tabletVisible() && (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Space", "Enter", "Backspace", "F6"].includes(event.code) || ((event.metaKey || event.ctrlKey) && ["KeyA", "KeyC", "KeyF", "KeyS", "KeyV", "KeyX", "KeyY", "KeyZ"].includes(event.code)))) event.preventDefault();
   if (event.code !== "KeyF" || event.repeat || event.metaKey || event.ctrlKey ||
-      (!cityControls() && canvas.hasAttribute("data-action-menu")) ||
+      (library() && canvas.hasAttribute("data-action-menu")) ||
       event.altKey || (!locked && (event.target !== canvas || (canvas.hasAttribute("data-pointer-ui") && !canvas.hasAttribute("data-overview")))) ||
       document.querySelector("dialog[open]") || !active?.canFilterChanges) return;
   event.preventDefault();
@@ -217,7 +217,14 @@ logo.addEventListener("click", () => {
   focusRepositoryPicker();
 });
 close.addEventListener("click", () => dialog.close());
-dialog.addEventListener("close", () => { audio.refresh(); focusCanvas(); });
+dialog.addEventListener("close", () => {
+  if (running && worldSelect.value !== world) {
+    worldSelect.value = world;
+    nameOpenButton();
+  }
+  audio.refresh();
+  focusCanvas();
+});
 dialog.addEventListener("cancel", event => {
   if (reset.disabled) event.preventDefault();
 });
@@ -283,11 +290,16 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
   const nextWorld = worldSelect.value;
   const worldName = worldSelect.selectedOptions[0].label;
   const query = queryFor(repo, ref, base);
-  if (exactBase) query.set("exact", "1");
   if (running && world !== nextWorld) {
+    const previous = new URLSearchParams(location.search);
+    if (exactBase || (previous.get("exact") === "1" &&
+        ["repo", "pr", "ref", "base"].every(key => previous.get(key) === query.get(key)))) {
+      query.set("exact", "1");
+    }
     location.search = query.toString();
     return;
   }
+  if (exactBase) query.set("exact", "1");
   submit.disabled = true;
   worldSelect.disabled = true;
   form.setAttribute("aria-busy", "true");
@@ -481,19 +493,25 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
         },
       };
       canvas.hidden = false;
-      if (!cityControls()) canvas.setAttribute("aria-label", worldName);
+      if (world !== defaultWorld) canvas.setAttribute("aria-label", worldName);
       await engine.default();
       running = true;
       document.documentElement.dataset.playing = "";
       startScreen.hidden = true;
       cityRepository.hidden = false;
-      cityProgress.hidden = !cityControls();
+      cityProgress.hidden = library();
       startControls.hidden = true;
       help.hidden = false;
     } else {
       await stageRepository(await loadGitHub(repo, pull ? null : ref, pull ? null : base, githubRequest, { exactBase, pinnedComparison }), ref, base);
     }
     history.replaceState(null, "", `?${query}`);
+    if (exactBase) {
+      form.elements.repo.value = repo;
+      form.elements.ref.value = ref ?? "";
+      form.elements.base.value = base ?? "";
+      refreshRepositoryPicker();
+    }
     if (exactBase) review.dismissTablet();
     status.textContent = "";
     if (dialog.open) dialog.close();
@@ -504,7 +522,7 @@ async function openRepository(repo, ref, base, exactBase = false, pinnedComparis
     } else {
       progressWarning.hidden = true;
     }
-    if (firstOpen && cityControls()) offerFirstTour();
+    if (firstOpen && world === defaultWorld) offerFirstTour();
     audio.refresh();
     focusCanvas();
   } catch (error) {

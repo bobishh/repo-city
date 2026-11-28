@@ -2,6 +2,7 @@
 use bevy::prelude::*;
 use serde::Deserialize;
 
+pub(crate) mod abyss;
 mod library;
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) mod picker;
@@ -31,6 +32,13 @@ const ADAPTERS: &[Adapter] = &[
         locomotion: "walking",
         install: library::install,
     },
+    Adapter {
+        id: "abyss",
+        descriptor: include_str!("../../../../world_sets/abyss.json"),
+        representation: "seafloor",
+        locomotion: "bathyscaphe",
+        install: abyss::install,
+    },
 ];
 #[derive(Resource, Clone, Deserialize)]
 pub struct WorldSet {
@@ -53,7 +61,7 @@ pub fn color(v: [f32; 3]) -> Color {
 }
 impl WorldSet {
     pub(super) fn city_controls(&self) -> bool {
-        self.locomotion == "flight-and-anchor"
+        self.locomotion == "flight-and-anchor" || self.is_abyss()
     }
 
     pub fn load(selection: Option<&str>) -> Result<Self, String> {
@@ -92,6 +100,10 @@ impl WorldSet {
 
     pub(super) fn is_library(&self) -> bool {
         self.representation == "shelves-and-scrolls"
+    }
+
+    pub(crate) fn is_abyss(&self) -> bool {
+        self.representation == "seafloor"
     }
 
     #[cfg(target_arch = "wasm32")]

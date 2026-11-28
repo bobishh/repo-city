@@ -174,6 +174,7 @@ fn draw(
     repo: &Repository,
     picker: Option<&repository_picker::RepositoryPicker>,
     comments: Option<&native_github::PullComments>,
+    reading_tool: &str,
 ) {
     ui.fields.clear();
     ui.draft_fields.clear();
@@ -264,7 +265,7 @@ fn draw(
                                 .checked_sub(1_usize)
                                 .and_then(|i| review.palette[i].as_ref());
                             let name = if slot == 0 {
-                                "Heat"
+                                reading_tool
                             } else {
                                 preset.map_or("Note", |paint| paint.label.as_str())
                             };
@@ -680,7 +681,7 @@ pub(crate) fn update(
     mut commands: Commands,
     mut review: ResMut<Review>,
     mut ui: ResMut<ReviewUi>,
-    _explorer: Res<Explorer>,
+    world: Option<Res<WorldSet>>,
     mut camera: Query<&mut Pilot, PlayerCamera>,
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     time: Res<Time>,
@@ -1092,6 +1093,11 @@ pub(crate) fn update(
             repo,
             picker.as_deref(),
             comments.as_deref(),
+            if world.as_deref().is_some_and(WorldSet::is_abyss) {
+                "Headlamp"
+            } else {
+                "Heat"
+            },
         );
         if let Some(field) = ui
             .fields

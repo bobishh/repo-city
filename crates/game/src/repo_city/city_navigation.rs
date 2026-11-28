@@ -994,7 +994,12 @@ pub(super) fn navigate(
                         saved_progress.visit(explorer.selected, file, view.is_diff());
                         saved_progress.set_file_cursor(Some(&file.path));
                         if !explorer.anchored {
-                            saved_progress.record_view(file, &camera, time.elapsed_secs_f64());
+                            saved_progress.record_view(
+                                file,
+                                explorer.before,
+                                &camera,
+                                time.elapsed_secs_f64(),
+                            );
                         }
                     }
                     navigation.changes.show(time.elapsed_secs());
@@ -1317,7 +1322,9 @@ pub(super) fn draw(
     mut gizmos: Gizmos,
     nearest: Res<Nearest>,
 ) {
-    if navigation.overview_level() != Some(Overview::District)
+    let outline_target = !set.is_abyss() || navigation.overview();
+    if outline_target
+        && navigation.overview_level() != Some(Overview::District)
         && !navigation.guides_camera()
         && !explorer.anchored
         && explorer.comparison_mode == 0
@@ -1337,7 +1344,8 @@ pub(super) fn draw(
             gizmos.line(corners[edge], corners[(edge + 1) % 4], color(set.accent));
         }
     }
-    if !navigation.guides_camera()
+    if outline_target
+        && !navigation.guides_camera()
         && !explorer.anchored
         && explorer.comparison_mode == 0
         && let Some(aim) = nearest.file
@@ -1504,6 +1512,7 @@ mod tests {
             .collect();
         let mut app = App::new();
         app.insert_resource(Repo(repo))
+            .insert_resource(WorldSet::load(None).unwrap())
             .insert_resource(Explorer::new(0))
             .init_resource::<Navigation>()
             .init_resource::<Nearest>()
@@ -1939,6 +1948,7 @@ mod tests {
         }
         let mut app = App::new();
         app.insert_resource(Repo(repo))
+            .insert_resource(WorldSet::load(None).unwrap())
             .insert_resource(Explorer::new(0))
             .init_resource::<Nearest>()
             .init_resource::<Time>()

@@ -118,6 +118,33 @@ The library reads the same snapshots as Code City and shares visited-file
 progress. Its scrolls show source, including the previous snapshot for removed
 files.
 
+### Abyss
+
+Open the [Abyss repository picker](https://repo-city.meta-uber-engineer.dev/?world=abyss)
+or run `./scripts/run-native.sh /path/to/checkout --world-set abyss`.
+Append `--file src/main.rs --line 52` to begin at a specific local source line.
+An engineer pilots a twin-headlamp bathyscaphe among file stations on a
+dark seabed with seapunk coral, shell plating, and pearl lights. Hold **I**
+while travelling to see the pilot from outside. On touch
+screens, hold **Pilot**. Click the scene to take the controls. Use **WASD**
+for thrust, **Space / Ctrl** to ascend or descend, and **Shift** to boost.
+Release thrust to coast. Aim at a station and press **E** to approach it.
+Press **O** to drop a private survey buoy, or press **O** beside a buoy
+to retrieve it. Touch controls offer the same action with **Buoy**.
+Buoys stay in this dive across visits and work without signing in.
+
+The headlamp limits how far you can see while travelling and on the map.
+At a station the active reading surface lights evenly. Keep a source block
+in view for the configured reading time. Read lines
+retain a faint phosphorescent glow when you turn away.
+Choose a paint with **1–9**, then drag across readable lines to leave a
+review mark. In the browser, paint notes require a signed-in pull request.
+**J** opens review notes and **U** edits paints. Reading
+progress and notes use the same repository and comparison as Code City.
+The bathyscaphe has its own saved reading position.
+
+### Adding a world set
+
 To add a world in Rust, give it a Bevy presentation module under
 `world_set/` and register its installer and bundled JSON descriptor in
 `world_set.rs`. An installer owns the scene and controls and uses the

@@ -57,12 +57,7 @@ impl CoverRows {
         Self {
             glass: Vec4::new(f32::from(r), f32::from(g), f32::from(b), 0.),
             glow: [Vec4::ZERO; TILE_ROWS / 4],
-            info: UVec4::new(
-                mask,
-                rows as u32,
-                code_texture::LISTING_WIDTH,
-                code_texture::LISTING_ROW_PIXELS,
-            ),
+            info: UVec4::new(mask, rows as u32, code_texture::LISTING_WIDTH, 0),
             paint: [Vec4::ZERO; TILE_ROWS],
             clarity: std::array::from_fn(|group| {
                 Vec4::from_array(std::array::from_fn(|offset| {
@@ -102,6 +97,11 @@ impl CoverRows {
 
     pub fn set_paint(&mut self, paint: [Vec4; TILE_ROWS]) {
         self.paint = paint;
+    }
+
+    pub fn set_station_light(&mut self, phosphor: u32, close: bool) {
+        self.info.w = phosphor;
+        self.glass.w = if close { 1. } else { -1. };
     }
 }
 

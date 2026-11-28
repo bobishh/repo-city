@@ -373,14 +373,18 @@ pub(super) fn startup_revision(live: bool, revision: Option<&str>) -> &str {
 }
 
 pub(super) fn window_title(set: &WorldSet, repo: &Repository) -> String {
-    let name = if cfg!(target_arch = "wasm32") || set.is_library() {
-        set.name.as_str()
-    } else {
-        APP_NAME
-    };
+    let name = app_name(set);
     match repo.root.file_name() {
         Some(repository) => format!("{name} · {}", repository.to_string_lossy()),
         None => name.into(),
+    }
+}
+
+fn app_name(set: &WorldSet) -> &str {
+    if cfg!(target_arch = "wasm32") || set.is_library() || set.is_abyss() {
+        &set.name
+    } else {
+        APP_NAME
     }
 }
 
@@ -1181,7 +1185,7 @@ pub(super) fn open_repository(
                 let mut explorer = Explorer::new(selected);
                 explorer.resume_on_open = requested.is_none();
                 explorer.open(&next, selected);
-                window.title = format!("{APP_NAME} · {}", snapshot.target.label());
+                window.title = format!("{} · {}", app_name(&set), snapshot.target.label());
                 picker.comments = native_github::pull_comments(
                     &snapshot.target,
                     &next,
@@ -1425,12 +1429,7 @@ pub(super) fn open_repository(
         picker.status.clear();
         match action {
             PickerAction::Menu => {
-                let title = if set.is_library() {
-                    &set.name
-                } else {
-                    APP_NAME
-                };
-                picker.view = Some(draw_menu(&mut commands, title));
+                picker.view = Some(draw_menu(&mut commands, app_name(&set)));
             }
             PickerAction::Folder => {
                 #[cfg(target_os = "macos")]

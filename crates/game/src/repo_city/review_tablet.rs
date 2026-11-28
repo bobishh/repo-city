@@ -1367,7 +1367,7 @@ pub(super) fn update(
         party
             .as_deref()
             .is_some_and(review_party::Party::hosts_room),
-        world.as_deref().is_some_and(WorldSet::is_library),
+        world.as_deref(),
     );
     tablet.panel = Some(panel);
     let focus_target = tablet
@@ -1499,7 +1499,7 @@ fn draw(
     trace: Option<&trace_import::Trace>,
     agent: Option<agent_engine::Provider>,
     hosts_room: bool,
-    library: bool,
+    world: Option<&WorldSet>,
 ) -> (Entity, Entity) {
     let title = match tablet.view {
         Page::Files if repository.is_worktree() => "Live worktree",
@@ -1733,7 +1733,10 @@ fn draw(
                             ..default()
                         },
                     ))
-                    .with_children(|body| guide::draw_controls(body, library));
+                    .with_children(|body| guide::draw_controls(body, world));
+                if world.is_some_and(WorldSet::is_abyss) {
+                    return;
+                }
                 parent
                     .spawn(Node {
                         column_gap: px(8.),
@@ -2545,7 +2548,7 @@ mod tests {
                     None,
                     None,
                     false,
-                    false,
+                    None,
                 );
             })
             .unwrap();
@@ -2601,7 +2604,7 @@ mod tests {
                         None,
                         None,
                         false,
-                        false,
+                        None,
                     )
                     .0
                 })

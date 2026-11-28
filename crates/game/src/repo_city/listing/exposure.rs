@@ -6,6 +6,20 @@ struct Viewed {
     lines: Vec<(bool, syntax::Line)>,
 }
 
+fn whole_line_rows(
+    mut rows: Range<usize>,
+    count: usize,
+    identity: impl Fn(usize) -> Option<(bool, usize)>,
+) -> Range<usize> {
+    while !rows.is_empty() && rows.start > 0 && identity(rows.start - 1) == identity(rows.start) {
+        rows.start += 1;
+    }
+    while !rows.is_empty() && rows.end < count && identity(rows.end - 1) == identity(rows.end) {
+        rows.end -= 1;
+    }
+    rows
+}
+
 impl Listing {
     pub(crate) fn observe_rows(
         &mut self,
@@ -174,6 +188,8 @@ pub(crate) fn update(
     camera: Query<&Transform, PlayerCamera>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut progress: ResMut<progress::Progress>,
+    set: Res<WorldSet>,
+    nearest: Res<Nearest>,
 ) {
     if !settings.enabled {
         listing.observed = None;
@@ -183,17 +199,25 @@ pub(crate) fn update(
     let mut guided_focus = false;
     let view = (|| {
         let (camera, window) = (camera.single().ok()?, windows.single().ok()?);
+        let abyss = set.is_abyss();
         if !window.focused
             || review.blocked
             || picker.is_open()
             || menu.is_open()
             || search.blocks_controls()
             || navigation.is_flying()
+            || (abyss
+                && (review.tablet_open
+                    || explorer.dirty
+                    || nearest.lamp_file != Some(explorer.selected)))
         {
             return None;
         }
         let file = repo.0.files.get(explorer.selected)?;
         if explorer.comparison_mode > 0 {
+            if abyss {
+                return None;
+            }
             let (before, rows) = comparison_scene::reading_rows(file, &explorer, camera)?;
             return aligned(&explorer, rows, Some(before));
         }
@@ -203,6 +227,10 @@ pub(crate) fn update(
         let aspect = window.width() / window.height().max(1.);
         let face = listing.close_face(file, camera, &explorer, aspect)?;
         if face == Face::Source {
+            if abyss {
+                // Only the headlamp earns source credit, including in the always-visible setting.
+                return None;
+            }
             if (settings.show_all_source
                 || listing.guided == Some((explorer.selected, explorer.before)))
                 && !review.tablet_open
@@ -267,6 +295,24 @@ pub(crate) fn update(
             }
         }
         rows = rows.start.max(visible.start)..rows.end.min(visible.end);
+        if abyss {
+            side.wash_hit(camera, count, listing.frame)?;
+            let tiles = if face == Face::Blame {
+                &listing.blame_tiles
+            } else {
+                &listing.diff_tiles
+            };
+            rows = lamp::ready_rows(rows, focus, |row, _| tiles.ready(row));
+            rows = whole_line_rows(rows, count, |row| {
+                if face == Face::Diff {
+                    let (line, mark) = &explorer.diff_layout.rows[row];
+                    line.as_ref()
+                        .map(|line| (*mark == Mark::Removed, line.number))
+                } else {
+                    Some((explorer.before, explorer.blame_layout.rows[row].number))
+                }
+            });
+        }
         if rows.is_empty() {
             return None;
         }
@@ -313,6 +359,23 @@ pub(crate) fn update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn abyss_diff_credit_skips_partially_visible_wrapped_lines_and_preserves_comparison_sides() {
+        let rows = [
+            (true, 5),
+            (true, 5),
+            (false, 5),
+            (false, 5),
+            (false, 6),
+            (false, 6),
+        ];
+        assert_eq!(
+            whole_line_rows(1..5, rows.len(), |row| Some(rows[row])),
+            2..4
+        );
+        assert!(whole_line_rows(2..3, rows.len(), |row| Some(rows[row])).is_empty());
+    }
     fn view() -> Viewed {
         Viewed {
             rows: 0..1,

@@ -96,6 +96,7 @@ pub(crate) fn draw(
     mut files_by_path: Local<HashMap<String, usize>>,
     mut hud: Query<(&mut Text, &mut TextColor), With<review_notes::ToolHud>>,
     mut reticle: Query<(&ReticlePart, &mut BackgroundColor, &mut Node)>,
+    set: Res<WorldSet>,
 ) {
     use review_notes::Anchor;
     let Ok((camera, pilot)) = camera.single() else {
@@ -366,6 +367,9 @@ pub(crate) fn draw(
             let saved = match release {
                 Some((_, face, _, _)) if can_save(&listing, &explorer, &anchor, *face) => {
                     review.save_draft(&repo.0, anchor)
+                }
+                Some(_) if set.is_abyss() => {
+                    Err("Read these source lines before marking them.".into())
                 }
                 Some(_) => Err("Thaw these lines first, or mark them on the diff wall.".into()),
                 None => Err("Release over the marked lines to save a note.".into()),

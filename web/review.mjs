@@ -34,7 +34,7 @@ const changedPaths = ({ before, after }) => [...new Set([...Object.keys(before),
   path => before[path]?.id !== after[path]?.id || before[path]?.mode !== after[path]?.mode,
 );
 
-export function createReview({ canvas, release, onClose, onTour, audio, onCompare = () => {}, library = () => false }) {
+export function createReview({ canvas, release, onClose, onTour, audio, onCompare = () => {}, library = () => false, diving = () => false }) {
   const dialog = document.querySelector("#review-dialog");
   const tablet = createTablet(dialog, canvas);
   const settingsKey = "repo-city-reading-v1";
@@ -260,6 +260,26 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     dialog.dataset.view = "help";
     dialog.dataset.tablet = "";
     view("Help");
+    if (diving()) {
+      dialog.append(make("p", "The lamp guides you between stations. Up close the reading surface lights evenly. Keep a block in view to read it. Read lines keep glowing."));
+      const controls = make("dl", undefined, { class: "review-controls" });
+      for (const [keys, purpose] of [
+        ["WASD / mouse", "Steer the bathyscaphe and aim the lamp"],
+        ["Space / Ctrl / Shift", "Ascend, descend, or boost the thrusters"],
+        ["E", "Approach the file in your sights"],
+        ["O", "Drop a survey buoy or retrieve a nearby one"],
+        ["Hold I / Pilot", "See the engineer in the bathyscaphe"],
+        ["0", "Select the reading lamp"],
+        ["1–9 / drag", "Select a paint and mark readable lines"],
+        ["U / J", "Edit paints or open review notes"],
+        ["/", "Find text at a file or find a file"],
+        ["G / B", "Read the diff or blame"],
+        ["Tab / P", "Open VibePad or preview a file"],
+      ]) controls.append(make("dt", keys), make("dd", purpose));
+      dialog.append(controls);
+      show();
+      return;
+    }
     if (library()) {
       dialog.append(make("p", "Click Repo Polis to open the repository picker."));
       const controls = make("dl", undefined, { class: "review-controls" });
@@ -622,13 +642,16 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
   function paintsPanel() {
     dialog.dataset.view = "paints";
     view("Paints");
-    dialog.append(make("p", "Pick a tool. Thaw source first, then mark a range with a paint."));
+    dialog.append(make("p", diving()
+      ? "Read a block at a station, then drag a paint across its lines to mark them."
+      : "Pick a tool. Thaw source first, then mark a range with a paint."));
     const grid = make("div", undefined, { class: "paint-slots" });
     const palette = session?.palette.length ? session.palette : defaults;
     for (let i = 0; i <= 9; i++) {
       const paint = palette[i - 1];
       const row = make("div");
-      const equip = button(i === 0 ? "0 · Heat" : `${i} · ${paint?.label ?? "Empty"}`, () => {
+      const label = i === 0 ? (diving() ? "Headlamp" : "Heat") : paint?.label ?? "Empty";
+      const equip = button(`${i} · ${label}`, () => {
         pendingSlot = i;
         close();
       });

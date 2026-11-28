@@ -212,6 +212,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(Repo(repo))
             .insert_resource(WorldSet::load(None).unwrap())
+            .init_resource::<city_navigation::Navigation>()
             .init_resource::<file_facade::ChangesOnly>()
             .init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<StandardMaterial>>()
@@ -386,12 +387,13 @@ pub(super) fn draw_distant_city(
     repo: Res<Repo>,
     focus: Res<file_facade::ChangesOnly>,
     set: Res<WorldSet>,
+    navigation: Res<city_navigation::Navigation>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     maps: Query<(Entity, &Mesh3d), With<DistantCity>>,
     mut previous_progress: Local<Option<f32>>,
 ) {
-    let enabled = repo.0.files.len() > EAGER_FILES;
+    let enabled = repo.0.files.len() > EAGER_FILES && (!set.is_abyss() || navigation.overview());
     let progress = focus.animation_progress();
     if enabled
         && !repo.is_changed()

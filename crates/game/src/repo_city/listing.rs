@@ -10,6 +10,7 @@ use super::*;
 mod cover;
 pub(super) mod exposure;
 pub(super) mod find;
+mod lamp;
 pub(super) mod layout;
 mod overview;
 mod paint;
@@ -257,6 +258,7 @@ pub(super) struct Listing {
     guided: Option<(usize, bool)>,
     guidance: Option<GuidedRange>,
     show_all_source: bool,
+    station_source_lit: bool,
     timers: reading::Timers,
     water_on: bool,
     blame: super::blame::Blame,
@@ -359,7 +361,10 @@ pub(super) fn draw_overview(
             Option<&mut MeshMaterial3d<StandardMaterial>>,
             Option<&MeshMaterial3d<overview::Material>>,
         ),
-        Without<FacadeRim>,
+        (
+            Without<FacadeRim>,
+            Without<world_set::abyss::scene::Station>,
+        ),
     >,
     mut rims: Query<(&FacadeRim, &mut MeshMaterial3d<StandardMaterial>), Without<Facade>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -854,6 +859,7 @@ impl Listing {
 
     fn source_display_row_is_readable(&self, explorer: &Explorer, row: usize) -> bool {
         self.show_all_source
+            || self.station_source_lit
             || explorer
                 .source_layout
                 .rows
@@ -1032,12 +1038,28 @@ impl Listing {
         delta: f32,
         settings: reading::Settings,
     ) -> Option<progress::Mark> {
+        self.advance_wash_rows(
+            explorer,
+            file,
+            settings.block(explorer, row),
+            delta,
+            settings,
+        )
+    }
+
+    fn advance_wash_rows(
+        &mut self,
+        explorer: &Explorer,
+        file: &repo_world::File,
+        rows: Range<usize>,
+        delta: f32,
+        settings: reading::Settings,
+    ) -> Option<progress::Mark> {
         if !settings.enabled {
             self.stop_water();
             self.observed = None;
             return None;
         }
-        let rows = settings.block(explorer, row);
         if rows.is_empty()
             || rows
                 .clone()
@@ -1517,9 +1539,51 @@ pub(super) fn wash_stream(
     menu: Res<city_menu::Menu>,
     search: Res<find::Search>,
     settings: Res<reading::Settings>,
+    set: Res<WorldSet>,
+    windows: Query<&Window, With<PrimaryWindow>>,
 ) {
     if !settings.enabled {
         listing.stop_water();
+        return;
+    }
+    if set.is_abyss() {
+        let active = camera
+            .single()
+            .ok()
+            .zip(windows.single().ok())
+            .filter(|(_, window)| {
+                window.focused
+                    && !menu.is_open()
+                    && !search.blocks_controls()
+                    && !review.blocked
+                    && !review.tablet_open
+                    && !picker.is_open()
+                    && !listing.turning()
+                    && Listing::visible(&explorer, &navigation)
+                    && !explorer.dirty
+                    && nearest.lamp_file == Some(explorer.selected)
+                    && !listing
+                        .guidance
+                        .as_ref()
+                        .is_some_and(|cue| cue.strength() > 0.)
+            });
+        if let Some(((camera, _), window)) = active
+            && let Some(file) = repo.0.files.get(explorer.selected)
+        {
+            if let Some(mark) = lamp::source(
+                &mut listing,
+                &explorer,
+                file,
+                camera,
+                window.width() / window.height().max(1.),
+                time.delta_secs(),
+                *settings,
+            ) {
+                progress.mark(mark, true);
+            }
+        } else {
+            listing.stop_water();
+        }
         return;
     }
     if listing.show_all_source || listing.guided == Some((explorer.selected, explorer.before)) {
@@ -1605,6 +1669,14 @@ struct Tiles {
     dirty: HashSet<usize>,
     preview: Option<Handle<Image>>,
     preview_dirty: bool,
+}
+
+impl Tiles {
+    fn ready(&self, row: usize) -> bool {
+        self.resident
+            .get(&(row / TILE_ROWS))
+            .is_some_and(|tile| tile.alpha >= 0.95)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1863,20 +1935,30 @@ struct WallRender<'a, 'w, 's> {
     covered: &'a mut Assets<cover::Material>,
     remaining: usize,
     dt: f32,
+    abyss: bool,
 }
 
 struct TileDetails<'a> {
     mask: &'a dyn Fn(Range<usize>) -> u32,
-    metadata: &'a dyn Fn(Range<usize>, u32) -> cover::CoverRows,
+    phosphor: Option<&'a dyn Fn(Range<usize>) -> u32>,
+    station_close: bool,
     paint: &'a dyn Fn(Range<usize>) -> [Vec4; TILE_ROWS],
     glow: &'a dyn Fn(Range<usize>) -> [f32; TILE_ROWS],
 }
 
 impl TileDetails<'_> {
-    fn build(&self, rows: Range<usize>) -> cover::CoverRows {
-        let mut data = (self.metadata)(rows.clone(), (self.mask)(rows.clone()));
+    fn apply(&self, data: &mut cover::CoverRows, rows: Range<usize>) {
+        data.set_mask((self.mask)(rows.clone()));
+        if let Some(phosphor) = self.phosphor {
+            data.set_station_light(phosphor(rows.clone()), self.station_close);
+        }
         data.set_paint((self.paint)(rows.clone()));
         data.set_glow((self.glow)(rows));
+    }
+
+    fn build(&self, rows: Range<usize>) -> cover::CoverRows {
+        let mut data = cover::CoverRows::new(rows.len(), (self.mask)(rows.clone()));
+        self.apply(&mut data, rows);
         data
     }
 }
@@ -1925,29 +2007,37 @@ impl WallRender<'_, '_, '_> {
     fn plane(
         &mut self,
         side: &WallSide,
-        image: Image,
+        mut image: Image,
         y: f32,
         height: f32,
         layer: Layer,
         cover: Option<cover::CoverRows>,
         alpha: f32,
     ) -> Tile {
+        if self.abyss && cover.is_none() {
+            clear_paper(&mut image);
+        }
         let image = self.images.add(image);
         let material = StandardMaterial {
             base_color: Color::WHITE.with_alpha(alpha),
             base_color_texture: Some(image.clone()),
-            alpha_mode: if alpha < 1. {
+            alpha_mode: if self.abyss || alpha < 1. {
                 AlphaMode::Blend
             } else {
                 AlphaMode::Opaque
             },
             unlit: true,
+            fog_enabled: !self.abyss,
             ..default()
         };
+        let mut pose = layer.pose(side, y);
+        if self.abyss {
+            pose.translation -= side.normal() * (PANEL_OFFSET - 0.004);
+        }
         let mut entity = self.commands.spawn((
             ListingSurface(side.face),
             Mesh3d(self.meshes.add(Rectangle::new(side.width, height))),
-            layer.pose(side, y),
+            pose,
         ));
         let material = if let Some(data) = cover {
             let handle = self.covered.add(cover::Material {
@@ -2070,7 +2160,7 @@ impl WallRender<'_, '_, '_> {
                 let alpha = (tile.alpha + sign * self.dt / 0.14).clamp(0., 1.);
                 if alpha != tile.alpha {
                     tile.alpha = alpha;
-                    let mode = if alpha >= 1. {
+                    let mode = if alpha >= 1. && !self.abyss {
                         AlphaMode::Opaque
                     } else {
                         AlphaMode::Blend
@@ -2095,10 +2185,8 @@ impl WallRender<'_, '_, '_> {
                     if let Some(material) = self.covered.get(handle) {
                         let data = material.extension.data;
                         let mut updated = data;
-                        updated.set_mask((details.mask)(rows.clone()));
+                        details.apply(&mut updated, rows);
                         updated.advance(self.dt);
-                        updated.set_paint((details.paint)(rows.clone()));
-                        updated.set_glow((details.glow)(rows));
                         if updated != data
                             && let Some(mut material) = self.covered.get_mut(handle)
                         {
@@ -2163,6 +2251,22 @@ impl WallRender<'_, '_, '_> {
     }
 }
 
+fn clear_paper(image: &mut Image) {
+    if let Some(pixels) = &mut image.data
+        && let Some(background) = pixels.first_chunk::<4>().copied()
+    {
+        for pixel in pixels.chunks_exact_mut(4) {
+            let pigment = pixel[..3]
+                .iter()
+                .zip(background)
+                .map(|(&value, base)| value.abs_diff(base))
+                .max()
+                .unwrap_or_default();
+            pixel[3] = u8::try_from(u16::from(pigment) * 4).unwrap_or(u8::MAX);
+        }
+    }
+}
+
 pub(super) fn draw(
     mut commands: Commands,
     repo: Res<Repo>,
@@ -2199,6 +2303,26 @@ pub(super) fn draw(
             .files
             .get(explorer.selected)
             .is_some_and(|file| focus.as_ref().is_none_or(|focus| focus.includes(file)));
+    let aspect = windows
+        .single()
+        .map_or(16. / 9., |window| window.width() / window.height().max(1.));
+    let visible = visible
+        && (!set.is_abyss()
+            || camera.single().is_ok_and(|camera| {
+                let file = &repo.0.files[explorer.selected];
+                let size = block_size(file);
+                [
+                    (Face::Source, explorer.source_layout.len()),
+                    (Face::Diff, explorer.diff_layout.rows.len()),
+                    (Face::Blame, explorer.blame_layout.len()),
+                ]
+                .into_iter()
+                .any(|(face, count)| {
+                    WallSide::new(file, count, face, size)
+                        .detail_distance(camera, aspect, listing.rendered.is_some(), listing.frame)
+                        .is_some()
+                })
+            }));
     #[cfg(not(target_arch = "wasm32"))]
     let visible = visible
         && !live
@@ -2222,6 +2346,7 @@ pub(super) fn draw(
         covered: &mut covered,
         remaining: TEXTURES_PER_FRAME,
         dt: time.as_ref().map_or(1. / 60., |time| time.delta_secs()),
+        abyss: set.is_abyss(),
     };
     if changed {
         listing.observed = None;
@@ -2277,6 +2402,7 @@ pub(super) fn draw(
         }
     }
     if !visible {
+        listing.station_source_lit = false;
         listing.blame.clear();
         return;
     }
@@ -2317,9 +2443,6 @@ pub(super) fn draw(
     let frame = listing.frame;
     let fallback = view(file, source_count, frame);
     let camera = camera.single().unwrap_or(&fallback);
-    let aspect = windows
-        .single()
-        .map_or(16. / 9., |window| window.width() / window.height().max(1.));
     let near = |face, retained| {
         let side = match face {
             Face::Source => &source,
@@ -2341,6 +2464,8 @@ pub(super) fn draw(
     if listing.turn.is_none() {
         listing.viewing = viewed;
     }
+    let station_close = |face| set.is_abyss() && near(face, false).is_some();
+    listing.station_source_lit = station_close(Face::Source);
     let blame_row = (viewed == Some(Face::Blame) && blame_count > 0 && listing.turn.is_none())
         .then(|| {
             explorer.blame_layout.rows[blame.wall.row(blame.look_height(camera), blame_count)]
@@ -2357,6 +2482,9 @@ pub(super) fn draw(
         if let Some(header) = &listing.blame_header {
             if let Some(mut image) = render.images.get_mut(&header.image) {
                 *image = code_texture::render(caption, &[], set.ink, 1280, 64);
+                if set.is_abyss() {
+                    clear_paper(&mut image);
+                }
             }
         } else {
             listing.blame_header = Some(render.header(&blame, caption, set.ink));
@@ -2448,7 +2576,13 @@ pub(super) fn draw(
             || active_wash.is_some_and(|preview| preview.rows.contains(&row))
     };
     let mask = |rows| cover::mask(rows, &display_revealed);
-    let metadata = |rows: Range<usize>, bits| cover::CoverRows::new(rows.len(), bits);
+    let phosphor = |rows| {
+        cover::mask(rows, &|visual| {
+            let row = visual - 1;
+            is_revealed(explorer.source_layout.rows[row].number)
+                || partial_source.contains(&(explorer.selected, explorer.before, row))
+        })
+    };
     let tone = |[r, g, b]: [u8; 3], alpha| {
         Vec4::new(r as f32 / 255., g as f32 / 255., b as f32 / 255., alpha)
     };
@@ -2497,7 +2631,7 @@ pub(super) fn draw(
             .map(|(_, paint)| *paint)
     };
     let print = code_texture::FacadePrint::for_path(&file.path);
-    if fits_wall_preview(facade_rows(size.y, print)) {
+    if !set.is_abyss() && fits_wall_preview(facade_rows(size.y, print)) {
         render.preview(&source, source_tiles, source_count, || {
             code_texture::listing_preview(
                 source_count,
@@ -2565,7 +2699,8 @@ pub(super) fn draw(
                 },
                 Some(TileDetails {
                     mask: &mask,
-                    metadata: &metadata,
+                    phosphor: set.is_abyss().then_some(&phosphor),
+                    station_close: station_close(Face::Source),
                     paint: &source_paint,
                     glow: &source_glow,
                 }),
@@ -2579,7 +2714,19 @@ pub(super) fn draw(
                 |rows| code_texture::listing(&diff_lines[rows], Face::Diff, diff.glyph_scale()),
                 Some(TileDetails {
                     mask: &|_| u32::MAX,
-                    metadata: &|rows, bits| cover::CoverRows::new(rows.len(), bits),
+                    phosphor: set.is_abyss().then_some(&|rows| {
+                        cover::mask(rows, &|visual| {
+                            let (line, mark) = &diff_lines[visual - 1];
+                            line.as_ref().is_some_and(|line| {
+                                revealed.contains(&(
+                                    explorer.selected,
+                                    *mark == Mark::Removed,
+                                    line.number,
+                                ))
+                            })
+                        })
+                    }),
+                    station_close: station_close(Face::Diff),
                     paint: &diff_paint,
                     glow: &|_| [0.; TILE_ROWS],
                 }),
@@ -2605,7 +2752,17 @@ pub(super) fn draw(
                         attribution.notes(),
                     )
                 },
-                None,
+                set.is_abyss().then_some(TileDetails {
+                    mask: &|_| u32::MAX,
+                    phosphor: Some(&|rows| {
+                        cover::mask(rows, &|visual| {
+                            is_revealed(explorer.blame_layout.rows[visual - 1].number)
+                        })
+                    }),
+                    station_close: station_close(Face::Blame),
+                    paint: &|_| [Vec4::ZERO; TILE_ROWS],
+                    glow: &|_| [0.; TILE_ROWS],
+                }),
             ),
             _ => {}
         }
@@ -3194,6 +3351,108 @@ mod tests {
             mode: "100644".into(),
         });
         file
+    }
+
+    #[test]
+    fn abyss_reads_a_visible_block_even_when_aimed_at_the_empty_right_edge() {
+        let file = fixture_with_rows(48);
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight(
+            "test.rs",
+            &"let sample = 1;\n".repeat(48),
+        ));
+        let settings = reading::Settings {
+            block_lines: 48,
+            block_kind: reading::BlockKind::Lines,
+            min_seconds: Some(1.),
+            max_seconds: Some(1.),
+            ..default()
+        };
+        let mut listing = Listing {
+            rendered: Some((0, false, 48)),
+            viewing: Some(Face::Source),
+            rendered_layout: explorer.source_layout.revision(),
+            ..default()
+        };
+        for index in 0..3 {
+            listing.source_tiles.resident.insert(
+                index,
+                Tile {
+                    entity: Entity::PLACEHOLDER,
+                    image: default(),
+                    material: TileMaterial::Plain(default()),
+                    alpha: 1.,
+                },
+            );
+        }
+        let side = WallSide::new(&file, 48, Face::Source, block_size(&file));
+        let hit = side.top.with_y(side.wall.y(24.5)) + Vec3::X * (side.width * 0.46);
+        let camera = Transform::from_translation(hit + Vec3::Z * 2.).looking_at(hit, Vec3::Y);
+        let visible = side.visible_rows(&camera, 48, 1.6);
+        assert!(visible.contains(&24) && visible.len() < 24);
+        assert!(
+            lamp::source(&mut listing, &explorer, &file, &camera, 1.6, 0.3, settings).is_none()
+        );
+        let away = camera.looking_at(camera.translation + Vec3::Z, Vec3::Y);
+        assert!(lamp::source(&mut listing, &explorer, &file, &away, 1.6, 5., settings).is_none());
+        assert_eq!(listing.counts(&explorer).0, 0);
+        assert!(
+            lamp::source(&mut listing, &explorer, &file, &camera, 1.6, 0.71, settings).is_some()
+        );
+        listing.stop_water();
+        for row in 0..48 {
+            assert_eq!(
+                listing.has_read_line(0, false, row + 1),
+                visible.contains(&row)
+            );
+        }
+    }
+
+    #[test]
+    fn abyss_survey_keeps_the_pressure_hull_exposed_until_the_source_is_close() {
+        let file = fixture_with_rows(48);
+        let mut repo = repository_picker::empty();
+        repo.files.push(file.clone());
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight(
+            "test.rs",
+            &"let sample = 1;\n".repeat(48),
+        ));
+        let near = view(&file, 48, ReadingFrame::default());
+        let far = Transform::from_xyz(12., 12., 36.).looking_at(Vec3::Y * 5., Vec3::Y);
+        let mut app = App::new();
+        app.insert_resource(Repo(repo))
+            .insert_resource(explorer)
+            .insert_resource(WorldSet::load(Some("abyss")).unwrap())
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<cover::Material>>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<city_navigation::Navigation>()
+            .init_resource::<Listing>()
+            .add_systems(Update, draw);
+        let eye = app.world_mut().spawn((Camera3d::default(), far)).id();
+        let surfaces = |app: &mut App| {
+            app.world_mut()
+                .query::<&ListingSurface>()
+                .iter(app.world())
+                .count()
+        };
+        app.update();
+        assert_eq!(surfaces(&mut app), 0);
+        app.world_mut().entity_mut(eye).insert(near);
+        app.update();
+        assert!(surfaces(&mut app) > 0);
+        assert!(
+            app.world()
+                .resource::<Listing>()
+                .source_tiles
+                .preview
+                .is_none()
+        );
+        app.world_mut().entity_mut(eye).insert(far);
+        app.update();
+        assert_eq!(surfaces(&mut app), 0);
     }
 
     #[test]

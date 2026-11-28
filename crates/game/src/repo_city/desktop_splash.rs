@@ -48,10 +48,21 @@ fn spawn(
         )
         .expect("Repo City wordmark font");
     let library = set.is_library();
-    let bytes: &[u8] = if library {
-        include_bytes!("../../../../assets/repo-polis-cover.webp")
+    let (bytes, focus): (&[u8], _) = if library {
+        (
+            &include_bytes!("../../../../assets/repo-polis-cover.webp")[..],
+            0.42,
+        )
+    } else if set.is_abyss() {
+        (
+            &include_bytes!("../../../../assets/abyss-cover.webp")[..],
+            0.34,
+        )
     } else {
-        include_bytes!("../../../../assets/repo-city-tablet.webp")
+        (
+            &include_bytes!("../../../../assets/repo-city-tablet.webp")[..],
+            0.67,
+        )
     };
     let image = Image::from_buffer(
         bytes,
@@ -66,7 +77,7 @@ fn spawn(
     commands.spawn((
         Cover {
             aspect,
-            focus: Vec2::new(if library { 0.42 } else { 0.67 }, 0.47),
+            focus: Vec2::new(focus, 0.47),
             library,
         },
         ImageNode::new(images.add(image)),

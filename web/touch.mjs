@@ -1,7 +1,7 @@
 // Adapted from Feed the Poor touch.ts at beabe03f5aef648717fa175693cb9a76c953d9d5.
 // Repo City adds altitude, independent look, and tablet actions; no pointer lock is required.
 // Circular controls follow Feed the Poor style.css at 6b1b2eed8a660bfb9dea2a4259175056d0718e06.
-export function createTouchControls({ canvas, document = globalThis.document, browser = globalThis, onPad, enabled = () => true, walking = () => false } = {}) {
+export function createTouchControls({ canvas, document = globalThis.document, browser = globalThis, onPad, enabled = () => true, walking = () => false, diving = () => false } = {}) {
   const panel = document.createElement("nav");
   panel.id = "touch-controls";
   panel.setAttribute("aria-label", "Touch flight controls");
@@ -12,6 +12,8 @@ export function createTouchControls({ canvas, document = globalThis.document, br
     Read: '<path d="M12 5v16M3 3l9 2 9-2v16l-9 2-9-2z"/>',
     Paint: '<path d="M8 7h8v14H8Zm1-4h6v4m3-4h3M18 6l3 2"/>',
     Notes: '<path d="M4 4h16v12H9l-5 5zM8 8h8m-8 4h5"/>',
+    Buoy: '<path d="M12 3v3m-2 0h4l1 10H9zM6 16h12l-2 3H8zM3 21q3-2 6 0t6 0 6 0"/>',
+    Pilot: '<circle cx="12" cy="8" r="4"/><path d="M5 21v-2a7 7 0 0 1 14 0v2z"/>',
     Up: '<path d="m5 14 7-7 7 7M12 7v14"/>',
     Down: '<path d="m5 10 7 7 7-7M12 3v14"/>',
     Fast: '<path d="m13 2-9 12h7l-1 8L21 9h-8z"/>',
@@ -38,16 +40,22 @@ export function createTouchControls({ canvas, document = globalThis.document, br
   let readingBoard, board;
   let sampled = browser.performance.now();
   const held = new Set(), pulses = [];
-  const pulse = (label, name, key) => button(label, name, ["Tab", "KeyM", "KeyJ"].includes(key) ? utility : tools).addEventListener("pointerdown", event => {
-    event.preventDefault(); event.stopPropagation(); if (key === "Tab" && onPad) onPad(); else pulses.push(walking() && key === "KeyJ" ? "KeyN" : key);
-  });
+  const pulse = (label, name, key) => {
+    const element = button(label, name, ["Tab", "KeyM", "KeyJ", "KeyO"].includes(key) ? utility : tools);
+    element.addEventListener("pointerdown", event => {
+      event.preventDefault(); event.stopPropagation(); if (key === "Tab" && onPad) onPad(); else pulses.push(walking() && key === "KeyJ" ? "KeyN" : key);
+    });
+    return element;
+  };
   for (const [label, name, key] of [["Pad", "Open VibePad", "Tab"], ["Map", "Change map view", "KeyM"],
     ["Go", "Fly to aimed wall", "KeyE"], ["Read", "Preview aimed file", "KeyP"],
     ["Paint", "Choose paint", "KeyU"], ["Notes", "Review notes", "KeyJ"]]) pulse(label, name, key);
+  const buoy = pulse("Buoy", "Drop or retrieve a survey buoy", "KeyO");
+  buoy.hidden = true;
   const flight = document.createElement("div"); flight.className = "touch-altitude"; panel.append(flight);
   for (const [label, name, key] of [["Up", "Fly up", "Space"], ["Down", "Fly down", "ControlLeft"],
-    ["Fast", "Fly faster", "ShiftLeft"], ["Use", "Use water or paint", "Fire"]]) {
-    const element = button(label, name, flight); element.dataset.action = key;
+    ["Fast", "Fly faster", "ShiftLeft"], ["Use", "Use water or paint", "Fire"], ["Pilot", "Hold to see the pilot", "KeyI"]]) {
+    const element = button(label, name, key === "KeyI" ? utility : flight); element.dataset.action = key;
     element.addEventListener("pointerdown", event => {
       event.preventDefault(); event.stopPropagation();
       if (walking() && key === "Fire") { pulses.push("KeyK"); return; }
@@ -117,14 +125,19 @@ export function createTouchControls({ canvas, document = globalThis.document, br
       Boolean(document.querySelector("dialog[open]")) || canvas.hasAttribute("data-library-map") || document.hidden;
     if (!hidden) {
       const foot = walking();
-      panel.setAttribute("aria-label", foot ? "Touch walking controls" : "Touch flight controls");
+      const dive = diving();
+      if (buoy.hidden === dive) buoy.hidden = !dive;
+      const pilot = utility.querySelector('[data-action="KeyI"]');
+      if (pilot.hidden === dive) pilot.hidden = !dive;
+      panel.setAttribute("aria-label", dive ? "Bathyscaphe controls" : foot ? "Touch walking controls" : "Touch flight controls");
       const use = flight.querySelector('[data-action="Fire"]');
-      use.setAttribute("aria-label", foot ? "Use heat" : "Use water or paint");
+      use.setAttribute("aria-label", dive ? "Apply selected paint" : foot ? "Use heat" : "Use water or paint");
       utility.querySelector("button").setAttribute("aria-label", foot ? "Open Stone Pad" : "Open VibePad");
-      tools.querySelector("button").setAttribute("aria-label", foot ? "Open aimed scroll" : "Fly to aimed wall");
+      tools.querySelector("button").setAttribute("aria-label", dive ? "Approach aimed file" : foot ? "Open aimed scroll" : "Fly to aimed wall");
       const airborne = canvas.hasAttribute("data-library-flight");
-      flight.querySelector('[data-action="Space"]').setAttribute("aria-label", foot && !airborne ? "Take off" : "Fly up");
-      flight.querySelector('[data-action="ControlLeft"]').setAttribute("aria-label", foot ? "Land" : "Fly down");
+      flight.querySelector('[data-action="Space"]').setAttribute("aria-label", dive ? "Ascend" : foot && !airborne ? "Take off" : "Fly up");
+      flight.querySelector('[data-action="ControlLeft"]').setAttribute("aria-label", dive ? "Descend" : foot ? "Land" : "Fly down");
+      flight.querySelector('[data-action="ShiftLeft"]').setAttribute("aria-label", dive ? "Boost thrusters" : "Fly faster");
       for (const element of flight.children) {
         const hide = foot && !airborne && ["ControlLeft", "ShiftLeft"].includes(element.dataset.action);
         if (element.hidden !== hide) element.hidden = hide;

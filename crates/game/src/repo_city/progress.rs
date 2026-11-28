@@ -36,6 +36,7 @@ pub(super) struct Progress {
     file_cursor: Option<String>,
     total_diffs: usize,
     camera: view::Checkpoint,
+    camera_world: Option<String>,
     #[cfg(not(target_arch = "wasm32"))]
     store: Option<std::sync::Mutex<sqlite::Store>>,
     #[cfg(target_arch = "wasm32")]
@@ -258,6 +259,8 @@ pub(super) fn sync(
     navigation: Res<city_navigation::Navigation>,
     review: Res<review_notes::Review>,
     camera: Query<(&Transform, &Pilot), PlayerCamera>,
+    set: Res<WorldSet>,
+    nearest: Res<Nearest>,
     #[cfg(not(target_arch = "wasm32"))] mut document: Option<ResMut<markdown_preview::ReadQueue>>,
 ) {
     #[cfg(not(target_arch = "wasm32"))]
@@ -302,7 +305,11 @@ pub(super) fn sync(
         && !navigation.overview()
         && !listing.turning()
         && let Ok((eye, pilot)) = camera.single()
-        && pilot.captured
+        && if set.is_abyss() {
+            nearest.lamp_file == Some(explorer.selected) && !review.tablet_open
+        } else {
+            pilot.captured
+        }
         && let Some(file) = repo.0.files.get(explorer.selected)
     {
         let size = listing::block_size(file);
@@ -310,7 +317,7 @@ pub(super) fn sync(
             listing::Face::at_camera(file, size, eye, listing.frame.tool_range(size.x) * 1.4)
         {
             progress.visit(explorer.selected, file, face == listing::Face::Diff);
-            progress.record_view(file, eye, time.elapsed_secs_f64());
+            progress.record_view(file, explorer.before, eye, time.elapsed_secs_f64());
         }
     }
     #[cfg(target_arch = "wasm32")]

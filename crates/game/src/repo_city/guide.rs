@@ -310,7 +310,30 @@ fn section(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn draw_controls(parent: &mut ChildSpawnerCommands, library: bool) {
+pub(super) fn draw_controls(parent: &mut ChildSpawnerCommands, world: Option<&WorldSet>) {
+    const DIVE_NAVIGATION: &[(&str, &str)] = &[
+        ("W A S D", "Steer the bathyscaphe"),
+        ("Mouse / arrows", "Aim the headlamp"),
+        ("Space / Ctrl", "Ascend or descend"),
+        ("Shift", "Boost the thrusters"),
+        ("E", "Approach the file in your sights"),
+        ("O", "Drop a survey buoy or retrieve the nearest one"),
+        ("Hold I", "See the engineer in the bathyscaphe"),
+        ("M", "Cycle folder and project views"),
+        ("Cmd+O / Cmd+P", "Open a repository or find a file"),
+        ("Tab / P", "Open VibePad or preview a file"),
+    ];
+    const DIVE_REVIEW: &[(&str, &str)] = &[
+        (
+            "0",
+            "Read a block on the illuminated surface. Read lines keep glowing.",
+        ),
+        ("1–9 / drag", "Select a paint and mark readable lines"),
+        ("U / J", "Edit paints or open review notes"),
+        ("C", "Review changed files"),
+        ("[ / ]", "Move between changed hunks"),
+        ("V", "Toggle reviewed mark"),
+    ];
     const LIBRARY_NAVIGATION: &[(&str, &str)] = &[
         ("W A S D", "Walk in the gallery"),
         ("Space / O", "Take off or land in front of a reading room"),
@@ -347,6 +370,13 @@ pub(super) fn draw_controls(parent: &mut ChildSpawnerCommands, library: bool) {
     ];
     let font = TextFont::from_font_size(14.);
     let ink = native_panel::INK;
+    let (navigation, reading, review) = if world.is_some_and(WorldSet::is_abyss) {
+        (DIVE_NAVIGATION, READING, DIVE_REVIEW)
+    } else if world.is_some_and(WorldSet::is_library) {
+        (LIBRARY_NAVIGATION, LIBRARY_READING, LIBRARY_REVIEW)
+    } else {
+        (NAVIGATION, READING, REVIEW)
+    };
     let column = Node {
         flex_direction: FlexDirection::Column,
         flex_basis: px(310.),
@@ -363,37 +393,15 @@ pub(super) fn draw_controls(parent: &mut ChildSpawnerCommands, library: bool) {
         })
         .with_children(|columns| {
             columns.spawn(column.clone()).with_children(|left| {
-                section(
-                    left,
-                    "Navigation",
-                    if library {
-                        LIBRARY_NAVIGATION
-                    } else {
-                        NAVIGATION
-                    },
-                    &font,
-                    ink,
-                );
+                section(left, "Navigation", navigation, &font, ink);
                 left.spawn(Node {
                     height: px(10.),
                     ..default()
                 });
-                section(
-                    left,
-                    "Reading",
-                    if library { LIBRARY_READING } else { READING },
-                    &font,
-                    ink,
-                );
+                section(left, "Reading", reading, &font, ink);
             });
             columns.spawn(column).with_children(|right| {
-                section(
-                    right,
-                    "Review",
-                    if library { LIBRARY_REVIEW } else { REVIEW },
-                    &font,
-                    ink,
-                );
+                section(right, "Review", review, &font, ink);
                 right.spawn(Node {
                     height: px(10.),
                     ..default()

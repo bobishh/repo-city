@@ -6,6 +6,8 @@ const SAVE_INTERVAL: f64 = 0.5;
 #[derive(Serialize, Deserialize)]
 struct View {
     path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    before: Option<bool>,
     offset: [f32; 3],
     rotation: [f32; 4],
 }
@@ -15,9 +17,10 @@ impl View {
         Vec3::new(file.position[0], 0., file.position[1])
     }
 
-    fn capture(file: &repo_world::File, camera: &Transform) -> Self {
+    fn capture(file: &repo_world::File, before: bool, camera: &Transform) -> Self {
         Self {
             path: file.path.clone(),
+            before: Some(before),
             offset: (camera.translation - Self::origin(file)).to_array(),
             rotation: camera.rotation.to_array(),
         }
@@ -27,13 +30,15 @@ impl View {
         Self::origin(file) + Vec3::from_array(self.offset)
     }
 
-    fn pose(&self, file: &repo_world::File, frame: listing::ReadingFrame) -> Option<Transform> {
+    fn pose(
+        &self,
+        file: &repo_world::File,
+        frame: listing::ReadingFrame,
+        floor: f32,
+    ) -> Option<Transform> {
         let translation = self.position(file);
         let rotation = Quat::from_array(self.rotation);
-        if !translation.is_finite()
-            || translation.y < city_navigation::STREET_EYE_HEIGHT
-            || !rotation.is_normalized()
-        {
+        if !translation.is_finite() || translation.y < floor || !rotation.is_normalized() {
             return None;
         }
         let pose = Transform::from_translation(translation).with_rotation(rotation);
@@ -50,6 +55,19 @@ pub(super) struct Checkpoint {
 }
 
 impl Progress {
+    pub(crate) fn separate_camera(&mut self, world: String) {
+        self.camera_world = Some(world);
+        self.camera = Checkpoint::default();
+    }
+
+    fn camera_scope(&self, comparison: &str) -> String {
+        match self.camera_world.as_deref() {
+            Some(world) => world_scope(comparison, world),
+            // Existing city checkpoints use the comparison itself as their key.
+            None => comparison.to_owned(),
+        }
+    }
+
     pub(super) fn restore_file_cursor(&mut self, scope: &str) {
         let key = format!("{scope}|city-change-route");
         self.file_cursor = self
@@ -81,22 +99,42 @@ impl Progress {
         if !explorer.resume_on_open {
             return None;
         }
-        let scope = comparison_scope(repo);
+        let scope = self.camera_scope(&comparison_scope(repo));
         let json = self.read_view(&scope).ok().flatten()?;
         let saved: View = serde_json::from_str(&json).ok()?;
         let index = repo.files.iter().position(|file| file.path == saved.path)?;
         if index != explorer.selected {
             explorer.open(repo, index);
         }
-        saved.pose(&repo.files[index], frame)
+        let file = &repo.files[index];
+        if let Some(before) = saved.before
+            && before != explorer.before
+            && (if before { &file.before } else { &file.after }).is_some()
+        {
+            explorer.before = before;
+            explorer.reload(repo);
+        }
+        let floor = if self.camera_world.is_some() {
+            CAMERA_FLOOR
+        } else {
+            city_navigation::STREET_EYE_HEIGHT
+        };
+        saved.pose(file, frame, floor)
     }
 
-    pub(crate) fn record_view(&mut self, file: &repo_world::File, camera: &Transform, now: f64) {
+    pub(crate) fn record_view(
+        &mut self,
+        file: &repo_world::File,
+        before: bool,
+        camera: &Transform,
+        now: f64,
+    ) {
         if self.scope.is_empty() {
             return;
         }
         if let Some(previous) = &self.camera.saved
             && previous.path == file.path
+            && previous.before == Some(before)
             && (now - self.camera.saved_at < SAVE_INTERVAL
                 || (previous.position(file).distance_squared(camera.translation)
                     < POSITION_STEP.powi(2)
@@ -107,7 +145,7 @@ impl Progress {
         {
             return;
         }
-        let view = View::capture(file, camera);
+        let view = View::capture(file, before, camera);
         let result = serde_json::to_string(&view)
             .map_err(|error| error.to_string())
             .and_then(|json| self.write_view(&json));
@@ -123,7 +161,7 @@ impl Progress {
         repo: &Repository,
         world: &str,
     ) -> Option<T> {
-        let scope = world_scope(repo, world);
+        let scope = world_scope(&comparison_scope(repo), world);
         serde_json::from_str(&self.read_view(&scope).ok().flatten()?).ok()
     }
 
@@ -133,7 +171,7 @@ impl Progress {
         world: &str,
         place: &impl Serialize,
     ) -> Result<(), String> {
-        let scope = world_scope(repo, world);
+        let scope = world_scope(&comparison_scope(repo), world);
         let value = serde_json::to_string(place).map_err(|error| error.to_string())?;
         self.write_view_at(&scope, &value)
     }
@@ -147,7 +185,7 @@ impl Progress {
     }
 
     fn write_view(&mut self, json: &str) -> Result<(), String> {
-        self.write_view_at(&self.scope.clone(), json)
+        self.write_view_at(&self.camera_scope(&self.scope), json)
     }
 
     fn write_view_at(&mut self, scope: &str, json: &str) -> Result<(), String> {
@@ -165,8 +203,8 @@ impl Progress {
     }
 }
 
-fn world_scope(repo: &Repository, world: &str) -> String {
-    format!("{}|world={world}", comparison_scope(repo))
+fn world_scope(comparison: &str, world: &str) -> String {
+    format!("{comparison}|world={world}")
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -182,6 +220,57 @@ fn browser_storage() -> Option<web_sys::Storage> {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_bathyscaphe_and_city_resume_their_own_views_of_the_same_file() {
+        let mut repo = repository_picker::empty();
+        repo.files.push(repo_world::File {
+            path: "main.rs".into(),
+            position: [0., 0.],
+            before: Some(repo_world::Blob {
+                id: "a".repeat(40),
+                size: 4800,
+                mode: "100644".into(),
+            }),
+            after: Some(repo_world::Blob {
+                id: "b".repeat(40),
+                size: 4800,
+                mode: "100644".into(),
+            }),
+            change: Change::Unchanged,
+        });
+        let mut progress = Progress {
+            store: Some(std::sync::Mutex::new(
+                sqlite::Store::open(std::path::Path::new(":memory:")).unwrap(),
+            )),
+            scope: comparison_scope(&repo),
+            ..default()
+        };
+        let file = &repo.files[0];
+        let city = Transform::from_xyz(12., 7., 1.).looking_at(Vec3::Y * 6., Vec3::Y);
+        let dive = Transform::from_xyz(12., 0.8, 2.).looking_at(Vec3::Y * 3., Vec3::Y);
+        progress.record_view(file, false, &city, 0.);
+        progress.separate_camera("abyss".into());
+        let mut explorer = Explorer::new(0);
+        let frame = listing::ReadingFrame::default();
+        assert!(
+            progress
+                .resume_camera(&repo, &mut explorer, frame)
+                .is_none()
+        );
+        progress.record_view(file, true, &dive, 1.);
+        assert_eq!(
+            progress.resume_camera(&repo, &mut explorer, frame),
+            Some(dive)
+        );
+        assert!(explorer.before);
+        progress.camera_world = None;
+        assert_eq!(
+            progress.resume_camera(&repo, &mut explorer, frame),
+            Some(city)
+        );
+        assert!(!explorer.before);
+    }
 
     #[test]
     fn resumes_the_latest_view_in_its_comparison_and_respects_an_explicit_file() {
@@ -204,8 +293,8 @@ mod tests {
             scope: comparison_scope(&repo),
             ..default()
         };
-        progress.record_view(&repo.files[0], &camera(0., 0.), 0.);
-        progress.record_view(&repo.files[1], &camera(32., 8.), 0.1);
+        progress.record_view(&repo.files[0], false, &camera(0., 0.), 0.);
+        progress.record_view(&repo.files[1], false, &camera(32., 8.), 0.1);
         let mut explorer = Explorer::new(0);
         explorer.resume_on_open = false;
         assert!(

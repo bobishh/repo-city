@@ -169,3 +169,44 @@ fn choosing_a_world_keeps_the_same_repository_revision_and_file() {
         ]
     );
 }
+
+#[test]
+fn launching_the_bathyscaphe_keeps_the_comparison_and_line() {
+    let args = [
+        "--world-picker",
+        "--repo",
+        "/checkout",
+        "--rev",
+        "HEAD",
+        "--base",
+        "HEAD~1",
+        "--world-set",
+        "repo-polis",
+        "--file",
+        "src/main.rs",
+        "--line",
+        "42",
+    ]
+    .map(str::to_owned);
+    let args = world_args(&args, "abyss");
+    assert_eq!(
+        args,
+        [
+            "--repo",
+            "/checkout",
+            "--rev",
+            "HEAD",
+            "--base",
+            "HEAD~1",
+            "--file",
+            "src/main.rs",
+            "--line",
+            "42",
+            "--world-set",
+            "abyss",
+        ]
+    );
+    let selected = WorldSet::load(args.last().map(String::as_str)).unwrap();
+    assert_eq!(selected.name, "Abyss");
+    assert_eq!(selected.locomotion, "bathyscaphe");
+}

@@ -38,10 +38,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
     if (cover.info.y > 0u) {
         let row = min(u32(in.uv.y * f32(cover.info.y)), cover.info.y - 1u);
         let paint = cover.paint[row];
+        let glass = srgb_to_linear(cover.glass.rgb / 255.0);
         let clarity = cover.clarity[row / 4u][row % 4u];
-        if clarity < 1.0 {
+        if clarity < 1.0 && cover.glass.w == 0.0 {
             let x = in.uv.x * f32(cover.info.z);
-            let glass = srgb_to_linear(cover.glass.rgb / 255.0);
             let blurred = frost(in.uv);
             let grain = fract(dot(floor(in.uv * vec2<f32>(640.0, 512.0)), vec2<f32>(0.75488, 0.56984)));
             let icy = mix(glass, vec3<f32>(0.15, 0.25, 0.31), 0.12 + grain * 0.05);
@@ -69,6 +69,25 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
             let gutter = smoothstep(0.065, 0.071, x) * (1.0 - smoothstep(0.082, 0.09, x));
             let opacity = paint.a * max(shape * band * (0.22 + 0.20 * grain), gutter * band * 0.96);
             ink = vec4<f32>(mix(ink.rgb, srgb_to_linear(paint.rgb), opacity), ink.a);
+        }
+        if cover.glass.w != 0.0 {
+            let recorded = ((cover.info.w >> row) & 1u) != 0u;
+            let luma = dot(ink.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+            let phosphor = vec3<f32>(0.02, 0.49, 0.34) * luma;
+            let difference = abs(ink.rgb - glass);
+            let pigment = max(difference.r, max(difference.g, difference.b));
+            let edge = smoothstep(0.064, 0.067, in.uv.x) - smoothstep(0.075, 0.078, in.uv.x);
+            let trace = select(0.0, edge, recorded);
+            let opacity = max(smoothstep(0.002, 0.10, pigment), trace);
+            if opacity < 0.001 { discard; }
+            let phosphor_ink = phosphor + vec3<f32>(0.007, 0.33, 0.22) * trace;
+            if cover.glass.w > 0.0 {
+                // The plate stays visible through the blank space between glyphs.
+                ink = vec4<f32>(ink.rgb * 1.85 + vec3<f32>(0.012, 0.36, 0.25) * trace, ink.a * opacity);
+            } else {
+                if !recorded { discard; }
+                ink = vec4<f32>(phosphor_ink, ink.a * opacity);
+            }
         }
     }
     var out: FragmentOutput;

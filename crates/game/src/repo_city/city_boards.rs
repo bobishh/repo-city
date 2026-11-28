@@ -136,7 +136,7 @@ fn update(
                         },
                         MeshMaterial3d(materials.add(StandardMaterial {
                             base_color_texture: Some(textures[index].clone()),
-                            unlit: true,
+                            unlit: !set.is_abyss(),
                             ..default()
                         })),
                         transforms[index],

@@ -85,6 +85,7 @@ type PlayerCamera = (
     With<Camera3d>,
     Without<district::MirrorCamera>,
     Without<android::TabletCamera>,
+    Without<world_set::abyss::ExteriorCamera>,
 );
 
 const CAMERA_FLOOR: f32 = 0.05;
@@ -341,6 +342,7 @@ struct TargetLabel;
 #[derive(Component, Default)]
 struct Pilot {
     captured: bool,
+    scene_focused: bool,
     keyboard: bool,
     fire_ready: bool,
     firing: bool,
@@ -365,6 +367,7 @@ impl Pilot {
 #[derive(Resource, Default)]
 struct Nearest {
     file: Option<file_facade::Aim>,
+    lamp_file: Option<usize>,
     file_distance: f32,
     near_source: Option<usize>,
     district: Option<usize>,
@@ -647,10 +650,13 @@ fn install_city(app: &mut App, args: &[String]) {
                     .run_if(listing::find::movement_enabled),
                 (listing::exposure::update, listing::wash_stream).chain(),
                 (
-                    guide::advance,
+                    guide::advance.run_if(|set: Res<WorldSet>| !set.is_abyss()),
                     listing::paint_notes,
                     listing::find::mark,
-                    (android::show_sprayer, android::show_tablet),
+                    (
+                        android::show_sprayer.run_if(|set: Res<WorldSet>| !set.is_abyss()),
+                        android::show_tablet,
+                    ),
                 )
                     .chain(),
                 physics::splashes,
@@ -665,6 +671,7 @@ fn install_city(app: &mut App, args: &[String]) {
                 hud,
             )
                 .chain()
+                .run_if(world_set::abyss::piloting)
                 .run_if(repository_picker::has_city),
         );
     app.add_systems(
@@ -752,12 +759,14 @@ fn install_city(app: &mut App, args: &[String]) {
         )
         .add_systems(Update, reading::apply.before(listing::update_framing))
         .add_systems(Update, browser_audio::update.after(listing::draw));
-    app.add_systems(Startup, district::setup);
+    if !app.world().resource::<WorldSet>().is_abyss() {
+        app.add_systems(Startup, district::setup);
+        app.add_systems(Update, district::reflect.after(listing::draw_overview));
+    }
     app.add_systems(
         Update,
         city_stream::draw_distant_city.after(city_navigation::navigate),
     );
-    app.add_systems(Update, district::reflect.after(listing::draw_overview));
     #[cfg(target_arch = "wasm32")]
     app.add_systems(
         Update,
@@ -818,6 +827,7 @@ fn install_city(app: &mut App, args: &[String]) {
                     "--smoke-overview" => Some(24),
                     "--smoke-empty-diff" => Some(18),
                     "--smoke-frost" => Some(20),
+                    "--smoke-abyss" => Some(39),
                     _ => None,
                 })
                 .unwrap_or(0);
@@ -826,6 +836,7 @@ fn install_city(app: &mut App, args: &[String]) {
                 elapsed: 0.,
                 stage,
                 stop: match stage {
+                    39 => 44,
                     35 => 39,
                     29 => 31,
                     31 => 33,
@@ -970,6 +981,9 @@ fn setup(
         ..default()
     });
     let facades = code_texture::FacadePrint::ALL.map(|print| {
+        if set.is_abyss() {
+            return default();
+        }
         [code_texture::Coverage::Closed, code_texture::Coverage::Open].map(|coverage| {
             let mut material =
                 listing::overview_material(images.add(code_texture::facade_atlas(coverage, print)));
@@ -978,6 +992,9 @@ fn setup(
         })
     });
     let facade_rims = code_texture::Coverage::ALL.map(|state| {
+        if set.is_abyss() {
+            return materials.add(world_set::abyss::scene::rim_material(state));
+        }
         let [r, g, b] = state.accent();
         materials.add(StandardMaterial {
             base_color: Color::srgb_u8(r, g, b),
@@ -1045,21 +1062,23 @@ fn setup(
         &mut images,
         pilot,
     );
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 10000.,
-            shadow_maps_enabled: !mobile,
-            ..default()
-        },
-        bevy::light::CascadeShadowConfigBuilder {
-            first_cascade_far_bound: 22.,
-            maximum_distance: city_stream::RADIUS * 1.5,
-            overlap_proportion: 0.25,
-            ..default()
-        }
-        .build(),
-        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.9, -0.4, 0.)),
-    ));
+    if !set.is_abyss() {
+        commands.spawn((
+            DirectionalLight {
+                illuminance: 10000.,
+                shadow_maps_enabled: !mobile,
+                ..default()
+            },
+            bevy::light::CascadeShadowConfigBuilder {
+                first_cascade_far_bound: 22.,
+                maximum_distance: city_stream::RADIUS * 1.5,
+                overlap_proportion: 0.25,
+                ..default()
+            }
+            .build(),
+            Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.9, -0.4, 0.)),
+        ));
+    }
     let ui_font = TextFont::from_font_size;
     file_picker::spawn(&mut commands, &ui_font(13.), color(set.ink));
     city_menu::spawn(&mut commands, &ui_font(13.), color(set.ink));
@@ -1091,7 +1110,7 @@ fn setup(
         &ui_font(13.),
         color(set.ink),
         &mut images,
-        None,
+        set.is_abyss().then(|| (set.name.as_str(), ui_font(20.))),
     );
     #[cfg(not(target_arch = "wasm32"))]
     commands.spawn((
@@ -1328,7 +1347,10 @@ fn building_assets(
 fn spawn_city(
     mut commands: Commands,
     repo: Res<Repo>,
-    set: Res<WorldSet>,
+    (set, seafloor): (
+        Res<WorldSet>,
+        Option<Res<world_set::abyss::scene::Seafloor>>,
+    ),
     mut explorer: ResMut<Explorer>,
     mut progress: ResMut<progress::Progress>,
     palette: Res<Palette>,
@@ -1375,6 +1397,9 @@ fn spawn_city(
         *pose = progress
             .resume_camera(&repo.0, &mut explorer, frame)
             .unwrap_or_else(|| {
+                if set.is_abyss() && explorer.resume_on_open {
+                    return world_set::abyss::arrival(&repo.0, explorer.selected);
+                }
                 listing::view(
                     &repo.0.files[explorer.selected],
                     explorer.source_layout.len(),
@@ -1389,25 +1414,28 @@ fn spawn_city(
         stream.refresh_files(files);
     } else if repo.is_changed() {
         stream.reset(&repo.0);
-        let extent = repo
-            .0
-            .districts
-            .iter()
-            .fold(Vec2::splat(22.), |extent, district| {
-                extent.max(Vec2::from_array(district.position) + Vec2::from_array(district.size))
-            });
-        commands.spawn((
-            CityObject,
-            Mesh3d(unit.clone()),
-            MeshMaterial3d(plate.clone()),
-            Transform::from_xyz(extent.x / 2., -0.7, extent.y / 2.).with_scale(Vec3::new(
-                extent.x + 56.,
-                1.,
-                extent.y + 56.,
-            )),
-            RigidBody::Static,
-            Collider::cuboid(1., 1., 1.),
-        ));
+        if seafloor.is_none() {
+            let extent = repo
+                .0
+                .districts
+                .iter()
+                .fold(Vec2::splat(22.), |extent, district| {
+                    extent
+                        .max(Vec2::from_array(district.position) + Vec2::from_array(district.size))
+                });
+            commands.spawn((
+                CityObject,
+                Mesh3d(unit.clone()),
+                MeshMaterial3d(plate.clone()),
+                Transform::from_xyz(extent.x / 2., -0.7, extent.y / 2.).with_scale(Vec3::new(
+                    extent.x + 56.,
+                    1.,
+                    extent.y + 56.,
+                )),
+                RigidBody::Static,
+                Collider::cuboid(1., 1., 1.),
+            ));
+        }
     }
     let eye = camera.single().map_or_else(
         |_| Vec2::from_array(repo.0.files[explorer.selected].position),
@@ -1424,8 +1452,31 @@ fn spawn_city(
             }
         }
     }
-    let assets = assets.get_or_insert_with(|| building_assets(&mut meshes, &mut materials, &set));
     for item in batch {
+        if let Some(seafloor) = seafloor.as_deref() {
+            match item {
+                Item::File(index) => {
+                    if let Some(listing) = listing.as_mut() {
+                        listing.building_loaded(index);
+                    }
+                    seafloor.spawn_station(
+                        &mut commands,
+                        &palette,
+                        index,
+                        &repo.0.files[index],
+                        &set,
+                        &mut images,
+                        &mut materials,
+                    );
+                }
+                Item::District(index) => {
+                    seafloor.spawn_vent(&mut commands, &repo.0.districts[index], index)
+                }
+            }
+            continue;
+        }
+        let assets =
+            assets.get_or_insert_with(|| building_assets(&mut meshes, &mut materials, &set));
         let i = match item {
             Item::District(index) => {
                 let district = &repo.0.districts[index];
@@ -1619,11 +1670,12 @@ fn flight(
     windows: Query<&Window, With<PrimaryWindow>>,
     picker: Res<file_picker::FilePicker>,
     menu: Res<city_menu::Menu>,
-    (listing, repo, focus, facades): (
+    (listing, repo, focus, facades, mut thrusters): (
         Res<listing::Listing>,
         Res<Repo>,
         Res<file_facade::ChangesOnly>,
         Query<&Facade>,
+        Option<ResMut<world_set::abyss::Thrusters>>,
     ),
     file_buttons: Query<&bevy::picking::hover::Hovered, With<file_picker::FileButton>>,
     review: Res<review_notes::Review>,
@@ -1684,6 +1736,7 @@ fn flight(
         pilot.captured = true;
     }
     let focused = window.focused || (cfg!(target_arch = "wasm32") && pilot.captured);
+    pilot.scene_focused = window.focused && !pointer_ui_open && !menu_open && !map_open;
     #[cfg(not(target_arch = "wasm32"))]
     if focused && !pointer_ui_open && !menu_open && !over_button && !map_open {
         if mouse.just_pressed(MouseButton::Left) {
@@ -1730,6 +1783,20 @@ fn flight(
         && !over_button
         && !menu_open
         && mouse.just_pressed(MouseButton::Left);
+    if let Some(sub) = &mut thrusters
+        && (menu_open
+            || pointer_ui_open
+            || !focused
+            || !pilot.captured
+            || map_open
+            || listing.turning()
+            || navigation.guides_camera()
+            || explorer.anchored
+            || explorer.comparison_mode != 0
+            || repo.is_changed())
+    {
+        sub.stop();
+    }
     if menu_open {
         pilot.fire_ready = false;
         pilot.firing = false;
@@ -1796,7 +1863,8 @@ fn flight(
                     >= half_width
         })
     };
-    if !map_open
+    if thrusters.is_none()
+        && !map_open
         && !explorer.anchored
         && explorer.comparison_mode == 0
         && keys.just_pressed(KeyCode::KeyO)
@@ -1859,6 +1927,20 @@ fn flight(
         walk.step(&mut camera, direction, time.delta_secs(), clear);
         return;
     }
+    if let Some(sub) = &mut thrusters
+        && !explorer.anchored
+        && explorer.comparison_mode == 0
+    {
+        if pilot.captured {
+            sub.steer(
+                &mut camera,
+                direction,
+                keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
+                time.delta_secs(),
+            );
+        }
+        return;
+    }
     let speed = flight_speed(
         camera.translation.y,
         explorer.anchored,
@@ -1909,6 +1991,7 @@ fn ray_box_entry(origin: Vec3, direction: Vec3, min: Vec3, max: Vec3) -> Option<
 }
 fn targeting(
     repo: Res<Repo>,
+    set: Res<WorldSet>,
     focus: Res<file_facade::ChangesOnly>,
     explorer: Res<Explorer>,
     camera: Query<(&Camera, &Transform, &Pilot), PlayerCamera>,
@@ -1922,6 +2005,7 @@ fn targeting(
     listing: Res<listing::Listing>,
     mut map_hover: Local<Option<(Vec3, Vec3, Option<usize>)>>,
 ) {
+    nearest.lamp_file = None;
     let Ok((projection, camera, pilot)) = camera.single() else {
         nearest.screen = None;
         return;
@@ -1971,8 +2055,12 @@ fn targeting(
     }
     const FILE_REACH: f32 = 1_000.;
     const MIN_FILE_TARGET_PX: f32 = 36.;
+    let diving = set.is_abyss() && !navigation.overview();
+    let lamp_active = diving && pilot.scene_focused;
+    let mut lamp_distance = world_set::abyss::LAMP_RANGE;
     let district_from_air = nearest.screen.and_then(|(_, viewport)| {
-        (!navigation.overview()
+        (!diving
+            && !navigation.overview()
             && !navigation.guides_camera()
             && !explorer.anchored
             && explorer.comparison_mode == 0
@@ -1987,6 +2075,8 @@ fn targeting(
         || navigation.overview_level() == Some(city_navigation::Overview::District)
     {
         f32::INFINITY
+    } else if diving {
+        world_set::abyss::LAMP_RANGE
     } else {
         FILE_REACH
     };
@@ -2005,10 +2095,19 @@ fn targeting(
         let size = listing::block_size(file);
         let min = Vec3::new(x - size.x / 2., 0., z - size.z / 2.);
         let max = Vec3::new(x + size.x / 2., size.y, z + size.z / 2.);
+        if lamp_active
+            && !pilot.captured
+            && let Some(d) = ray_box(camera.translation, camera.forward().as_vec3(), min, max)
+            && d < lamp_distance
+        {
+            lamp_distance = d;
+            nearest.lamp_file = Some(f.index);
+        }
         let beam_min = Vec3::new(x - 0.55, size.y, z - 0.55);
         let beam_max = Vec3::new(x + 0.55, size.y + file_facade::BEAM_HEIGHT, z + 0.55);
         if let Some((d, normal)) = ray_box_entry(origin, direction, min, max)
             && d < distance
+            && (!diving || world_set::abyss::lamp_strength(camera, origin + direction * d) > 0.01)
         {
             distance = d;
             nearest.file = Some(file_facade::Aim {
@@ -2019,7 +2118,8 @@ fn targeting(
                 }),
             });
         }
-        if let Some(d) = ray_box(origin, direction, beam_min, beam_max)
+        if !set.is_abyss()
+            && let Some(d) = ray_box(origin, direction, beam_min, beam_max)
             && file_facade::beam_visible(
                 &file_facade::transform(file, size, file_facade::Part::Beam),
                 camera,
@@ -2040,6 +2140,9 @@ fn targeting(
             near_distance = d;
             nearest.near_source = Some(f.index);
         }
+    }
+    if lamp_active && pilot.captured {
+        nearest.lamp_file = nearest.file.map(|aim| aim.index);
     }
     for (marker, pose) in &district_beams {
         if !file_facade::beam_visible(pose, camera, reading.as_ref()) {
@@ -2677,13 +2780,31 @@ fn smoke(
     if check.pending || repo.0.files.is_empty() {
         return;
     }
+    if matches!(check.stage, 42 | 43) {
+        // The isolated smoke window may remain behind the developer's active app.
+        // Feed the input route a focused window without asking winit to raise it.
+        let entity = window.single().expect("smoke window");
+        let stage = check.stage;
+        commands.queue(move |world: &mut World| {
+            if let Some(mut window) = world.get_mut::<Window>(entity) {
+                window.bypass_change_detection().focused = true;
+            }
+            if stage == 42 {
+                world
+                    .resource_mut::<ButtonInput<KeyCode>>()
+                    .press(KeyCode::KeyI);
+            }
+        });
+    }
     if check.stage >= check.stop {
         if explorer.dirty {
             let expected = explorer.original.clone();
             explorer.reload(&repo.0);
             assert_eq!(explorer.source, expected);
         }
-        let report = if check.stop == 39 {
+        let report = if check.stop == 44 {
+            "Rendered the survey dive, reading surface, saved phosphor, bathyscaphe exterior and illuminated chart."
+        } else if check.stop == 39 {
             "Antigravity voice connected in Chat, stayed connected when Escape hid VibePad, and stopped before returning to ACP."
         } else if check.stop == 35 {
             "Rendered one Find list with paths and per-file match counts."
@@ -2780,27 +2901,55 @@ fn smoke(
                     .resource_mut::<review_notes::ReviewUi>()
                     .smoke_edit_paint();
             }),
-            31 | 32 => {
-                commands.write_message(bevy::input::keyboard::KeyboardInput {
-                    key_code: if check.stage == 31 {
-                        KeyCode::KeyC
-                    } else {
-                        KeyCode::ArrowUp
-                    },
+            31 | 32 | 42 | 43 => {
+                let event = |key_code, state| bevy::input::keyboard::KeyboardInput {
+                    key_code,
                     logical_key: bevy::input::keyboard::Key::Unidentified(
                         bevy::input::keyboard::NativeKey::Unidentified,
                     ),
                     text: None,
-                    state: bevy::input::ButtonState::Pressed,
+                    state,
                     repeat: false,
                     window: window.single().expect("smoke window"),
-                });
+                };
+                if check.stage == 43 {
+                    commands
+                        .write_message(event(KeyCode::KeyI, bevy::input::ButtonState::Released));
+                }
+                let key = match check.stage {
+                    31 => KeyCode::KeyC,
+                    42 => KeyCode::KeyI,
+                    43 => KeyCode::KeyM,
+                    _ => KeyCode::ArrowUp,
+                };
+                commands.write_message(event(key, bevy::input::ButtonState::Pressed));
             }
             _ => {}
         }
         if let Ok(mut camera) = camera.single_mut() {
             let [x, z] = repo.0.files[explorer.selected].position;
             match check.stage {
+                39 | 42 => {
+                    *camera = world_set::abyss::arrival(&repo.0, explorer.selected);
+                }
+                40 | 41 => {
+                    let file = &repo.0.files[explorer.selected];
+                    let count = explorer.highlighted.len();
+                    assert!(
+                        count >= 12,
+                        "Abyss smoke needs a text file with at least twelve lines"
+                    );
+                    explorer.anchored = false;
+                    explorer.comparison_mode = 0;
+                    listing.reset_view();
+                    *camera = listing
+                        .line_view(&explorer, file, listing::Face::Source, 10)
+                        .expect("Abyss source position");
+                    if check.stage == 41 {
+                        listing.reveal(explorer.selected, explorer.before, file, 7..12, count);
+                        camera.rotate_local_y(0.46);
+                    }
+                }
                 0 => {
                     explorer.comparison_mode = 1;
                     explorer.page = explorer
@@ -3036,6 +3185,11 @@ fn smoke(
             )
             .expect("stable frost view");
     }
+    if check.stage == 39
+        && let Ok(mut eye) = camera.single_mut()
+    {
+        *eye = world_set::abyss::arrival(&repo.0, explorer.selected);
+    }
     let previous = check.elapsed;
     check.elapsed += time.delta_secs();
     if check.stage == 33 && previous < 1. && check.elapsed >= 1. {
@@ -3186,8 +3340,22 @@ fn smoke(
             "blame rows missing"
         );
     }
-    if check.stage == 9 {
+    if matches!(check.stage, 9 | 40) {
         assert!(listing::smoke_source_ready(&listing), "source rows missing");
+    }
+    if check.stage == 42 {
+        commands.queue(|world: &mut World| {
+            assert!(
+                world
+                    .query_filtered::<&Camera, With<world_set::abyss::ExteriorCamera>>()
+                    .single(world)
+                    .is_ok_and(|camera| camera.is_active),
+                "Exterior camera stayed off"
+            );
+        });
+    }
+    if check.stage == 43 {
+        assert!(navigation.overview(), "Abyss chart did not open");
     }
     if matches!(check.stage, 20..=22) {
         assert!(
