@@ -268,7 +268,6 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
         ["Space / Ctrl / Shift", "Ascend, descend, or boost the thrusters"],
         ["E", "Approach the file in your sights"],
         ["O", "Drop a survey buoy or retrieve a nearby one"],
-        ["Hold I / Pilot", "See the engineer in the bathyscaphe"],
         ["0", "Select the reading lamp"],
         ["1–9 / drag", "Select a paint and mark readable lines"],
         ["U / J", "Edit paints or open review notes"],

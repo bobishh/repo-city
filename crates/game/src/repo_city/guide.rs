@@ -318,7 +318,6 @@ pub(super) fn draw_controls(parent: &mut ChildSpawnerCommands, world: Option<&Wo
         ("Shift", "Boost the thrusters"),
         ("E", "Approach the file in your sights"),
         ("O", "Drop a survey buoy or retrieve the nearest one"),
-        ("Hold I", "See the engineer in the bathyscaphe"),
         ("M", "Cycle folder and project views"),
         ("Cmd+O / Cmd+P", "Open a repository or find a file"),
         ("Tab / P", "Open VibePad or preview a file"),

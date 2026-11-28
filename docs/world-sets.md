@@ -6,9 +6,9 @@ and presents its operations. The repository, review state and services have
 the same identities in every world.
 
 Code City is the default. Repo Polis presents files as scrolls in a library.
-Abyss places file stations on a dark ultramarine seabed. An engineer
+Repo Reef places file stations on a dark ultramarine seabed. An engineer
 pilots a bathyscaphe with twin headlamps among seafoam kelp and lilac rock.
-Hold **I** during travel for an exterior view. Touch screens use **Pilot**.
+The rear mirror shows the engineer as you approach.
 Desktop accepts `--world-set ID`, a compatible JSON descriptor, or
 `--world-picker`. Browser URLs accept `?world=ID` and expose the picker only
 with `?world-picker=1`. The picker preserves repository, revision, comparison
@@ -17,7 +17,7 @@ presentation adapter. An adapter owns its Bevy scene and declares the
 interactions it implements. JSON supplies the presentation ID and palette.
 A new adapter can be added without changing repository storage or services.
 
-In Abyss, the lamp limits visibility during travel and in the map view.
+In Repo Reef, the lamp limits visibility during travel and in the map view.
 At a station it lights the active reading surface evenly. Reading uses the
 shared block timer. Completed lines retain a dim glow when the player
 leaves. Paint marks use the shared review

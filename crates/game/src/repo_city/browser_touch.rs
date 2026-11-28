@@ -43,7 +43,6 @@ fn key(name: &str) -> Option<KeyCode> {
         "KeyJ" => KeyCode::KeyJ,
         "KeyN" => KeyCode::KeyN,
         "KeyK" => KeyCode::KeyK,
-        "KeyI" => KeyCode::KeyI,
         "KeyO" => KeyCode::KeyO,
         "Space" => KeyCode::Space,
         "ControlLeft" => KeyCode::ControlLeft,

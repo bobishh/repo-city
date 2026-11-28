@@ -14,11 +14,7 @@ struct Float;
 pub(super) fn install(app: &mut App) {
     app.init_resource::<Buoys>().add_systems(
         Update,
-        (
-            restore,
-            deploy.run_if(city_accepts_input).run_if(piloting),
-            render,
-        )
+        (restore, deploy.run_if(city_accepts_input), render)
             .chain()
             .after(flight),
     );

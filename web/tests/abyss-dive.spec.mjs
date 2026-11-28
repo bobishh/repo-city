@@ -48,18 +48,9 @@ test("a guest can recover a survey buoy and read a station by holding the light 
     await canvas.evaluate(element => element.requestPointerLock());
     await expect(canvas).toHaveAttribute("data-pointer-locked", "");
   };
-  await page.goto("/?world=abyss&repo=owner%2Ftrench");
+  await page.goto("/?world=repo-reef&repo=owner%2Ftrench");
   await board();
   await expect(summary).toContainText("0 lines revealed");
-  await page.keyboard.down("KeyI");
-  try {
-    await expect(canvas).toHaveAttribute("data-abyss-exterior", "");
-    await canvas.screenshot({ path: info.outputPath("engineer.png") });
-    await expect(summary).toContainText("0 lines revealed");
-  } finally {
-    await page.keyboard.up("KeyI");
-  }
-  await expect(canvas).not.toHaveAttribute("data-abyss-exterior", "");
   await page.keyboard.press("KeyO", { delay: 180 });
   await expect.poll(buoys).toHaveLength(1);
   await canvas.screenshot({ path: info.outputPath("survey-buoy.png") });
@@ -93,5 +84,8 @@ test("a guest can recover a survey buoy and read a station by holding the light 
   expect(Math.min(...ink), `glyph brightness across reading surface: ${ink}`).toBeGreaterThan(100);
   expect(Math.min(...ink) / Math.max(...ink)).toBeGreaterThan(0.65);
   expect(backing, "empty station plating below the last line stays dark").toBeLessThan(100);
+  await page.keyboard.press("KeyM", { delay: 180 });
+  await expect(canvas).toHaveAttribute("data-overview", "");
+  await canvas.screenshot({ path: info.outputPath("chart.png") });
   expect(faults).toEqual([]);
 });

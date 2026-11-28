@@ -188,7 +188,7 @@ fn launching_the_bathyscaphe_keeps_the_comparison_and_line() {
         "42",
     ]
     .map(str::to_owned);
-    let args = world_args(&args, "abyss");
+    let args = world_args(&args, "repo-reef");
     assert_eq!(
         args,
         [
@@ -203,10 +203,11 @@ fn launching_the_bathyscaphe_keeps_the_comparison_and_line() {
             "--line",
             "42",
             "--world-set",
-            "abyss",
+            "repo-reef",
         ]
     );
     let selected = WorldSet::load(args.last().map(String::as_str)).unwrap();
-    assert_eq!(selected.name, "Abyss");
+    assert_eq!(selected.name, "Repo Reef");
+    assert_eq!(WorldSet::load(Some("abyss")).unwrap().id, selected.id);
     assert_eq!(selected.locomotion, "bathyscaphe");
 }

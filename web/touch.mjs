@@ -13,7 +13,6 @@ export function createTouchControls({ canvas, document = globalThis.document, br
     Paint: '<path d="M8 7h8v14H8Zm1-4h6v4m3-4h3M18 6l3 2"/>',
     Notes: '<path d="M4 4h16v12H9l-5 5zM8 8h8m-8 4h5"/>',
     Buoy: '<path d="M12 3v3m-2 0h4l1 10H9zM6 16h12l-2 3H8zM3 21q3-2 6 0t6 0 6 0"/>',
-    Pilot: '<circle cx="12" cy="8" r="4"/><path d="M5 21v-2a7 7 0 0 1 14 0v2z"/>',
     Up: '<path d="m5 14 7-7 7 7M12 7v14"/>',
     Down: '<path d="m5 10 7 7 7-7M12 3v14"/>',
     Fast: '<path d="m13 2-9 12h7l-1 8L21 9h-8z"/>',
@@ -54,8 +53,8 @@ export function createTouchControls({ canvas, document = globalThis.document, br
   buoy.hidden = true;
   const flight = document.createElement("div"); flight.className = "touch-altitude"; panel.append(flight);
   for (const [label, name, key] of [["Up", "Fly up", "Space"], ["Down", "Fly down", "ControlLeft"],
-    ["Fast", "Fly faster", "ShiftLeft"], ["Use", "Use water or paint", "Fire"], ["Pilot", "Hold to see the pilot", "KeyI"]]) {
-    const element = button(label, name, key === "KeyI" ? utility : flight); element.dataset.action = key;
+    ["Fast", "Fly faster", "ShiftLeft"], ["Use", "Use water or paint", "Fire"]]) {
+    const element = button(label, name, flight); element.dataset.action = key;
     element.addEventListener("pointerdown", event => {
       event.preventDefault(); event.stopPropagation();
       if (walking() && key === "Fire") { pulses.push("KeyK"); return; }
@@ -127,8 +126,6 @@ export function createTouchControls({ canvas, document = globalThis.document, br
       const foot = walking();
       const dive = diving();
       if (buoy.hidden === dive) buoy.hidden = !dive;
-      const pilot = utility.querySelector('[data-action="KeyI"]');
-      if (pilot.hidden === dive) pilot.hidden = !dive;
       panel.setAttribute("aria-label", dive ? "Bathyscaphe controls" : foot ? "Touch walking controls" : "Touch flight controls");
       const use = flight.querySelector('[data-action="Fire"]');
       use.setAttribute("aria-label", dive ? "Apply selected paint" : foot ? "Use heat" : "Use water or paint");

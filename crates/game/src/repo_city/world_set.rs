@@ -33,7 +33,7 @@ const ADAPTERS: &[Adapter] = &[
         install: library::install,
     },
     Adapter {
-        id: "abyss",
+        id: "repo-reef",
         descriptor: include_str!("../../../../world_sets/abyss.json"),
         representation: "seafloor",
         locomotion: "bathyscaphe",
@@ -65,7 +65,11 @@ impl WorldSet {
     }
 
     pub fn load(selection: Option<&str>) -> Result<Self, String> {
-        let selection = selection.unwrap_or("code-city");
+        let selection = match selection {
+            Some("abyss") => "repo-reef",
+            Some(selection) => selection,
+            None => "code-city",
+        };
         if let Some(adapter) = ADAPTERS.iter().find(|adapter| adapter.id == selection) {
             return Self::parse(adapter.descriptor);
         }

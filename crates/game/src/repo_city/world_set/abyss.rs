@@ -2,10 +2,9 @@
 use super::super::*;
 
 mod buoys;
-mod exterior;
+pub(crate) mod mirror;
 mod pilot;
 pub(crate) mod scene;
-pub(crate) use exterior::{ExteriorCamera, piloting};
 
 pub(crate) const LAMP_RANGE: f32 = 72.;
 pub(crate) const LAMP_INNER_ANGLE: f32 = 0.27;
@@ -21,7 +20,7 @@ pub(super) fn install(app: &mut App, args: &[String]) {
     install_city(app, args);
     scene::install(app);
     buoys::install(app);
-    exterior::install(app);
+    mirror::install(app);
     #[cfg(not(target_arch = "wasm32"))]
     open_initial_line(app, args);
 }

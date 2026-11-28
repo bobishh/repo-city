@@ -118,15 +118,15 @@ The library reads the same snapshots as Code City and shares visited-file
 progress. Its scrolls show source, including the previous snapshot for removed
 files.
 
-### Abyss
+### Repo Reef
 
-Open the [Abyss repository picker](https://repo-city.meta-uber-engineer.dev/?world=abyss)
-or run `./scripts/run-native.sh /path/to/checkout --world-set abyss`.
+Open the [Repo Reef repository picker](https://repo-city.meta-uber-engineer.dev/?world=repo-reef)
+or run `./scripts/run-native.sh /path/to/checkout --world-set repo-reef`.
 Append `--file src/main.rs --line 52` to begin at a specific local source line.
 An engineer pilots a twin-headlamp bathyscaphe among file stations on a
-dark seabed with seapunk coral, shell plating, and pearl lights. Hold **I**
-while travelling to see the pilot from outside. On touch
-screens, hold **Pilot**. Click the scene to take the controls. Use **WASD**
+dark seabed with seapunk coral, shell plating, and pearl lights.
+The back of each station has a mirror that shows the engineer as you approach.
+Click the scene to take the controls. Use **WASD**
 for thrust, **Space / Ctrl** to ascend or descend, and **Shift** to boost.
 Release thrust to coast. Aim at a station and press **E** to approach it.
 Press **O** to drop a private survey buoy, or press **O** beside a buoy

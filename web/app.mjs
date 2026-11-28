@@ -45,7 +45,7 @@ let running = false;
 let canvasRequest = "";
 let world = defaultWorld;
 const library = () => world === "repo-polis";
-const diving = () => world === "abyss";
+const diving = () => world === "repo-reef";
 const audio = createCityAudio({ active: () => running && !dialog.open && !canvas.hidden });
 const releasePointer = setupPointer(canvas, dialog);
 const touch = createTouchControls({ canvas, onPad: () => review.changedFiles(), walking: library, diving });
@@ -127,7 +127,8 @@ let progressResetVersion = 0;
 const parameters = new URLSearchParams(location.search);
 const worldPickerEnabled = parameters.get("world-picker") === "1";
 worldSelect.closest(".world-picker").hidden = !worldPickerEnabled;
-const requestedWorld = parameters.get("world");
+const worldParam = parameters.get("world");
+const requestedWorld = worldParam === "abyss" ? "repo-reef" : worldParam;
 if (Array.from(worldSelect.options).some(option => option.value === requestedWorld)) {
   worldSelect.value = requestedWorld;
 }

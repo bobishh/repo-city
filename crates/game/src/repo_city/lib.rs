@@ -86,7 +86,6 @@ type PlayerCamera = (
     With<Camera3d>,
     Without<district::MirrorCamera>,
     Without<android::TabletCamera>,
-    Without<world_set::abyss::ExteriorCamera>,
 );
 
 const CAMERA_FLOOR: f32 = 0.05;
@@ -670,7 +669,6 @@ fn install_city(app: &mut App, args: &[String]) {
                 hud,
             )
                 .chain()
-                .run_if(world_set::abyss::piloting)
                 .run_if(not(canvas::active))
                 .run_if(repository_picker::has_city),
         );
@@ -837,6 +835,7 @@ fn install_city(app: &mut App, args: &[String]) {
                     "--smoke-empty-diff" => Some(18),
                     "--smoke-frost" => Some(20),
                     "--smoke-abyss" => Some(39),
+                    "--smoke-reef-mirror" => Some(44),
                     _ => None,
                 })
                 .unwrap_or(0);
@@ -845,7 +844,7 @@ fn install_city(app: &mut App, args: &[String]) {
                 elapsed: 0.,
                 stage,
                 stop: match stage {
-                    39 => 44,
+                    39 => 43,
                     35 => 39,
                     29 => 31,
                     31 => 33,
@@ -2791,7 +2790,7 @@ fn smoke(
     if check.pending || repo.0.files.is_empty() {
         return;
     }
-    if matches!(check.stage, 42 | 43) {
+    if matches!(check.stage, 42 | 44) {
         // The isolated smoke window may remain behind the developer's active app.
         // Feed the input route a focused window without asking winit to raise it.
         let entity = window.single().expect("smoke window");
@@ -2801,9 +2800,10 @@ fn smoke(
                 window.bypass_change_detection().focused = true;
             }
             if stage == 42 {
-                world
-                    .resource_mut::<ButtonInput<KeyCode>>()
-                    .press(KeyCode::KeyI);
+                let mut nav = world.resource_mut::<city_navigation::Navigation>();
+                if !nav.overview() {
+                    nav.overview_requested = true;
+                }
             }
         });
     }
@@ -2825,8 +2825,10 @@ fn smoke(
             } else {
                 "Opened the fullscreen comparison canvas."
             }
-        } else if check.stop == 44 {
-            "Rendered the survey dive, reading surface, saved phosphor, bathyscaphe exterior and illuminated chart."
+        } else if check.stop == 45 {
+            "Rendered the engineer in a station mirror."
+        } else if check.stop == 43 {
+            "Rendered the survey dive, reading surface, saved phosphor and illuminated chart."
         } else if check.stop == 39 {
             "Antigravity voice connected in Chat, stayed connected when Escape hid VibePad, and stopped before returning to ACP."
         } else if check.stop == 35 {
@@ -2929,7 +2931,7 @@ fn smoke(
                     .resource_mut::<review_notes::ReviewUi>()
                     .smoke_edit_paint();
             }),
-            31 | 32 | 42 | 43 => {
+            31 | 32 => {
                 let event = |key_code, state| bevy::input::keyboard::KeyboardInput {
                     key_code,
                     logical_key: bevy::input::keyboard::Key::Unidentified(
@@ -2940,14 +2942,8 @@ fn smoke(
                     repeat: false,
                     window: window.single().expect("smoke window"),
                 };
-                if check.stage == 43 {
-                    commands
-                        .write_message(event(KeyCode::KeyI, bevy::input::ButtonState::Released));
-                }
                 let key = match check.stage {
                     31 => KeyCode::KeyC,
-                    42 => KeyCode::KeyI,
-                    43 => KeyCode::KeyM,
                     _ => KeyCode::ArrowUp,
                 };
                 commands.write_message(event(key, bevy::input::ButtonState::Pressed));
@@ -2957,7 +2953,17 @@ fn smoke(
         if let Ok(mut camera) = camera.single_mut() {
             let [x, z] = repo.0.files[explorer.selected].position;
             match check.stage {
-                39 | 42 => {
+                44 => {
+                    let file = &repo.0.files[explorer.selected];
+                    let mirror = file_facade::transform(
+                        file,
+                        listing::block_size(file),
+                        file_facade::Part::Mirror,
+                    );
+                    *camera = Transform::from_translation(mirror.translation - Vec3::Z * 6.)
+                        .looking_at(mirror.translation, Vec3::Y);
+                }
+                39 => {
                     *camera = world_set::abyss::arrival(&repo.0, explorer.selected);
                 }
                 40 | 41 => {
@@ -3384,18 +3390,17 @@ fn smoke(
     if matches!(check.stage, 9 | 40) {
         assert!(listing::smoke_source_ready(&listing), "source rows missing");
     }
-    if check.stage == 42 {
+    if check.stage == 44 {
         commands.queue(|world: &mut World| {
+            let mut cameras =
+                world.query_filtered::<&Camera, With<world_set::abyss::mirror::RearMirrorCamera>>();
             assert!(
-                world
-                    .query_filtered::<&Camera, With<world_set::abyss::ExteriorCamera>>()
-                    .single(world)
-                    .is_ok_and(|camera| camera.is_active),
-                "Exterior camera stayed off"
+                cameras.single(world).is_ok_and(|camera| camera.is_active),
+                "Station mirror was not active"
             );
         });
     }
-    if check.stage == 43 {
+    if check.stage == 42 {
         assert!(navigation.overview(), "Abyss chart did not open");
     }
     if matches!(check.stage, 20..=22) {
