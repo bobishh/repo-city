@@ -5,7 +5,7 @@ const source = '/- 𝓟 ℕ ℤ ℚ ℝ ℂ ∀ ∃ ∈ ∉ ⊆ ⊂ ⟨⟩ ↦ �
 async function openLean(page, unavailable = false) {
   await page.addInitScript(() => {
     localStorage.setItem("repo-city-guide-v1", "seen");
-    localStorage.setItem("repo-city-reading-v1", JSON.stringify({ mode: "immediate", block_lines: 6, block_kind: "fixed", auto_advance: false, min_seconds: null, max_seconds: null }));
+    localStorage.setItem("repo-city-reading-v1", JSON.stringify({ enabled: true, mode: "immediate", block_lines: 6, block_kind: "fixed", auto_advance: false, min_seconds: null, max_seconds: null }));
   });
   if (unavailable) await page.route("**/syntax-chunks/source.lean4-*.mjs", route => route.abort());
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));

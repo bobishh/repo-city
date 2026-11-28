@@ -97,6 +97,7 @@ pub(crate) fn draw(
     mut hud: Query<(&mut Text, &mut TextColor), With<review_notes::ToolHud>>,
     mut reticle: Query<(&ReticlePart, &mut BackgroundColor, &mut Node)>,
     set: Res<WorldSet>,
+    prepared: Res<cover::PreparedTiles>,
 ) {
     use review_notes::Anchor;
     let Ok((camera, pilot)) = camera.single() else {
@@ -223,7 +224,7 @@ pub(crate) fn draw(
             if nearest
                 .file
                 .is_none_or(|aim| aim.index == explorer.selected)
-                && let Some(hit) = listing.readable_hit(&explorer, &side, camera, count)
+                && let Some(hit) = listing.readable_hit(&explorer, &side, camera, count, &prepared)
             {
                 let row = side.wall.row(hit.y, count);
                 let point = match face {

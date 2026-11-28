@@ -154,8 +154,12 @@ impl Aim {
         hit_distance: f32,
         frame: Option<listing::ReadingFrame>,
     ) -> bool {
-        let Some(surface) = self.surface.filter(|surface| surface.normal.y == 0.) else {
-            return hit_distance <= listing::tool_range(size.x);
+        let surface = match self.surface {
+            Some(Surface {
+                normal: Vec3::Y, ..
+            }) => return false,
+            Some(surface) if surface.normal.y == 0. => surface,
+            _ => return hit_distance <= listing::tool_range(size.x),
         };
         let [x, z] = file.position;
         let normal = surface.normal;
@@ -173,46 +177,25 @@ impl Aim {
         Self {
             surface: Some(Surface {
                 normal: face.normal(),
-                height: self.surface.map_or(0.9, |surface| surface.height.min(0.9)),
+                height: self.surface.map_or(0.9, |surface| {
+                    if surface.normal == Vec3::Y {
+                        1.
+                    } else {
+                        surface.height.min(0.9)
+                    }
+                }),
             }),
             ..self
         }
     }
+}
 
-    pub(super) fn view(self, file: &repo_world::File, size: Vec3, eye: Vec3) -> Transform {
-        let [x, z] = file.position;
-        let center = Vec3::new(x, 0., z);
-        let toward_eye = eye - center;
-        let side = if toward_eye.x.abs() > toward_eye.z.abs() {
-            Vec3::X * toward_eye.x.signum()
-        } else if toward_eye.z < 0. {
-            Vec3::NEG_Z
-        } else {
-            Vec3::Z
-        };
-        let surface = self.surface.unwrap_or(Surface {
-            normal: side,
-            height: 0.9,
-        });
-        let normal = if surface.normal == Vec3::ZERO {
-            side
-        } else {
-            surface.normal
-        };
-        let (target, width, up) = if normal == Vec3::Y {
-            (center.with_y(size.y), size.x.max(size.z), Vec3::NEG_Z)
-        } else {
-            let width = if normal.x == 0. { size.x } else { size.z };
-            let target = center.with_y(size.y * surface.height)
-                + normal * (normal.abs().dot(size) / 2. + listing::PANEL_OFFSET);
-            (target, width, Vec3::Y)
-        };
-        let position = target + normal * (width * 0.84).max(0.18);
-        Transform::from_translation(
-            position.with_y(position.y.max(city_navigation::STREET_EYE_HEIGHT)),
-        )
-        .looking_at(target, up)
-    }
+pub(super) fn mirror_view(file: &repo_world::File, size: Vec3, height: f32) -> Transform {
+    let [x, z] = file.position;
+    let target = Vec3::new(x, size.y * height, z - size.z / 2. - listing::PANEL_OFFSET);
+    let eye = target.with_y(target.y.max(city_navigation::STREET_EYE_HEIGHT))
+        - Vec3::Z * (size.x * 0.84).max(0.18);
+    Transform::from_translation(eye).looking_at(target, Vec3::Y)
 }
 
 pub(super) fn beam_material([r, g, b]: [f32; 3]) -> StandardMaterial {

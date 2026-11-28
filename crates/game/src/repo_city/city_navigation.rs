@@ -980,7 +980,7 @@ pub(super) fn navigate(
             // Browser blobs can arrive after the flight starts. Frame the actual
             // listing once its row count becomes available.
             *rows = view.wall_rows(&explorer);
-            hop.end = view.destination(&repo.0, &mut explorer, &listing, camera.translation);
+            hop.end = view.destination(&repo.0, &mut explorer, &listing, &focus);
         }
         hop.elapsed += time.delta_secs();
         let progress = hop.elapsed / hop.duration;
@@ -1174,7 +1174,7 @@ pub(super) fn navigate(
             KeyCode::AltLeft,
             KeyCode::AltRight,
         ]);
-    let distant_shot = ((pilot.shot || pilot.map_click) && !listing.water_on())
+    let distant_shot = (pilot.shot && !listing.water_on())
         .then_some(nearest.file)
         .flatten()
         .filter(|aim| {
@@ -1193,8 +1193,7 @@ pub(super) fn navigate(
         Some((aim.index, Some(aim), None))
     } else if let Some(file) = requested_file {
         Some((file, None, None))
-    } else if navigation.overview() && (distant_shot.is_some() || keys.just_pressed(KeyCode::KeyE))
-    {
+    } else if navigation.overview() && (pilot.map_click || keys.just_pressed(KeyCode::KeyE)) {
         nearest.file.map(|aim| (aim.index, None, None))
     } else if next_changed {
         let mode = changes::FileView::current(
@@ -1246,10 +1245,9 @@ pub(super) fn navigate(
         explorer.rebuild = true;
         let file = &repo.0.files[index];
         navigation.history.record(&file.path);
-        let size = listing::block_size(file);
         let end = match mode {
-            Some(mode) => mode.destination(&repo.0, &mut explorer, &listing, camera.translation),
-            None => listing.arrival_view(&explorer, file, size, aimed, camera.translation),
+            Some(mode) => mode.destination(&repo.0, &mut explorer, &listing, &focus),
+            None => listing.arrival_view(&explorer, &repo.0, &focus, aimed),
         };
         if camera.translation.distance_squared(end.translation) < 0.04
             && camera.rotation.dot(end.rotation).abs() > 0.9999
@@ -1731,6 +1729,63 @@ mod tests {
             empty_district.with_translation(Vec3::new(4990., 2500., 5010.));
         release(&mut app);
         assert_eq!(app.world().resource::<Nearest>().district, None);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_click_or_e_above_a_nearby_roof_flies_to_the_source_wall() {
+        let (mut app, camera) = district_navigation_app();
+        app.world_mut().spawn(Facade { index: 1 });
+        let position = Vec3::new(5010., 8., 5010.);
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() =
+            Transform::from_translation(position).looking_to(Vec3::NEG_Y, Vec3::NEG_Z);
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<Nearest>()
+                .file
+                .unwrap()
+                .surface
+                .unwrap()
+                .normal,
+            Vec3::Y
+        );
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+        assert_eq!(app.world().resource::<Explorer>().selected, 1);
+        let world = app.world();
+        let end = world
+            .resource::<Navigation>()
+            .hop
+            .as_ref()
+            .unwrap()
+            .pose(1.);
+        let file = &world.resource::<Repo>().0.files[1];
+        assert_eq!(
+            listing::Face::at_camera(file, listing::block_size(file), &end, 30.),
+            Some(listing::Face::Source)
+        );
+
+        let world = app.world_mut();
+        world.resource_mut::<Navigation>().hop = None;
+        world
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .reset(MouseButton::Left);
+        world
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyE);
+        app.update();
+        let approached = app
+            .world()
+            .resource::<Navigation>()
+            .hop
+            .as_ref()
+            .unwrap()
+            .pose(1.);
+        assert_eq!(approached, end);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

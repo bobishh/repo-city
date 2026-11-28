@@ -40,7 +40,7 @@ pub(super) struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             mode: Mode::Delayed,
             block_lines: 6,
             block_kind: BlockKind::Function,
@@ -309,8 +309,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fresh_preferences_show_source_without_recording_reading() {
+        let settings = Settings::parse("{}").unwrap();
+        assert!(!settings.enabled);
+        assert!(settings.source_is_visible());
+    }
+
+    #[test]
     fn disabling_reading_preserves_visibility_preference_and_round_trips() {
-        let original = Settings::parse(r#"{"show_all_source":false}"#).unwrap();
+        let original = Settings::parse(r#"{"enabled":true,"show_all_source":false}"#).unwrap();
         assert_eq!(original.fly_to_font_px, DEFAULT_FLY_TO_FONT_PX);
         assert!(original.enabled);
         assert!(!original.source_is_visible());

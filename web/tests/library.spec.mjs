@@ -124,7 +124,7 @@ test("opens a repository in Repo Polis and unrolls a file at the requested line"
   let slowSource = false;
   await page.addInitScript(() => {
     if (!localStorage.getItem("repo-city-reading-v1")) {
-      localStorage.setItem("repo-city-reading-v1", JSON.stringify({ block_kind: "lines", min_seconds: 0.1, max_seconds: 0.2 }));
+      localStorage.setItem("repo-city-reading-v1", JSON.stringify({ enabled: true, block_kind: "lines", min_seconds: 0.1, max_seconds: 0.2 }));
     }
   });
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));

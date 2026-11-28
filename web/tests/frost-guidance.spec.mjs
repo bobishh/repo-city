@@ -19,6 +19,7 @@ async function repository(page) {
     };
     localStorage.setItem("repo-city-guide-v1", "seen");
     localStorage.setItem("repo-city-reading-v1", JSON.stringify({
+      enabled: true,
       mode: "delayed", block_lines: 6, block_kind: "lines", auto_advance: false,
       min_seconds: 60, max_seconds: 60, show_all_source: false,
     }));

@@ -892,18 +892,27 @@ impl Listing {
     pub(super) fn arrival_view(
         &self,
         explorer: &Explorer,
-        file: &repo_world::File,
-        size: Vec3,
+        repo: &Repository,
+        focus: &file_facade::ChangesOnly,
         aim: Option<file_facade::Aim>,
-        eye: Vec3,
     ) -> Transform {
+        let file = &repo.files[explorer.selected];
+        let size = block_size(file);
         let surface = aim.and_then(|aim| aim.surface);
-        let face = match surface.map(|surface| surface.normal) {
-            Some(Vec3::Y | Vec3::NEG_Z) => {
-                return aim.expect("surface has an aim").view(file, size, eye);
+        let face = match surface {
+            Some(file_facade::Surface {
+                normal: Vec3::NEG_Z,
+                height,
+            }) => {
+                return file_facade::mirror_view(file, size, height);
             }
-            Some(Vec3::X) => Face::Diff,
-            Some(Vec3::NEG_X) => Face::Blame,
+            Some(file_facade::Surface {
+                normal: Vec3::X, ..
+            }) => Face::Diff,
+            Some(file_facade::Surface {
+                normal: Vec3::NEG_X,
+                ..
+            }) => Face::Blame,
             _ => Face::Source,
         };
         let count = if face == Face::Diff {
@@ -930,7 +939,7 @@ impl Listing {
             };
             side.wall.y(row as f32 + 0.5)
         };
-        side.view(y, self.frame)
+        side.view_in_street(y, self.frame, repo, focus)
     }
 
     pub(super) fn diff_view(
@@ -986,8 +995,21 @@ impl Listing {
         side: &WallSide,
         camera: &Transform,
         count: usize,
+        prepared: &cover::PreparedTiles,
     ) -> Option<Vec3> {
-        if self.viewing != Some(side.face)
+        let hit = side.detail_hit(camera, count, self.frame)?;
+        self.detail_row_ready(explorer, side.face, side.wall.row(hit.y, count), prepared)
+            .then_some(hit)
+    }
+
+    fn detail_row_ready(
+        &self,
+        explorer: &Explorer,
+        face: Face,
+        row: usize,
+        prepared: &cover::PreparedTiles,
+    ) -> bool {
+        if self.viewing != Some(face)
             || self.rendered_layout != explorer.source_layout.revision()
             || self.rendered
                 != Some((
@@ -996,20 +1018,14 @@ impl Listing {
                     explorer.highlighted.len(),
                 ))
         {
-            return None;
+            return false;
         }
-        let hit = side.wash_hit(camera, count, self.frame)?;
-        let tiles = match side.face {
+        let tiles = match face {
             Face::Source => &self.source_tiles,
             Face::Diff => &self.diff_tiles,
-            Face::Blame => return None,
+            Face::Blame => &self.blame_tiles,
         };
-        let tile = side.wall.row(hit.y, count) / TILE_ROWS;
-        tiles
-            .resident
-            .get(&tile)
-            .filter(|tile| tile.alpha >= 0.95)
-            .map(|_| hit)
+        tiles.ready(row, prepared)
     }
 
     pub(super) fn counts(&self, explorer: &Explorer) -> (usize, usize) {
@@ -1305,7 +1321,7 @@ pub(super) fn controls(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     wheel: Res<AccumulatedMouseScroll>,
-    repo: Res<Repo>,
+    (repo, focus): (Res<Repo>, Res<file_facade::ChangesOnly>),
     explorer: Res<Explorer>,
     navigation: Res<city_navigation::Navigation>,
     mut listing: ResMut<Listing>,
@@ -1416,7 +1432,8 @@ pub(super) fn controls(
             side.wall.y(row as f32 + 0.5)
         };
         listing.destination = Some(destination);
-        listing.turn = Some((0., *camera, side.view(y, listing.frame)));
+        let end = side.view_in_street(y, listing.frame, &repo.0, &focus);
+        listing.turn = Some((0., *camera, end));
     }
     if let Some((elapsed, start, end)) = listing.turn {
         let t = (elapsed + time.delta_secs() / 0.72).min(1.);
@@ -1538,7 +1555,7 @@ pub(super) fn wash_stream(
     mut review: ResMut<review_notes::Review>,
     menu: Res<city_menu::Menu>,
     search: Res<find::Search>,
-    settings: Res<reading::Settings>,
+    (settings, prepared): (Res<reading::Settings>, Res<cover::PreparedTiles>),
     set: Res<WorldSet>,
     windows: Query<&Window, With<PrimaryWindow>>,
 ) {
@@ -1578,6 +1595,7 @@ pub(super) fn wash_stream(
                 window.width() / window.height().max(1.),
                 time.delta_secs(),
                 *settings,
+                &prepared,
             ) {
                 progress.mark(mark, true);
             }
@@ -1616,20 +1634,21 @@ pub(super) fn wash_stream(
     let count = explorer.source_layout.len();
     let file = &repo.0.files[explorer.selected];
     let side = WallSide::new(file, count, Face::Source, block_size(file));
-    let Some(hit) = listing
-        .readable_hit(&explorer, &side, camera, count)
-        .filter(|_| {
-            nearest
-                .file
-                .is_none_or(|aim| aim.index == explorer.selected)
-        })
-    else {
+    let Some(hit) = side.detail_hit(camera, count, listing.frame).filter(|_| {
+        nearest
+            .file
+            .is_none_or(|aim| aim.index == explorer.selected)
+    }) else {
         listing.wash_preview = None;
         return;
     };
     listing.water_on = true;
-    review.washing = true;
     let row = side.wall.row(hit.y, count);
+    if !listing.detail_row_ready(&explorer, Face::Source, row, &prepared) {
+        listing.wash_preview = None;
+        return;
+    }
+    review.washing = true;
     let block = settings.block(&explorer, row);
     let unfinished = block
         .clone()
@@ -1672,10 +1691,10 @@ struct Tiles {
 }
 
 impl Tiles {
-    fn ready(&self, row: usize) -> bool {
+    fn ready(&self, row: usize, prepared: &cover::PreparedTiles) -> bool {
         self.resident
             .get(&(row / TILE_ROWS))
-            .is_some_and(|tile| tile.alpha >= 0.95)
+            .is_some_and(|tile| tile.alpha >= 0.95 && prepared.contains(tile.image.id()))
     }
 }
 
@@ -1841,6 +1860,11 @@ impl WallSide {
             .then_some(point)
     }
 
+    fn detail_hit(&self, camera: &Transform, count: usize, frame: ReadingFrame) -> Option<Vec3> {
+        self.detail_distance(camera, frame.viewport.x / frame.viewport.y, true, frame)?;
+        self.wash_hit(camera, count, frame)
+    }
+
     fn look_height(&self, camera: &Transform) -> f32 {
         let normal = self.normal();
         let facing = camera.forward().dot(normal);
@@ -1853,8 +1877,49 @@ impl WallSide {
     }
 
     fn view(&self, y: f32, frame: ReadingFrame) -> Transform {
+        self.view_at_distance(y, frame, self.reading_distance(y, frame))
+    }
+
+    fn reading_distance(&self, y: f32, frame: ReadingFrame) -> f32 {
+        self.font_distance(frame)
+            .max(0.18)
+            .max((city_navigation::STREET_EYE_HEIGHT - y) * 1.45)
+    }
+
+    fn view_in_street(
+        &self,
+        y: f32,
+        frame: ReadingFrame,
+        repo: &Repository,
+        focus: &file_facade::ChangesOnly,
+    ) -> Transform {
+        const CLEARANCE: f32 = 0.5;
+        let normal = self.normal();
+        let across = Vec3::Y.cross(normal);
+        let eye_height = y.max(city_navigation::STREET_EYE_HEIGHT);
+        let mut distance = self.reading_distance(y, frame);
+        for file in &repo.files {
+            let [x, z] = file.position;
+            let offset = Vec3::new(x, 0., z) - self.top;
+            let gap = offset.dot(normal) - WIDTH / 2.;
+            // Leave the wall-width corridor clear when reframing the gutter.
+            if gap <= CLEARANCE
+                || gap >= distance + CLEARANCE
+                || offset.dot(across).abs() > (self.width + WIDTH) / 2. + CLEARANCE
+            {
+                continue;
+            }
+            let size = block_size(file);
+            let roof = size.y + focus.vertical_offset(file, size);
+            if roof >= eye_height - CLEARANCE {
+                distance = gap - CLEARANCE;
+            }
+        }
+        self.view_at_distance(y, frame, distance)
+    }
+
+    fn view_at_distance(&self, y: f32, frame: ReadingFrame, distance: f32) -> Transform {
         let height = y.max(city_navigation::STREET_EYE_HEIGHT);
-        let distance = self.font_distance(frame).max(0.18).max((height - y) * 1.45);
         // Keep the line numbers on screen even if the full listing does not fit.
         let visible_width =
             2. * distance * ReadingFrame::slope() * (frame.viewport.x / frame.viewport.y);
@@ -2922,6 +2987,7 @@ mod tests {
         let rows = explorer.source_layout.visual_rows(0);
         assert!(rows.len() > 1);
         let settings = reading::Settings {
+            enabled: true,
             block_lines: 1,
             block_kind: reading::BlockKind::Lines,
             min_seconds: Some(1.),
@@ -3116,7 +3182,10 @@ mod tests {
             frame: ReadingFrame { viewport, font_px },
             ..default()
         };
-        let camera = listing.arrival_view(&explorer, &file, size, None, Vec3::new(0., 5., 30.));
+        let mut repo = repository_picker::empty();
+        repo.files.push(file);
+        let camera =
+            listing.arrival_view(&explorer, &repo, &file_facade::ChangesOnly::default(), None);
         let nominal_glyph = side.width * side.glyph_scale().x * code_texture::LISTING_FONT_SIZE
             / code_texture::LISTING_WIDTH as f32;
         let point = side.top.with_y(side.wall.y(0.5));
@@ -3354,6 +3423,61 @@ mod tests {
     }
 
     #[test]
+    fn an_old_detailed_tile_cannot_start_the_timer_at_fallback_distance() {
+        let file = fixture_with_rows(16);
+        let mut explorer = Explorer::new(0);
+        explorer.set_highlighted(syntax::highlight(
+            "test.rs",
+            &"let sample = 1;\n".repeat(64),
+        ));
+        let side = WallSide::new(&file, 64, Face::Source, block_size(&file));
+        let hit = side.top.with_y(side.wall.y(5.5));
+        let mut listing = Listing {
+            rendered: Some((0, false, 64)),
+            viewing: Some(Face::Source),
+            rendered_layout: explorer.source_layout.revision(),
+            ..default()
+        };
+        listing.source_tiles.resident.insert(
+            0,
+            Tile {
+                entity: Entity::PLACEHOLDER,
+                image: default(),
+                material: TileMaterial::Plain(default()),
+                alpha: 1.,
+            },
+        );
+        let camera_at =
+            |gap| Transform::from_translation(hit + Vec3::Z * gap).looking_at(hit, Vec3::Y);
+        let ready =
+            cover::PreparedTiles::from_images([listing.source_tiles.resident[&0].image.id()]);
+        let far = camera_at(10.);
+        assert!(side.wash_hit(&far, 64, listing.frame).is_some());
+        assert!(
+            listing
+                .readable_hit(&explorer, &side, &far, 64, &ready)
+                .is_none()
+        );
+        let near = camera_at(2.);
+        assert!(
+            listing
+                .readable_hit(
+                    &explorer,
+                    &side,
+                    &near,
+                    64,
+                    &cover::PreparedTiles::default()
+                )
+                .is_none()
+        );
+        assert!(
+            listing
+                .readable_hit(&explorer, &side, &near, 64, &ready)
+                .is_some()
+        );
+    }
+
+    #[test]
     fn abyss_reads_a_visible_block_even_when_aimed_at_the_empty_right_edge() {
         let file = fixture_with_rows(48);
         let mut explorer = Explorer::new(0);
@@ -3362,6 +3486,7 @@ mod tests {
             &"let sample = 1;\n".repeat(48),
         ));
         let settings = reading::Settings {
+            enabled: true,
             block_lines: 48,
             block_kind: reading::BlockKind::Lines,
             min_seconds: Some(1.),
@@ -3390,14 +3515,53 @@ mod tests {
         let camera = Transform::from_translation(hit + Vec3::Z * 2.).looking_at(hit, Vec3::Y);
         let visible = side.visible_rows(&camera, 48, 1.6);
         assert!(visible.contains(&24) && visible.len() < 24);
+        let ready = cover::PreparedTiles::from_images(
+            listing
+                .source_tiles
+                .resident
+                .values()
+                .map(|tile| tile.image.id()),
+        );
         assert!(
-            lamp::source(&mut listing, &explorer, &file, &camera, 1.6, 0.3, settings).is_none()
+            lamp::source(
+                &mut listing,
+                &explorer,
+                &file,
+                &camera,
+                1.6,
+                0.3,
+                settings,
+                &ready
+            )
+            .is_none()
         );
         let away = camera.looking_at(camera.translation + Vec3::Z, Vec3::Y);
-        assert!(lamp::source(&mut listing, &explorer, &file, &away, 1.6, 5., settings).is_none());
+        assert!(
+            lamp::source(
+                &mut listing,
+                &explorer,
+                &file,
+                &away,
+                1.6,
+                5.,
+                settings,
+                &ready
+            )
+            .is_none()
+        );
         assert_eq!(listing.counts(&explorer).0, 0);
         assert!(
-            lamp::source(&mut listing, &explorer, &file, &camera, 1.6, 0.71, settings).is_some()
+            lamp::source(
+                &mut listing,
+                &explorer,
+                &file,
+                &camera,
+                1.6,
+                0.71,
+                settings,
+                &ready
+            )
+            .is_some()
         );
         listing.stop_water();
         for row in 0..48 {
@@ -3629,6 +3793,7 @@ mod tests {
             "let value = 1;\nlet other = 2;\n",
         ));
         let settings = reading::Settings {
+            enabled: true,
             block_lines: 1,
             min_seconds: Some(1.),
             max_seconds: Some(1.),
@@ -3705,6 +3870,7 @@ mod tests {
         let mut explorer = Explorer::new(0);
         explorer.set_highlighted(syntax::highlight("test.rs", "let value = 1;\n"));
         let settings = reading::Settings {
+            enabled: true,
             min_seconds: Some(1.),
             max_seconds: Some(1.),
             ..default()
@@ -3742,6 +3908,7 @@ mod tests {
             "let a = 1;\nlet longer_name = calculate_something(argument);\n}\n",
         ));
         let settings = reading::Settings {
+            enabled: true,
             block_lines: 1,
             min_seconds: None,
             max_seconds: None,
@@ -3795,6 +3962,7 @@ mod tests {
         let mut explorer = Explorer::new(0);
         explorer.set_highlighted(syntax::highlight("test.rs", &"let x = 1;\n".repeat(24)));
         let settings = reading::Settings {
+            enabled: true,
             block_lines: 6,
             min_seconds: None,
             max_seconds: None,
@@ -3866,6 +4034,7 @@ mod tests {
         let mut explorer = Explorer::new(0);
         explorer.set_highlighted(syntax::highlight("test.rs", "let first = 1;\n"));
         let settings = reading::Settings {
+            enabled: true,
             min_seconds: Some(1.),
             max_seconds: Some(1.),
             ..default()
@@ -4521,6 +4690,72 @@ mod tests {
     }
 
     #[test]
+    fn turning_to_either_side_stays_in_the_street_on_a_tall_viewport() {
+        let file = fixture_with_rows(160);
+        let size = block_size(&file);
+        let mut repo = repository_picker::empty();
+        repo.files = vec![file.clone(), file.clone(), file];
+        repo.files[1].position = [27., 0.];
+        repo.files[2].position = [-27., 0.];
+
+        let mut explorer = Explorer::new(0);
+        let old = "let x = 1;\n".repeat(160);
+        let new = old.replacen("1", "2", 1);
+        explorer.set_highlighted(syntax::highlight("test.rs", &new));
+        explorer.set_comparison(Some(Comparison::new("test.rs", &old, &new).unwrap()));
+        let frame = ReadingFrame {
+            viewport: Vec2::new(1440., 1200.),
+            ..default()
+        };
+        let source = WallSide::new(
+            &repo.files[0],
+            explorer.source_layout.len(),
+            Face::Source,
+            size,
+        );
+        let start = source.view(source.wall.y(4.5), frame);
+        let mut time = Time::<()>::default();
+        time.advance_by(std::time::Duration::from_millis(16));
+        let mut app = App::new();
+        app.insert_resource(Repo(repo))
+            .insert_resource(explorer)
+            .insert_resource(time)
+            .insert_resource(Listing { frame, ..default() })
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<AccumulatedMouseScroll>()
+            .init_resource::<city_navigation::Navigation>()
+            .init_resource::<file_picker::FilePicker>()
+            .init_resource::<file_facade::ChangesOnly>()
+            .init_resource::<review_notes::Review>()
+            .add_systems(Update, controls);
+        app.world_mut().spawn((Window::default(), PrimaryWindow));
+        let camera = app.world_mut().spawn((Camera3d::default(), start)).id();
+        for (key, face) in [(KeyCode::KeyG, Face::Diff), (KeyCode::KeyB, Face::Blame)] {
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(key);
+            app.update();
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .clear();
+            for _ in 0..46 {
+                app.update();
+                let pose = app.world().get::<Transform>(camera).unwrap();
+                assert!(
+                    pose.translation.x.abs() < 27. - size.x / 2.,
+                    "{face:?}: {pose:?}"
+                );
+            }
+            let end = app.world().get::<Transform>(camera).unwrap();
+            let repo = app.world().resource::<Repo>();
+            assert_eq!(
+                Face::at_camera(&repo.0.files[0], size, end, 20.),
+                Some(face)
+            );
+        }
+    }
+
+    #[test]
     fn page_down_eases_along_the_wall_without_reframing_an_oblique_view() {
         let file = fixture_file();
         let mut repo = repository_picker::empty();
@@ -4537,6 +4772,7 @@ mod tests {
             .init_resource::<AccumulatedMouseScroll>()
             .init_resource::<city_navigation::Navigation>()
             .init_resource::<file_picker::FilePicker>()
+            .init_resource::<file_facade::ChangesOnly>()
             .init_resource::<Listing>()
             .init_resource::<review_notes::Review>()
             .add_systems(Update, controls);

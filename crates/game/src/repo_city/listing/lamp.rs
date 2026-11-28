@@ -28,10 +28,11 @@ pub(super) fn source(
     aspect: f32,
     delta: f32,
     settings: reading::Settings,
+    prepared: &cover::PreparedTiles,
 ) -> Option<progress::Mark> {
     let count = explorer.source_layout.len();
     let side = WallSide::new(file, count, Face::Source, block_size(file));
-    let Some(hit) = listing.readable_hit(explorer, &side, camera, count) else {
+    let Some(hit) = listing.readable_hit(explorer, &side, camera, count, prepared) else {
         listing.stop_water();
         return None;
     };
@@ -42,7 +43,7 @@ pub(super) fn source(
         group.start.max(visible.start)..group.end.min(visible.end),
         focus,
         |row, previous| {
-            listing.source_tiles.ready(row)
+            listing.source_tiles.ready(row, prepared)
                 && explorer.source_layout.rows[row]
                     .number
                     .abs_diff(explorer.source_layout.rows[previous].number)

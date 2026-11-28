@@ -1004,6 +1004,7 @@ pub(super) fn draw(
         aim.0.is_some(),
         reading,
         unrolling.stationary(),
+        settings.enabled,
         review.washing,
     );
     for (label, mut text) in &mut labels {

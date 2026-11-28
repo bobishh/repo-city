@@ -8,6 +8,7 @@ const next = "e".repeat(40);
 
 test("opens a rendered Markdown document with P and follows its relative link", async ({ page }) => {
   await emulatePointerLock(page);
+  await page.addInitScript(() => localStorage.setItem("repo-city-reading-v1", JSON.stringify({ enabled: true })));
   const license = "5".repeat(40);
   const licenseText = "Permission is hereby granted to use this source.\n";
   const source = "# Project notes\n\nSee the [MIT License](docs/LICENSE).\n\nUse **this** command.\n\n- First step\n\n| Action | Example |\n| --- | --- |\n| Inspect | status |\n\n```sh\ngit status\n```\n\n[Unsafe](javascript:alert%281%29)\n\n" +
@@ -176,6 +177,9 @@ test("shows the guide once and keeps it available from the help button", async (
   await gpuClick(page, guide.getByRole("button", { includeHidden: true, name: "Settings" }));
   const settings = page.locator("#review-dialog");
   await expect(settings).toContainText("Brysbaert");
+  await expect(settings.getByLabel("Reading mode", { exact: true })).not.toBeChecked();
+  await gpuClick(page, settings.getByLabel("Reading mode", { exact: true }));
+  await expect(settings.getByLabel("Reading mode", { exact: true })).toBeChecked();
   await expect(settings.getByLabel("Lines per reading block")).toHaveValue("6");
   await gpuFill(page, settings.getByLabel("Lines per reading block"), "0");
   await expect(settings.locator(".review-reading [role=status]")).toContainText("positive whole number");
@@ -188,7 +192,7 @@ test("shows the guide once and keeps it available from the help button", async (
   await expect(settings.locator(".review-reading [role=status]")).toContainText("Saved");
   await gpuSelect(page, settings.getByLabel("Read credit"), "immediate");
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("repo-city-reading-v1"))))
-    .toEqual({mode: "immediate", block_kind: "function", auto_advance: true, show_all_source: false, block_lines: 1, min_seconds: null, max_seconds: 5.5, fly_to_font_px: 14});
+    .toEqual({enabled: true, mode: "immediate", block_kind: "function", auto_advance: true, show_all_source: false, block_lines: 1, min_seconds: null, max_seconds: 5.5, fly_to_font_px: 14});
   await page.keyboard.press("Escape", { delay: 120 });
   await expectClosed(page);
   await page.evaluate(() => localStorage.removeItem("repo-city-guide-v1"));
@@ -849,6 +853,7 @@ test("finds account repositories and revisions in their own fields", async ({ pa
 
 test("restores review progress after reload and resets only the open comparison", async ({ page }, testInfo) => {
   await emulatePointerLock(page);
+  await page.addInitScript(() => localStorage.setItem("repo-city-reading-v1", JSON.stringify({ enabled: true })));
   let head = after;
   await page.route("https://api.github.com/**", async route => {
     const path = new URL(route.request().url()).pathname;
@@ -986,6 +991,7 @@ test("restores review progress after reload and resets only the open comparison"
 test("publishes a painted preset in one action and still supports suggestions", async ({ page }, testInfo) => {
   // This flow drags over a multi-line range; make its readable block explicit.
   await page.addInitScript(() => localStorage.setItem("repo-city-reading-v1", JSON.stringify({
+    enabled: true,
     mode: "delayed", block_kind: "lines", auto_advance: false, block_lines: 16, min_seconds: 3, max_seconds: 6,
   })));
   await emulatePointerLock(page);
@@ -1359,7 +1365,7 @@ test("P plays a video from the selected snapshot and explains unsupported video 
 test("keyboard-only navigation can find a building and wash source without pointer capture", async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem("repo-city-guide-v1", "seen");
-    localStorage.setItem("repo-city-reading-v1", JSON.stringify({ mode: "immediate", block_lines: 6, block_kind: "lines", auto_advance: true, min_seconds: null, max_seconds: null }));
+    localStorage.setItem("repo-city-reading-v1", JSON.stringify({ enabled: true, mode: "immediate", block_lines: 6, block_kind: "lines", auto_advance: true, min_seconds: null, max_seconds: null }));
   });
   const source = "fn main() {\n    let answer = 42;\n    println!(\"{answer}\");\n}\n";
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: false } }));
@@ -1394,6 +1400,7 @@ test("keyboard-only navigation can find a building and wash source without point
 test("a tall code facade renders after a partial thaw", async ({ page }, testInfo) => {
   await page.addInitScript(() => {
     localStorage.setItem("repo-city-reading-v1", JSON.stringify({
+      enabled: true,
       mode: "immediate", block_lines: 6, block_kind: "lines", auto_advance: false,
       min_seconds: null, max_seconds: null,
     }));
@@ -1434,7 +1441,23 @@ test("a tall code facade renders after a partial thaw", async ({ page }, testInf
     return Number((await page.locator("#progress-summary").textContent()).match(/(\d+) lines revealed/)?.[1]);
   }, { timeout: 25_000, intervals: [500, 1000] }).toBeGreaterThan(0);
   await expect(page.locator("#progress-summary")).toContainText("6 lines revealed");
-  await page.screenshot({ path: testInfo.outputPath("tall-near.png") });
+  const near = await page.screenshot({ path: testInfo.outputPath("tall-near.png"), scale: "css" });
+  const gutterInk = await page.evaluate(async png => {
+    const bytes = Uint8Array.from(atob(png), byte => byte.charCodeAt(0));
+    const image = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+    const context = new OffscreenCanvas(16, 170).getContext("2d");
+    context.drawImage(image, 146, 290, 16, 170, 0, 0, 16, 170);
+    image.close();
+    const { data } = context.getImageData(0, 0, 16, 170);
+    let ink = 0;
+    for (let index = 0; index < data.length; index += 4) {
+      const [red, green, blue] = data.subarray(index, index + 3);
+      if (green > 100 && green > red + 15 && blue > red + 25) ink++;
+    }
+    return ink;
+  }, near.toString("base64"));
+  // The distant fallback has no line numbers. Credit must wait for the detailed tiles.
+  expect(gutterInk).toBeGreaterThan(20);
   // Back away past the readable tiles to render the partially thawed facade itself.
   await page.keyboard.press("KeyS", { delay: 300 });
   let far;

@@ -48,6 +48,7 @@ impl Tour {
         aiming: bool,
         reading: bool,
         ready: bool,
+        heat_enabled: bool,
         heating: bool,
     ) -> &'static str {
         #[cfg(target_arch = "wasm32")]
@@ -56,8 +57,9 @@ impl Tour {
             Step::Look if aiming || reading => Step::Travel,
             Step::Travel if reading => Step::Arriving,
             Step::Arriving if !reading => Step::Travel,
+            Step::Arriving if ready && !heat_enabled => Step::Finish(now),
             Step::Arriving if ready => Step::Wash,
-            Step::Wash if heating => Step::Finish(now),
+            Step::Wash if !heat_enabled || heating => Step::Finish(now),
             Step::Finish(started) if now > started + 9. => Step::Off,
             step => step,
         };
@@ -101,6 +103,7 @@ pub(super) fn advance(
     camera: Query<&Pilot, PlayerCamera>,
     navigation: Res<city_navigation::Navigation>,
     review: Res<review_notes::Review>,
+    reading: Res<reading::Settings>,
     mut hint: Query<(&mut Text, &mut Node), With<Hint>>,
 ) {
     #[cfg(target_arch = "wasm32")]
@@ -115,8 +118,11 @@ pub(super) fn advance(
         tour.step = match tour.step {
             Step::Look if pilot.captured => Step::Travel,
             Step::Travel if navigation.is_flying() && !navigation.overview() => Step::Arriving,
+            Step::Arriving if !navigation.is_flying() && !reading.enabled => {
+                Step::Finish(time.elapsed_secs())
+            }
             Step::Arriving if !navigation.is_flying() => Step::Wash,
-            Step::Wash if review.washing && review.nozzle > 0.85 => {
+            Step::Wash if !reading.enabled || review.washing && review.nozzle > 0.85 => {
                 Step::Finish(time.elapsed_secs())
             }
             Step::Finish(started) if time.elapsed_secs() > started + 9. => Step::Off,

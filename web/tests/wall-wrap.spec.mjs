@@ -8,7 +8,7 @@ for (const history of [true, false]) test(`long Elm code keeps canonical lines w
     HTMLCanvasElement.prototype.requestPointerLock = function () { locked = this; queueMicrotask(() => document.dispatchEvent(new Event("pointerlockchange"))); return Promise.resolve(); };
     document.exitPointerLock = () => { locked = null; queueMicrotask(() => document.dispatchEvent(new Event("pointerlockchange"))); };
     localStorage.setItem("repo-city-guide-v1", "seen");
-    localStorage.setItem("repo-city-reading-v1", JSON.stringify({ mode: "immediate", block_lines: 6, block_kind: "fixed", auto_advance: false, min_seconds: null, max_seconds: null }));
+    localStorage.setItem("repo-city-reading-v1", JSON.stringify({ enabled: true, mode: "immediate", block_lines: 6, block_kind: "fixed", auto_advance: false, min_seconds: null, max_seconds: null }));
   });
   await page.route("**/github/session", route => route.fulfill({ json: { enabled: true, login: "reviewer" } }));
   await page.route(/\/github\/api\/|https:\/\/api.github.com\//, route => {

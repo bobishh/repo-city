@@ -184,7 +184,7 @@ pub(crate) fn update(
     picker: Res<file_picker::FilePicker>,
     menu: Res<city_menu::Menu>,
     search: Res<find::Search>,
-    settings: Res<reading::Settings>,
+    (settings, prepared): (Res<reading::Settings>, Res<cover::PreparedTiles>),
     camera: Query<&Transform, PlayerCamera>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut progress: ResMut<progress::Progress>,
@@ -237,7 +237,8 @@ pub(crate) fn update(
             {
                 let count = explorer.source_layout.len();
                 let side = WallSide::new(file, count, face, block_size(file));
-                let row = side.wall.row(side.look_height(camera), count);
+                let hit = listing.readable_hit(&explorer, &side, camera, count, &prepared)?;
+                let row = side.wall.row(hit.y, count);
                 guided_focus = true;
                 if let Some(mark) =
                     listing.advance_wash(&explorer, file, row, time.delta_secs(), *settings)
@@ -254,7 +255,8 @@ pub(crate) fn update(
         };
         let side = WallSide::new(file, count, face, block_size(file));
         let visible = side.visible_rows(camera, count, aspect);
-        let focus = side.wall.row(side.look_height(camera), count);
+        let hit = listing.readable_hit(&explorer, &side, camera, count, &prepared)?;
+        let focus = side.wall.row(hit.y, count);
         let mut rows = if face == Face::Blame {
             settings.block_in_layout(&explorer, &explorer.blame_layout, focus)
         } else {
@@ -296,13 +298,12 @@ pub(crate) fn update(
         }
         rows = rows.start.max(visible.start)..rows.end.min(visible.end);
         if abyss {
-            side.wash_hit(camera, count, listing.frame)?;
             let tiles = if face == Face::Blame {
                 &listing.blame_tiles
             } else {
                 &listing.diff_tiles
             };
-            rows = lamp::ready_rows(rows, focus, |row, _| tiles.ready(row));
+            rows = lamp::ready_rows(rows, focus, |row, _| tiles.ready(row, &prepared));
             rows = whole_line_rows(rows, count, |row| {
                 if face == Face::Diff {
                     let (line, mark) = &explorer.diff_layout.rows[row];
@@ -392,6 +393,7 @@ mod tests {
         let mut explorer = Explorer::new(0);
         explorer.set_highlighted(syntax::highlight("test.rs", "new value\n"));
         let enabled = reading::Settings {
+            enabled: true,
             min_seconds: Some(1.),
             max_seconds: Some(1.),
             ..default()
@@ -429,6 +431,7 @@ mod tests {
             Comparison::new("test.rs", "old value\nunseen\n", "new value\nunseen\n").unwrap(),
         ));
         let settings = reading::Settings {
+            enabled: true,
             min_seconds: Some(1.),
             max_seconds: Some(1.),
             ..default()

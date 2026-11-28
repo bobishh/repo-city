@@ -11,6 +11,7 @@ test("a guest can recover a survey buoy and read a station by holding the light 
   });
   await page.addInitScript(() => {
     localStorage.setItem("repo-city-reading-v1", JSON.stringify({
+      enabled: true,
       mode: "delayed", block_kind: "lines", block_lines: 3, auto_advance: false,
       min_seconds: 1, max_seconds: 1,
     }));

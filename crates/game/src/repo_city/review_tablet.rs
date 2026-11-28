@@ -2711,7 +2711,7 @@ mod tests {
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::F4);
         app.update();
-        assert!(!app.world().resource::<reading::Settings>().enabled);
+        assert!(app.world().resource::<reading::Settings>().enabled);
         assert!(!app.world().resource::<Tablet>().is_open());
         let editor = app.world_mut().spawn(EditableText::default()).id();
         app.world_mut()
@@ -2725,7 +2725,7 @@ mod tests {
             .press(KeyCode::F4);
         app.update();
         assert!(
-            !app.world().resource::<reading::Settings>().enabled,
+            app.world().resource::<reading::Settings>().enabled,
             "F4 must not steal editor input"
         );
         let volume = app.world().resource::<city_audio::Settings>().volume;
@@ -2759,8 +2759,8 @@ mod tests {
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::F4);
         app.update();
-        assert!(app.world().resource::<reading::Settings>().enabled);
-        assert!(reading::Settings::load().enabled);
+        assert!(!app.world().resource::<reading::Settings>().enabled);
+        assert!(!reading::Settings::load().enabled);
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
             .reset_all();
@@ -2776,7 +2776,7 @@ mod tests {
         );
         app.world_mut().resource_mut::<Tablet>().action = Some(Action::ReadingEnabled);
         app.update();
-        assert!(!app.world().resource::<reading::Settings>().enabled);
+        assert!(app.world().resource::<reading::Settings>().enabled);
     }
 
     #[test]

@@ -249,9 +249,9 @@ Source, diff and blame walls wrap long code to their available text width for
 every language. Blame reserves space for attribution while history loads.
 Continuation rows keep the original line number for notes, search and links.
 
-On desktop, **F4** or **Settings → Reading → Reading mode** toggles reading off
-and on. While off, source is visible and timers pause without changing saved
-progress. **F10** mutes Repo City audio, including room audio and Codex voice.
+Reading mode starts off, with source visible and timers paused. Enable it in
+**Settings → Reading → Reading mode** or press **F4** on desktop.
+**F10** mutes Repo City audio, including room audio and Codex voice.
 Press it again to restore sound. Use Antigravity's terminal controls for its audio.
 
 **Reading block** chooses whole functions where syntax boundaries are available,

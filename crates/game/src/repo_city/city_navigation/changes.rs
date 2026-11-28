@@ -51,7 +51,7 @@ impl FileView {
         repo: &Repository,
         explorer: &mut Explorer,
         listing: &listing::Listing,
-        eye: Vec3,
+        focus: &file_facade::ChangesOnly,
     ) -> Transform {
         let file = &repo.files[explorer.selected];
         let hunk = explorer
@@ -79,7 +79,7 @@ impl FileView {
                     surface: None,
                 }
                 .on_side(face);
-                listing.arrival_view(explorer, file, listing::block_size(file), Some(aim), eye)
+                listing.arrival_view(explorer, repo, focus, Some(aim))
             }
         }
     }

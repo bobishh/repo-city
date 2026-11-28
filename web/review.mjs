@@ -38,7 +38,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
   const dialog = document.querySelector("#review-dialog");
   const tablet = createTablet(dialog, canvas);
   const settingsKey = "repo-city-reading-v1";
-  let reading = { mode: "delayed", block_lines: 6, block_kind: "function", auto_advance: true, min_seconds: 3, max_seconds: 6, fly_to_font_px: 14 };
+  let reading = { enabled: false, mode: "delayed", block_lines: 6, block_kind: "function", auto_advance: true, min_seconds: 3, max_seconds: 6, fly_to_font_px: 14 };
   try {
     if (localStorage.getItem("repo-city-wash-mode") === "immediate") reading.mode = "immediate";
     const previous = JSON.parse(localStorage.getItem(settingsKey));
@@ -410,6 +410,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     for (const [value, label] of [["function", "Whole function"], ["lines", "Fixed lines"]]) kind.append(make("option", label, { value }));
     kind.value = reading.block_kind ?? "function";
     const auto = make("input", undefined, { type: "checkbox" }); auto.checked = reading.auto_advance ?? true;
+    const enabled = make("input", undefined, { type: "checkbox" }); enabled.checked = reading.enabled;
     const showSource = make("input", undefined, { type: "checkbox" }); showSource.checked = reading.show_all_source ?? false;
     const block = make("input", undefined, { type: "number", min: "1", step: "1", value: reading.block_lines });
     const bound = value => make("input", undefined, { type: "text", inputmode: "decimal", value: value ?? "", placeholder: "No limit" });
@@ -419,7 +420,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     form.noValidate = true;
     const limits = make("div", undefined, { class: "reading-limits" });
     limits.append(field("Minimum delay (seconds)", min), field("Maximum delay (seconds)", max));
-    form.append(make("h3", "Reading"), field("Source always visible", showSource), field("Read credit", mode), field("Reading block", kind), field("Lines per reading block", block),
+    form.append(make("h3", "Reading"), field("Reading mode", enabled), field("Source always visible", showSource), field("Read credit", mode), field("Reading block", kind), field("Lines per reading block", block),
       make("p", "Used for fixed blocks and when function boundaries are unavailable."),
       field("Auto-advance downward", auto), limits,
       make("p", "Block size and time limits are independent. Leave either limit blank to use the calculated time."),
@@ -432,7 +433,7 @@ export function createReview({ canvas, release, onClose, onTour, audio, onCompar
     const side = make("div", undefined, { class: "settings-side" }); side.append(soundSettings(), estimate);
     const applyReading = () => {
       const seconds = input => input.value.trim() === "" ? null : Number(input.value);
-      const next = { mode: mode.value, block_kind: kind.value, auto_advance: auto.checked, show_all_source: showSource.checked, block_lines: Number(block.value), min_seconds: seconds(min), max_seconds: seconds(max), fly_to_font_px: Number(fontSize.value) };
+      const next = { enabled: enabled.checked, mode: mode.value, block_kind: kind.value, auto_advance: auto.checked, show_all_source: showSource.checked, block_lines: Number(block.value), min_seconds: seconds(min), max_seconds: seconds(max), fly_to_font_px: Number(fontSize.value) };
       const error = readingError(next);
       if (error) { status.textContent = error; return; }
       reading = next;

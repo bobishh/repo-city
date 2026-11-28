@@ -1,9 +1,23 @@
 use bevy::{
-    asset::{load_internal_asset, uuid_handle},
-    pbr::{ExtendedMaterial, MaterialExtension},
+    asset::{UntypedAssetId, load_internal_asset, uuid_handle},
+    pbr::{
+        ExtendedMaterial, MaterialExtension, PreparedMaterial, SpecializedMaterialPipelineCache,
+    },
     prelude::*,
-    render::render_resource::{AsBindGroup, ShaderType},
+    render::{
+        Extract, ExtractSchedule, Render, RenderApp, RenderSystems,
+        erased_render_asset::ErasedRenderAssets,
+        render_asset::RenderAssets,
+        render_resource::{AsBindGroup, PipelineCache, ShaderType},
+        sync_world::MainEntity,
+        texture::GpuImage,
+        view::{ExtractedView, RenderVisibleEntities, RetainedViewEntity},
+    },
     shader::{Shader, ShaderRef},
+};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
 };
 
 use super::{TILE_ROWS, code_texture};
@@ -17,7 +31,101 @@ impl bevy::app::Plugin for Plugin {
         load_internal_asset!(app, SHADER, "cover.wesl", Shader::from_wesl);
         app.add_plugins(MaterialPlugin::<Material>::default());
         super::overview::install(app);
+        let prepared = PreparedTiles::default();
+        app.insert_resource(prepared.clone());
+        if let Some(render) = app.get_sub_app_mut(RenderApp) {
+            render
+                .insert_resource(prepared)
+                .init_resource::<ExtractedTiles>()
+                .add_systems(ExtractSchedule, extract_tiles)
+                .add_systems(Render, mark_prepared.in_set(RenderSystems::Cleanup));
+        }
     }
+}
+
+#[derive(Clone, Default, Resource)]
+pub(crate) struct PreparedTiles(Arc<Mutex<HashSet<AssetId<Image>>>>);
+
+impl PreparedTiles {
+    pub(super) fn contains(&self, image: AssetId<Image>) -> bool {
+        self.0.lock().unwrap().contains(&image)
+    }
+
+    #[cfg(test)]
+    pub(super) fn from_images(images: impl IntoIterator<Item = AssetId<Image>>) -> Self {
+        Self(Arc::new(Mutex::new(images.into_iter().collect())))
+    }
+}
+
+#[derive(Default, Resource)]
+struct ExtractedTiles {
+    camera: Option<MainEntity>,
+    tiles: Vec<(MainEntity, AssetId<Image>, UntypedAssetId)>,
+}
+
+fn extract_tiles(
+    listing: Extract<Option<Res<super::Listing>>>,
+    camera: Extract<Query<Entity, crate::PlayerCamera>>,
+    mut extracted: ResMut<ExtractedTiles>,
+) {
+    extracted.camera = camera.single().ok().map(MainEntity::from);
+    extracted.tiles.clear();
+    if let Some(listing) = listing.as_ref() {
+        for state in [
+            &listing.source_tiles,
+            &listing.diff_tiles,
+            &listing.blame_tiles,
+        ] {
+            extracted.tiles.extend(state.resident.values().map(|tile| {
+                let material = match &tile.material {
+                    super::TileMaterial::Plain(handle) => handle.id().untyped(),
+                    super::TileMaterial::Covered(handle) => handle.id().untyped(),
+                };
+                (tile.entity.into(), tile.image.id(), material)
+            }));
+        }
+    }
+}
+
+fn mark_prepared(
+    extracted: Res<ExtractedTiles>,
+    images: Res<RenderAssets<GpuImage>>,
+    materials: Res<ErasedRenderAssets<PreparedMaterial>>,
+    views: Query<(&ExtractedView, &RenderVisibleEntities)>,
+    specialized: Res<SpecializedMaterialPipelineCache>,
+    pipelines: Res<PipelineCache>,
+    prepared: Res<PreparedTiles>,
+) {
+    let mut ready = prepared.0.lock().unwrap();
+    ready.clear();
+    let Some(camera) = extracted.camera else {
+        return;
+    };
+    let view_key = RetainedViewEntity::new(camera, None, 0);
+    let Some(view_pipelines) = specialized.get(&view_key) else {
+        return;
+    };
+    let Some(meshes) = views
+        .iter()
+        .find(|(view, _)| view.retained_view_entity == view_key)
+        .and_then(|(_, visible)| visible.get::<Mesh3d>())
+    else {
+        return;
+    };
+    // A prepared texture can still be hidden behind its fallback while the pipeline compiles.
+    ready.extend(
+        extracted
+            .tiles
+            .iter()
+            .filter_map(|&(entity, image, material)| {
+                let pipeline = *view_pipelines.get(&entity)?;
+                (images.get(image).is_some()
+                    && materials.get(material).is_some()
+                    && meshes.entity_pair_is_visible(Entity::PLACEHOLDER, entity)
+                    && pipelines.get_render_pipeline(pipeline).is_some())
+                .then_some(image)
+            }),
+    );
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Clone)]
